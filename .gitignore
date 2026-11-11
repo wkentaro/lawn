@@ -1,3 +1,4 @@
+# Modified for Lawn.
 /target
 node_modules/
 /vendor/libghostty-vt/zig-pkg/
@@ -9,6 +10,7 @@ __pycache__/
 .DS_Store
 
 /docs/*
+!/docs/lawn/
 !/docs/next/
 !/docs/next/**
 !/docs/preview/

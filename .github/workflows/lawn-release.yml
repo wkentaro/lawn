@@ -1,0 +1,121 @@
+name: Lawn release
+
+on:
+  push:
+    tags: ['lawn-v*']
+  pull_request:
+    paths:
+      - '.github/workflows/lawn-release.yml'
+      - 'scripts/lawn_release.py'
+      - 'scripts/test_lawn_release.py'
+      - 'docs/lawn/releases/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lawn-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'wkentaro/lawn'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release source
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: 1.96.1
+          components: rustfmt,clippy
+          targets: aarch64-apple-darwin
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just,cargo-nextest
+      - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+        with:
+          version: 0.16.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          key: lawn-release-macos-aarch64
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: Check and build
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          just ci 'not binary(live_handoff)'
+          just docs-contract-test
+          cargo build --release --locked --target aarch64-apple-darwin
+      - name: Package and smoke
+        env:
+          IS_RELEASE: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          release_tag="$GITHUB_REF_NAME"
+          if [ "$IS_RELEASE" != true ]; then
+            release_tag="lawn-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          fi
+          python3 scripts/lawn_release.py --binary target/aarch64-apple-darwin/release/lawn --output artifacts --tag "$release_tag"
+          ./artifacts/lawn-macos-aarch64 --help >/dev/null
+          ./artifacts/lawn-macos-aarch64 completion zsh >/dev/null
+          (cd artifacts && shasum -a 256 -c SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lawn-macos-aarch64
+          path: artifacts/
+          if-no-files-found: error
+
+  publish:
+    if: github.repository == 'wkentaro/lawn' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/lawn-v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Require repository admins for publishing and reruns
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" --jq .permission)"
+            test "$permission" = admin
+          done
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag still selects the checked main commit
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: lawn-macos-aarch64
+          path: artifacts
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Lawn $GITHUB_REF_NAME" \
+            --notes-file artifacts/release-notes.md \
+            artifacts/lawn-macos-aarch64 artifacts/lawn-*-macos-aarch64.tar.gz artifacts/SHA256SUMS artifacts/latest.json

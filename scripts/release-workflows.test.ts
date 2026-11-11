@@ -1,3 +1,4 @@
+// Modified for Lawn.
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -7,6 +8,7 @@ const load = (name: string): any =>
   Bun.YAML.parse(readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), "utf8"));
 const preview = load("preview");
 const release = load("release");
+const lawn = load("lawn-release");
 const adminGate = release.jobs["validate-release-source"].steps[0];
 
 describe("official publishing workflow boundaries", () => {
@@ -25,6 +27,23 @@ describe("official publishing workflow boundaries", () => {
       name: "herdr-windows-x86_64.zip",
     });
     expect(preview.jobs.publish.needs).toContain("build");
+  });
+
+  test("Lawn only publishes checked tags from main with a separate write job", () => {
+    expect(lawn.permissions.contents).toBe("read");
+    expect(lawn.on.push.tags).toEqual(["lawn-v*"]);
+    expect(lawn.on.pull_request).toBeDefined();
+    expect(lawn.jobs.publish.if).toContain("github.repository == 'wkentaro/lawn'");
+    expect(lawn.jobs.publish.if).toContain("github.event_name == 'push'");
+    expect(lawn.jobs.publish.if).toContain("startsWith(github.ref, 'refs/tags/lawn-v')");
+    expect(lawn.jobs.publish.needs).toBe("build");
+    expect(lawn.jobs.publish.permissions.contents).toBe("write");
+    const verify = lawn.jobs.publish.steps.find((step: any) => step.name?.startsWith("Verify tag"));
+    expect(verify.run).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
+    expect(verify.run).toContain('refs/tags/$GITHUB_REF_NAME^{commit}');
+    const checkout = lawn.jobs.publish.steps.find((step: any) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkout.with.ref).toBe("${{ github.sha }}");
+    expect(checkout.with["persist-credentials"]).toBe(false);
   });
 
   test("each publishing job rechecks both actors before using credentials", () => {
@@ -77,11 +96,13 @@ esac
         ["admin-one", "maintainer", false],
         ["admin-one", "api-error", false],
       ] as const) {
-        const result = spawnSync("bash", ["-c", adminGate.run], {
-          env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "example/test", GITHUB_ACTOR: actor, GITHUB_TRIGGERING_ACTOR: trigger },
-          encoding: "utf8",
-        });
-        expect(result.status === 0).toBe(succeeds);
+        for (const gate of [adminGate, lawn.jobs.publish.steps[0]]) {
+          const result = spawnSync("bash", ["-c", gate.run], {
+            env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: "example/test", GITHUB_ACTOR: actor, GITHUB_TRIGGERING_ACTOR: trigger },
+            encoding: "utf8",
+          });
+          expect(result.status === 0).toBe(succeeds);
+        }
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
