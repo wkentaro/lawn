@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import tarfile
@@ -43,7 +44,8 @@ class LawnReleaseTests(unittest.TestCase):
         }})
         self.assertEqual((manifest["version"], manifest["protocol"], manifest["endpoint_generation"]),
                          ("0.1.0", 22, 1))
-        self.assertEqual(asset.stat().st_mode & 0o777, 0o755)
+        if os.name != "nt":
+            self.assertEqual(asset.stat().st_mode & 0o777, 0o755)
         with tarfile.open(self.output / "lawn-0.1.0-macos-aarch64.tar.gz") as archive:
             self.assertEqual(archive.getnames(), ["lawn", "LICENSE", "SPONSORS.md", "README.md"])
             self.assertEqual(archive.extractfile("lawn").read(), self.binary.read_bytes())
