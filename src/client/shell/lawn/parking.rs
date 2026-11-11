@@ -247,10 +247,7 @@ impl PaneParking {
                     && !self.store.terminals.contains(id)
                     && !self.protected.contains(id)
             });
-            if added
-                || restored
-                || (self.preview.is_some() && request.preview_terminal != self.preview)
-                || self.focus.is_some()
+            if added || restored || request.preview_terminal != self.preview || self.focus.is_some()
             {
                 self.dirty = true;
             }
@@ -568,5 +565,66 @@ mod tests {
             .expect("newer additions require a newer authoritative map");
         assert_eq!(refreshed.hidden_terminals, ["later-addition"]);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn closing_a_previewed_terminal_sends_a_clearing_policy_before_input_resumes() {
+        let (mut model, mut snapshot, now) = connected(None);
+        let mut second = snapshot.panes[0].clone();
+        second.pane_id = "pane_2".into();
+        second.focused = false;
+        snapshot.panes.push(second);
+        let reply = |model: &mut PaneParking,
+                     snapshot: &mut ClientShellSnapshot,
+                     sequence,
+                     focused: Option<&str>| {
+            snapshot.revision += 1;
+            snapshot.focused_pane_id = focused.map(str::to_owned);
+            model.receive_identities(
+                Some(7),
+                PaneIdentities {
+                    boot_id: snapshot.boot_id.clone(),
+                    revision: snapshot.revision,
+                    sequence,
+                    pane_terminals: snapshot
+                        .panes
+                        .iter()
+                        .map(|pane| {
+                            (
+                                pane.pane_id.clone(),
+                                if pane.pane_id == "pane_1" {
+                                    "terminal-one".into()
+                                } else {
+                                    "terminal-two".into()
+                                },
+                            )
+                        })
+                        .collect(),
+                },
+            );
+            model.observe_snapshot(Some(7), snapshot);
+        };
+        model.park("pane_1").unwrap();
+        let parked = model.poll(now).unwrap();
+        reply(&mut model, &mut snapshot, parked.sequence, Some("pane_2"));
+        model.preview("terminal-one").unwrap();
+        let preview = model.poll(now).unwrap();
+        reply(&mut model, &mut snapshot, preview.sequence, Some("pane_1"));
+        assert!(!model.accepts_input("pane_2"));
+
+        snapshot.panes.retain(|pane| pane.pane_id != "pane_1");
+        reply(&mut model, &mut snapshot, preview.sequence, None);
+        assert!(!model.ready());
+        assert!(!model.accepts_input("pane_2"));
+        let cleared = model
+            .poll(now)
+            .expect("the deleted preview must be cleared on the server");
+        assert!(cleared.preview_terminal.is_none());
+        assert!(cleared.hidden_terminals.is_empty());
+        assert!(cleared.read_only_terminals.is_empty());
+        reply(&mut model, &mut snapshot, cleared.sequence, Some("pane_2"));
+        assert!(model.available());
+        assert!(model.shows_tab("tab_1"));
+        assert!(model.accepts_input("pane_2"));
     }
 }
