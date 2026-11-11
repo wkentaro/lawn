@@ -1081,6 +1081,12 @@ impl ClientShellState {
     }
 
     pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+        if self
+            .active_parking()
+            .is_some_and(|parking| !parking.shows_tab(&tab_id))
+        {
+            return;
+        }
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
             let target = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
             (self.config.confirm_close

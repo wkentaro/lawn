@@ -1034,18 +1034,17 @@ impl ClientShellState {
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
             KeybindAction::SwitchTab(index) => {
-                let tabs = snapshot
+                let tab = snapshot
                     .tabs
                     .iter()
+                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .nth(index)
                     .filter(|tab| {
-                        tab.workspace_id == focused_workspace
-                            && self
-                                .active_parking()
-                                .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-                    })
-                    .collect::<Vec<_>>();
+                        self.active_parking()
+                            .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+                    })?;
                 Some(Method::TabFocus(TabTarget {
-                    tab_id: tabs.get(index)?.tab_id.clone(),
+                    tab_id: tab.tab_id.clone(),
                 }))
             }
             KeybindAction::PreviousTab | KeybindAction::NextTab => {

@@ -358,7 +358,7 @@ fn tab_navigation_skips_parked_tabs_and_reordering_uses_server_positions() {
     let parked = request(&mut state);
     acknowledge(&mut state, &parked, Some("pane_1"));
     for action in [
-        crate::input::KeybindAction::SwitchTab(1),
+        crate::input::KeybindAction::SwitchTab(2),
         crate::input::KeybindAction::NextTab,
         crate::input::KeybindAction::PreviousTab,
     ] {
@@ -501,6 +501,66 @@ fn tabbed_snapshot() -> ClientShellSnapshot {
         projected.panes.push(pane);
     }
     projected
+}
+
+#[test]
+fn closing_an_empty_parked_view_does_not_close_a_hidden_tab() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    assert!(state.config.confirm_close);
+    for pane in ["pane_1", "pane_2", "pane_3"] {
+        state.parking_action(
+            ClientEndpointId::Local,
+            pane.into(),
+            lawn::ParkingAction::Park,
+            &mut ClientShellInput::default(),
+        );
+        let policy = request(&mut state);
+        acknowledge(&mut state, &policy, None);
+    }
+    state.compose(100, 24).unwrap();
+    assert_eq!(state.focused_tab_count(), 0);
+    let closed = binding(&mut state, crate::input::KeybindAction::CloseTab);
+    assert!(closed.actions.is_empty());
+    assert!(state.overlay.is_none());
+    let mut stale_menu = ClientShellInput::default();
+    state.request_tab_close("tab_1".into(), &mut stale_menu);
+    assert!(stale_menu.actions.is_empty());
+}
+
+#[test]
+fn numbered_tab_shortcuts_keep_the_numbers_shown_in_the_tab_bar() {
+    let mut projected = tabbed_snapshot();
+    for tab in &mut projected.tabs {
+        tab.label = tab.number.to_string();
+    }
+    let mut state = state_with_snapshot(projected);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_2".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_1"));
+    let frame = state.compose(100, 24).unwrap();
+    let row = &frame_rows(&frame)[usize::from(state.hits.tabs[0].0.y)];
+    assert!(row.contains(" 1 ") && row.contains(" 3 "));
+    for (index, expected) in [(0, Some("tab_1")), (1, None), (2, Some("tab_3"))] {
+        let action = crate::input::KeybindAction::SwitchTab(index);
+        assert_eq!(
+            state.indexed_navigation_target_exists(&crate::input::KeybindMatch::Action(action)),
+            expected.is_some()
+        );
+        let outcome = binding(&mut state, action);
+        let focused = outcome.actions.iter().find_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::TabFocus(target) => Some(target.tab_id.as_str()),
+                _ => None,
+            },
+            _ => None,
+        });
+        assert_eq!(focused, expected);
+    }
 }
 
 #[test]
