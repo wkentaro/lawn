@@ -92,12 +92,9 @@ impl ClientPanePresentation {
             .as_deref()
             .and_then(|id| locations.get(id))
             .copied();
-        self.focus = self
-            .request
-            .focus_terminal
-            .as_deref()
-            .and_then(|id| locations.get(id))
-            .map(|location| location.pane_id);
+        if let Some(id) = self.request.focus_terminal.as_deref() {
+            self.focus = locations.get(id).map(|location| location.pane_id);
+        }
     }
 
     pub(crate) fn presents(&self, pane_id: PaneId) -> bool {
@@ -145,6 +142,11 @@ impl ClientPanePresentation {
         self.focus_active = false;
         self.preview_active = false;
         changed
+    }
+
+    pub(crate) fn preserve_focus(&mut self, pane_id: PaneId) {
+        self.focus = Some(pane_id);
+        self.focus_active = true;
     }
 
     pub(crate) fn requested_target(

@@ -198,6 +198,10 @@ async fn existing_controller_resizes_and_directional_focus_skips_hidden_panes_fo
     let mut policy = request(&server, 2);
     policy.focus_terminal = Some(ids[0].to_string());
     assert!(apply(&mut server, 7, &policy));
+    let refresh = request(&server, 3);
+    assert!(apply(&mut server, 7, &refresh));
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, first);
+    assert_eq!(server.shell_focus_target(8).unwrap().pane_id, last);
     for input in &mut inputs {
         while input.try_recv().is_ok() {}
     }
@@ -211,7 +215,7 @@ async fn existing_controller_resizes_and_directional_focus_skips_hidden_panes_fo
     assert_eq!(inputs[0].try_recv().unwrap(), Bytes::from_static(b"\x1b[O"));
     assert_eq!(inputs[2].try_recv().unwrap(), Bytes::from_static(b"\x1b[O"));
     assert_eq!(inputs[1].try_recv().unwrap(), Bytes::from_static(b"\x1b[I"));
-    let mut policy = request(&server, 3);
+    let mut policy = request(&server, 4);
     policy.focus_terminal = Some(ids[0].to_string());
     assert!(apply(&mut server, 7, &policy));
     for input in &mut inputs {

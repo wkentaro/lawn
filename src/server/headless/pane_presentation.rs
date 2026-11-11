@@ -149,7 +149,24 @@ impl HeadlessServer {
                 "the selected terminal no longer has a pane",
             );
         }
-        let presentation = ClientPanePresentation::new(request, &locations);
+        let mut presentation = ClientPanePresentation::new(request, &locations);
+        if presentation.request.preview_terminal.is_none()
+            && presentation.request.focus_terminal.is_none()
+        {
+            if let Some(focus) = self.shell_focus_target(client_id) {
+                let native_focus = self
+                    .app
+                    .parse_tab_id(&focus.tab_id)
+                    .map(|(workspace, tab)| {
+                        self.app.state.workspaces[workspace].tabs[tab]
+                            .layout
+                            .focused()
+                    });
+                if native_focus != Some(focus.pane_id) && presentation.presents(focus.pane_id) {
+                    presentation.preserve_focus(focus.pane_id);
+                }
+            }
+        }
         let target = presentation
             .requested_target(&locations)
             .or_else(|| self.shell_target_for_client(client_id))
