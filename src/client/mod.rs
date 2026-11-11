@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Thin client mode — connects to the server's client socket.
 //!
 //! The client:
@@ -513,6 +514,17 @@ async fn run_client_loop(
                 .is_some_and(|capabilities| {
                     capabilities.iter().any(|capability| {
                         capability == crate::protocol::endpoint::AGENT_VIEW_PROJECTION_CAPABILITY
+                    })
+                }),
+        );
+        shell.set_endpoint_parking_supported(
+            &endpoint::ClientEndpointId::Local,
+            initial
+                .as_ref()
+                .and_then(|(_, handshake)| handshake.endpoint_capabilities.as_ref())
+                .is_some_and(|capabilities| {
+                    capabilities.iter().any(|capability| {
+                        capability == crate::protocol::endpoint::pane_presentation::CAPABILITY
                     })
                 }),
         );
@@ -1389,6 +1401,12 @@ async fn run_client_loop(
                     );
                     let frame = state.shell.as_mut().and_then(|shell| {
                         shell.set_endpoint_methods_for(&endpoint_id, Some(negotiation.methods()));
+                        shell.set_endpoint_parking_supported(
+                            &endpoint_id,
+                            negotiation.supports_capability(
+                                crate::protocol::endpoint::pane_presentation::CAPABILITY,
+                            ),
+                        );
                         shell.set_endpoint_agent_view_projection_supported(
                             &endpoint_id,
                             agent_view_projection_supported,
@@ -2136,6 +2154,26 @@ async fn run_client_loop(
                                 }
                                 continue;
                             }
+                            Ok(endpoint::EndpointControlMessage::PaneIdentities(identities)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    shell.set_endpoint_pane_identities(
+                                        &endpoint_id,
+                                        generation,
+                                        identities,
+                                    );
+                                }
+                                continue;
+                            }
+                            Ok(endpoint::EndpointControlMessage::PanePresentationError(error)) => {
+                                if let Some(shell) = state.shell.as_mut() {
+                                    shell.receive_endpoint_parking_error(
+                                        &endpoint_id,
+                                        generation,
+                                        error,
+                                    );
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -2333,6 +2371,10 @@ async fn run_client_loop(
                     let (effects, outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
+                        let parking = shell.tick_parking(now);
+                        outcome.repaint |= parking.repaint;
+                        outcome.resize |= parking.resize;
+                        outcome.actions.extend(parking.actions);
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;

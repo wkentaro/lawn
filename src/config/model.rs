@@ -407,6 +407,13 @@ pub struct KeysConfig {
     pub close_tab: BindingConfig,
     /// Rename the focused pane. Default: "prefix+shift+p".
     pub rename_pane: BindingConfig,
+    /// Park the focused workspace pane in Lawn. Unset by default.
+    pub park_pane: BindingConfig,
+    /// Restore the current Later preview. Unset by default.
+    pub restore_pane: BindingConfig,
+    /// Open the Later picker. Unset by default.
+    pub open_later: BindingConfig,
+
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
     pub edit_scrollback: BindingConfig,
     pub clear_pane: BindingConfig,
@@ -544,6 +551,10 @@ pub(crate) struct KeysConfigOverlay {
     close_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_pane: Option<BindingConfig>,
+    park_pane: Option<BindingConfig>,
+    restore_pane: Option<BindingConfig>,
+    open_later: Option<BindingConfig>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     edit_scrollback: Option<BindingConfig>,
     clear_pane: Option<BindingConfig>,
@@ -679,6 +690,10 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(switch_workspace);
         apply_field!(close_tab);
         apply_field!(rename_pane);
+        apply_field!(park_pane);
+        apply_field!(restore_pane);
+        apply_field!(open_later);
+
         apply_field!(edit_scrollback);
         apply_field!(clear_pane);
         apply_field!(copy_mode);
@@ -784,6 +799,10 @@ impl KeysConfig {
         copy_effective_indexed_field!(switch_workspace, keybinds.switch_workspace);
         copy_effective_action_field!(close_tab, keybinds.close_tab);
         copy_effective_action_field!(rename_pane, keybinds.rename_pane);
+        copy_effective_action_field!(park_pane, keybinds.park_pane);
+        copy_effective_action_field!(restore_pane, keybinds.restore_pane);
+        copy_effective_action_field!(open_later, keybinds.open_later);
+
         copy_effective_action_field!(edit_scrollback, keybinds.edit_scrollback);
         copy_effective_action_field!(clear_pane, keybinds.clear_pane);
         copy_effective_action_field!(copy_mode, keybinds.copy_mode);
@@ -1156,6 +1175,10 @@ impl Default for KeysConfig {
             switch_workspace: BindingConfig::empty(),
             close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
+            park_pane: BindingConfig::empty(),
+            restore_pane: BindingConfig::empty(),
+            open_later: BindingConfig::empty(),
+
             edit_scrollback: BindingConfig::one("prefix+e"),
             clear_pane: BindingConfig::default(),
             copy_mode: BindingConfig::one("prefix+["),

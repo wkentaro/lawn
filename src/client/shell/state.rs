@@ -60,6 +60,7 @@ pub(super) struct ClientShellLayout {
     pub tab_bar: Rect,
     pub mobile_header: Rect,
     pub pane_surface: Rect,
+    pub parking_header: Rect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +115,12 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
     pub(super) jump_launcher: Rect,
+    pub(super) later_toggle: Rect,
+    pub(super) later_body: Rect,
+    pub(super) later_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(super) later_max_scroll: usize,
+    pub(super) restore_pane: Rect,
+    pub(super) open_later: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
@@ -243,6 +250,12 @@ pub(super) struct WorkspaceHit {
 
 #[derive(Debug)]
 pub(crate) enum ClientShellAction {
+    PanePresentation {
+        endpoint_id: ClientEndpointId,
+        generation: Option<u64>,
+        request: crate::protocol::endpoint::pane_presentation::SetPanePresentation,
+        releases: Vec<ClientMessage>,
+    },
     Endpoint {
         endpoint_id: ClientEndpointId,
         boot_id: String,
@@ -328,13 +341,14 @@ pub(super) struct ClientRenameOverlay {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientNavigatorFilter {
+    Later,
     Blocked,
     Working,
     Idle,
     Done,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ClientNavigatorTarget {
     Machine {
         endpoint_id: ClientEndpointId,
@@ -527,6 +541,8 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    ParkPane,
+    RestorePane,
 }
 
 #[derive(Debug)]
@@ -549,6 +565,11 @@ pub(super) enum ClientContextMenuTarget {
         source_pane_id: Option<String>,
         has_manual_label: bool,
         right_click_passthrough: bool,
+        can_park: bool,
+    },
+    ParkedPane {
+        endpoint_id: ClientEndpointId,
+        pane_id: String,
     },
 }
 
@@ -901,6 +922,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
+    pub(super) later: lawn::LaterState,
     pub(super) mode: ClientShellMode,
     pub(super) navigate_workspace_id: Option<WorkspaceNavigationTarget>,
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
@@ -1031,6 +1053,13 @@ impl ClientShellState {
                 .or_default()
                 .extend(saved.collapsed_groups);
         }
+        let mut primary_endpoint = local_endpoint();
+        primary_endpoint.parking.set_path(
+            config
+                .preferences_path
+                .as_ref()
+                .map(|path| path.with_extension("parking.json")),
+        );
         Self {
             machine_diagnostics: Default::default(),
             config,
@@ -1072,9 +1101,10 @@ impl ClientShellState {
             last_composed_at: None,
             selection_repaint_deadline: None,
             hits: ShellHitMap::default(),
-            endpoints: vec![local_endpoint()],
+            endpoints: vec![primary_endpoint],
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),
+            later: lawn::LaterState::default(),
             mode: ClientShellMode::Terminal,
             navigate_workspace_id: None,
             pending_workspace_highlight: None,
@@ -1221,13 +1251,24 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
-        self.config.layout(
+        let mut layout = self.config.layout(
             cols,
             rows,
             self.sidebar_collapsed,
             self.focused_tab_count(),
             self.sidebar_width,
-        )
+        );
+        if self.has_parking_preview() && layout.pane_surface.height > 1 {
+            layout.parking_header = Rect::new(
+                layout.pane_surface.x,
+                layout.pane_surface.y,
+                layout.pane_surface.width,
+                1,
+            );
+            layout.pane_surface.y += 1;
+            layout.pane_surface.height -= 1;
+        }
+        layout
     }
 
     pub(crate) fn surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {

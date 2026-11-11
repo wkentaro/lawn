@@ -47,6 +47,10 @@ pub(super) fn global_menu_items(
         ));
     }
     items.push((
+        "Later",
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenLater),
+    ));
+    items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
     ));

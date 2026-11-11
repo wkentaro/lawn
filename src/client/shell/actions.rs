@@ -20,6 +20,47 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                if action == crate::input::KeybindAction::OpenLater {
+                    self.open_later();
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::ParkPane {
+                    self.focused_parking_action(lawn::ParkingAction::Park, outcome);
+                    return;
+                }
+                if action == crate::input::KeybindAction::RestorePane {
+                    self.focused_parking_action(lawn::ParkingAction::Restore, outcome);
+                    return;
+                }
+                if self.has_parking_preview()
+                    && matches!(
+                        action,
+                        crate::input::KeybindAction::ClosePane
+                            | crate::input::KeybindAction::CloseTab
+                            | crate::input::KeybindAction::CloseWorkspace
+                            | crate::input::KeybindAction::ClearPane
+                            | crate::input::KeybindAction::SplitVertical
+                            | crate::input::KeybindAction::SplitHorizontal
+                            | crate::input::KeybindAction::Zoom
+                            | crate::input::KeybindAction::EnterResizeMode
+                            | crate::input::KeybindAction::ResizePaneLeft
+                            | crate::input::KeybindAction::ResizePaneDown
+                            | crate::input::KeybindAction::ResizePaneUp
+                            | crate::input::KeybindAction::ResizePaneRight
+                            | crate::input::KeybindAction::SwapPaneLeft
+                            | crate::input::KeybindAction::SwapPaneRight
+                            | crate::input::KeybindAction::SwapPaneUp
+                            | crate::input::KeybindAction::SwapPaneDown
+                    )
+                {
+                    self.receive_endpoint_unavailable(
+                        "Restore this pane before changing it".into(),
+                    );
+                    outcome.repaint = true;
+                    return;
+                }
+
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -179,6 +220,13 @@ impl ClientShellState {
                 outcome.actions.push(ClientShellAction::Keybind(action));
             }
             crate::input::KeybindMatch::Command(command) => {
+                if self.has_parking_preview() {
+                    self.receive_endpoint_unavailable(
+                        "Restore this pane before running a command".into(),
+                    );
+                    outcome.repaint = true;
+                    return;
+                }
                 let action = command.action.into();
                 let resolved_labels = command.bindings.labels();
                 let command_id = self.snapshot.as_deref().and_then(|snapshot| {
@@ -376,6 +424,15 @@ impl ClientShellState {
             outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
             return false;
         }
+        if let crate::api::schema::Method::PaneFocus(target) = &method {
+            if self
+                .active_parking()
+                .and_then(lawn::PaneParking::preview_pane)
+                == Some(target.pane_id.as_str())
+            {
+                return true;
+            }
+        }
         let method_name = crate::api::api_method_name(&method).to_owned();
         if !self.supports_endpoint_method(&method) {
             outcome.repaint |= self.push_endpoint_notice(
@@ -387,6 +444,9 @@ impl ClientShellState {
                 ),
             );
             return false;
+        }
+        if changes_focus {
+            self.leave_parking_preview();
         }
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
@@ -890,19 +950,29 @@ impl ClientShellState {
 
         match action {
             KeybindAction::FocusAgent(index) => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
+                let mut agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
                     self.config.agent_panel_sort,
                 );
+                agents.retain(|pane| {
+                    !self
+                        .active_parking()
+                        .is_some_and(|parking| parking.hides_pane(pane))
+                });
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
                 }))
             }
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
+                let mut agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
                     self.config.agent_panel_sort,
                 );
+                agents.retain(|pane| {
+                    !self
+                        .active_parking()
+                        .is_some_and(|parking| parking.hides_pane(pane))
+                });
                 if agents.is_empty() {
                     return None;
                 }
@@ -966,7 +1036,12 @@ impl ClientShellState {
                 let tabs = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .filter(|tab| {
+                        tab.workspace_id == focused_workspace
+                            && self
+                                .active_parking()
+                                .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+                    })
                     .collect::<Vec<_>>();
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs.get(index)?.tab_id.clone(),
@@ -976,41 +1051,60 @@ impl ClientShellState {
                 let tabs = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
+                    .filter(|tab| {
+                        tab.workspace_id == focused_workspace
+                            && self
+                                .active_parking()
+                                .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+                    })
                     .collect::<Vec<_>>();
-                let focused_tab = focused_tab?;
-                let current = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
-                let delta = if action == KeybindAction::PreviousTab {
-                    -1
-                } else {
-                    1
+                if tabs.is_empty() {
+                    return None;
+                }
+                let current = focused_tab
+                    .as_ref()
+                    .and_then(|focused| tabs.iter().position(|tab| tab.tab_id == *focused));
+                let next = match (current, action) {
+                    (Some(current), KeybindAction::PreviousTab) => {
+                        (current + tabs.len() - 1) % tabs.len()
+                    }
+                    (Some(current), _) => (current + 1) % tabs.len(),
+                    (None, KeybindAction::PreviousTab) => tabs.len() - 1,
+                    (None, _) => 0,
                 };
-                let next = (current as isize + delta).rem_euclid(tabs.len() as isize) as usize;
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs[next].tab_id.clone(),
                 }))
             }
             KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
-                let tabs = snapshot
+                let all_tabs = snapshot
                     .tabs
                     .iter()
                     .filter(|tab| tab.workspace_id == focused_workspace)
+                    .collect::<Vec<_>>();
+                let tabs = all_tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, tab)| {
+                        self.active_parking()
+                            .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+                    })
                     .collect::<Vec<_>>();
                 if tabs.len() <= 1 {
                     return None;
                 }
                 let focused_tab = focused_tab?;
-                let source = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
+                let source = tabs.iter().position(|(_, tab)| tab.tab_id == focused_tab)?;
                 let insert_index = if action == KeybindAction::MoveTabNext {
                     if source + 1 >= tabs.len() {
                         0
                     } else {
-                        source + 2
+                        tabs[source + 1].0 + 1
                     }
                 } else if source == 0 {
-                    tabs.len()
+                    all_tabs.len()
                 } else {
-                    source - 1
+                    tabs[source - 1].0
                 };
                 Some(Method::TabMove(TabMoveParams {
                     tab_id: focused_tab,
@@ -1065,7 +1159,12 @@ impl ClientShellState {
                 let panes = snapshot
                     .panes
                     .iter()
-                    .filter(|pane| pane.tab_id == focused_tab)
+                    .filter(|pane| {
+                        pane.tab_id == focused_tab
+                            && !self
+                                .active_parking()
+                                .is_some_and(|parking| parking.hides_pane(&pane.pane_id))
+                    })
                     .collect::<Vec<_>>();
                 if panes.is_empty() {
                     return None;
@@ -1086,7 +1185,10 @@ impl ClientShellState {
             }
             KeybindAction::LastPane => {
                 let pane_id = self.previous_pane_id.as_ref()?;
-                if Some(pane_id.as_str()) == focused_pane.as_deref()
+                if self
+                    .active_parking()
+                    .is_some_and(|parking| parking.hides_pane(pane_id))
+                    || Some(pane_id.as_str()) == focused_pane.as_deref()
                     || !snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
                 {
                     return None;

@@ -1247,7 +1247,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     );
 
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 10).expect("scrolled endpoint frame");
+    state.compose(100, 11).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics
@@ -2265,7 +2265,8 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     assert!(rows.iter().all(|row| match row.target {
         ClientNavigatorTarget::Machine { .. } => row.depth == 0 && row.status.is_none(),
         ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
-        ClientNavigatorTarget::Pane { .. } => row.depth == 2 && row.status.is_some(),
+        ClientNavigatorTarget::Pane { .. } =>
+            row.depth == 2 && (row.status.is_some() == row.agent.is_some()),
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
 

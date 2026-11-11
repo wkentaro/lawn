@@ -233,6 +233,9 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
+    pub(super) later: &'a mut lawn::LaterState,
+    pub(super) later_height: u16,
+    pub(super) later_rows: &'a [ClientNavigatorRow],
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -266,6 +269,11 @@ pub(super) fn render_shell(
             layout.mobile_header,
             snapshot,
             config,
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .map(|endpoint| &endpoint.parking),
             &mut hits,
         );
     }
@@ -311,12 +319,32 @@ pub(super) fn render_shell(
             );
         }
     }
+    lawn::render_later(
+        buffer,
+        layout.sidebar,
+        state.later_height,
+        state.endpoints,
+        state.later_rows,
+        state.later,
+        config,
+        &mut hits,
+    );
     if layout.tab_bar.height > 0 {
         render_tab_bar(
             buffer,
             layout.tab_bar,
             snapshot,
             config,
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .map(|endpoint| &endpoint.parking),
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .is_some_and(|endpoint| endpoint.status == ClientEndpointStatus::Online),
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,

@@ -9,6 +9,8 @@ pub(crate) fn render_tab_bar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
+    online: bool,
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
@@ -19,14 +21,38 @@ pub(crate) fn render_tab_bar(
     let tabs = snapshot
         .tabs
         .iter()
-        .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
+        .filter(|tab| {
+            Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+                && parking.is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+        })
         .collect::<Vec<_>>();
-    let desired_widths = tabs
+    let statuses = if online {
+        tab_statuses(snapshot, parking)
+    } else {
+        HashMap::new()
+    };
+    let names = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab);
-            display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
+            let name = tab_label(tab);
+            if let Some((status, blocked)) = statuses.get(tab.tab_id.as_str()) {
+                let count = if *blocked > 1 {
+                    blocked.to_string()
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{}{count} {name}",
+                    status_icon(*status, config.status_indicators)
+                )
+            } else {
+                name
+            }
         })
+        .collect::<Vec<_>>();
+    let desired_widths = names
+        .iter()
+        .map(|name| display_width(name).saturating_add(4).max(MIN_TAB_WIDTH))
         .collect::<Vec<_>>();
     let content = tab_bar_content_area(snapshot, area);
     let mouse_chrome = config.mouse_capture;
@@ -92,7 +118,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab);
+        let name = &names[index];
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -114,7 +140,7 @@ pub(crate) fn render_tab_bar(
         } else {
             Style::default().fg(palette.overlay0).bg(palette.surface0)
         };
-        let padding = width.saturating_sub(display_width(&name));
+        let padding = width.saturating_sub(display_width(name));
         let left = padding / 2;
         let text = format!(
             "{empty:left$}{name}{empty:right_padding$}",
@@ -123,6 +149,16 @@ pub(crate) fn render_tab_bar(
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        if let Some((status, _)) = statuses.get(tab.tab_id.as_str()) {
+            put_text(
+                buffer,
+                rect.x.saturating_add(left),
+                rect.y,
+                rect.width.saturating_sub(left),
+                status_icon(*status, config.status_indicators),
+                style.fg(status_color(*status, palette)),
+            );
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);
@@ -209,7 +245,14 @@ pub(crate) fn render_tab_bar(
     }
 
     if let Some(insert_index) = tab_drag_insert_index {
-        if let Some(indicator_x) = tab_drop_indicator_x(hits, &tabs, insert_index) {
+        let all_tabs = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| {
+                Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+            })
+            .collect::<Vec<_>>();
+        if let Some(indicator_x) = tab_drop_indicator_x(hits, &all_tabs, insert_index) {
             put_text(
                 buffer,
                 indicator_x.min(content.right().saturating_sub(1)),
@@ -377,6 +420,50 @@ fn tab_label(tab: &ClientShellTab) -> String {
     } else {
         tab.label.clone()
     }
+}
+
+fn tab_statuses<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    parking: Option<&lawn::PaneParking>,
+) -> HashMap<&'a str, (crate::api::schema::AgentStatus, usize)> {
+    use crate::api::schema::AgentStatus;
+    let panes = snapshot
+        .panes
+        .iter()
+        .filter(|pane| {
+            Some(pane.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+                && parking.is_none_or(|parking| !parking.hides_pane(&pane.pane_id))
+        })
+        .map(|pane| (pane.pane_id.as_str(), pane.tab_id.as_str()))
+        .collect::<HashMap<_, _>>();
+    let rank = |status| match status {
+        AgentStatus::Blocked => 4,
+        AgentStatus::Working => 3,
+        AgentStatus::Idle => 2,
+        AgentStatus::Done => 1,
+        AgentStatus::Unknown => 0,
+    };
+    let mut statuses = HashMap::new();
+    for agent in &snapshot.agents {
+        if agent
+            .agent
+            .as_ref()
+            .or(agent.display_agent.as_ref())
+            .is_none()
+            || rank(agent.agent_status) == 0
+        {
+            continue;
+        }
+        let Some(tab) = panes.get(agent.pane_id.as_str()) else {
+            continue;
+        };
+        let entry = statuses.entry(*tab).or_insert((AgentStatus::Unknown, 0));
+        if rank(agent.agent_status) > rank(entry.0) {
+            entry.0 = agent.agent_status;
+        }
+        entry.1 += usize::from(agent.agent_status == AgentStatus::Blocked);
+    }
+    statuses
 }
 
 #[cfg(test)]

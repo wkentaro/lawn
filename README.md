@@ -55,6 +55,37 @@ An inherited socket override deliberately targets that session. Configuration
 uses `LAWN_CONFIG_PATH` so a herdr configuration override does not silently
 select Lawn's settings file.
 
+## Park and restore
+
+Right-click a workspace pane and choose **Park** to hide it in Lawn.
+The terminal keeps running. **Later** uses the same machine and workspace order
+as Jump; selecting a pane there opens a read-only preview. Choose **Restore**
+in the preview header or the pane's context menu to resume input.
+
+Parking works for agents and ordinary terminals, including long-running jobs.
+Parked panes disappear from active Jump results and tab indicators. A tab with
+all its panes parked disappears until a pane is restored. Lawn keeps you in
+the workspace when its last visible pane is parked.
+
+These shortcuts have no defaults. Assign them in the configuration if wanted:
+
+```toml
+[keys]
+park_pane = "prefix+f"
+restore_pane = "prefix+u"
+open_later = "ctrl+g"
+```
+
+The menu also opens Later when the sidebar is hidden. Parking state is saved
+locally per server and shared by Lawn windows on this computer. A preview stays
+read-only until you restore it in that window, even if another window restores
+the shared record. Other herdr clients keep their own layouts.
+
+Parking requires a runtime advertising `pane_presentation_v1`, as provided by
+Lawn's bundled runtime. Older herdr servers retain normal terminal operation;
+parking is unavailable there. Lawn's inherited SSH bootstrap currently installs
+the upstream runtime, which may not advertise this extension.
+
 ## Upstream maintenance
 
 This repository retains herdr's history and source paths. The starting revision

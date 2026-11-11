@@ -406,7 +406,15 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
 
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: 3,
+        highlighted: super::super::global_menu::global_menu_items(&snapshot())
+            .iter()
+            .position(|(_, action)| {
+                *action
+                    == super::super::global_menu::ClientGlobalMenuAction::Binding(
+                        crate::input::KeybindAction::Detach,
+                    )
+            })
+            .unwrap(),
     }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);

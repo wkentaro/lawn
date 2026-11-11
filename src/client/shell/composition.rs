@@ -55,7 +55,16 @@ impl ClientShellState {
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
+        let later_rows = lawn::later_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            &self.later,
+            !sidebar.is_empty(),
+        );
         let mut render_state = render::ShellRenderState {
+            later_height: lawn::later_height(sidebar, false, &self.later, later_rows.len()),
+            later_rows: &later_rows,
+            later: &mut self.later,
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -97,6 +106,16 @@ impl ClientShellState {
                 &mut self.hits,
             );
         }
+        lawn::render_later(
+            &mut buffer,
+            sidebar,
+            render_state.later_height,
+            &self.endpoints,
+            &later_rows,
+            &mut self.later,
+            &self.config,
+            &mut self.hits,
+        );
         if !self.config.mouse_capture {
             self.hits = ShellHitMap::default();
         }
@@ -187,7 +206,7 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        if self.snapshot.is_none() || self.pane_surface.is_none() {
+        if self.snapshot.is_none() || self.pane_surface.is_none() || !self.parking_ready() {
             return Some(self.compose_unavailable(cols, rows).into());
         }
         let snapshot = self.snapshot.as_deref()?;
@@ -222,12 +241,26 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        let later_rows = lawn::later_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            &self.later,
+            !self.sidebar_collapsed && !layout.sidebar.is_empty(),
+        );
         self.hits = render::render_shell(
             &mut buffer,
             layout,
             snapshot,
             &self.config,
             render::ShellRenderState {
+                later_height: lawn::later_height(
+                    layout.sidebar,
+                    self.sidebar_collapsed,
+                    &self.later,
+                    later_rows.len(),
+                ),
+                later_rows: &later_rows,
+                later: &mut self.later,
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
@@ -251,6 +284,7 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
+        let preview = self.has_parking_preview();
         self.hits.panes = surface
             .panes
             .iter()
@@ -284,7 +318,7 @@ impl ClientShellState {
                 }),
                 pane_id: pane.pane_id.clone(),
                 popup: false,
-                mouse_reporting: pane.mouse_reporting,
+                mouse_reporting: pane.mouse_reporting && !preview,
                 sgr_pixel_mouse: pane.sgr_pixel_mouse,
                 pixel_width: pane.pixel_width,
                 pixel_height: pane.pixel_height,
@@ -354,12 +388,20 @@ impl ClientShellState {
             self.hits.tab_scroll_left = Rect::default();
             self.hits.tab_scroll_right = Rect::default();
         }
+        let empty_parked_workspace = self.render_parking_chrome(&mut buffer, layout);
+        let snapshot = self.snapshot.as_deref()?;
+        let surface = self.pane_surface.as_ref()?;
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
         let mode_bar_cells = mode_bar.map(|bar| {
             let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        if !empty_parked_workspace {
+            blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        }
+        if preview {
+            frame.cursor = None;
+        }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

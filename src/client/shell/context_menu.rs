@@ -50,13 +50,21 @@ impl ClientContextMenuOverlay {
                 item("Rename", Action::Rename),
                 item("Close", Action::Close),
             ],
+            ClientContextMenuTarget::ParkedPane { .. } => {
+                vec![item("Restore", Action::RestorePane)]
+            }
             ClientContextMenuTarget::Pane {
+                can_park,
                 source_pane_id,
                 has_manual_label,
                 right_click_passthrough,
                 ..
             } => {
-                let mut items = vec![item("Rename pane", Action::RenamePane)];
+                let mut items = vec![];
+                if *can_park {
+                    items.push(item("Park", Action::ParkPane));
+                }
+                items.push(item("Rename pane", Action::RenamePane));
                 if *has_manual_label {
                     items.push(item("Clear pane name", Action::ClearPaneName));
                 }
@@ -149,6 +157,16 @@ impl ClientShellState {
         let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {
             return;
         };
+        if self
+            .active_parking()
+            .is_some_and(|parking| parking.hides_pane(&pane_id))
+        {
+            self.open_parked_context_menu(self.active_endpoint_id.clone(), pane_id, x, y);
+            return;
+        }
+        let can_park = self.active_parking().is_some_and(|parking| {
+            parking.available() && parking.terminal_for_pane(&pane_id).is_some()
+        });
         let source_pane_id = snapshot
             .focused_pane_id
             .clone()
@@ -160,6 +178,25 @@ impl ClientShellState {
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
+                can_park,
+            },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    pub(super) fn open_parked_context_menu(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        pane_id: String,
+        x: u16,
+        y: u16,
+    ) {
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::ParkedPane {
+                endpoint_id,
+                pane_id,
             },
             x,
             y,
@@ -192,6 +229,12 @@ impl ClientShellState {
             return;
         };
         match menu.target {
+            ClientContextMenuTarget::ParkedPane {
+                endpoint_id,
+                pane_id,
+            } => {
+                self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Restore, outcome);
+            }
             ClientContextMenuTarget::Workspace {
                 workspace_id,
                 close_group,
@@ -370,6 +413,14 @@ impl ClientShellState {
         };
 
         match action {
+            ClientContextMenuAction::ParkPane => {
+                self.parking_action(
+                    self.active_endpoint_id.clone(),
+                    pane_id,
+                    lawn::ParkingAction::Park,
+                    outcome,
+                );
+            }
             ClientContextMenuAction::RenamePane => {
                 let label = self.snapshot.as_deref().and_then(|snapshot| {
                     snapshot

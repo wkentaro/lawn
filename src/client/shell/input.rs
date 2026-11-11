@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use crate::protocol::ClientPaneInputEvent;
 use crate::raw_input::RawInputEvent;
@@ -263,7 +264,7 @@ impl ClientShellState {
                         continue;
                     }
                     if let Some(target) = self.popup_input_target() {
-                        super::push_target_event(
+                        self.push_input_target_event(
                             target,
                             ClientPaneInputEvent::TextCommit(text),
                             &mut outcome,
@@ -296,7 +297,7 @@ impl ClientShellState {
                         continue;
                     }
                     if let Some(target) = self.popup_input_target() {
-                        super::push_target_event(
+                        self.push_input_target_event(
                             target,
                             ClientPaneInputEvent::Paste(text),
                             &mut outcome,
@@ -327,7 +328,7 @@ impl ClientShellState {
                 RawInputEvent::OuterFocusLost => {
                     outcome.repaint |= self.clear_link_hover();
                     self.outer_focused = Some(false);
-                    self.release_input_leases(&mut outcome);
+                    self.release_input_leases(&mut outcome, None);
                     outcome
                         .requests
                         .push(ClientMessage::ClientShellFocus { focused: false });
@@ -445,8 +446,38 @@ impl ClientShellState {
         }
     }
 
-    fn release_input_leases(&mut self, outcome: &mut ClientShellInput) {
-        for lease in self.input_leases.remove_source(LOCAL_INPUT_SOURCE) {
+    pub(super) fn release_input_leases(
+        &mut self,
+        outcome: &mut ClientShellInput,
+        targets: Option<&HashSet<String>>,
+    ) {
+        let hide_popup = targets.is_none()
+            || self
+                .active_parking()
+                .and_then(|parking| parking.preview_pane())
+                .is_some();
+        let leases = match targets {
+            None => self.input_leases.remove_source(LOCAL_INPUT_SOURCE),
+            Some(targets) => {
+                let mut leases = targets
+                    .iter()
+                    .flat_map(|pane| {
+                        self.input_leases
+                            .remove_target(&ClientInputTarget::Pane(pane.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                if hide_popup {
+                    if let Some(terminal) = &self.popup_terminal_id {
+                        leases.extend(
+                            self.input_leases
+                                .remove_target(&ClientInputTarget::Popup(terminal.clone())),
+                        );
+                    }
+                }
+                leases
+            }
+        };
+        for lease in leases {
             // A press that arrived as plain text (IME commits, and printable keys
             // the host sends as text) reached the pane as text, not as a key
             // event. IME commits never get a host release, so inventing one per
@@ -466,7 +497,19 @@ impl ClientShellState {
                 outcome,
             );
         }
-        if let Some(gesture) = self.pane_mouse_gesture.take() {
+        let release_mouse = self.pane_mouse_gesture.as_ref().is_some_and(|gesture| {
+            targets.is_none_or(|targets| {
+                if gesture.hit.popup {
+                    hide_popup
+                } else {
+                    targets.contains(&gesture.hit.pane_id)
+                }
+            })
+        });
+        if let Some(gesture) = release_mouse
+            .then(|| self.pane_mouse_gesture.take())
+            .flatten()
+        {
             let modifiers = gesture
                 .last_event
                 .modifiers
@@ -486,7 +529,7 @@ impl ClientShellState {
             } else {
                 ClientInputTarget::Pane(gesture.hit.pane_id)
             };
-            super::push_target_event(
+            self.push_input_target_event(
                 target,
                 ClientPaneInputEvent::Mouse {
                     kind: crate::protocol::ClientMouseKind::Up(
@@ -500,7 +543,15 @@ impl ClientShellState {
                 outcome,
             );
         }
-        self.copy_input_queue.clear();
+        if hide_popup
+            || targets.is_none_or(|targets| {
+                self.copy_mode
+                    .as_ref()
+                    .is_some_and(|copy| targets.contains(&copy.pane_id))
+            })
+        {
+            self.copy_input_queue.clear();
+        }
     }
 
     fn execute_repeat_plan(
@@ -1094,6 +1145,9 @@ impl ClientShellState {
     pub(crate) fn clipboard_image_target(
         &self,
     ) -> Option<crate::protocol::ClientClipboardImageTarget> {
+        if !self.parking_ready() {
+            return None;
+        }
         if matches!(
             self.overlay,
             Some(
@@ -1120,6 +1174,7 @@ impl ClientShellState {
             return None;
         }
         self.focused_pane_id()
+            .filter(|pane| self.pane_accepts_input(pane))
             .map(crate::protocol::ClientClipboardImageTarget::Pane)
     }
 
@@ -1166,6 +1221,14 @@ impl ClientShellState {
     }
 
     fn popup_input_target(&self) -> Option<ClientInputTarget> {
+        if !self.parking_ready()
+            || self
+                .active_parking()
+                .and_then(|parking| parking.preview_pane())
+                .is_some()
+        {
+            return None;
+        }
         self.popup_terminal_id
             .as_ref()
             .map(|terminal_id| ClientInputTarget::Popup(terminal_id.clone()))
@@ -1178,13 +1241,44 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
-            super::push_target_event(target, event, outcome);
+            self.push_input_target_event(target, event, outcome);
         }
     }
 
     fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
         if let Some(pane_id) = self.focused_pane_id() {
-            super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
+            self.push_input_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
+        }
+    }
+
+    pub(super) fn push_input_target_event(
+        &self,
+        target: ClientInputTarget,
+        event: ClientPaneInputEvent,
+        outcome: &mut ClientShellInput,
+    ) {
+        let releases = matches!(
+            event,
+            ClientPaneInputEvent::Key {
+                kind: crate::protocol::ClientKeyKind::Release,
+                ..
+            } | ClientPaneInputEvent::Mouse {
+                kind: crate::protocol::ClientMouseKind::Up(_),
+                ..
+            }
+        );
+        let accepts = match &target {
+            ClientInputTarget::Pane(pane) => self.pane_accepts_input(pane),
+            ClientInputTarget::Popup(_) => {
+                self.parking_ready()
+                    && self
+                        .active_parking()
+                        .and_then(|parking| parking.preview_pane())
+                        .is_none()
+            }
+        };
+        if releases || accepts {
+            super::push_target_event(target, event, outcome);
         }
     }
 }
