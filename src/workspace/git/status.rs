@@ -1,3 +1,4 @@
+// Modified for Lawn: isolate test fixture fingerprints from user Git settings.
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -210,7 +211,16 @@ pub fn git_status_snapshot_for_cwd_with_demand(
 
 #[cfg(test)]
 pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
-    fingerprint(repo_context(cwd)?, true)
+    let mut repo = repo_context(cwd)?;
+    if let GitHeadIdentity::Branch { short_name, .. } = read_head_identity(&repo.0, repo.1)? {
+        // Fixture fingerprints must not inherit the developer's global fetch refspecs.
+        repo.3 = Some(super::config::read_config_with_user_paths(
+            &repo.0,
+            &short_name,
+            Vec::new(),
+        ));
+    }
+    fingerprint(repo, true)
 }
 
 fn fingerprint(mut repo: RepoContext, include_upstream: bool) -> Option<GitStatusFingerprint> {
