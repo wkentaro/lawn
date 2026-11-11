@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Stable endpoint compatibility contract for client-owned shells.
 //!
 //! The endpoint generation is intentionally independent from the private
@@ -7,6 +8,8 @@
 //! security reason. New JSON fields must be optional or have serde defaults;
 //! new enum values need an `Unknown` fallback. Unknown named controls are
 //! optional and ignored unless negotiated as part of the core.
+
+pub mod pane_presentation;
 
 use serde::{Deserialize, Serialize};
 
@@ -174,6 +177,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                pane_presentation::CAPABILITY.into(),
             ],
             error: None,
         }
@@ -385,6 +389,7 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                pane_presentation::CAPABILITY.to_string(),
             ]
         );
     }

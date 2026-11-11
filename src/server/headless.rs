@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Headless server mode — runs the herdr event loop without a real terminal.
 //!
 //! The server:
@@ -80,6 +81,7 @@ mod endpoint_requests;
 mod lifecycle;
 mod native_graphics;
 mod notifications;
+mod pane_presentation;
 mod render;
 mod retained_surface;
 mod surface_interest;
@@ -957,8 +959,9 @@ impl HeadlessServer {
                 other_id != client_id
                     && client.is_active_shell_client()
                     && client.outer_terminal_focus == Some(true)
-                    && self.shell_tab_id_for_client(other_id).as_deref()
-                        == Some(target.tab_id.as_str())
+                    && self
+                        .shell_focus_target(other_id)
+                        .is_some_and(|other| other.pane_id == target.pane_id)
             })
         });
         let was_foreground = self.foreground_client_id == Some(client_id);
@@ -1136,10 +1139,20 @@ impl HeadlessServer {
                         .clients
                         .get(&client_id)
                         .is_some_and(ClientConnection::is_active_shell_client)
-                    && self.app.parse_pane_id(pane_id).is_some()
+                    && self
+                        .app
+                        .parse_pane_id(pane_id)
+                        .is_some_and(|(workspace_index, pane_id)| {
+                            self.shell_client_accepts_pane_input(
+                                client_id,
+                                workspace_index,
+                                pane_id,
+                            )
+                        })
             }
             protocol::ClientClipboardImageTarget::Popup(terminal_id) => {
-                !self.handoff_in_progress
+                self.shell_client_shows_popup(client_id)
+                    && !self.handoff_in_progress
                     && self
                         .clients
                         .get(&client_id)
@@ -1204,7 +1217,11 @@ impl HeadlessServer {
                 let popup_blocks_input = self.app.state.popup_pane.is_some()
                     && self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id);
                 if popup_blocks_input
-                    || !self.shell_client_views_pane(client_id, workspace_index, runtime_pane_id)
+                    || !self.shell_client_accepts_pane_input(
+                        client_id,
+                        workspace_index,
+                        runtime_pane_id,
+                    )
                 {
                     return false;
                 }
@@ -1244,7 +1261,7 @@ impl HeadlessServer {
                     return false;
                 };
                 if popup_terminal_id.as_str() != terminal_id
-                    || self.popup_owner_tab_id != self.shell_tab_id_for_client(client_id)
+                    || !self.shell_client_shows_popup(client_id)
                 {
                     return false;
                 }
@@ -1432,7 +1449,10 @@ impl HeadlessServer {
                     .tabs
                     .get(target.tab_index)
             })
-            .map(|tab| tab.layout.focused())
+            .and_then(|tab| match self.foreground_client_id {
+                Some(client_id) => self.focused_pane_for_client(client_id, tab),
+                None => Some(tab.layout.focused()),
+            })
             .is_some_and(|pane_id| sources.contains(&pane_id));
         let changes = self.app.sync_terminal_titles(sources);
         let outer_title_synced = focused_source && self.app.window_title_uses_terminal_title();
@@ -1463,8 +1483,17 @@ impl HeadlessServer {
             .map_or_else(
                 || self.app.window_title(),
                 |target| {
+                    let pane_id = self
+                        .app
+                        .state
+                        .workspaces
+                        .get(target.workspace_index)
+                        .and_then(|workspace| workspace.tabs.get(target.tab_index))
+                        .and_then(|tab| {
+                            self.focused_pane_for_client(self.foreground_client_id?, tab)
+                        });
                     self.app
-                        .window_title_for(target.workspace_index, target.tab_index)
+                        .window_title_for(target.workspace_index, target.tab_index, pane_id)
                 },
             )
             .and_then(|title| crate::config::sanitize_window_title_text(&title))
@@ -1966,11 +1995,12 @@ impl HeadlessServer {
                 } else {
                     self.server_config_diagnostic_without_keybindings.as_deref()
                 };
-                let (seed_snapshot, completion_projection) = client_shell_snapshot(
+                let (seed_snapshot, completion_projection, _) = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
                     connection.shell_projection_revision,
                     config_diagnostic,
+                    None,
                     None,
                 );
                 let location =
@@ -2288,12 +2318,17 @@ impl HeadlessServer {
                 {
                     return false;
                 }
-                let tab_id = self.shell_tab_id_for_client(client_id);
+                let focused_pane = self
+                    .shell_focus_target(client_id)
+                    .map(|target| target.pane_id);
                 let another_focused_viewer = self.clients.iter().any(|(&other_id, client)| {
                     other_id != client_id
                         && client.is_active_shell_client()
                         && client.outer_terminal_focus == Some(true)
-                        && self.shell_tab_id_for_client(other_id) == tab_id
+                        && self
+                            .shell_focus_target(other_id)
+                            .map(|target| target.pane_id)
+                            == focused_pane
                 });
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.outer_terminal_focus = Some(focused);
@@ -2334,6 +2369,9 @@ impl HeadlessServer {
                 client.shell_mouse_capture = enabled;
                 client.host_mouse_capture_active = None;
                 true
+            }
+            ServerEvent::ClientPanePresentation { client_id, data } => {
+                self.set_client_pane_presentation(client_id, &data)
             }
             ServerEvent::ClientShellPresentationSync { client_id, token } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
@@ -2394,7 +2432,11 @@ impl HeadlessServer {
                 let popup_blocks_input = self.app.state.popup_pane.is_some()
                     && self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id);
                 if popup_blocks_input
-                    || !self.shell_client_views_pane(client_id, workspace_index, runtime_pane_id)
+                    || !self.shell_client_accepts_pane_input(
+                        client_id,
+                        workspace_index,
+                        runtime_pane_id,
+                    )
                 {
                     let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                         &self.app.terminal_runtimes,
@@ -2493,7 +2535,7 @@ impl HeadlessServer {
                     runtime.current_size(),
                     runtime.pixel_size(),
                 );
-                if self.popup_owner_tab_id != self.shell_tab_id_for_client(client_id) {
+                if !self.shell_client_shows_popup(client_id) {
                     let releases = events
                         .into_iter()
                         .filter(client_pane_input_releases_press)
@@ -2605,7 +2647,7 @@ impl HeadlessServer {
                     .as_deref()
                     .and_then(Self::deferred_endpoint_navigation_tab_id);
                 let focus_before = self.shell_focus_target(client_id);
-                let focused_tabs_before = self.focused_shell_tabs();
+                let focused_panes_before = self.focused_shell_panes();
                 let navigation_changed = self.clients.get(&client_id).is_some_and(|client| {
                     client.is_active_shell_client()
                         && client.shell_projection_revision == command_surface_revision
@@ -2615,15 +2657,16 @@ impl HeadlessServer {
                 let geometry_changed =
                     navigation_changed && self.claim_shell_tab_geometry(client_id, false);
                 if navigation_changed {
+                    self.deactivate_client_pane_focus(client_id);
                     self.reconcile_client_shell_locations();
                     let focus_after = self.shell_focus_target(client_id);
-                    let focused_tabs_after = self.focused_shell_tabs();
+                    let focused_panes_after = self.focused_shell_panes();
                     self.app.accept_current_focus_without_events();
                     self.send_shell_navigation_focus_events(
                         focus_before.as_ref(),
                         focus_after.as_ref(),
-                        &focused_tabs_before,
-                        &focused_tabs_after,
+                        &focused_panes_before,
+                        &focused_panes_after,
                     );
                 }
                 self.send_to_client(
@@ -2911,6 +2954,7 @@ impl HeadlessServer {
         msg: api::ApiRequestMessage,
         skip_default_workspace_for_request: bool,
         client_local: bool,
+        client_presentation: Option<pane_presentation::ClientPaneRequest>,
     ) -> bool {
         if self.shutting_down || self.host_shutdown_requested() {
             // During shutdown, respond with server_unavailable.
@@ -2983,7 +3027,9 @@ impl HeadlessServer {
                 &msg.request.method,
                 api::schema::Method::ServerStop(_) | api::schema::Method::ServerLiveHandoff(_)
             );
-        changed |= self.drain_all_internal_events_with_forwarding();
+        if !client_local {
+            changed |= self.drain_all_internal_events_with_forwarding();
+        }
         if self.host_shutdown_requested() {
             Self::reject_api_request_for_shutdown(msg);
             return changed;
@@ -3064,6 +3110,36 @@ impl HeadlessServer {
             self.app.state.view.terminal_area =
                 Rect::new(0, 0, self.effective_size.0, self.effective_size.1);
         }
+        let presented_response = client_presentation
+            .as_ref()
+            .and_then(|request| request.layout.as_ref())
+            .and_then(|layout| {
+                self.app.sync_pending_terminal_titles();
+                match &msg.request.method {
+                    api::schema::Method::PaneFocusDirection(params) => {
+                        Some(self.app.handle_pane_focus_direction_presented(
+                            msg.request.id.clone(),
+                            params.clone(),
+                            Some(&layout.panes),
+                        ))
+                    }
+                    api::schema::Method::PaneResize(params) => {
+                        Some(self.app.handle_pane_resize_presented(
+                            msg.request.id.clone(),
+                            params.clone(),
+                            Some(layout),
+                        ))
+                    }
+                    api::schema::Method::PaneSwap(params) => {
+                        Some(self.app.handle_pane_swap_presented(
+                            msg.request.id.clone(),
+                            params.clone(),
+                            Some(&layout.panes),
+                        ))
+                    }
+                    _ => None,
+                }
+            });
         let mut response = if matches!(
             &msg.request.method,
             api::schema::Method::ServerReloadConfig(_)
@@ -3086,10 +3162,27 @@ impl HeadlessServer {
                 })
                 .unwrap_or_else(|_| "{}".to_string())
             })
+        } else if let Some(response) = presented_response {
+            response
         } else {
             self.app
                 .handle_api_request_after_internal_events_drained(msg.request)
         };
+        if let Some(presentation) = client_presentation {
+            if let Ok(success) = serde_json::from_str::<api::schema::SuccessResponse>(&response) {
+                let focus_selected = match success.result {
+                    api::schema::ResponseResult::PaneZoom { .. } => true,
+                    api::schema::ResponseResult::PaneSwap { swap } => swap.changed,
+                    _ => false,
+                };
+                if presentation.deactivate_focus || focus_selected {
+                    self.deactivate_client_pane_focus(presentation.client_id);
+                }
+            } else if let Some(client) = self.clients.get_mut(&presentation.client_id) {
+                client.shell_location = presentation.location_before;
+                self.set_default_shell_target_from_client(presentation.client_id);
+            }
+        }
         if let Some(snapshot) = frozen_alt_screen_read {
             if let Ok(mut success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
             {

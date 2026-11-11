@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use bytes::Bytes;
 
 use crate::api::schema::{
@@ -665,6 +666,15 @@ impl App {
         id: String,
         params: PaneFocusDirectionParams,
     ) -> String {
+        self.handle_pane_focus_direction_presented(id, params, None)
+    }
+
+    pub(crate) fn handle_pane_focus_direction_presented(
+        &mut self,
+        id: String,
+        params: PaneFocusDirectionParams,
+        presented: Option<&[crate::layout::PaneInfo]>,
+    ) -> String {
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
             return encode_error(id, "pane_not_found", "pane not found");
@@ -681,8 +691,13 @@ impl App {
         let Some(source_public_id) = self.public_pane_id(ws_idx, source_pane_id) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let target =
-            self.directional_pane_target(ws_idx, tab_idx, source_pane_id, params.direction);
+        let target = match presented {
+            Some(panes) => panes
+                .iter()
+                .find(|pane| pane.id == source_pane_id)
+                .and_then(|source| find_in_direction(source, params.direction.into(), panes)),
+            None => self.directional_pane_target(ws_idx, tab_idx, source_pane_id, params.direction),
+        };
         let reason = target
             .is_none()
             .then_some(PaneFocusDirectionReason::NoNeighbor);
@@ -718,6 +733,15 @@ impl App {
     }
 
     pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneResizeParams) -> String {
+        self.handle_pane_resize_presented(id, params, None)
+    }
+
+    pub(crate) fn handle_pane_resize_presented(
+        &mut self,
+        id: String,
+        params: PaneResizeParams,
+        presented: Option<&crate::layout::PresentedLayout>,
+    ) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -744,7 +768,12 @@ impl App {
             .workspaces
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
-            .is_some_and(|tab| tab.layout.resize_pane(pane_id, direction, amount, area));
+            .is_some_and(|tab| match presented {
+                Some(layout) => tab
+                    .layout
+                    .resize_pane_presented(pane_id, direction, amount, layout),
+                None => tab.layout.resize_pane(pane_id, direction, amount, area),
+            });
         if changed {
             self.schedule_session_save();
         }
@@ -772,6 +801,15 @@ impl App {
     }
 
     pub(super) fn handle_pane_swap(&mut self, id: String, params: PaneSwapParams) -> String {
+        self.handle_pane_swap_presented(id, params, None)
+    }
+
+    pub(crate) fn handle_pane_swap_presented(
+        &mut self,
+        id: String,
+        params: PaneSwapParams,
+        presented: Option<&[crate::layout::PaneInfo]>,
+    ) -> String {
         let directional = params.direction.is_some();
         let explicit = params.source_pane_id.is_some() || params.target_pane_id.is_some();
         if directional == explicit {
@@ -800,7 +838,13 @@ impl App {
                         .unwrap_or_default(),
                 );
             };
-            let target = self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction);
+            let target = match presented {
+                Some(panes) => panes
+                    .iter()
+                    .find(|pane| pane.id == source_pane_id)
+                    .and_then(|source| find_in_direction(source, direction.into(), panes)),
+                None => self.directional_pane_target(ws_idx, tab_idx, source_pane_id, direction),
+            };
             match target {
                 Some(target_pane_id) => {
                     (ws_idx, tab_idx, source_pane_id, Some(target_pane_id), None)

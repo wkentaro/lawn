@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use ratatui::layout::Rect;
 
 use crate::app;
@@ -11,7 +12,7 @@ pub(super) fn snapshot(
     config_diagnostic: Option<&str>,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> protocol::ClientShellSnapshot {
-    snapshot_with_completions(app, boot_id, revision, config_diagnostic, location).0
+    snapshot_with_completions(app, boot_id, revision, config_diagnostic, location, None).0
 }
 
 pub(super) fn snapshot_with_completions(
@@ -20,11 +21,22 @@ pub(super) fn snapshot_with_completions(
     revision: u64,
     config_diagnostic: Option<&str>,
     location: Option<&crate::server::clients::ClientShellLocation>,
+    presentation: Option<&crate::server::pane_presentation::ClientPanePresentation>,
 ) -> (
     protocol::ClientShellSnapshot,
     protocol::endpoint::EndpointAgentCompletions,
+    Option<protocol::endpoint::pane_presentation::PaneIdentities>,
 ) {
     let snapshot = app.session_metadata_snapshot();
+    let mut identities =
+        presentation.map(
+            |presentation| protocol::endpoint::pane_presentation::PaneIdentities {
+                boot_id: boot_id.to_owned(),
+                revision,
+                sequence: presentation.request.sequence,
+                pane_terminals: std::collections::BTreeMap::new(),
+            },
+        );
     let completions = protocol::endpoint::EndpointAgentCompletions {
         boot_id: boot_id.to_owned(),
         revision,
@@ -44,17 +56,24 @@ pub(super) fn snapshot_with_completions(
         .as_deref()
         .and_then(|tab_id| app.parse_tab_id(tab_id))
         .and_then(|(workspace_index, tab_index)| {
-            let pane_id = app
+            let tab = app
                 .state
                 .workspaces
                 .get(workspace_index)?
                 .tabs
-                .get(tab_index)?
-                .layout
-                .focused();
+                .get(tab_index)?;
+            let pane_id = match presentation {
+                Some(presentation) => presentation.focused(tab)?,
+                None => tab.layout.focused(),
+            };
             app.public_pane_id(workspace_index, pane_id)
         })
-        .or_else(|| snapshot.focused_pane_id.clone());
+        .or_else(|| {
+            presentation
+                .is_none()
+                .then(|| snapshot.focused_pane_id.clone())
+                .flatten()
+        });
     let workspaces = snapshot
         .workspaces
         .into_iter()
@@ -126,6 +145,11 @@ pub(super) fn snapshot_with_completions(
         .into_iter()
         .map(|pane| {
             let pane_id = pane.pane_id;
+            if let Some(identities) = identities.as_mut() {
+                identities
+                    .pane_terminals
+                    .insert(pane_id.clone(), pane.terminal_id);
+            }
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
             let right_click_passthrough = app
                 .parse_pane_id(&pane_id)
@@ -264,7 +288,7 @@ pub(super) fn snapshot_with_completions(
         agents,
         commands: app.client_shell_command_manifest(),
     };
-    (shell, completions)
+    (shell, completions, identities)
 }
 
 pub(super) struct RenderedPaneSurface {
@@ -292,14 +316,16 @@ pub(super) fn render_pane_surface(
     cell_size: crate::kitty_graphics::HostCellSize,
     graphics_delivery: &crate::kitty_graphics::surface::DeliveryCache,
     client_id: u64,
+    presented: Option<crate::layout::PresentedLayout>,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
-    let layout = crate::ui::compute_tab_surface_for(
+    let layout = crate::ui::compute_tab_surface_for_presented(
         &app.state,
         &app.terminal_runtimes,
         target,
         area,
         resize_panes,
         cell_size,
+        presented,
     );
     let mut content_revisions_before = std::collections::HashMap::new();
     if let Some(target) = target {
@@ -692,7 +718,9 @@ mod tests {
             .values()
             .all(|runtime| runtime.test_scroll_metrics_reads() == 1));
 
-        let (shell, completions) = snapshot_with_completions(&app, "boot", 9, None, None);
+        let (shell, completions, identities) =
+            snapshot_with_completions(&app, "boot", 9, None, None, None);
+        assert!(identities.is_none());
         assert_eq!(shell.panes.len(), 3);
         assert_eq!(shell.agents.len(), 2);
         assert_eq!(shell.focused_pane_id, metadata.focused_pane_id);

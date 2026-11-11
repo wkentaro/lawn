@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -175,9 +176,12 @@ pub(crate) struct ClientConnection {
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Connection-local workspace and tab projection for a client-owned shell.
     pub(crate) shell_location: Option<ClientShellLocation>,
+    pub(crate) pane_presentation: Option<crate::server::pane_presentation::ClientPanePresentation>,
     /// Last coherent shell replacement sent to this client.
     pub(crate) shell_snapshot: Option<crate::protocol::ClientShellSnapshot>,
     pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
+    pub(crate) shell_pane_identities:
+        Option<crate::protocol::endpoint::pane_presentation::PaneIdentities>,
     /// View policy paired with the last coherent shell replacement.
     pub(crate) shell_agent_view: Option<crate::api::schema::AgentViewSetParams>,
     /// Monotonic shell replacement revision for this connection.
@@ -248,6 +252,8 @@ impl ClientConnection {
             shell_location: None,
             shell_snapshot: None,
             shell_agent_completions: None,
+            shell_pane_identities: None,
+            pane_presentation: None,
             shell_agent_view: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,
@@ -370,6 +376,16 @@ impl ClientConnection {
     pub(crate) fn drain_shell_held_inputs(&mut self) -> Vec<ClientShellHeldInput> {
         self.shell_held_inputs
             .drain()
+            .map(|(_, held)| held)
+            .collect()
+    }
+
+    pub(crate) fn drain_shell_inputs_matching(
+        &mut self,
+        mut matches: impl FnMut(&ClientShellInputTarget) -> bool,
+    ) -> Vec<ClientShellHeldInput> {
+        self.shell_held_inputs
+            .extract_if(|_, held| matches(&held.target))
             .map(|(_, held)| held)
             .collect()
     }
@@ -562,6 +578,49 @@ mod tests {
         );
 
         assert!(client.drain_shell_held_inputs().is_empty());
+    }
+
+    #[test]
+    fn hiding_one_pane_releases_only_its_held_inputs() {
+        let mut client = shell_client();
+        for (key, pane) in [('a', "w1:p1"), ('b', "w1:p2")] {
+            client.track_shell_input(
+                ClientShellInputTarget::Pane(pane.into()),
+                &[ClientPaneInputEvent::Key {
+                    code: ClientKeyCode::Char(key),
+                    modifiers: 0,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
+                    shifted_codepoint: None,
+                    generated_text: None,
+                    tracks_release: true,
+                    physical_key_id: None,
+                    windows_record: None,
+                }],
+            );
+        }
+        let released = client.drain_shell_inputs_matching(|target| {
+            matches!(target,
+            ClientShellInputTarget::Pane(id) if id == "w1:p1")
+        });
+        assert_eq!(released.len(), 1);
+        assert_eq!(
+            released[0].target,
+            ClientShellInputTarget::Pane("w1:p1".into())
+        );
+        assert!(matches!(
+            released[0].release,
+            ClientPaneInputEvent::Key {
+                kind: ClientKeyKind::Release,
+                ..
+            }
+        ));
+        let remaining = client.drain_shell_held_inputs();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0].target,
+            ClientShellInputTarget::Pane("w1:p2".into())
+        );
     }
 
     #[test]

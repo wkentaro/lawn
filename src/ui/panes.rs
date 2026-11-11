@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use ratatui::{
     buffer::Buffer,
     layout::{Direction, Rect},
@@ -374,6 +375,31 @@ pub(super) fn compute_pane_infos_for_tab(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> Vec<PaneInfo> {
+    compute_pane_infos_for_tab_presented(
+        app,
+        terminal_runtimes,
+        super::tab_surface::TabSurfaceTarget {
+            workspace_index: ws_idx,
+            tab_index: tab_idx,
+        },
+        area,
+        resize_panes,
+        cell_size,
+        None,
+    )
+}
+
+pub(super) fn compute_pane_infos_for_tab_presented(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    target: super::tab_surface::TabSurfaceTarget,
+    area: Rect,
+    resize_panes: bool,
+    cell_size: crate::kitty_graphics::HostCellSize,
+    presented: Option<Vec<PaneInfo>>,
+) -> Vec<PaneInfo> {
+    let ws_idx = target.workspace_index;
+    let tab_idx = target.tab_index;
     let Some(tab) = app
         .workspaces
         .get(ws_idx)
@@ -382,10 +408,19 @@ pub(super) fn compute_pane_infos_for_tab(
         return Vec::new();
     };
 
-    let multi_pane = tab.layout.pane_count() > 1;
+    if presented.as_ref().is_some_and(Vec::is_empty) {
+        return Vec::new();
+    }
+    let multi_pane = presented
+        .as_ref()
+        .map_or_else(|| tab.layout.pane_count(), Vec::len)
+        > 1;
 
     if tab.zoomed {
-        let focused_id = tab.layout.focused();
+        let focused_id = presented
+            .as_ref()
+            .and_then(|panes| panes.iter().find(|pane| pane.is_focused))
+            .map_or_else(|| tab.layout.focused(), |pane| pane.id);
         let borders = zoomed_pane_borders(app, multi_pane);
         let pane_inner = pane_inner_rect(area, borders);
         let mut inner_rect = pane_inner;
@@ -417,7 +452,7 @@ pub(super) fn compute_pane_infos_for_tab(
     }
 
     let mut pane_infos = apply_pane_chrome(
-        tab.layout.panes(area),
+        presented.unwrap_or_else(|| tab.layout.panes(area)),
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,

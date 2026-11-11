@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 impl HeadlessServer {
@@ -37,7 +38,7 @@ impl HeadlessServer {
         &self,
         client_id: u64,
     ) -> Option<(&crate::terminal::TerminalRuntime, crate::layout::PaneId)> {
-        if self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id) {
+        if self.shell_client_shows_popup(client_id) {
             if let Some(popup) = &self.app.state.popup_pane {
                 return self
                     .app
@@ -54,7 +55,7 @@ impl HeadlessServer {
             .get(target.workspace_index)?
             .tabs
             .get(target.tab_index)?;
-        let pane_id = tab.layout.focused();
+        let pane_id = self.focused_pane_for_client(client_id, tab)?;
         self.app
             .state
             .runtime_for_pane_in_workspace(
@@ -90,7 +91,14 @@ impl HeadlessServer {
         if tab.zoomed {
             return false;
         }
+        let presentation = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.pane_presentation.as_ref());
         tab.layout.pane_ids().into_iter().any(|pane_id| {
+            if presentation.is_some_and(|presentation| !presentation.presents(pane_id)) {
+                return false;
+            }
             self.app
                 .state
                 .runtime_for_pane_in_workspace(
@@ -312,11 +320,18 @@ impl HeadlessServer {
                     continue;
                 };
                 if tab.zoomed {
-                    pane_ids.insert(tab.layout.focused());
+                    if let Some(pane_id) = self.focused_pane_for_client(client_id, tab) {
+                        pane_ids.insert(pane_id);
+                    }
                 } else {
-                    pane_ids.extend(tab.layout.pane_ids());
+                    pane_ids.extend(tab.layout.pane_ids().into_iter().filter(|id| {
+                        client
+                            .pane_presentation
+                            .as_ref()
+                            .is_none_or(|presentation| presentation.presents(*id))
+                    }));
                 }
-                if self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id) {
+                if self.shell_client_shows_popup(client_id) {
                     if let Some(popup) = &self.app.state.popup_pane {
                         pane_ids.insert(popup.pane_id);
                     }
@@ -424,7 +439,7 @@ impl HeadlessServer {
                 .as_ref()
                 .is_some_and(|popup| popup.pane_id == pane_id)
             {
-                return self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id);
+                return self.shell_client_shows_popup(client_id);
             }
             let Some(target) = self.shell_target_for_client(client_id) else {
                 return false;
@@ -438,7 +453,12 @@ impl HeadlessServer {
             else {
                 return false;
             };
-            tab.panes.contains_key(&pane_id) && (!tab.zoomed || tab.layout.focused() == pane_id)
+            tab.panes.contains_key(&pane_id)
+                && client
+                    .pane_presentation
+                    .as_ref()
+                    .is_none_or(|presentation| presentation.presents(pane_id))
+                && (!tab.zoomed || self.focused_pane_for_client(client_id, tab) == Some(pane_id))
         })
     }
 
@@ -521,13 +541,14 @@ impl HeadlessServer {
             if changed {
                 if let Some(target) = self.shell_target_for_client(*client_id) {
                     let area = Rect::new(0, 0, *cols, *rows);
-                    let layout = crate::ui::compute_tab_surface_for(
+                    let layout = crate::ui::compute_tab_surface_for_presented(
                         &self.app.state,
                         &self.app.terminal_runtimes,
                         Some(target),
                         area,
                         false,
                         *cell_size,
+                        self.pane_layout_for_client(*client_id, Some(target), area),
                     );
                     if layout.pane_infos.iter().any(|pane| {
                         self.app
@@ -541,7 +562,7 @@ impl HeadlessServer {
                     }) {
                         continue;
                     }
-                    crate::ui::resize_tab_surface(
+                    crate::ui::resize_tab_surface_presented(
                         &self.app.state,
                         &self.app.terminal_runtimes,
                         target.workspace_index,
@@ -552,6 +573,7 @@ impl HeadlessServer {
                         } else {
                             crate::kitty_graphics::HostCellSize::default()
                         },
+                        self.pane_layout_for_client(*client_id, Some(target), area),
                     );
                 }
             }
@@ -571,8 +593,7 @@ impl HeadlessServer {
             }
             let area = Rect::new(0, 0, cols, rows);
             let shell_target = self.shell_target_for_client(client_id);
-            let shell_tab_id = self.shell_tab_id_for_client(client_id);
-            let shell_shows_popup = shell_tab_id.as_deref() == self.popup_owner_tab_id.as_deref();
+            let shell_shows_popup = self.shell_client_shows_popup(client_id);
             let shell_graphics_delivery = self
                 .clients
                 .get(&client_id)
@@ -590,6 +611,7 @@ impl HeadlessServer {
                 } else {
                     crate::kitty_graphics::HostCellSize::default()
                 };
+                let presented = self.pane_layout_for_client(client_id, shell_target, area);
                 let result = render_client_shell_pane_surface(
                     &mut self.app,
                     shell_target,
@@ -599,6 +621,7 @@ impl HeadlessServer {
                     render_cell_size,
                     &shell_graphics_delivery,
                     client_id,
+                    presented,
                 );
                 crate::render_prof::duration_since(
                     "full_render.render_tab_surface_virtual",
@@ -632,12 +655,13 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
                 };
-                let (mut candidate, mut completions) = client_shell_snapshot(
+                let (mut candidate, mut completions, mut identities) = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
                     client.shell_projection_revision,
                     None,
                     location.as_ref(),
+                    client.pane_presentation.as_ref(),
                 );
                 candidate.config_diagnostic = if client.shell_uses_endpoint_keybindings {
                     self.server_config_diagnostic.clone()
@@ -648,11 +672,34 @@ impl HeadlessServer {
                 if client.shell_snapshot.as_ref() != Some(&candidate)
                     || client.shell_agent_completions.as_ref() != Some(&completions)
                     || client.shell_agent_view != agent_view
+                    || client.shell_pane_identities != identities
                 {
                     client.shell_projection_revision =
                         client.shell_projection_revision.saturating_add(1);
                     candidate.revision = client.shell_projection_revision;
                     completions.revision = candidate.revision;
+                    if let Some(identities) = identities.as_mut() {
+                        identities.revision = candidate.revision;
+                    }
+                    let identities_framed = match identities
+                        .as_ref()
+                        .map(crate::protocol::endpoint::pane_presentation::identities_message)
+                        .transpose()
+                        .map_err(std::io::Error::other)
+                        .and_then(|message| {
+                            message
+                                .as_ref()
+                                .map(Self::frame_server_message)
+                                .transpose()
+                                .map_err(std::io::Error::other)
+                        }) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            warn!(client_id, err = %err, "failed to frame pane identities");
+                            broken_clients.push(client_id);
+                            continue;
+                        }
+                    };
                     let completion_framed =
                         match crate::protocol::endpoint::agent_completions_message(&completions)
                             .map_err(std::io::Error::other)
@@ -717,7 +764,9 @@ impl HeadlessServer {
                         broken_clients.push(client_id);
                         continue;
                     };
-                    if projection_framed.is_some_and(|framed| writer.control.send(framed).is_err())
+                    if identities_framed.is_some_and(|framed| writer.control.send(framed).is_err())
+                        || projection_framed
+                            .is_some_and(|framed| writer.control.send(framed).is_err())
                         || writer.control.send(completion_framed).is_err()
                         || writer.control.send(snapshot_framed).is_err()
                     {
@@ -726,6 +775,7 @@ impl HeadlessServer {
                     }
                     client.shell_snapshot = Some(candidate);
                     client.shell_agent_completions = Some(completions);
+                    client.shell_pane_identities = identities;
                     client.shell_agent_view = agent_view;
                 }
                 shell_projection_revision = client.shell_projection_revision;
