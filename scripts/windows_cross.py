@@ -1,3 +1,4 @@
+# Modified for Lawn.
 """One-time Windows SDK setup and Windows target linting from Unix hosts."""
 
 import argparse
@@ -78,7 +79,7 @@ def lint() -> None:
             "cargo",
             "clippy",
             "--bin",
-            "herdr",
+            "lawn",
             "--tests",
             "--locked",
             "--target",

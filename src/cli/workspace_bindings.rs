@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::collections::HashMap;
 
 use clap::{Arg, ArgMatches, Command};
@@ -110,7 +111,7 @@ impl Leaf {
     pub(crate) fn request(&self, args: &[String]) -> Result<Request, ParseError> {
         let method = super::projection::parse(
             self.command()
-                .bin_name(format!("herdr workspace {}", self.name)),
+                .bin_name(format!("lawn workspace {}", self.name)),
             args,
             self.method,
         )?;

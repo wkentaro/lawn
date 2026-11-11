@@ -1,19 +1,20 @@
+# Modified for Lawn.
 [package]
-name = "herdr"
-version = "0.9.5"
+name = "lawn"
+version = "0.1.0"
 edition = "2021"
 build = "build.rs"
-description = "terminal workspace manager for AI coding agents"
+description = "terminal workspaces for focused development"
 license = "Apache-2.0"
-repository = "https://github.com/herdrdev/herdr"
-homepage = "https://herdr.dev"
+repository = "https://github.com/wkentaro/lawn"
+homepage = "https://github.com/wkentaro/lawn"
 keywords = ["terminal", "tui", "ai", "agents", "multiplexer"]
 categories = ["command-line-utilities"]
 include = [
     "src/**/*",
     "assets/sounds/*",
     "docs/next/api/herdr-api.schema.json",
-    "skills/herdr/SKILL.md",
+    "skills/lawn/SKILL.md",
     "distribution/install.ps1",
     "README.md",
     "LICENSE",

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::harness::*;
 
 #[test]
@@ -554,7 +555,7 @@ fn plugin_update_does_not_resurrect_a_plugin_unlinked_during_build() {
     run_git(&source_repo, &["add", "."]);
     run_git(&source_repo, &["commit", "--quiet", "-m", "update plugin"]);
 
-    let mut update = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut update = Command::new(env!("CARGO_BIN_EXE_lawn"));
     update
         .args([
             "--session",
@@ -670,7 +671,7 @@ mv "$HERDR_PLUGIN_ROOT/result-$kind.tmp" "$HERDR_PLUGIN_ROOT/result-$kind"
     );
 
     // Model an existing installation from before generation directories.
-    let registry = config_home.join("herdr-dev/plugins.json");
+    let registry = config_home.join("lawn-dev/plugins.json");
     let mut entries: serde_json::Value =
         serde_json::from_slice(&fs::read(&registry).unwrap()).unwrap();
     let installed_root = PathBuf::from(entries[0]["plugin_root"].as_str().unwrap());
@@ -681,7 +682,7 @@ mv "$HERDR_PLUGIN_ROOT/result-$kind.tmp" "$HERDR_PLUGIN_ROOT/result-$kind"
         .unwrap()
         .file_name()
         .unwrap();
-    let legacy_root = config_home.join("herdr-dev/plugins/github").join(component);
+    let legacy_root = config_home.join("lawn-dev/plugins/github").join(component);
     fs::create_dir_all(legacy_root.parent().unwrap()).unwrap();
     fs::rename(&installed_root, &legacy_root).unwrap();
     entries[0]["plugin_root"] = serde_json::json!(legacy_root);
@@ -798,7 +799,7 @@ mv "$HERDR_PLUGIN_ROOT/result-$kind.tmp" "$HERDR_PLUGIN_ROOT/result-$kind"
 
     // Fail registry activation after the build, preserving the working version
     // and both running consumers' directories without a restore operation.
-    let registry = config_home.join("herdr-dev/plugins.json");
+    let registry = config_home.join("lawn-dev/plugins.json");
     let original_registry = fs::read(&registry).unwrap();
     let block_write = format!("mkdir '{}'", registry.with_extension("json.tmp").display());
     fs::write(
@@ -848,7 +849,7 @@ id = "example.layout"
 name = "Layout"
 version = "0.1.0"
 min_herdr_version = "0.6.10"
-description = "Apply a preferred Herdr layout"
+description = "Apply a preferred Lawn layout"
 
 [[actions]]
 id = "apply"
@@ -993,10 +994,10 @@ fn plugin_install_usage_errors_include_options_without_installing() {
         );
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("usage: herdr plugin install"), "{stderr}");
+        assert!(stderr.contains("usage: lawn plugin install"), "{stderr}");
         assert!(stderr.contains("[--ref REF] [--yes|-y]"), "{stderr}");
-        assert!(!config_home.join("herdr-dev/plugins").exists());
-        assert!(!config_home.join("herdr-dev/plugins.json").exists());
+        assert!(!config_home.join("lawn-dev/plugins").exists());
+        assert!(!config_home.join("lawn-dev/plugins.json").exists());
         assert!(!state_home.exists());
     }
 

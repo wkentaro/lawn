@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Application orchestration.
 //!
 //! - `state.rs` — AppState, Mode, and pure data structs
@@ -1670,7 +1671,7 @@ mod tests {
         let path = temp_config_path("startup-stale-update-notes");
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
 
-        crate::release_notes::save_pending("0.4.9", "### Changed\n- One").unwrap();
+        crate::release_notes::save_pending("0.0.0", "### Changed\n- One").unwrap();
 
         let app = test_app();
 
@@ -2016,7 +2017,7 @@ mod tests {
         );
         assert_eq!(
             app.state.config_diagnostic.as_deref(),
-            Some("config.toml; herdr config check")
+            Some("config.toml; lawn config check")
         );
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
@@ -2078,7 +2079,7 @@ mod tests {
         assert_eq!(app.state.pane_borders, target_pane_borders);
         assert_eq!(
             app.state.config_diagnostic.as_deref(),
-            Some("config.toml has unknown keys; herdr config check")
+            Some("config.toml has unknown keys; lawn config check")
         );
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
@@ -2207,7 +2208,7 @@ mod tests {
             .config_diagnostic
             .as_deref()
             .is_some_and(|message| {
-                message == "config.toml invalid; keeping current config; herdr config check"
+                message == "config.toml invalid; keeping current config; lawn config check"
             }));
         assert!(app.state.toast.is_none());
 

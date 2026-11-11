@@ -1,3 +1,4 @@
+// Modified for Lawn.
 #![cfg(windows)]
 
 use std::io;
@@ -101,9 +102,9 @@ fn server_integrity_requires_startup_consent_on_both_endpoints() {
         directory,
     };
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "lawn-dev"
     } else {
-        "herdr"
+        "lawn"
     };
     let session_dir = server
         .directory
@@ -134,7 +135,7 @@ fn server_integrity_requires_startup_consent_on_both_endpoints() {
             configuration,
         )
         .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_lawn"));
         command.args(["--session", "integrity-test", "server"]);
         if allow_unelevated {
             command.arg("--allow-unelevated-clients");
@@ -149,7 +150,7 @@ fn server_integrity_requires_startup_consent_on_both_endpoints() {
         for name in [
             "HERDR_SOCKET_PATH",
             "HERDR_CLIENT_SOCKET_PATH",
-            "HERDR_CONFIG_PATH",
+            "LAWN_CONFIG_PATH",
             "HERDR_SESSION",
             "HERDR_WORKSPACE",
             "HERDR_TAB",

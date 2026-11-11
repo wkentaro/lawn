@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use clap::{Arg, Command};
 
 use super::{json_flag, option};
@@ -23,7 +24,7 @@ pub(super) fn command() -> Command {
         )
         .subcommand(
             Command::new("add")
-                .about("Prepare the remote Herdr server and save an SSH machine")
+                .about("Prepare the remote Lawn server and save an SSH machine")
                 .arg(
                     Arg::new("ssh-target")
                         .value_name("SSH_TARGET")

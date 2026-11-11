@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Remote thin-client launcher over SSH command stdio.
 
 #[cfg(unix)]
@@ -319,28 +320,6 @@ impl RemotePlatform {
             _ => return None,
         };
         Some(Self { os, arch })
-    }
-
-    fn local() -> Self {
-        let os = if cfg!(target_os = "linux") {
-            "linux"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else if cfg!(target_os = "windows") {
-            "windows"
-        } else {
-            "unknown"
-        };
-
-        let arch = if cfg!(target_arch = "x86_64") {
-            "x86_64"
-        } else if cfg!(target_arch = "aarch64") {
-            "aarch64"
-        } else {
-            "unknown"
-        };
-
-        Self { os, arch }
     }
 
     fn asset_key(&self) -> String {
@@ -699,7 +678,7 @@ struct RemoteManifestReleaseRef<'a> {
 }
 
 fn current_version() -> String {
-    crate::build_info::version()
+    crate::build_info::HERDR_COMPAT_VERSION.to_owned()
 }
 
 fn current_channel() -> &'static str {
@@ -2088,32 +2067,16 @@ fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
 }
 
 fn install_source_description(platform: &RemotePlatform, override_binary: Option<&Path>) -> String {
-    install_source_description_for(
-        platform,
-        override_binary,
-        local_binary_can_seed_remote(platform),
-    )
-}
-
-fn install_source_description_for(
-    platform: &RemotePlatform,
-    override_binary: Option<&Path>,
-    local_binary_can_seed_remote: bool,
-) -> String {
     if let Some(path) = override_binary {
         return format!("{REMOTE_BINARY_ENV_VAR} ({})", path.display());
     }
 
-    if local_binary_can_seed_remote {
-        "the current local herdr binary".to_string()
-    } else {
-        format!(
-            "the {} {} asset for {}",
-            current_version(),
-            current_channel(),
-            platform.asset_key()
-        )
-    }
+    format!(
+        "the {} {} asset for {}",
+        current_version(),
+        current_channel(),
+        platform.asset_key()
+    )
 }
 
 fn resolve_install_source(
@@ -2124,24 +2087,8 @@ fn resolve_install_source(
         return Ok(InstallSource::persistent(path));
     }
 
-    if *platform == RemotePlatform::local() {
-        let path = std::env::current_exe()?;
-        if !crate::update::is_package_manager_managed_exe_path(&path) {
-            return Ok(InstallSource::persistent(path));
-        }
-    }
-
+    // Lawn's executable must not be installed under the remote herdr identity.
     download_release_asset(platform)
-}
-
-fn local_binary_can_seed_remote(platform: &RemotePlatform) -> bool {
-    if platform.is_windows() || *platform != RemotePlatform::local() {
-        return false;
-    }
-
-    std::env::current_exe()
-        .map(|path| !crate::update::is_package_manager_managed_exe_path(&path))
-        .unwrap_or(false)
 }
 
 fn windows_package_identity(custom: bool, sha256: &str) -> String {
@@ -5842,7 +5789,6 @@ function Get-Process {
         assert!(!old.supports_endpoint_requirement(&windows, false));
         assert!(current.supports_endpoint_requirement(&windows, false));
         assert!(old.supports_endpoint_requirement(&linux, false));
-        assert!(!local_binary_can_seed_remote(&windows));
         assert_eq!(
             windows_package_identity(true, &"a".repeat(64)),
             format!("{}-custom.{}", current_version(), "a".repeat(64))
@@ -6082,27 +6028,34 @@ function Get-Process {
             arch: "aarch64",
         };
         assert_eq!(
-            install_source_description_for(&platform, Some(Path::new("/tmp/herdr-aarch64")), false),
+            install_source_description(&platform, Some(Path::new("/tmp/herdr-aarch64"))),
             "HERDR_REMOTE_BINARY (/tmp/herdr-aarch64)"
         );
     }
 
     #[test]
-    fn install_source_description_uses_local_binary_when_allowed() {
-        let platform = RemotePlatform::local();
-
-        assert_eq!(
-            install_source_description_for(&platform, None, true),
-            "the current local herdr binary"
-        );
+    fn bootstrap_version_resolves_current_herdr_release_with_checksums() {
+        let manifest: RemoteUpdateManifest =
+            serde_json::from_str(include_str!("../../distribution/latest.json")).unwrap();
+        let release = manifest
+            .release_for_version(&current_version())
+            .expect("compatible herdr release");
+        assert_eq!(release.protocol, Some(CURRENT_PROTOCOL));
+        for key in ["linux-x86_64", "macos-aarch64"] {
+            assert!(release.assets.contains_key(key));
+            assert_eq!(release.sha256.get(key).map(String::len), Some(64));
+        }
     }
 
     #[test]
-    fn install_source_description_uses_release_asset_when_local_binary_cannot_seed_remote() {
-        let platform = RemotePlatform::local();
+    fn install_source_description_always_uses_upstream_release() {
+        let platform = RemotePlatform {
+            os: "macos",
+            arch: "aarch64",
+        };
 
         assert_eq!(
-            install_source_description_for(&platform, None, false),
+            install_source_description(&platform, None),
             format!(
                 "the {} {} asset for {}",
                 current_version(),

@@ -1,3 +1,4 @@
+# Modified for Lawn.
 # Shared test helpers. Dot-sourcing does not touch the desktop or console.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -36,7 +37,7 @@ function New-GauntletProcess($Exe, $Arguments, $Plan, [switch] $Capture) {
         if ($name -like 'HERDR_*' -or $name -in @('SSH_CONNECTION', 'SSH_TTY')) { $null = $info.Environment.Remove($name) }
     }
     if ($null -ne $Plan) {
-        $info.Environment['HERDR_CONFIG_PATH'] = $Plan.config
+        $info.Environment['LAWN_CONFIG_PATH'] = $Plan.config
         $info.Environment['XDG_CONFIG_HOME'] = $Plan.config_home
         $info.Environment['HERDR_SESSION'] = $Plan.session
         if ($Plan.profile -ne 'default') { $info.Environment['HERDR_WINDOWS_INPUT_PROBE'] = $Plan.profile }
@@ -45,7 +46,7 @@ function New-GauntletProcess($Exe, $Arguments, $Plan, [switch] $Capture) {
             # Enable the mapper's client-event trace so a report can distinguish a
             # terminal-issued paste from a bridge reaction (see README, #4314).
             $info.Environment['HERDR_WINDOWS_INPUT_TRACE'] = '1'
-            $info.Environment['HERDR_LOG'] = 'herdr=info'
+            $info.Environment['HERDR_LOG'] = 'lawn=info,herdr=info'
         }
         if ($Plan.path -eq 'herdr-remote') {
             $info.Environment['HERDR_REMOTE_KEYBINDINGS'] = 'local'

@@ -1,85 +1,62 @@
-# herdr
+# Lawn
 
+Lawn is a terminal workspace for focused local development, derived from
+[herdr](https://github.com/herdrdev/herdr).
 
-<p align="center">
-  <img src="assets/logo.png" alt="herdr" width="100" />
-</p>
+Version 0.1 is in development for macOS Apple Silicon. The workspace, Jump, and
+parking changes are tracked in [issue #1](https://github.com/wkentaro/lawn/issues/1).
 
-<p align="center">
-  <a href="https://herdr.dev">herdr.dev</a> · <a href="#install">install</a> · <a href="https://herdr.dev/docs/quick-start/">quick start</a> · <a href="https://herdr.dev/docs/">docs</a>
-</p>
+## Build
 
-<p align="center">
-  English · <a href="README.zh-CN.md">简体中文</a>
-</p>
+Use the Rust version in `rust-toolchain.toml`, Zig 0.16.0, `just`,
+`cargo-nextest`, and Bun. If another Zig version is on your PATH, set `ZIG` to
+the 0.16.0 executable.
 
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-666666?labelColor=333333" alt="Apache 2.0 license" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases"><img src="https://img.shields.io/github/downloads/herdrdev/herdr/total?labelColor=333333&color=666666" alt="total GitHub release downloads" /></a>
-  <a href="https://github.com/herdrdev/herdr/stargazers"><img src="https://img.shields.io/github/stars/herdrdev/herdr?labelColor=333333&color=666666&logo=github" alt="GitHub stars" /></a>
-  <a href="https://github.com/herdrdev/herdr/releases/latest"><img src="https://img.shields.io/github/v/release/herdrdev/herdr?label=release&labelColor=333333&color=666666" alt="latest stable release" /></a>
-  <a href="https://formulae.brew.sh/formula/herdr"><img src="https://img.shields.io/homebrew/v/herdr?label=homebrew&labelColor=333333&color=666666" alt="Homebrew version" /></a>
-  <a href="https://x.com/herdrdev"><img src="https://img.shields.io/badge/follow-%40herdrdev-000000?logo=x&logoColor=white" alt="follow @herdrdev on X" /></a>
-</p>
-
----
-
-https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
-
-**the runtime your coding agents live on.**
-
-- **detach without stopping work** — herdr keeps terminals running in a background server when you close the client or lose your SSH connection. after a server or machine restart, herdr restores the saved layout and can resume supported agent sessions; the original processes do not survive. [session state →](https://herdr.dev/docs/session-state/)
-- **several machines, one window** — keep local work and saved ssh machines together, with a combined agent list and independent reconnects. [remote machines →](https://herdr.dev/docs/connecting-machines/)
-- **never hunt for the stuck one** — every pane is marked working, blocked, or idle. when an agent stops and needs an answer, herdr says so.
-- **agent-native** — agents drive herdr through the cli and socket api: they can spawn panes, prompt each other, and wait until another agent is genuinely blocked. [agent skill →](https://herdr.dev/docs/agent-skill/)
-- **runs what you already run** — claude code, codex, cursor, opencode, grok and the rest. herdr doesn't wrap or replace them; it owns their terminals. building an agent? [add herdr support →](https://herdr.dev/docs/add-herdr-support/)
-- **keyboard and mouse, both first-class** — tmux-style prefix keys *and* click, drag, split. pick per moment, not per tool.
-- **plugins** — extend panes and workflows. [browse the marketplace →](https://herdr.dev/plugins/)
-- **one rust binary, no electron** — runs in whatever terminal you already use.
-
----
-
-## install
-
-```bash
-curl -fsSL https://herdr.dev/install.sh | sh
+```sh
+just lawn-check
+just build
+./target/release/lawn
 ```
 
-or `brew install herdr` · `mise use -g herdr` · windows: `powershell -ExecutionPolicy Bypass -c "irm https://herdr.dev/install.ps1 | iex"` · [endpoint-protected Windows](https://herdr.dev/docs/windows-beta/) · [binaries](https://github.com/herdrdev/herdr/releases)
+`lawn-check` runs formatting, clippy, all native Rust tests, maintenance tests,
+integration-asset tests, and documentation contracts. The inherited `check`
+recipe additionally requires the Windows SDK for cross-linting.
 
-then start it where the work lives:
+## Configuration
 
-```bash
-herdr
+Release builds use `~/.config/lawn/config.toml`; debug builds use `lawn-dev`.
+`XDG_CONFIG_HOME` changes the base directory, and `LAWN_CONFIG_PATH` selects an
+explicit configuration file. Client presentation state uses Lawn's state
+directory and respects `XDG_STATE_HOME`.
+
+```sh
+lawn --default-config
+lawn --help
+lawn completion zsh
 ```
 
-run your agents, split panes, walk away. `ctrl+b q` detaches, `herdr` reattaches. [quick start →](https://herdr.dev/docs/quick-start/)
+Lawn retains the `HERDR_*` runtime, socket, and hook variables for compatibility.
+An inherited socket override deliberately targets that session. Configuration
+uses `LAWN_CONFIG_PATH` so a herdr configuration override does not silently
+select Lawn's settings file.
 
-## docs
+## Upstream maintenance
 
-everything lives at [herdr.dev/docs](https://herdr.dev/docs/): [quick start](https://herdr.dev/docs/quick-start/) · [concepts](https://herdr.dev/docs/concepts/) · [supported agents](https://herdr.dev/docs/agents/) · [keyboard](https://herdr.dev/docs/keyboard/) · [configuration](https://herdr.dev/docs/configuration/) · [session state](https://herdr.dev/docs/session-state/) · [connecting machines](https://herdr.dev/docs/connecting-machines/) · [remote](https://herdr.dev/docs/persistence-remote/) · [integrations](https://herdr.dev/docs/integrations/) · [add herdr support to your agent](https://herdr.dev/docs/add-herdr-support/) · [plugins](https://herdr.dev/docs/plugins/) · [socket api](https://herdr.dev/docs/socket-api/)
+This repository retains herdr's history and source paths. The starting revision
+is `ee5bfb5041bb3e4a49d591c72308aae3c81ecdde`, whose runtime version is 0.9.5.
+Lawn's release version is independent. Existing plugin manifests and the
+inherited terminal identity and remote herdr bootstrap use `HERDR_COMPAT_VERSION` in
+`src/build_info.rs`.
 
-## thanks
+SSH machine setup downloads the matching upstream runtime. It does not copy
+the local Lawn executable into a remote herdr installation.
 
-every past sponsor and backer is listed in [SPONSORS.md](./SPONSORS.md) — thank you 🐑
+Keep herdr as the `upstream` remote. Import selected revisions through reviewed
+merge commits so their ancestry is preserved. Recheck runtime compatibility
+when updating the upstream version, and keep Lawn release tags under `lawn-v*`.
 
-enterprise / partnership: hey@herdr.dev
+## License
 
-## agent instructions
+[Apache-2.0](LICENSE). Lawn preserves herdr's license and attribution notices.
 
-if you are an ai agent helping with this repository, read [`AGENTS.md`](./AGENTS.md) before making changes and read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before opening issues or PRs.
-
-## development
-
-```bash
-git clone https://github.com/herdrdev/herdr
-cd herdr
-cargo build --release
-
-just test        # unit tests
-just check       # formatting, tests, and maintenance checks
-```
-
-## license
-
-Herdr is licensed under the [Apache License 2.0](LICENSE).
+Upstream sponsors and backers remain listed in [SPONSORS.md](SPONSORS.md).

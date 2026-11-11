@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use crate::api::schema::{
     InstalledPluginInfo, PluginManifestAction, PluginManifestBuild, PluginManifestEventHook,
     PluginManifestLinkHandler, PluginManifestPane, PluginManifestStartup, PluginPanePlacement,
@@ -241,11 +242,12 @@ fn validate_min_herdr_version(value: Option<&str>) -> Result<String, (&'static s
             "invalid_plugin_min_herdr_version",
             format!(
                 "plugin min_herdr_version must be a semantic version like {}",
-                crate::build_info::BASE_VERSION
+                crate::build_info::HERDR_COMPAT_VERSION
             ),
         )
     })?;
-    let current = crate::update::Version::current();
+    let current = crate::update::Version::parse(crate::build_info::HERDR_COMPAT_VERSION)
+        .expect("invalid herdr compatibility version");
     if required > current {
         return Err((
             "plugin_requires_newer_herdr",

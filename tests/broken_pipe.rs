@@ -1,3 +1,4 @@
+// Modified for Lawn.
 #![cfg(unix)]
 
 use std::os::fd::{FromRawFd, OwnedFd};
@@ -16,7 +17,7 @@ fn closed_pipe_writer() -> Stdio {
 }
 
 fn run_with_closed_stdout(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_herdr"))
+    Command::new(env!("CARGO_BIN_EXE_lawn"))
         .args(args)
         .stdout(closed_pipe_writer())
         .stderr(Stdio::piped())

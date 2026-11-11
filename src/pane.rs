@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::cell::Cell;
 use std::io;
 use std::path::Path;
@@ -105,7 +106,10 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     cmd.env("TERM", PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
     cmd.env("TERM_PROGRAM", "herdr");
-    cmd.env("TERM_PROGRAM_VERSION", crate::build_info::version());
+    cmd.env(
+        "TERM_PROGRAM_VERSION",
+        crate::build_info::HERDR_COMPAT_VERSION,
+    );
     // fish only skips its own resize repaint for terminals it recognizes as
     // reflowing. Herdr reflows too, and the competing repaint glues prompt copies.
     // Match the exact casing: Windows env keys are case-insensitive here, but
@@ -4398,7 +4402,7 @@ mod tests {
         assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("herdr")));
         assert_eq!(
             cmd.get_env("TERM_PROGRAM_VERSION"),
-            Some(OsStr::new(&crate::build_info::version()))
+            Some(OsStr::new(crate::build_info::HERDR_COMPAT_VERSION))
         );
     }
 
