@@ -564,11 +564,7 @@ fn server_crash_after_attach_causes_lost_connection_error() {
                 Ok(n) if n > 0 => {
                     let out = String::from_utf8_lossy(&buf[..n]);
                     output.push_str(&out);
-                    if out.contains("\u{2500}")
-                        || out.contains("workspace")
-                        || out.contains("pane")
-                        || out.contains("terminal")
-                    {
+                    if output_has_shell_frame(&output) {
                         seen = true;
                         break;
                     }
@@ -652,6 +648,15 @@ fn server_crash_after_attach_causes_lost_connection_error() {
 /// terminal restore. Their presence in the client's PTY output proves the
 /// restore path (`TerminalGuard::Drop` → `restore_terminal_state`) ran.
 const MOUSE_TEARDOWN_MARKERS: [&str; 2] = ["\u{1b}[?1003l", "\u{1b}[?1000l"];
+
+fn output_has_shell_frame(output: &str) -> bool {
+    output.contains("spaces")
+        || output.contains("machines")
+        || output.contains('\u{2500}')
+        || output.contains("workspace")
+        || output.contains("pane")
+        || output.contains("terminal")
+}
 
 fn output_has_mouse_teardown(output: &str) -> bool {
     MOUSE_TEARDOWN_MARKERS
@@ -878,11 +883,7 @@ fn attach_thin_client_with_config(
     let mut attached = false;
     while Instant::now() < deadline {
         let out = read_output(&output);
-        if out.contains('\u{2500}')
-            || out.contains("workspace")
-            || out.contains("pane")
-            || out.contains("terminal")
-        {
+        if output_has_shell_frame(&out) {
             attached = true;
             break;
         }
@@ -1686,11 +1687,7 @@ fn read_until_client_attaches(client: &SpawnedHerdr) -> String {
             }
             Err(err) => panic!("read thin client PTY: {err}"),
         }
-        if output.contains('\u{2500}')
-            || output.contains("workspace")
-            || output.contains("pane")
-            || output.contains("terminal")
-        {
+        if output_has_shell_frame(&output) {
             return output;
         }
     }

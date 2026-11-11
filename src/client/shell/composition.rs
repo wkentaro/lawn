@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 fn restore_mode_bar(
@@ -67,7 +68,6 @@ impl ClientShellState {
             reveal_focused_workspace: &mut self.reveal_focused_workspace,
             reveal_focused_tab: &mut self.reveal_focused_tab,
             sidebar_collapsed: false,
-            sidebar_section_split: self.sidebar_section_split,
             tab_drag_insert_index: None,
             selected_workspace_id: self
                 .navigate_workspace_id
@@ -144,7 +144,24 @@ impl ClientShellState {
                 &self.config.palette,
             );
         }
-        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+        let mut cursor = None;
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() {
+            if let Some(rendered) = render::render_navigator_overlay(
+                &mut buffer,
+                navigator,
+                &self.endpoints,
+                &self.active_endpoint_id,
+                &self.config.palette,
+            ) {
+                self.hits.navigator_popup = rendered.navigator_popup;
+                self.hits.navigator_search = rendered.navigator_search;
+                self.hits.navigator_rows = rendered.navigator_rows;
+                self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
+                self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
+                cursor = rendered.cursor;
+            }
+        }
+        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &[])
     }
 
     pub(crate) fn compose(
@@ -223,7 +240,6 @@ impl ClientShellState {
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
                 sidebar_collapsed: self.sidebar_collapsed,
-                sidebar_section_split: self.sidebar_section_split,
                 tab_drag_insert_index,
                 selected_workspace_id: self
                     .navigate_workspace_id

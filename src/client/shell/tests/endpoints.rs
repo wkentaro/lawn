@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[path = "workspace_navigation.rs"]
@@ -541,7 +542,9 @@ fn sidebar_toggle_remains_clickable_with_overflowing_agents() {
             }
             state.agent_scroll = if scroll_to_bottom { usize::MAX } else { 0 };
             let frame = state.compose(100, 28).expect("overflowing agent panel");
-            assert!(!state.hits.agent_scrollbar.is_empty());
+            assert!(state.hits.agent_scrollbar.is_empty());
+            assert!(state.hits.endpoint_agents.is_empty());
+            assert!(state.hits.agents.is_empty());
             let scroll = state.agent_scroll;
 
             let toggle = state.hits.sidebar_toggle;
@@ -578,7 +581,7 @@ fn sidebar_toggle_remains_clickable_with_overflowing_agents() {
 }
 
 #[test]
-fn agent_navigation_reveals_offscreen_targets() {
+fn agent_navigation_preserves_targets_without_an_agents_panel() {
     use crate::input::KeybindAction;
 
     for action in [
@@ -611,14 +614,13 @@ fn agent_navigation_reveals_offscreen_targets() {
             assert!(state.activate_endpoint_projection(&endpoint_id));
         }
         state.compose(100, 28).unwrap();
-        assert!(
-            state
-                .hits
-                .endpoint_agents
-                .iter()
-                .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id }),
-            "{action:?} must reveal the selected agent"
-        );
+        assert_eq!(state.active_endpoint_id, endpoint_id);
+        assert!(outcome.actions.iter().any(|event| match event {
+            ClientShellAction::ActivateEndpoint { target: Some(ClientEndpointFocusTarget::Pane(target)), .. } => target == pane_id,
+            ClientShellAction::Endpoint { request, .. } => matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == pane_id),
+            _ => false,
+        }));
+        assert!(state.hits.endpoint_agents.is_empty());
     }
 }
 
@@ -672,11 +674,8 @@ fn agent_navigation_reveals_target_using_destination_sort() {
     state.compose(100, 28).unwrap();
     assert!(state.activate_endpoint_projection(&remote));
     state.compose(100, 28).unwrap();
-    assert!(state
-        .hits
-        .endpoint_agents
-        .iter()
-        .any(|(_, endpoint, pane)| { endpoint == &remote && pane == "pane_8" }));
+    assert_eq!(state.active_endpoint_id, remote);
+    assert!(state.hits.endpoint_agents.is_empty());
 }
 
 #[test]
@@ -701,122 +700,6 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         state.compose(100, 28).unwrap();
         assert_eq!(state.agent_scroll, scroll);
     }
-}
-
-#[test]
-fn agent_navigation_keeps_scroll_when_target_is_visible() {
-    let (mut state, _) = state_with_scrollable_agents();
-    let (_, endpoint_id, pane_id) = state.hits.endpoint_agents[1].clone();
-    let targets = super::super::aggregate_navigation::online_agent_targets(
-        &state.endpoints,
-        &state.active_endpoint_id,
-        state.config.agent_panel_sort,
-    );
-    let index = targets
-        .iter()
-        .position(|target| target.endpoint_id == endpoint_id && target.pane_id == pane_id)
-        .unwrap();
-    let scroll = state.agent_scroll;
-    assert!(state.handle_endpoint_navigation(
-        crate::input::KeybindAction::FocusAgent(index),
-        &mut ClientShellInput::default(),
-    ));
-    state.compose(100, 28).unwrap();
-    assert_eq!(state.agent_scroll, scroll);
-}
-
-#[test]
-fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
-    let (mut state, remote) = state_with_scrollable_agents();
-    for endpoint_id in [remote.clone(), ClientEndpointId::Local, remote] {
-        let visible = state.hits.endpoint_agents.clone();
-        let (rect, _, pane_id) = visible
-            .iter()
-            .find(|(_, endpoint, _)| endpoint == &endpoint_id)
-            .expect("destination agent remains visible");
-        let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 2,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        })]);
-        assert!(matches!(
-            click.actions.as_slice(),
-            [ClientShellAction::ActivateEndpoint {
-                endpoint_id: target,
-                target: Some(ClientEndpointFocusTarget::Pane(target_pane)),
-            }] if target == &endpoint_id && target_pane == pane_id
-        ));
-
-        state.workspace_scroll = 3;
-        state.tab_scroll = 2;
-        assert!(state.activate_endpoint_projection(&endpoint_id));
-        assert_eq!(state.agent_scroll, 6);
-        assert_eq!(state.workspace_scroll, 0);
-        assert_eq!(state.tab_scroll, 0);
-        assert!(state.pane_surface.is_none());
-
-        let mut next_surface = surface();
-        next_surface.boot_id = state.endpoint_boot_id(&endpoint_id).unwrap().into();
-        state.set_pane_surface(next_surface);
-        state.compose(100, 28).unwrap();
-        assert_eq!(state.agent_scroll, 6);
-        assert_eq!(state.hits.endpoint_agents, visible);
-    }
-}
-
-#[test]
-fn local_agent_click_can_cancel_a_pending_remote_switch() {
-    for reconnecting in [false, true] {
-        let (mut state, remote) = state_with_scrollable_agents();
-        assert!(state.activate_endpoint(remote, &mut ClientShellInput::default()));
-        if reconnecting {
-            state.mark_endpoint_disconnected(&ClientEndpointId::Local);
-        }
-        state.compose(100, 28).unwrap();
-        let (rect, _, pane_id) = state
-            .hits
-            .endpoint_agents
-            .iter()
-            .find(|(_, endpoint, _)| endpoint.is_local())
-            .unwrap()
-            .clone();
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 2,
-            row: rect.y,
-            modifiers: KeyModifiers::NONE,
-        })]);
-        assert!(
-            matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Pane(target)),
-        }] if target == &pane_id)
-        );
-    }
-}
-
-#[test]
-fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
-    let (mut state, remote) = state_with_scrollable_agents();
-    for endpoint_id in [ClientEndpointId::Local, remote.clone()] {
-        let mut projection = state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-            .unwrap()
-            .snapshot
-            .clone()
-            .unwrap();
-        projection.revision += 1;
-        projection.agents.truncate(1);
-        state.set_endpoint_snapshot(&endpoint_id, projection);
-    }
-    assert!(state.activate_endpoint_projection(&remote));
-    state.compose(100, 28).unwrap();
-    assert_eq!(state.agent_scroll, 0);
-    assert_eq!(state.hits.agent_max_scroll, 0);
-    assert_eq!(state.hits.endpoint_agents.len(), 2);
 }
 
 #[test]
@@ -1103,7 +986,7 @@ fn saved_machine_preserves_endpoint_scoped_worktree_collapses() {
     assert_eq!(key, "repo");
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_eq!(buffer[(local_toggle.x, local_toggle.y)].symbol(), "▸");
-    assert!((local_parent.rect.x..local_parent.rect.right())
+    assert!(!(local_parent.rect.x..local_parent.rect.right())
         .any(|x| buffer[(x, local_parent.rect.y)].fg == state.config.palette.red));
 
     assert!(state.activate_endpoint_projection(&remote_id));
@@ -1364,7 +1247,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     );
 
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 18).expect("scrolled endpoint frame");
+    state.compose(100, 10).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics
@@ -1439,70 +1322,6 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
 }
 
 #[test]
-fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
-    use crate::api::schema::AgentStatus;
-    use crate::config::{AgentSidebarToken, StatusIndicatorStyle};
-
-    let mut config = Config::default();
-    config.ui.status_indicators = StatusIndicatorStyle::Symbols;
-    config.ui.sidebar.agents.rows = vec![vec![
-        AgentSidebarToken::StateIcon,
-        AgentSidebarToken::Machine,
-        AgentSidebarToken::Agent,
-    ]];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    let profile = remote_profile();
-    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
-
-    let mut local = snapshot();
-    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
-    state.set_snapshot(Box::new(local));
-    state.set_pane_surface(surface());
-    let mut remote = snapshot();
-    remote.boot_id = "remote-boot".into();
-    remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 1)];
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
-
-    let frame = state.compose(100, 28).expect("combined endpoint frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("○ Local · local agent"), "frame: {text}");
-    assert!(text.contains("× Build · remote agent"), "frame: {text}");
-    assert!(text.contains("grouped"), "frame: {text}");
-    let toggle = state.hits.agent_sort_toggle;
-    assert!(!toggle.is_empty());
-    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: toggle.x,
-        row: toggle.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert_eq!(
-        state.config.agent_panel_sort,
-        crate::config::AgentPanelSortConfig::Priority
-    );
-    assert!(click.actions.is_empty());
-
-    let buffer = frame
-        .to_ratatui_buffer()
-        .expect("aggregate frame should reconstruct");
-    assert!(buffer
-        .content()
-        .iter()
-        .any(|cell| cell.symbol() == "×" && cell.fg == state.config.palette.red));
-}
-
-#[test]
 fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     use crate::api::schema::AgentStatus;
     use crate::config::AgentSidebarToken;
@@ -1533,17 +1352,7 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view.clone()));
     state.set_test_endpoint_agent_view(&endpoint_id, Some(view));
 
-    let frame = state.compose(100, 28).expect("combined endpoint frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(text.contains("Local · local agent"), "frame: {text}");
     assert!(!text.contains("Build · remote agent"), "frame: {text}");
 
@@ -1551,17 +1360,7 @@ fn current_workspace_agent_view_excludes_same_workspace_id_on_other_machine() {
     let mut remote_surface = surface();
     remote_surface.boot_id = "remote-boot".into();
     state.set_pane_surface(remote_surface);
-    let frame = state.compose(100, 28).expect("remote endpoint frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(!text.contains("Local · local agent"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
 }
@@ -1620,17 +1419,7 @@ fn current_workspace_or_blocked_keeps_foreign_attention_only() {
     });
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view));
 
-    let frame = state.compose(100, 28).expect("combined endpoint frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(text.contains("Local · local agent"), "frame: {text}");
     assert!(!text.contains("Build · remote idle"), "frame: {text}");
     assert!(text.contains("Build · remote blocked"), "frame: {text}");
@@ -1676,20 +1465,9 @@ fn selected_default_view_ignores_inactive_endpoint_projection() {
         }),
     );
 
-    let frame = state.compose(100, 28).expect("combined endpoint frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(text.contains("Local · local agent"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
-    assert!(text.contains("grouped"), "frame: {text}");
 }
 
 #[test]
@@ -1762,17 +1540,7 @@ fn legacy_custom_views_keep_v1_per_endpoint_projection() {
     remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
-    let frame = state.compose(100, 28).expect("legacy combined frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(text.contains("Local · local agent"), "frame: {text}");
     assert!(text.contains("Build · remote agent"), "frame: {text}");
 }
@@ -1814,17 +1582,7 @@ fn selected_custom_sort_orders_rendering_and_indexed_navigation() {
     }];
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view));
 
-    let frame = state.compose(100, 28).expect("custom sorted frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = aggregate_agent_text(&state);
     assert!(
         text.find("Build · remote idle").expect("remote row")
             < text.find("Local · local blocked").expect("local row"),
@@ -1938,19 +1696,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let mut local = snapshot();
     local.agents = vec![agent("local agent", AgentStatus::Idle, 2)];
     state.set_snapshot(Box::new(local));
-    let frame_text = |state: &mut ClientShellState| {
-        let frame = state.compose(100, 28).expect("combined endpoint frame");
-        frame
-            .cells
-            .chunks(frame.width as usize)
-            .map(|row| {
-                row.iter()
-                    .map(|cell| cell.symbol.as_str())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let frame_text = |state: &mut ClientShellState| aggregate_agent_text(state);
     let text = frame_text(&mut state);
     assert!(
         text.find("Local · local agent").expect("local agent")
@@ -2420,7 +2166,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         Some(ClientEndpointStatus::Reconnecting)
     );
     assert!(text.contains("◐ reconnecting"), "frame: {text}");
-    assert!(text.contains("Build · remote agent"), "frame: {text}");
+    assert!(!text.contains("Build · remote agent"), "frame: {text}");
     assert!(
         text.contains("LIVE"),
         "frozen surface should remain: {text}"
@@ -2428,12 +2174,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     assert!(state.hits.panes.is_empty());
     assert!(frame.cursor.is_none());
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
-    let stale_icon = buffer
-        .content()
-        .iter()
-        .find(|cell| cell.symbol() == "×")
-        .expect("stale blocked icon");
-    assert_eq!(stale_icon.fg, state.config.palette.overlay0);
+    assert!(!buffer.content().iter().any(|cell| cell.symbol() == "×"));
 }
 
 #[cfg(unix)]
@@ -2926,7 +2667,7 @@ fn workspace_drag_rejects_foreign_endpoint_slots() {
 }
 
 #[test]
-fn collapsed_aggregate_workspace_status_uses_its_status_color() {
+fn collapsed_workspace_omits_agent_status() {
     use crate::api::schema::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
@@ -2951,7 +2692,7 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .expect("remote workspace")
         .rect;
     let buffer = frame.to_ratatui_buffer().expect("frame buffer");
-    assert_eq!(
+    assert_ne!(
         buffer[(workspace.x.saturating_add(2), workspace.y)].fg,
         state.config.palette.red
     );
@@ -3019,4 +2760,94 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+fn aggregate_agent_text(state: &ClientShellState) -> String {
+    super::super::aggregate_navigation::aggregate_agent_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        state.config.agent_panel_sort,
+    )
+    .iter()
+    .map(|row| {
+        format!(
+            "{} · {}",
+            row.endpoint.label,
+            row.agent.name.as_deref().unwrap_or_default()
+        )
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
+#[test]
+fn workspace_navigation_has_no_aggregate_signals_or_agents_panel() {
+    for status in [
+        AgentStatus::Idle,
+        AgentStatus::Working,
+        AgentStatus::Blocked,
+        AgentStatus::Done,
+    ] {
+        for collapsed in [false, true] {
+            let (mut state, _) = state_with_remote();
+            state.sidebar_collapsed = collapsed;
+            for endpoint in &mut state.endpoints {
+                let snapshot = endpoint.snapshot.as_mut().unwrap();
+                snapshot.workspaces[0].agent_status = status;
+                snapshot.agents = vec![agent("agent-hidden-from-sidebar", status, 1)];
+            }
+            let frame = state.compose(100, 28).unwrap();
+            let buffer = frame.to_ratatui_buffer().unwrap();
+            for hit in &state.hits.workspaces {
+                for y in hit.rect.y..hit.rect.bottom() {
+                    for x in hit.rect.x..hit.rect.right() {
+                        assert!(!["●", "○", "×", "◌", "!"].contains(&buffer[(x, y)].symbol()));
+                    }
+                }
+            }
+            assert!(state.hits.agents.is_empty());
+            assert!(state.hits.endpoint_agents.is_empty());
+            assert!(state.hits.agent_body.is_empty());
+            assert!(state.hits.sidebar_section_divider.is_empty());
+            assert!(state.hits.agent_sort_toggle.is_empty());
+        }
+    }
+}
+
+#[test]
+fn jump_launcher_opens_existing_navigation_without_terminal_input() {
+    for (remote, surface_available) in [(false, true), (true, true), (false, false), (true, false)]
+    {
+        let (mut state, _) = state_with_remote();
+        if !remote {
+            state.set_endpoint_catalog(&[]);
+        }
+        if !surface_available {
+            state.pane_surface = None;
+        }
+        state.compose(100, 28).unwrap();
+        let launcher = state.hits.jump_launcher;
+        assert!(!launcher.is_empty());
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: launcher.x,
+            row: launcher.y,
+            modifiers: KeyModifiers::NONE,
+        })]);
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::Navigator(_))
+        ));
+        assert!(outcome.requests.is_empty());
+        assert!(outcome.actions.is_empty());
+        let frame = state.compose(100, 28).unwrap();
+        assert!(!state.hits.navigator_popup.is_empty());
+        assert!(!state.hits.navigator_rows.is_empty());
+        let text: String = frame
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect();
+        assert!(text.contains("Go to"));
+    }
 }

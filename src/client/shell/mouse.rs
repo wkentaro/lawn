@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
@@ -2043,6 +2044,11 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.global_launcher, point) {
                     self.toggle_global_menu();
+                    outcome.repaint = true;
+                    return;
+                }
+                if super::contains(self.hits.jump_launcher, point) {
+                    self.open_navigator_overlay();
                     outcome.repaint = true;
                     return;
                 }

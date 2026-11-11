@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 mod settings_overlay;
@@ -701,7 +702,7 @@ fn render_rename_overlay(
     })
 }
 
-fn render_navigator_overlay(
+pub(crate) fn render_navigator_overlay(
     b: &mut Buffer,
     n: &ClientNavigatorOverlay,
     endpoints: &[ClientShellEndpoint],

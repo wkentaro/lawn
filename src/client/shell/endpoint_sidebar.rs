@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 
@@ -172,20 +173,6 @@ pub(super) fn render_collapsed(
                     })
                     .add_modifier(dim),
             );
-            put_text(
-                buffer,
-                rect.x.saturating_add(number_width),
-                rect.y,
-                rect.width.saturating_sub(number_width),
-                status_icon(workspace.agent_status, config.status_indicators),
-                Style::default()
-                    .fg(if stale {
-                        palette.overlay0
-                    } else {
-                        status_color(workspace.agent_status, palette)
-                    })
-                    .add_modifier(dim),
-            );
             hits.workspaces.push(WorkspaceHit {
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
@@ -249,10 +236,7 @@ pub(super) fn render_expanded(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let (workspace_area, _, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
     put_text(
         buffer,
         workspace_area.x,
@@ -263,6 +247,8 @@ pub(super) fn render_expanded(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+
+    super::sidebar::render_jump_launcher(buffer, workspace_area, config, hits);
 
     let empty_collapsed_groups = HashSet::new();
 

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::render::put_text;
 use super::*;
 
@@ -9,6 +10,9 @@ pub(super) fn render_collapsed(
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
+    if area.is_empty() {
+        return;
+    }
     let rows = agent_rows(endpoints, active_endpoint_id, config);
     for (index, row) in rows.into_iter().take(area.height as usize).enumerate() {
         let rect = Rect::new(area.x, area.y + index as u16, area.width, 1);

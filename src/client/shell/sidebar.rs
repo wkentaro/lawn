@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use ratatui::{
     text::Line,
@@ -27,21 +28,16 @@ pub(in crate::client::shell) fn workspace_active_background(
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
 ) -> (Rect, Option<u16>, Rect) {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+    let content = Rect::new(
+        area.x,
+        area.y,
+        area.width.saturating_sub(1),
+        area.height.saturating_sub(1),
+    );
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
     }
-    if content.height < 7 {
-        return (content, None, Rect::default());
-    }
-    let workspace_height = content.height.div_ceil(2);
-    let divider_y = content.y + workspace_height;
-    let detail_height = content.height.saturating_sub(workspace_height + 1);
-    (
-        Rect::new(content.x, content.y, content.width, workspace_height),
-        Some(divider_y),
-        Rect::new(content.x, divider_y + 1, content.width, detail_height),
-    )
+    (content, None, Rect::default())
 }
 
 pub(crate) fn render_collapsed_sidebar(
@@ -92,15 +88,6 @@ pub(crate) fn render_collapsed_sidebar(
             &format!("{:<2}", index + 1),
             number_style,
         );
-        let status = workspace.agent_status;
-        put_text(
-            buffer,
-            rect.x.saturating_add(2),
-            rect.y,
-            rect.width.saturating_sub(2),
-            status_icon(status, config.status_indicators),
-            Style::default().fg(status_color(status, palette)),
-        );
         hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
@@ -127,8 +114,10 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    for (index, pane_id) in (!detail_content.is_empty())
+        .then(|| super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort))
         .into_iter()
+        .flatten()
         .take(detail_content.height as usize)
         .enumerate()
     {
@@ -211,10 +200,7 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let (workspace_area, _, detail_area) = collapsed_sidebar_sections(area);
     put_text(
         buffer,
         workspace_area.x,
@@ -225,6 +211,8 @@ pub(crate) fn render_sidebar(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+
+    render_jump_launcher(buffer, workspace_area, config, hits);
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
     let body = Rect::new(
@@ -676,7 +664,7 @@ pub(in crate::client::shell) fn workspace_rows(
         &workspace.label
     };
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    crate::ui::sidebar_space_rows(
+    let mut rows = crate::ui::sidebar_space_rows(
         config,
         crate::ui::SpaceTokenContext {
             workspace: label,
@@ -686,7 +674,18 @@ pub(in crate::client::shell) fn workspace_rows(
             tokens: &token_values,
             suppress_git_details: indented,
         },
-    )
+    );
+    for row in &mut rows {
+        row.retain(|token| {
+            !matches!(
+                token.kind,
+                crate::ui::ResolvedTokenKind::StateIcon
+                    | crate::ui::ResolvedTokenKind::StateText(_)
+            )
+        });
+    }
+    rows.retain(|row| !row.is_empty());
+    rows
 }
 
 pub(in crate::client::shell) fn render_workspace_rows(
@@ -785,4 +784,24 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
+}
+
+pub(in crate::client::shell) fn render_jump_launcher(
+    buffer: &mut Buffer,
+    area: Rect,
+    config: &ClientShellConfig,
+    hits: &mut ShellHitMap,
+) {
+    if !config.mouse_capture || area.width < 14 || area.height < 10 {
+        return;
+    }
+    hits.jump_launcher = Rect::new(area.right().saturating_sub(5), area.y, 5, 1);
+    put_text(
+        buffer,
+        hits.jump_launcher.x,
+        area.y,
+        5,
+        "jump",
+        Style::default().fg(config.palette.overlay0),
+    );
 }

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
@@ -112,6 +113,7 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_targets: Vec<(Rect, ClientMobileTarget)>,
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
+    pub(super) jump_launcher: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
