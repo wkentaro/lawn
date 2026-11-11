@@ -485,3 +485,131 @@ fn old_server_disables_parking_controls_and_keeps_terminal_input() {
         .requests
         .is_empty());
 }
+
+fn tabbed_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    for number in [2, 3] {
+        let mut tab = projected.tabs[0].clone();
+        tab.tab_id = format!("tab_{number}");
+        tab.number = number;
+        tab.focused = false;
+        projected.tabs.push(tab);
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = format!("pane_{number}");
+        pane.tab_id = format!("tab_{number}");
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    projected
+}
+
+#[test]
+fn parking_and_restoring_resize_when_the_tab_bar_appears_or_disappears() {
+    let mut projected = tabbed_snapshot();
+    projected.tabs.pop();
+    projected.panes.pop();
+    let mut state = state_with_snapshot(projected);
+    state.config.hide_tab_bar_when_single_tab = true;
+    state.compose(100, 24).unwrap();
+    let initial = state.surface_size(100, 24);
+    let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
+    assert!(parked.resize);
+    assert_eq!(state.surface_size(100, 24).rows, initial.rows + 1);
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_2"));
+    let mut restored = ClientShellInput::default();
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Restore,
+        &mut restored,
+    );
+    assert!(restored.resize);
+    assert_eq!(state.surface_size(100, 24), initial);
+}
+
+#[test]
+fn shared_parking_file_changes_resize_the_active_workspace() {
+    let mut projected = tabbed_snapshot();
+    projected.tabs.pop();
+    projected.panes.pop();
+    let root = std::env::temp_dir().join(format!(
+        "lawn-parking-resize-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let preferences = root.join("chrome.json");
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default())
+            .with_preferences_path(preferences.clone()),
+    );
+    state.config.hide_tab_bar_when_single_tab = true;
+    state.set_endpoint_parking_supported(&ClientEndpointId::Local, true);
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    let initial_policy = request(&mut state);
+    acknowledge(&mut state, &initial_policy, Some("pane_1"));
+    state.compose(100, 24).unwrap();
+    let initial = state.surface_size(100, 24);
+    std::fs::write(
+        preferences.with_extension("parking.json"),
+        r#"{"version":1,"terminals":["terminal-pane_1"]}"#,
+    )
+    .unwrap();
+    let changed = state.tick_parking(Instant::now() + std::time::Duration::from_secs(1));
+    assert!(changed.resize);
+    assert_eq!(state.surface_size(100, 24).rows, initial.rows + 1);
+    assert!(changed.actions.iter().any(|action| matches!(action, ClientShellAction::PanePresentation { request, .. } if request.hidden_terminals == ["terminal-pane_1"])));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn tab_drag_edges_follow_scroll_controls_and_preserve_hidden_tab_positions() {
+    for (parked_pane, expected_index) in [("pane_3", 0), ("pane_1", 1)] {
+        let mut state = state_with_snapshot(tabbed_snapshot());
+        state.parking_action(
+            ClientEndpointId::Local,
+            parked_pane.into(),
+            lawn::ParkingAction::Park,
+            &mut ClientShellInput::default(),
+        );
+        let policy = request(&mut state);
+        acknowledge(&mut state, &policy, Some("pane_2"));
+        state.compose(100, 24).unwrap();
+        assert_eq!(state.hits.tabs.len(), 2);
+        assert!(state.hits.tab_scroll_left.is_empty());
+        assert!(state.hits.tab_scroll_right.is_empty());
+        let first = state.hits.tabs[0].0;
+        let second = state.hits.tabs[1].0;
+        let mut moved = None;
+        for (kind, x) in [
+            (
+                MouseEventKind::Down(MouseButton::Left),
+                second.x + second.width / 2,
+            ),
+            (MouseEventKind::Drag(MouseButton::Left), first.x + 1),
+            (MouseEventKind::Up(MouseButton::Left), first.x + 1),
+        ] {
+            let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind,
+                column: x,
+                row: first.y,
+                modifiers: KeyModifiers::empty(),
+            })]);
+            for action in outcome.actions {
+                if let ClientShellAction::Endpoint { request, .. } = action {
+                    if let crate::api::schema::Method::TabMove(params) = request.method {
+                        moved = Some(params);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            moved.expect("drag must request a tab move").insert_index,
+            expected_index
+        );
+    }
+}

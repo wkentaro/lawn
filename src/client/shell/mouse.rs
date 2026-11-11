@@ -481,12 +481,12 @@ impl ClientShellState {
         if super::contains(self.hits.tab_scroll_right, point) {
             return Some(tabs.len());
         }
-        let left_edge = if first_index == 0 {
+        let left_edge = if self.hits.tab_scroll_left.is_empty() {
             first_rect.x
         } else {
             self.hits.tab_scroll_left.right()
         };
-        let right_edge = if last_index + 1 >= tabs.len() {
+        let right_edge = if self.hits.tab_scroll_right.is_empty() {
             last_rect.right()
         } else {
             self.hits.tab_scroll_right.x.saturating_sub(1)

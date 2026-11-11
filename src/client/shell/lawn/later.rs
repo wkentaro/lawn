@@ -6,7 +6,7 @@ pub(in crate::client::shell) struct LaterState {
     pub(in crate::client::shell) expanded: bool,
     pub(in crate::client::shell) collapsed: HashSet<ClientNavigatorTarget>,
     pub(in crate::client::shell) scroll: usize,
-    pub(in crate::client::shell) preview_header: bool,
+    pub(in crate::client::shell) resize_pending: bool,
 }
 
 pub(in crate::client::shell) fn rows(

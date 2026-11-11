@@ -18,6 +18,7 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         supported: bool,
     ) {
+        let previous_size = self.parking_size();
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -25,6 +26,7 @@ impl ClientShellState {
         {
             endpoint.parking.set_supported(supported);
         }
+        self.update_parking_size(previous_size);
     }
 
     pub(crate) fn set_endpoint_pane_identities(
@@ -33,6 +35,7 @@ impl ClientShellState {
         generation: u64,
         identities: PaneIdentities,
     ) {
+        let previous_size = self.parking_size();
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -47,6 +50,7 @@ impl ClientShellState {
                     .observe_snapshot(endpoint.snapshot_generation, snapshot);
             }
         }
+        self.update_parking_size(previous_size);
     }
 
     pub(crate) fn receive_endpoint_parking_error(
@@ -55,6 +59,7 @@ impl ClientShellState {
         generation: u64,
         error: PanePresentationError,
     ) {
+        let previous_size = self.parking_size();
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -62,17 +67,12 @@ impl ClientShellState {
         {
             endpoint.parking.receive_error(Some(generation), error);
         }
+        self.update_parking_size(previous_size);
     }
 
     pub(crate) fn tick_parking(&mut self, now: Instant) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
-        let preview_header = self.has_parking_preview();
-        if self.later.preview_header != preview_header {
-            self.later.preview_header = preview_header;
-            self.invalidate_pane_surface();
-            outcome.resize = true;
-            outcome.repaint = true;
-        }
+        let previous_size = self.parking_size();
         let mut notice = None;
         for endpoint in &mut self.endpoints {
             if endpoint.status != ClientEndpointStatus::Online {
@@ -112,11 +112,26 @@ impl ClientShellState {
                 *releases = release.requests;
             }
         }
+        self.update_parking_size(previous_size);
+        outcome.resize = std::mem::take(&mut self.later.resize_pending);
+        outcome.repaint |= outcome.resize;
         if let Some(message) = notice {
             self.receive_endpoint_unavailable(message);
             outcome.repaint = true;
         }
         outcome
+    }
+
+    fn parking_size(&self) -> Option<ClientSurfaceSize> {
+        self.last_composed_size
+            .map(|(cols, rows)| self.surface_size(cols, rows))
+    }
+
+    fn update_parking_size(&mut self, previous: Option<ClientSurfaceSize>) {
+        if previous != self.parking_size() {
+            self.later.resize_pending = true;
+            self.invalidate_pane_surface();
+        }
     }
 
     pub(super) fn active_parking(&self) -> Option<&PaneParking> {
@@ -151,6 +166,7 @@ impl ClientShellState {
         action: ParkingAction,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        let previous_size = self.parking_size();
         let result = self
             .endpoints
             .iter_mut()
@@ -185,6 +201,9 @@ impl ClientShellState {
         self.selection = None;
         self.copy_mode = None;
         self.mode = ClientShellMode::Terminal;
+        self.update_parking_size(previous_size);
+        outcome.resize |= previous_size.is_none();
+        outcome.resize |= std::mem::take(&mut self.later.resize_pending);
         true
     }
 
@@ -222,6 +241,7 @@ impl ClientShellState {
     }
 
     pub(super) fn leave_parking_preview(&mut self) {
+        let previous_size = self.parking_size();
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -229,6 +249,7 @@ impl ClientShellState {
         {
             endpoint.parking.leave_preview();
         }
+        self.update_parking_size(previous_size);
     }
 
     pub(super) fn has_parking_preview(&self) -> bool {
