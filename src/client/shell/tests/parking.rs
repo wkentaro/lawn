@@ -564,6 +564,30 @@ fn numbered_tab_shortcuts_keep_the_numbers_shown_in_the_tab_bar() {
 }
 
 #[test]
+fn narrow_switcher_numbers_custom_tabs_before_filtering_parked_tabs() {
+    let mut projected = tabbed_snapshot();
+    projected.tabs[2].number = 9;
+    projected.tabs[2].label = "logs".into();
+    projected.tabs[2].custom_label = true;
+    let mut state = state_with_snapshot(projected);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_2".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_1"));
+    state.mode = ClientShellMode::Navigate;
+    let frame = state.compose(44, 30).unwrap();
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("3 · logs"), "{text}");
+    assert!(!text.contains("2 · logs") && !text.contains("9 · logs"));
+    let outcome = binding(&mut state, crate::input::KeybindAction::SwitchTab(2));
+    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_3"))));
+}
+
+#[test]
 fn parking_and_restoring_resize_when_the_tab_bar_appears_or_disappears() {
     let mut projected = tabbed_snapshot();
     projected.tabs.pop();

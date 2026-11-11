@@ -908,14 +908,14 @@ fn mobile_items(
         for (index, tab) in snapshot
             .tabs
             .iter()
-            .filter(|tab| {
-                tab.workspace_id == workspace_id
-                    && endpoints
-                        .iter()
-                        .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
-                        .is_none_or(|endpoint| endpoint.parking.shows_tab(&tab.tab_id))
-            })
+            .filter(|tab| tab.workspace_id == workspace_id)
             .enumerate()
+            .filter(|(_, tab)| {
+                endpoints
+                    .iter()
+                    .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
+                    .is_none_or(|endpoint| endpoint.parking.shows_tab(&tab.tab_id))
+            })
         {
             let background = if tab.focused {
                 palette.surface_dim
