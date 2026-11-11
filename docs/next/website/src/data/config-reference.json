@@ -1,4 +1,5 @@
 {
+  "_comment": "Modified for Lawn.",
   "sections": [
     {
       "id": "general",
@@ -713,7 +714,7 @@
           "key": "keys.open_later",
           "type": "keybinding",
           "default": "unset",
-          "description": "Open Lawn’s Later picker to find parked panes. Unset by default."
+          "description": "Open Lawn's Later picker to find parked panes. Unset by default."
         },
         {
           "key": "keys.edit_scrollback",

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 pub(super) fn merged_config_diagnostic(
