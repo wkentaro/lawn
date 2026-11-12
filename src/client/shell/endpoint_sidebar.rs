@@ -100,7 +100,7 @@ pub(super) fn render_collapsed(
                 }),
             );
             let mut status_badge = Rect::default();
-            if !endpoint.endpoint_id.is_local() {
+            if !endpoint.endpoint_id.is_local() && endpoint.status != ClientEndpointStatus::Online {
                 let (glyph, _, color) = endpoint_status_presentation(endpoint.status, palette);
                 let width = display_width(glyph).min(rect.width);
                 status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
@@ -607,19 +607,12 @@ fn render_endpoint_row(
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
     let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
-    let state = if endpoint.status == ClientEndpointStatus::Online {
-        ""
-    } else {
-        state
-    };
     let signal = if auth.required_for(endpoint) {
         "! auth".to_owned()
     } else if endpoint.status == ClientEndpointStatus::Attention {
         "! error".to_owned()
-    } else if endpoint.endpoint_id.is_local() {
+    } else if endpoint.endpoint_id.is_local() || endpoint.status == ClientEndpointStatus::Online {
         String::new()
-    } else if state.is_empty() {
-        glyph.to_owned()
     } else {
         format!("{glyph} {state}")
     };

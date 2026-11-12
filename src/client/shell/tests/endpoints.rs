@@ -1006,7 +1006,7 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
 }
 
 #[test]
-fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
+fn sidebar_renders_connected_machines_without_status_badges() {
     let (mut state, _) = state_with_remote();
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let text = frame
@@ -1038,11 +1038,12 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .rect;
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_ne!(buffer[(local.right() - 1, local.y)].symbol(), "●");
-    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), "●");
-    assert_eq!(
-        buffer[(remote.right() - 1, remote.y)].fg,
-        state.config.palette.green
-    );
+    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), " ");
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|hit| hit.status_badge.is_empty()));
 
     state.sidebar_collapsed = true;
     let frame = state.compose(100, 28).expect("collapsed endpoint frame");
@@ -1062,7 +1063,39 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .rect;
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_ne!(buffer[(local.right() - 1, local.y)].symbol(), "●");
-    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), "●");
+    assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), " ");
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|hit| hit.status_badge.is_empty()));
+}
+
+#[test]
+fn sidebar_preserves_unavailable_machine_status_badges() {
+    for collapsed in [false, true] {
+        for (status, glyph) in [
+            (ClientEndpointStatus::Connecting, "◐"),
+            (ClientEndpointStatus::Reconnecting, "◐"),
+            (ClientEndpointStatus::Attention, "!"),
+            (ClientEndpointStatus::Disabled, "·"),
+        ] {
+            let (mut state, remote) = state_with_remote();
+            state.sidebar_collapsed = collapsed;
+            state.set_endpoint_status(&remote, status);
+            let frame = state.compose(100, 28).expect("unavailable endpoint frame");
+            let badge = state
+                .hits
+                .machines
+                .iter()
+                .find(|hit| hit.endpoint_id == remote)
+                .expect("remote machine row")
+                .status_badge;
+            assert!(!badge.is_empty(), "{status:?}, collapsed={collapsed}");
+            let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
+            assert_eq!(buffer[(badge.x, badge.y)].symbol(), glyph);
+        }
+    }
 }
 
 #[test]
