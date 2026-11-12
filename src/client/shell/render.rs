@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[path = "../shell/overlays.rs"]
@@ -9,7 +10,9 @@ mod tabs;
 
 pub(super) use super::agent_sidebar::{ordered_agent_pane_ids, render_agent_panel};
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
-pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
+pub(super) use overlays::{
+    render_client_overlay, render_context_menu, render_global_menu, render_navigator_overlay,
+};
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
 pub(super) use tabs::{render_tab_bar, tab_bar_status_width};
 
@@ -230,6 +233,9 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
+    pub(super) later: &'a mut lawn::LaterState,
+    pub(super) later_height: u16,
+    pub(super) later_rows: &'a [ClientNavigatorRow],
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -242,7 +248,6 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_focused_workspace: &'a mut bool,
     pub(super) reveal_focused_tab: &'a mut bool,
     pub(super) sidebar_collapsed: bool,
-    pub(super) sidebar_section_split: f32,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
@@ -264,6 +269,11 @@ pub(super) fn render_shell(
             layout.mobile_header,
             snapshot,
             config,
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .map(|endpoint| &endpoint.parking),
             &mut hits,
         );
     }
@@ -309,12 +319,32 @@ pub(super) fn render_shell(
             );
         }
     }
+    lawn::render_later(
+        buffer,
+        layout.sidebar,
+        state.later_height,
+        state.endpoints,
+        state.later_rows,
+        state.later,
+        config,
+        &mut hits,
+    );
     if layout.tab_bar.height > 0 {
         render_tab_bar(
             buffer,
             layout.tab_bar,
             snapshot,
             config,
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .map(|endpoint| &endpoint.parking),
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+                .is_some_and(|endpoint| endpoint.status == ClientEndpointStatus::Online),
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,

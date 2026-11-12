@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 impl HeadlessServer {
@@ -612,7 +613,7 @@ impl HeadlessServer {
             }
             AppEvent::WorktreeRemoveFinished(result) => {
                 let focus_before = self.shell_focus_targets();
-                let focused_tabs_before = self.focused_shell_tabs();
+                let focused_panes_before = self.focused_shell_panes();
                 let shutdown_terminals = result
                     .api_request
                     .as_ref()
@@ -634,7 +635,7 @@ impl HeadlessServer {
                     self.forward_pane_state_update_notifications_to_clients(update);
                 }
                 self.reconcile_client_shell_locations();
-                self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+                self.finish_shell_location_reconciliation(focus_before, &focused_panes_before);
                 self.reapply_controlled_shell_tab_geometry(false);
                 for (pane_id, terminal_id) in shutdown_terminals {
                     if self.app.find_pane(pane_id).is_none() {
@@ -649,7 +650,7 @@ impl HeadlessServer {
             AppEvent::PaneDied { pane_id, .. }
             | AppEvent::WorktreeRuntimeRestoreFailed { pane_id, .. } => {
                 let focus_before = self.shell_focus_targets();
-                let focused_tabs_before = self.focused_shell_tabs();
+                let focused_panes_before = self.focused_shell_panes();
                 let pane_id_val = *pane_id;
                 let terminal_id = self.app.state.workspaces.iter().find_map(|ws| {
                     ws.tabs.iter().find_map(|tab| {
@@ -681,7 +682,7 @@ impl HeadlessServer {
                     self.forward_pane_state_update_notifications_to_clients(update);
                 }
                 self.reconcile_client_shell_locations();
-                self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+                self.finish_shell_location_reconciliation(focus_before, &focused_panes_before);
                 self.reapply_controlled_shell_tab_geometry(false);
 
                 if self.app.find_pane(pane_id_val).is_none() {

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Integration tests for thin client mode.
 
 #![cfg(unix)]
@@ -124,7 +125,7 @@ fn spawn_client_process_with_args_and_env(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_lawn"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.args(args);
     cmd.env("HERDR_DISABLE_SOUND", "1");
@@ -185,7 +186,7 @@ fn spawn_server_with_config(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_lawn"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -248,9 +249,9 @@ fn first_pane_id_in_workspace(socket_path: &PathBuf, workspace_id: &str) -> Stri
 
 fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "lawn-dev"
     } else {
-        "herdr"
+        "lawn"
     }
 }
 
@@ -414,9 +415,9 @@ fn client_sees_headless_startup_config_diagnostic() {
     let client_socket = runtime_dir.join("herdr-client.sock");
 
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "lawn-dev"
     } else {
-        "herdr"
+        "lawn"
     };
     fs::create_dir_all(config_home.join(app_dir)).unwrap();
     fs::write(
@@ -436,7 +437,7 @@ fn client_sees_headless_startup_config_diagnostic() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_lawn"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);
@@ -469,7 +470,7 @@ fn client_sees_headless_startup_config_diagnostic() {
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             let output = read_output(&output);
-            output.contains("config.toml") && output.contains("herdr config check")
+            output.contains("config.toml") && output.contains("lawn config check")
         }),
         "client shell should render startup config diagnostic; output: {:?}",
         read_output(&output)
@@ -489,16 +490,12 @@ fn server_unreachable_shows_clear_error() {
     let runtime_dir = base.join("runtime");
     let api_socket = runtime_dir.join("herdr.sock");
 
-    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(config_home.join("lawn")).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     register_runtime_dir(&runtime_dir);
-    fs::write(
-        config_home.join("herdr/config.toml"),
-        "onboarding = false\n",
-    )
-    .unwrap();
+    fs::write(config_home.join("lawn/config.toml"), "onboarding = false\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lawn"))
         .arg("client")
         .env("HERDR_DISABLE_SOUND", "1")
         .env("XDG_CONFIG_HOME", &config_home)
@@ -567,11 +564,7 @@ fn server_crash_after_attach_causes_lost_connection_error() {
                 Ok(n) if n > 0 => {
                     let out = String::from_utf8_lossy(&buf[..n]);
                     output.push_str(&out);
-                    if out.contains("\u{2500}")
-                        || out.contains("workspace")
-                        || out.contains("pane")
-                        || out.contains("terminal")
-                    {
+                    if output_has_shell_frame(&output) {
                         seen = true;
                         break;
                     }
@@ -655,6 +648,15 @@ fn server_crash_after_attach_causes_lost_connection_error() {
 /// terminal restore. Their presence in the client's PTY output proves the
 /// restore path (`TerminalGuard::Drop` → `restore_terminal_state`) ran.
 const MOUSE_TEARDOWN_MARKERS: [&str; 2] = ["\u{1b}[?1003l", "\u{1b}[?1000l"];
+
+fn output_has_shell_frame(output: &str) -> bool {
+    output.contains("spaces")
+        || output.contains("machines")
+        || output.contains('\u{2500}')
+        || output.contains("workspace")
+        || output.contains("pane")
+        || output.contains("terminal")
+}
 
 fn output_has_mouse_teardown(output: &str) -> bool {
     MOUSE_TEARDOWN_MARKERS
@@ -881,11 +883,7 @@ fn attach_thin_client_with_config(
     let mut attached = false;
     while Instant::now() < deadline {
         let out = read_output(&output);
-        if out.contains('\u{2500}')
-            || out.contains("workspace")
-            || out.contains("pane")
-            || out.contains("terminal")
-        {
+        if output_has_shell_frame(&out) {
             attached = true;
             break;
         }
@@ -1042,7 +1040,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(base.join("home")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_herdr"), bin.join("herdr")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lawn"), bin.join("herdr")).unwrap();
     let quote =
         |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
     let ssh_commands = base.join("ssh-commands");
@@ -1689,11 +1687,7 @@ fn read_until_client_attaches(client: &SpawnedHerdr) -> String {
             }
             Err(err) => panic!("read thin client PTY: {err}"),
         }
-        if output.contains('\u{2500}')
-            || output.contains("workspace")
-            || output.contains("pane")
-            || output.contains("terminal")
-        {
+        if output_has_shell_frame(&output) {
             return output;
         }
     }
@@ -2077,7 +2071,7 @@ fn client_receives_notify_on_agent_state_change() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_lawn"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);

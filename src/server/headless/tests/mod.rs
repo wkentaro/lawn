@@ -1,9 +1,11 @@
+// Modified for Lawn.
 use super::*;
 
 mod event_fairness;
 mod native_graphics;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
+mod pane_presentation;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
 #[path = "surface_delta.rs"]
@@ -7599,7 +7601,7 @@ fn update_notification_is_semantic_for_system_delivery() {
             assert_eq!(notification.title, "Herdr v9.9.9 available");
             assert_eq!(
                 notification.body.as_deref(),
-                Some("detach, run `herdr update`, then run Herdr again to reconnect")
+                Some("detach, run `herdr update`, then run Lawn again to reconnect")
             );
         }
         other => panic!("expected semantic update notification, got {other:?}"),

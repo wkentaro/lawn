@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
@@ -665,7 +666,7 @@ fn client_error_display_detached_default_session_reattach_hint() {
     };
     let msg = err.to_string();
     assert!(
-        msg.contains("Run `herdr` to reattach"),
+        msg.contains("Run `lawn` to reattach"),
         "should suggest default reattach command: {msg}"
     );
 }
@@ -680,7 +681,7 @@ fn client_error_display_detached_named_session_reattach_hint() {
     };
     let msg = err.to_string();
     assert!(
-        msg.contains("Run `herdr session attach work` to reattach"),
+        msg.contains("Run `lawn session attach work` to reattach"),
         "should suggest named session reattach command: {msg}"
     );
 }

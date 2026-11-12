@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::path::{Path, PathBuf};
 
 use crate::api::schema::{
@@ -2464,7 +2465,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_api_worktree_remove_rejects_checkout_with_create_in_flight() {
+    fn deferred_api_worktree_remove_rejects_in_flight_checkout_even_when_dirty() {
         let repo = create_committed_repo("api-worktree-remove-create-in-flight-repo");
         let checkout = unique_temp_path("api-worktree-remove-create-in-flight-checkout");
         run_git(
@@ -2479,6 +2480,8 @@ mod tests {
                 "HEAD",
             ],
         );
+
+        std::fs::write(checkout.join("untracked.txt"), "in-flight checkout\n").unwrap();
 
         let mut app = test_app();
         let mut child = Workspace::test_new("child");

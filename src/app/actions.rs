@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
@@ -4302,7 +4303,7 @@ mod tests {
         assert_eq!(toast.title, "v0.5.0 available");
         assert_eq!(
             toast.context,
-            "detach, run `herdr update`, then run Herdr again to reconnect"
+            "detach, run `herdr update`, then run Lawn again to reconnect"
         );
     }
 
@@ -4323,7 +4324,7 @@ mod tests {
         let toast = state.toast.as_ref().expect("update toast");
         assert_eq!(
             toast.context,
-            "detach, run `brew update && brew upgrade herdr`, then run Herdr again to reconnect"
+            "detach, run `brew update && brew upgrade herdr`, then run Lawn again to reconnect"
         );
     }
 

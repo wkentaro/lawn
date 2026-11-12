@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 mod settings_overlay;
@@ -701,7 +702,7 @@ fn render_rename_overlay(
     })
 }
 
-fn render_navigator_overlay(
+pub(crate) fn render_navigator_overlay(
     b: &mut Buffer,
     n: &ClientNavigatorOverlay,
     endpoints: &[ClientShellEndpoint],
@@ -727,7 +728,11 @@ fn render_navigator_overlay(
         q.x + 2,
         q.y,
         q.width.saturating_sub(4),
-        " Go to ",
+        if n.filter == Some(ClientNavigatorFilter::Later) {
+            " Later "
+        } else {
+            " Go to "
+        },
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
     let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
@@ -737,6 +742,7 @@ fn render_navigator_overlay(
         format!(
             " / {}",
             match f {
+                ClientNavigatorFilter::Later => "Later",
                 ClientNavigatorFilter::Blocked => "blocked",
                 ClientNavigatorFilter::Working => "working",
                 ClientNavigatorFilter::Idle => "idle",
@@ -878,13 +884,13 @@ fn render_navigator_overlay(
         let status = r.status.map(status_dot).unwrap_or_default();
         let status_separator = if status.is_empty() { "" } else { " " };
         let label = format!("{indent}{current}{status}{status_separator}{}", r.label);
-        let st = if r.status.is_none() {
+        let st = if !is_pane {
             st.add_modifier(Modifier::BOLD)
         } else {
             st
         };
         b.set_style(rect, st);
-        let columns = if r.status.is_some() {
+        let columns = if is_pane {
             if rect.width >= 64 {
                 24
             } else if rect.width >= 36 {
@@ -932,6 +938,8 @@ fn render_navigator_overlay(
                 status_dot(status),
                 status_style,
             );
+        }
+        if is_pane {
             let meta_style = if r.stale || ix == selected {
                 st
             } else {
@@ -954,7 +962,7 @@ fn render_navigator_overlay(
                     rect.y,
                     11,
                     if r.agent.is_some() {
-                        status_text(status)
+                        r.status.map(status_text).unwrap_or("unknown")
                     } else {
                         "shell"
                     },
@@ -989,7 +997,7 @@ fn render_navigator_overlay(
                     })
             };
             put_right_text(b, rect, rect.y, &signal, signal_style);
-        } else if r.status.is_none() && !r.meta.is_empty() {
+        } else if !is_pane && !r.meta.is_empty() {
             let label_width = display_width(&label).min(rect.width);
             let meta = Rect::new(
                 rect.x.saturating_add(label_width).saturating_add(1),

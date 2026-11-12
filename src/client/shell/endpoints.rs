@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[derive(Clone, Debug)]
@@ -18,6 +19,7 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<String, u64>,
     pub(super) agent_presentation: super::endpoint_agent_state::EndpointAgentPresentation,
+    pub(super) parking: super::lawn::PaneParking,
     pub(crate) agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
@@ -62,6 +64,13 @@ impl ClientShellState {
                 .filter(|endpoint| {
                     profile.enabled && endpoint.status != ClientEndpointStatus::Disabled
                 });
+            let mut parking = previous
+                .map(|endpoint| endpoint.parking.clone())
+                .unwrap_or_default();
+            parking.set_path(self.config.preferences_path.as_ref().map(|_| {
+                preferences::path_for_remote_endpoint(&profile.target, &profile.session)
+                    .with_extension("parking.json")
+            }));
             next.push(ClientShellEndpoint {
                 endpoint_id,
                 label: profile.label.clone(),
@@ -87,6 +96,7 @@ impl ClientShellState {
                     .and_then(|endpoint| endpoint.pending_agent_view_projection.clone()),
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
+                parking,
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
             });
         }
@@ -133,6 +143,7 @@ impl ClientShellState {
             endpoint.agent_view_projection = None;
             endpoint.pending_agent_view_projection = None;
             endpoint.agent_view_projection_supported = false;
+            endpoint.parking.set_supported(false);
         }
     }
 
@@ -507,6 +518,9 @@ impl ClientShellState {
             .iter()
             .filter(|tab| {
                 Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+                    && self
+                        .active_parking()
+                        .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
             })
             .count()
     }
@@ -619,6 +633,7 @@ impl ClientShellState {
                 .any(|agent| &agent.pane_id == pane_id)
         });
         let endpoint = &mut self.endpoints[index];
+        endpoint.parking.observe_snapshot(generation, &snapshot);
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
@@ -738,6 +753,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         snapshot_generation: None,
         agent_recency: HashMap::new(),
         agent_presentation: Default::default(),
+        parking: Default::default(),
         agent_view_projection: None,
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,

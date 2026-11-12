@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use ratatui::layout::Rect;
 
 mod onboarding;
@@ -33,15 +34,17 @@ pub(crate) use self::scrollbar::{
     scrollbar_thumb_grab_offset,
 };
 pub(crate) use self::sidebar::{
-    agent_panel_entries_from, expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
-    sidebar_section_divider_rect, sidebar_space_rows, AgentPanelEntry, AgentTokenContext,
-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    agent_panel_entries_from, resolved_token_spans, sidebar_agent_rows, sidebar_space_rows,
+    AgentPanelEntry, AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
 };
 use self::status::copy_feedback_rect;
 pub(crate) use self::status::{render_config_diagnostic_buffer, render_copy_feedback_buffer};
+#[cfg(test)]
+pub(crate) use self::tab_surface::compute_tab_surface_for;
 pub(crate) use self::tab_surface::{
-    compute_tab_surface, compute_tab_surface_for, render_tab_surface, resize_tab_surface,
-    tab_surface_cursor, tab_surface_hyperlinks, TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView,
+    compute_tab_surface, compute_tab_surface_for_presented, render_tab_surface, resize_tab_surface,
+    resize_tab_surface_presented, tab_surface_cursor, tab_surface_hyperlinks, TabSurfaceLayout,
+    TabSurfaceTarget, TabSurfaceView,
 };
 pub(crate) use self::text::truncate_end;
 pub(crate) use self::widgets::{centered_popup_rect, modal_stack_areas};

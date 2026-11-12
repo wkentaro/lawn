@@ -1,3 +1,4 @@
+# Modified for Lawn.
 {
   description = "herdr — terminal workspace manager for AI coding agents";
 
@@ -67,8 +68,8 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/herdr";
-          meta.description = "Run Herdr";
+          program = "${self.packages.${system}.default}/bin/lawn";
+          meta.description = "Run Lawn";
         };
       });
 

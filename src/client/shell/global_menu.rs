@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +47,10 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
+    items.push((
+        "Later",
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenLater),
+    ));
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),

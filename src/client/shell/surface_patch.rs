@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 pub(crate) struct ClientComposedSurfacePatch {
@@ -58,7 +59,9 @@ fn fast_path_blocker(
     state: &ClientShellState,
     patch: &crate::protocol::PaneSurfacePatch,
 ) -> Option<&'static str> {
-    if state.mode != ClientShellMode::Terminal {
+    if !state.parking_ready() {
+        Some("client_surface_patch.fallback.parking")
+    } else if state.mode != ClientShellMode::Terminal {
         Some("client_surface_patch.fallback.mode")
     } else if state.overlay.is_some() {
         Some("client_surface_patch.fallback.overlay")
@@ -168,6 +171,7 @@ impl ClientShellState {
             }
         }
 
+        let preview = self.has_parking_preview();
         let fast_path_blocker = fast_path_blocker(self, &patch);
         if let Some(reason) = fast_path_blocker {
             crate::render_prof::event(reason);
@@ -186,15 +190,14 @@ impl ClientShellState {
                     cells: row.cells.clone(),
                 })
                 .collect(),
-            cursor: patch
-                .cursor
-                .clone()
-                .map(|cursor| crate::protocol::CursorState {
+            cursor: patch.cursor.clone().filter(|_| !preview).map(|cursor| {
+                crate::protocol::CursorState {
                     x: area.x.saturating_add(cursor.x),
                     y: area.y.saturating_add(cursor.y),
                     visible: cursor.visible,
                     shape: cursor.shape,
-                }),
+                }
+            }),
         });
         if let Some(area) = fast_path_area {
             let applied = self
@@ -228,7 +231,7 @@ impl ClientShellState {
                         .unwrap_or(usize::MAX),
                     viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
                 });
-                hit.mouse_reporting = updated.mouse_reporting;
+                hit.mouse_reporting = updated.mouse_reporting && !preview;
                 hit.sgr_pixel_mouse = updated.sgr_pixel_mouse;
                 hit.pixel_width = updated.pixel_width;
                 hit.pixel_height = updated.pixel_height;

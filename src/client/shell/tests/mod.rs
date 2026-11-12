@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use crate::api::schema::AgentStatus;
 use crate::protocol::{
@@ -260,5 +261,6 @@ mod keybindings_settings;
 mod link_hover;
 mod mobile;
 mod mouse_selection;
+mod parking;
 mod popup_focus_projection;
 mod startup_overlays;

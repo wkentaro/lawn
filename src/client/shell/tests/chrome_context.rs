@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[test]
@@ -148,7 +149,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
 fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     let mut initial = snapshot();
     let template = initial.workspaces[0].clone();
-    initial.workspaces = (1..=12)
+    initial.workspaces = (1..=24)
         .map(|number| ClientShellWorkspace {
             workspace_id: format!("ws_{number}"),
             number,
@@ -168,13 +169,13 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
         .hits
         .workspaces
         .iter()
-        .all(|hit| hit.workspace_id != "ws_12"));
+        .all(|hit| hit.workspace_id != "ws_24"));
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
     update.revision = 2;
-    update.focused_workspace_id = Some("ws_12".into());
+    update.focused_workspace_id = Some("ws_24".into());
     for workspace in &mut update.workspaces {
-        workspace.focused = workspace.workspace_id == "ws_12";
+        workspace.focused = workspace.workspace_id == "ws_24";
     }
     let mut updated_surface = surface();
     updated_surface.projection_revision = 2;
@@ -188,7 +189,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
         .hits
         .workspaces
         .iter()
-        .any(|hit| hit.workspace_id == "ws_12"));
+        .any(|hit| hit.workspace_id == "ws_24"));
 }
 
 #[test]
@@ -276,22 +277,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(recovered_text.contains(" spaces"));
     assert!(recovered_text.contains("LIVE"));
     assert!(!state.hits.panes.is_empty());
-    let section_divider = state.hits.sidebar_section_divider;
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: section_divider.x + 2,
-        row: section_divider.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let split = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: section_divider.x + 2,
-        row: 20,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(state.sidebar_section_split > 0.6);
-    assert!(split.repaint);
-    assert!(!split.resize);
+    assert!(state.hits.sidebar_section_divider.is_empty());
 }
 
 #[test]
@@ -420,7 +406,15 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
 
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: 3,
+        highlighted: super::super::global_menu::global_menu_items(&snapshot())
+            .iter()
+            .position(|(_, action)| {
+                *action
+                    == super::super::global_menu::ClientGlobalMenuAction::Binding(
+                        crate::input::KeybindAction::Detach,
+                    )
+            })
+            .unwrap(),
     }));
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);

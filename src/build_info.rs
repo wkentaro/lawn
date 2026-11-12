@@ -1,6 +1,9 @@
+// Modified for Lawn.
 //! Build identity helpers.
 
 pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
+// Runtime consumers use herdr's version independently of Lawn releases.
+pub const HERDR_COMPAT_VERSION: &str = "0.9.5";
 
 pub fn channel() -> &'static str {
     non_empty(option_env!("HERDR_BUILD_CHANNEL")).unwrap_or("stable")

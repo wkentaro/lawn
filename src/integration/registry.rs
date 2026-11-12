@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -370,7 +371,7 @@ pub(crate) fn integration_update_instructions(
         .iter()
         .map(|target| {
             format!(
-                "`herdr integration install {}`",
+                "`lawn integration install {}`",
                 integration_target_label(*target)
             )
         })
@@ -394,7 +395,7 @@ pub(crate) fn print_outdated_update_notice() -> bool {
         .map(|integration| integration.target)
         .collect::<Vec<_>>();
     eprintln!(
-        "installed herdr integrations need updating; {}.",
+        "installed lawn integrations need updating; {}.",
         integration_update_instructions(&targets).replace('`', "")
     );
     true

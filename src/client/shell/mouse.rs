@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
@@ -480,12 +481,12 @@ impl ClientShellState {
         if super::contains(self.hits.tab_scroll_right, point) {
             return Some(tabs.len());
         }
-        let left_edge = if first_index == 0 {
+        let left_edge = if self.hits.tab_scroll_left.is_empty() {
             first_rect.x
         } else {
             self.hits.tab_scroll_left.right()
         };
-        let right_edge = if last_index + 1 >= tabs.len() {
+        let right_edge = if self.hits.tab_scroll_right.is_empty() {
             last_rect.right()
         } else {
             self.hits.tab_scroll_right.x.saturating_sub(1)
@@ -1781,6 +1782,10 @@ impl ClientShellState {
             return;
         }
 
+        if self.handle_later_mouse(mouse, outcome) {
+            return;
+        }
+
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Right) => {
                 let pane_hit = self
@@ -2046,6 +2051,11 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if super::contains(self.hits.jump_launcher, point) {
+                    self.open_navigator_overlay();
+                    outcome.repaint = true;
+                    return;
+                }
                 if super::contains(self.hits.new_workspace, point) {
                     self.record_binding(
                         crate::input::KeybindMatch::Action(
@@ -2068,19 +2078,7 @@ impl ClientShellState {
                     return;
                 }
                 if super::contains(self.hits.tab_scroll_right, point) {
-                    let tab_count = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| {
-                            snapshot.focused_workspace_id.as_deref().map(|id| {
-                                snapshot
-                                    .tabs
-                                    .iter()
-                                    .filter(|tab| tab.workspace_id == id)
-                                    .count()
-                            })
-                        })
-                        .unwrap_or(0);
+                    let tab_count = self.focused_tab_count();
                     self.tab_scroll = self
                         .tab_scroll
                         .saturating_add(1)
@@ -2387,7 +2385,7 @@ impl ClientShellState {
         } else {
             ClientInputTarget::Pane(hit.pane_id.clone())
         };
-        push_target_event(
+        self.push_input_target_event(
             target,
             ClientPaneInputEvent::Mouse {
                 kind,

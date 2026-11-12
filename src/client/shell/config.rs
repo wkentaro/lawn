@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 pub(super) fn merged_config_diagnostic(
@@ -219,7 +220,7 @@ impl ClientShellConfig {
         }
     }
 
-    pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
+    pub(crate) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
         self.preferences = preferences::load(&path).unwrap_or_default();
         self.preferences_path = Some(path);
         self
@@ -393,6 +394,7 @@ impl ClientShellConfig {
         if cols <= self.mobile_width_threshold {
             let header_height = rows.min(2);
             return ClientShellLayout {
+                parking_header: Rect::default(),
                 sidebar: Rect::default(),
                 tab_bar: Rect::default(),
                 mobile_header: Rect::new(0, 0, cols, header_height),
@@ -439,6 +441,7 @@ impl ClientShellConfig {
         };
 
         ClientShellLayout {
+            parking_header: Rect::default(),
             sidebar: Rect::new(0, 0, sidebar_width, rows),
             tab_bar,
             mobile_header: Rect::default(),

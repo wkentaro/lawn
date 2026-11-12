@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
+# Modified for Lawn.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HERDR_BIN="${HERDR_BIN:-$ROOT/target/debug/herdr}"
+HERDR_BIN="${HERDR_BIN:-$ROOT/target/debug/lawn}"
 BASE="${BASE:-$(mktemp -d /tmp/herdr-handoff-smoke.XXXXXX)}"
 CONFIG_HOME="$BASE/config"
 RUNTIME_DIR="$BASE/runtime"
@@ -38,6 +39,9 @@ run_herdr() {
   env -u HERDR_SOCKET_PATH \
     -u HERDR_CLIENT_SOCKET_PATH \
     -u HERDR_SESSION \
+    -u HERDR_ENV \
+    -u HERDR_CONFIG_PATH \
+    -u LAWN_CONFIG_PATH \
     XDG_CONFIG_HOME="$CONFIG_HOME" \
     XDG_RUNTIME_DIR="$RUNTIME_DIR" \
     XDG_STATE_HOME="$STATE_DIR" \
@@ -47,9 +51,9 @@ run_herdr() {
 session_dir() {
   local session="$1"
   if [[ "$session" == "default" ]]; then
-    printf '%s/herdr-dev' "$CONFIG_HOME"
+    printf '%s/lawn-dev' "$CONFIG_HOME"
   else
-    printf '%s/herdr-dev/sessions/%s' "$CONFIG_HOME" "$session"
+    printf '%s/lawn-dev/sessions/%s' "$CONFIG_HOME" "$session"
   fi
 }
 
@@ -64,7 +68,7 @@ client_socket() {
 assert_smoke_socket() {
   local socket="$1"
   case "$socket" in
-    "$CONFIG_HOME"/herdr-dev/herdr.sock | "$CONFIG_HOME"/herdr-dev/sessions/*/herdr.sock)
+    "$CONFIG_HOME"/lawn-dev/herdr.sock | "$CONFIG_HOME"/lawn-dev/sessions/*/herdr.sock)
       ;;
     *)
       echo "refusing to use non-smoke socket: $socket" >&2
@@ -166,24 +170,12 @@ sock.close()
 PY
 }
 
-smoke_http_count() {
-  local count=0
-  local port matches
-  for port in "${ports[@]}"; do
-    matches="$(pgrep -fc "python3 -m http.server $port --bind 127.0.0.1" || true)"
-    if [[ -n "$matches" ]]; then
-      count=$((count + matches))
-    fi
-  done
-  printf '%s\n' "$count"
-}
-
-echo "using herdr: $HERDR_BIN"
+echo "using lawn: $HERDR_BIN"
 echo "smoke base: $BASE"
 
 cargo build --locked --manifest-path "$ROOT/Cargo.toml" >/dev/null
-mkdir -p "$CONFIG_HOME/herdr-dev" "$RUNTIME_DIR" "$STATE_DIR"
-printf 'onboarding = false\n' > "$CONFIG_HOME/herdr-dev/config.toml"
+mkdir -p "$CONFIG_HOME/lawn-dev" "$RUNTIME_DIR" "$STATE_DIR"
+printf 'onboarding = false\n' > "$CONFIG_HOME/lawn-dev/config.toml"
 
 for session in "${sessions[@]}"; do
   echo "starting smoke session $session at $(api_socket "$session")"
@@ -203,9 +195,6 @@ for session in "${sessions[@]}"; do
   wait_for_http "$port" "hello-from-$session"
 done
 
-before_count="$(smoke_http_count)"
-echo "smoke python http.server process count before handoff: $before_count"
-
 for session in "${sessions[@]}"; do
   socket="$(api_socket "$session")"
   json_request "$socket" '{"id":"smoke:handoff","method":"server.live_handoff","params":{}}' >/dev/null
@@ -216,6 +205,4 @@ for i in "${!sessions[@]}"; do
   wait_for_http "${ports[$i]}" "hello-from-${sessions[$i]}"
 done
 
-after_count="$(smoke_http_count)"
-echo "smoke python http.server process count after handoff: $after_count"
 echo "multi-session live handoff smoke passed"

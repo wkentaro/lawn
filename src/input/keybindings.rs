@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use crossterm::event::KeyCode;
 
 use crate::config::{CustomCommandKeybind, Keybinds};
@@ -40,6 +41,9 @@ pub(crate) enum KeybindAction {
     MoveTabNext,
     CloseTab,
     RenamePane,
+    ParkPane,
+    RestorePane,
+    OpenLater,
     FocusPaneLeft,
     FocusPaneDown,
     FocusPaneUp,
@@ -120,6 +124,9 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.move_tab_next, KeybindAction::MoveTabNext),
         (&keybinds.close_tab, KeybindAction::CloseTab),
         (&keybinds.rename_pane, KeybindAction::RenamePane),
+        (&keybinds.park_pane, KeybindAction::ParkPane),
+        (&keybinds.restore_pane, KeybindAction::RestorePane),
+        (&keybinds.open_later, KeybindAction::OpenLater),
         (&keybinds.edit_scrollback, KeybindAction::EditScrollback),
         (&keybinds.clear_pane, KeybindAction::ClearPane),
         (&keybinds.copy_mode, KeybindAction::CopyMode),

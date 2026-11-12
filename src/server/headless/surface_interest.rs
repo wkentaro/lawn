@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 impl HeadlessServer {
@@ -12,7 +13,7 @@ impl HeadlessServer {
         active: bool,
     ) -> Option<(bool, u64)> {
         let focus_before = self.shell_focus_targets();
-        let focused_tabs_before = self.focused_shell_tabs();
+        let focused_panes_before = self.focused_shell_panes();
         let (changed, projection_revision) = {
             let client = self.clients.get_mut(&client_id)?;
             if !client.is_shell_client() {
@@ -60,7 +61,7 @@ impl HeadlessServer {
             self.retire_native_graphics_for_client(client_id);
         }
         if changed {
-            self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+            self.finish_shell_location_reconciliation(focus_before, &focused_panes_before);
         }
 
         if active {

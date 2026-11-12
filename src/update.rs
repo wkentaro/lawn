@@ -1,7 +1,8 @@
+// Modified for Lawn.
 //! Self-update mechanism.
 //!
-//! Checks the hosted herdr.dev update manifest for newer versions.
-//! Manual `herdr update` downloads and installs the binary.
+//! Checks the hosted Lawn release manifest for newer versions.
+//! Manual `lawn update` downloads and installs the binary.
 //! Background checks only surface availability and release notes.
 //! Uses `curl` as a subprocess for HTTP — no additional Rust HTTP dependencies.
 //! JSON parsing uses serde_json (already in deps for persistence).
@@ -22,10 +23,12 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Stream as _;
 use serde::{Deserialize, Deserializer};
 
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+const STABLE_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/wkentaro/lawn/releases/latest/download/latest.json";
+const PREVIEW_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/wkentaro/lawn/releases/download/lawn-preview/preview.json";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
-const HERDR_UPDATE_COMMAND: &str = "herdr update";
+const HERDR_UPDATE_COMMAND: &str = "lawn update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
 const MISE_UPDATE_COMMAND: &str = "mise upgrade herdr";
 const NIX_UPDATE_COMMAND: &str = "update through Nix";
@@ -1008,7 +1011,7 @@ fn plan_running_server_updates(
         )
         .map_err(|err| {
             format!(
-                "failed to read status for herdr target {} at {}: {err}. stop it with `{}` and run `herdr update` again",
+                "failed to read status for herdr target {} at {}: {err}. stop it with `{}` and run `lawn update` again",
                 target.label,
                 target.socket_path.display(),
                 target.stop_command
@@ -1017,7 +1020,7 @@ fn plan_running_server_updates(
             Some(server) => server,
             None if target.must_be_running => {
                 return Err(format!(
-                        "herdr target {} looked running, but its status API did not respond at {}. stop it with `{}` and run `herdr update` again",
+                        "herdr target {} looked running, but its status API did not respond at {}. stop it with `{}` and run `lawn update` again",
                     target.label,
                     target.socket_path.display(),
                     target.stop_command
@@ -1025,7 +1028,7 @@ fn plan_running_server_updates(
             }
             None if client_protocol_server_is_running_at(&target.client_socket_path) => {
                 return Err(format!(
-                    "herdr target {} has a client socket, but its status API did not respond at {}. stop it with `{}` and run `herdr update` again",
+                    "herdr target {} has a client socket, but its status API did not respond at {}. stop it with `{}` and run `lawn update` again",
                     target.label,
                     target.socket_path.display(),
                     target.stop_command
@@ -1043,7 +1046,7 @@ fn plan_running_server_updates(
 
     if plans.is_empty() && target_client_protocol_server_is_running()? {
         return Err(format!(
-            "a herdr server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `herdr update` again",
+            "a herdr server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `lawn update` again",
             crate::session::local_stop_command()
         ));
     }
@@ -1084,7 +1087,7 @@ fn running_update_targets() -> Result<Vec<RunningUpdateTarget>, String> {
             name: None,
             label: socket_path.display().to_string(),
             stop_command: format!(
-                "{}={} herdr server stop",
+                "{}={} lawn server stop",
                 crate::api::SOCKET_PATH_ENV_VAR,
                 socket_path.display()
             ),
@@ -1114,9 +1117,9 @@ fn running_update_targets() -> Result<Vec<RunningUpdateTarget>, String> {
                 Some(&session.name)
             }),
             attach_command: Some(if session.default {
-                "herdr".to_string()
+                "lawn".to_string()
             } else {
-                format!("herdr session attach {}", session.name)
+                format!("lawn session attach {}", session.name)
             }),
             label: session.name.clone(),
             client_socket_path: crate::session::client_socket_path_for(if session.default {
@@ -1161,7 +1164,7 @@ pub(crate) fn parse_self_update_args(args: &[String]) -> Result<SelfUpdateOption
         match arg.as_str() {
             "--handoff" => options.live_handoff = true,
             "--help" | "-h" => {
-                return Err("usage: herdr update [--handoff]".to_string());
+                return Err("usage: lawn update [--handoff]".to_string());
             }
             _ => return Err(format!("unknown update option: {arg}")),
         }
@@ -1176,7 +1179,7 @@ fn prompt_to_stop_old_servers_before_update(
 ) -> Result<bool, String> {
     if !io::stdin().is_terminal() {
         return Err(
-            "one or more Herdr sessions must stop for this update. Stop running Herdr sessions when ready, then run `herdr update` again from an interactive terminal."
+            "one or more Herdr sessions must stop for this update. Stop running Herdr sessions when ready, then run `lawn update` again from an interactive terminal."
                 .to_string(),
         );
     }
@@ -1452,7 +1455,7 @@ fn prompt_to_stop_old_server_after_failed_handoff(
     eprintln!("  server: v{}", version_label(status.version.as_deref()));
     eprintln!("  installed: {}", release.label());
     eprintln!(
-        "you can keep using the old server, or stop it now so the next `herdr` start uses {}.",
+        "you can keep using the old server, or stop it now so the next `lawn` start uses {}.",
         release.label()
     );
     eprintln!("stopping the old server will exit its pane processes.");
@@ -1824,7 +1827,7 @@ fn print_running_session_update_outcomes(
     release: &ReleaseInfo,
 ) {
     if outcomes.is_empty() {
-        eprintln!("run herdr again.");
+        eprintln!("run lawn again.");
         return;
     }
 
@@ -1943,19 +1946,19 @@ pub(crate) fn update_install_command() -> &'static str {
 pub(crate) fn update_install_instruction(install_command: &str) -> String {
     match install_command {
         HERDR_UPDATE_COMMAND => {
-            "detach, run `herdr update`, then run Herdr again to reconnect".to_string()
+            "detach, run `lawn update`, then run Lawn again to reconnect".to_string()
         }
         HOMEBREW_UPDATE_COMMAND => {
-            "detach, run `brew update && brew upgrade herdr`, then run Herdr again to reconnect"
+            "detach, run `brew update && brew upgrade herdr`, then run Lawn again to reconnect"
                 .to_string()
         }
         MISE_UPDATE_COMMAND => {
-            "detach, run `mise upgrade herdr`, then run Herdr again to reconnect".to_string()
+            "detach, run `mise upgrade herdr`, then run Lawn again to reconnect".to_string()
         }
         NIX_UPDATE_COMMAND => {
-            "detach, update through Nix, then run Herdr again to reconnect".to_string()
+            "detach, update through Nix, then run Lawn again to reconnect".to_string()
         }
-        command => format!("detach, run `{command}`, then run Herdr again to reconnect"),
+        command => format!("detach, run `{command}`, then run Lawn again to reconnect"),
     }
 }
 
@@ -2018,18 +2021,6 @@ fn preview_channel_rejection_for_exe_path(path: &Path) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-#[cfg(unix)]
-pub(crate) fn is_package_manager_managed_exe_path(path: &Path) -> bool {
-    is_homebrew_managed_exe_path_following_links(path)
-        || is_mise_managed_exe_path_following_links(path)
-        || is_nix_store_exe_path_following_links(path)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn is_package_manager_managed_exe_path(_path: &Path) -> bool {
-    false
 }
 
 fn is_homebrew_managed_exe_path_following_links(path: &Path) -> bool {
@@ -2179,7 +2170,7 @@ fn preserve_preview_channel_for_install(
     Ok(())
 }
 
-/// Manual self-update command (`herdr update`).
+/// Manual self-update command (`lawn update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
     let channel = UpdateChannel::configured();
 
@@ -2217,7 +2208,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
     }
 
     if running_inside_herdr() {
-        return Err("run `herdr update` outside herdr after detaching from the session".into());
+        return Err("run `lawn update` outside herdr after detaching from the session".into());
     }
 
     eprintln!("checking {} channel for updates...", channel.as_str());
@@ -2283,7 +2274,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
             && !prompt_to_complete_plain_update(&server_update_decisions, &release)?
         {
             eprintln!("Herdr was not updated.");
-            eprintln!("Stop running Herdr sessions when ready, then run `herdr update` again.");
+            eprintln!("Stop running Herdr sessions when ready, then run `lawn update` again.");
             return Ok(current);
         }
         install_downloaded_update(downloaded_update)?;
@@ -2358,7 +2349,7 @@ impl KeptServer<'_> {
     fn reconnect(&self) -> String {
         match self.attach_command {
             Some(attach) => format!("`{attach}`"),
-            None => "herdr with the same socket override".to_string(),
+            None => "lawn with the same socket override".to_string(),
         }
     }
 }
@@ -2895,7 +2886,7 @@ mod tests {
         let lines = kept_server_notice_lines(&[socket_override], "0.10.0");
         assert_eq!(
             lines[3],
-            "when your agents are idle, run `herdr server stop`, then herdr with the same socket override."
+            "when your agents are idle, run `herdr server stop`, then lawn with the same socket override."
         );
     }
 
@@ -3122,7 +3113,7 @@ mod tests {
             fs::write(&cellar_binary, b"").unwrap();
             std::os::unix::fs::symlink(&cellar_binary, &opt_binary).unwrap();
 
-            assert!(is_package_manager_managed_exe_path(&opt_binary));
+            assert!(is_homebrew_managed_exe_path_following_links(&opt_binary));
 
             let _ = fs::remove_dir_all(root);
         }
@@ -3143,7 +3134,7 @@ mod tests {
             fs::write(&version_binary, b"").unwrap();
             std::os::unix::fs::symlink(&version_binary, &latest_binary).unwrap();
 
-            assert!(is_package_manager_managed_exe_path(&latest_binary));
+            assert!(is_mise_managed_exe_path_following_links(&latest_binary));
 
             let _ = fs::remove_dir_all(root);
         }
@@ -3154,7 +3145,6 @@ mod tests {
         let path = Path::new("/nix/store/abc123-herdr-0.6.1/bin/herdr");
 
         assert!(is_nix_store_exe_path(path));
-        assert!(is_package_manager_managed_exe_path(path));
     }
 
     #[test]
@@ -3247,15 +3237,15 @@ mod tests {
     fn update_install_instruction_distinguishes_install_from_restart() {
         assert_eq!(
             update_install_instruction(HERDR_UPDATE_COMMAND),
-            "detach, run `herdr update`, then run Herdr again to reconnect"
+            "detach, run `lawn update`, then run Lawn again to reconnect"
         );
         assert_eq!(
             update_install_instruction(HOMEBREW_UPDATE_COMMAND),
-            "detach, run `brew update && brew upgrade herdr`, then run Herdr again to reconnect"
+            "detach, run `brew update && brew upgrade herdr`, then run Lawn again to reconnect"
         );
         assert_eq!(
             update_install_instruction(MISE_UPDATE_COMMAND),
-            "detach, run `mise upgrade herdr`, then run Herdr again to reconnect"
+            "detach, run `mise upgrade herdr`, then run Lawn again to reconnect"
         );
     }
 
@@ -3465,8 +3455,13 @@ mod tests {
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].label, crate::session::DEFAULT_SESSION_NAME);
         assert_eq!(targets[0].name, None);
+        assert_eq!(targets[0].attach_command.as_deref(), Some("lawn"));
         assert_eq!(targets[1].label, "work");
         assert_eq!(targets[1].name.as_deref(), Some("work"));
+        assert_eq!(
+            targets[1].attach_command.as_deref(),
+            Some("lawn session attach work")
+        );
     }
 
     #[test]
@@ -3477,7 +3472,7 @@ mod tests {
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "lawn".to_string(),
             "--session".to_string(),
             "work".to_string(),
             "update".to_string(),
@@ -3521,6 +3516,7 @@ mod tests {
         assert!(targets[0]
             .stop_command
             .contains(crate::api::SOCKET_PATH_ENV_VAR));
+        assert!(targets[0].stop_command.ends_with(" lawn server stop"));
     }
 
     #[test]
@@ -3546,7 +3542,7 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(
-            err.contains("herdr session stop work"),
+            err.contains("lawn session stop work"),
             "unexpected error: {err}"
         );
     }

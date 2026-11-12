@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Modified for Lawn.
 from __future__ import annotations
 
 import argparse
@@ -275,7 +276,7 @@ def stage_bundle(
         validate_nuspec(archive, metadata["package"])
         staging = Path(temporary) / "bundle"
         staging.mkdir()
-        shutil.copy2(herdr_exe, staging / "herdr.exe")
+        shutil.copy2(herdr_exe, staging / "lawn.exe")
 
         for item in bundle["files"]:
             try:
@@ -383,7 +384,7 @@ def build_local_bundle(metadata_path: Path) -> None:
             elif (
                 message.get("reason") == "compiler-artifact"
                 and message["manifest_path"] == str(PROJECT_ROOT / "Cargo.toml")
-                and message["target"]["name"] == "herdr"
+                and message["target"]["name"] == "lawn"
                 and "bin" in message["target"]["kind"]
             ):
                 executable = Path(message["executable"])
@@ -391,7 +392,7 @@ def build_local_bundle(metadata_path: Path) -> None:
     if status:
         raise SystemExit(status)
     if executable is None:
-        raise ValueError("cargo did not report the Herdr executable")
+        raise ValueError("cargo did not report the Lawn executable")
 
     target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
     if not target.is_absolute():
@@ -405,7 +406,7 @@ def build_local_bundle(metadata_path: Path) -> None:
 
 
 def expected_stage_files(metadata: dict[str, Any], architecture: str) -> set[str]:
-    files = {"herdr.exe", MARKER_PATH.as_posix()}
+    files = {"lawn.exe", MARKER_PATH.as_posix()}
     files.update(item["destination"] for item in metadata["bundles"][architecture]["files"])
     files.update(item["destination"] for item in metadata["notices"])
     return files
@@ -428,7 +429,7 @@ def validate_stage(metadata_path: Path, architecture: str, stage_dir: Path) -> N
     # The executable is not hash-pinned (it changes every build), so re-check
     # it here to cover a direct archive of an existing stage or a swap after
     # staging.
-    validate_static_msvc_runtime((stage_dir / "herdr.exe").read_bytes(), "herdr.exe")
+    validate_static_msvc_runtime((stage_dir / "lawn.exe").read_bytes(), "lawn.exe")
     for item in metadata["bundles"][architecture]["files"]:
         path = stage_dir / PurePosixPath(item["destination"])
         actual_hash = sha256_file(path)

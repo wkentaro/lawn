@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -52,6 +53,7 @@ pub(super) fn render_mobile_header(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
@@ -69,8 +71,8 @@ pub(super) fn render_mobile_header(
     hits.mobile_switch = button;
     let status_width = button.x.saturating_sub(area.x).saturating_sub(1);
     let status = Rect::new(area.x, area.y, status_width, area.height);
-    render_header_status(buffer, status, snapshot, config);
-    render_header_button(buffer, button, snapshot, config);
+    render_header_status(buffer, status, snapshot, config, parking);
+    render_header_button(buffer, button, snapshot, config, parking);
 }
 
 fn render_header_status(
@@ -78,6 +80,7 @@ fn render_header_status(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
 ) {
     if area.is_empty() {
         return;
@@ -99,7 +102,7 @@ fn render_header_status(
         );
         return;
     };
-    let tab_status = compact_tab_status(snapshot, workspace);
+    let tab_status = compact_tab_status(snapshot, workspace, parking);
     let tab_width = display_width(&tab_status).saturating_add(1).min(area.width);
     let name_width = area.width.saturating_sub(tab_width);
     put_text(
@@ -140,6 +143,7 @@ fn render_header_status(
             Rect::new(area.x, area.y + 1, area.width, 1),
             snapshot,
             config,
+            parking,
         );
     }
 }
@@ -149,6 +153,7 @@ fn render_header_button(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
 ) {
     if area.is_empty() {
         return;
@@ -183,11 +188,10 @@ fn render_header_button(
             .bg(palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
-    if snapshot
-        .agents
-        .iter()
-        .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Blocked)
-    {
+    if snapshot.agents.iter().any(|agent| {
+        agent.agent_status == crate::api::schema::AgentStatus::Blocked
+            && parking.is_none_or(|parking| !parking.hides_pane(&agent.pane_id))
+    }) {
         put_text(
             buffer,
             area.right().saturating_sub(1),
@@ -212,11 +216,18 @@ fn mobile_endpoint_state(status: ClientEndpointStatus) -> &'static str {
     }
 }
 
-fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> String {
+fn compact_tab_status(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    parking: Option<&lawn::PaneParking>,
+) -> String {
     let tabs = snapshot
         .tabs
         .iter()
-        .filter(|tab| tab.workspace_id == workspace.workspace_id)
+        .filter(|tab| {
+            tab.workspace_id == workspace.workspace_id
+                && parking.is_none_or(|parking| parking.shows_tab(&tab.tab_id))
+        })
         .collect::<Vec<_>>();
     let active = tabs
         .iter()
@@ -238,6 +249,7 @@ fn render_agent_summary(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
 ) {
     use crate::api::schema::AgentStatus;
     let counts = [
@@ -253,7 +265,10 @@ fn render_agent_summary(
             snapshot
                 .agents
                 .iter()
-                .filter(|agent| agent.agent_status == status)
+                .filter(|agent| {
+                    agent.agent_status == status
+                        && parking.is_none_or(|parking| !parking.hides_pane(&agent.pane_id))
+                })
                 .count(),
         )
     });
@@ -860,7 +875,11 @@ fn mobile_items(
                         crate::ui::truncate_end(
                             &format!(
                                 "{detail_prefix}{branch} · {}{stale_detail}",
-                                compact_tab_status(endpoint.snapshot, workspace)
+                                compact_tab_status(
+                                    endpoint.snapshot,
+                                    workspace,
+                                    Some(endpoint.parking)
+                                )
                             ),
                             usize::from(content_width),
                         ),
@@ -891,6 +910,12 @@ fn mobile_items(
             .iter()
             .filter(|tab| tab.workspace_id == workspace_id)
             .enumerate()
+            .filter(|(_, tab)| {
+                endpoints
+                    .iter()
+                    .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
+                    .is_none_or(|endpoint| endpoint.parking.shows_tab(&tab.tab_id))
+            })
         {
             let background = if tab.focused {
                 palette.surface_dim

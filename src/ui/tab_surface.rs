@@ -1,6 +1,10 @@
+// Modified for Lawn.
 use ratatui::{layout::Rect, Frame};
 
-use super::panes::{compute_pane_infos_for_tab, render_panes, resize_tab_panes};
+use super::panes::{
+    compute_pane_infos_for_tab, compute_pane_infos_for_tab_presented, render_panes,
+    resize_tab_panes,
+};
 use crate::app::AppState;
 use crate::layout::{PaneInfo, SplitBorder};
 use crate::protocol::CursorState;
@@ -57,23 +61,64 @@ pub(crate) fn compute_tab_surface_for(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> TabSurfaceLayout {
+    compute_tab_surface_for_presented(
+        app,
+        terminal_runtimes,
+        target,
+        area,
+        resize_panes,
+        cell_size,
+        None,
+    )
+}
+
+pub(crate) fn compute_tab_surface_for_presented(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    target: Option<TabSurfaceTarget>,
+    area: Rect,
+    resize_panes: bool,
+    cell_size: crate::kitty_graphics::HostCellSize,
+    presented: Option<crate::layout::PresentedLayout>,
+) -> TabSurfaceLayout {
     let tab = target.and_then(|target| {
         app.workspaces
             .get(target.workspace_index)?
             .tabs
             .get(target.tab_index)
     });
-    let split_borders = tab
-        .map(|tab| {
-            if tab.zoomed {
+    let (presented_panes, split_borders) = match presented {
+        Some(presented) => (
+            Some(presented.panes),
+            if tab.is_some_and(|tab| tab.zoomed) {
                 Vec::new()
             } else {
-                tab.layout.splits(area)
-            }
-        })
-        .unwrap_or_default();
-    let pane_infos = target.map_or_else(Vec::new, |target| {
-        compute_pane_infos_for_tab(
+                presented.splits
+            },
+        ),
+        None => (
+            None,
+            tab.map(|tab| {
+                if tab.zoomed {
+                    Vec::new()
+                } else {
+                    tab.layout.splits(area)
+                }
+            })
+            .unwrap_or_default(),
+        ),
+    };
+    let pane_infos = target.map_or_else(Vec::new, |target| match presented_panes {
+        Some(panes) => compute_pane_infos_for_tab_presented(
+            app,
+            terminal_runtimes,
+            target,
+            area,
+            resize_panes,
+            cell_size,
+            Some(panes),
+        ),
+        None => compute_pane_infos_for_tab(
             app,
             terminal_runtimes,
             target.workspace_index,
@@ -81,7 +126,7 @@ pub(crate) fn compute_tab_surface_for(
             area,
             resize_panes,
             cell_size,
-        )
+        ),
     });
 
     TabSurfaceLayout {
@@ -114,6 +159,40 @@ pub(crate) fn resize_tab_surface(
         area,
         cell_size,
     );
+}
+
+pub(crate) fn resize_tab_surface_presented(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    workspace_index: usize,
+    tab_index: usize,
+    area: Rect,
+    cell_size: crate::kitty_graphics::HostCellSize,
+    presented: Option<crate::layout::PresentedLayout>,
+) {
+    if let Some(presented) = presented {
+        let _ = compute_pane_infos_for_tab_presented(
+            app,
+            terminal_runtimes,
+            TabSurfaceTarget {
+                workspace_index,
+                tab_index,
+            },
+            area,
+            true,
+            cell_size,
+            Some(presented.panes),
+        );
+    } else {
+        resize_tab_surface(
+            app,
+            terminal_runtimes,
+            workspace_index,
+            tab_index,
+            area,
+            cell_size,
+        );
+    }
 }
 
 pub(crate) fn render_tab_surface(

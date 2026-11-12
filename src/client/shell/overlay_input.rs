@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 impl ClientShellState {
@@ -294,6 +295,20 @@ impl ClientShellState {
         let Some(target) = target else {
             return;
         };
+        let later = matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref navigator)) if navigator.filter == Some(ClientNavigatorFilter::Later));
+        if later {
+            if let ClientNavigatorTarget::Pane {
+                endpoint_id,
+                pane_id,
+            } = target
+            {
+                if self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Preview, outcome)
+                {
+                    self.overlay = None;
+                }
+            }
+            return;
+        }
         let activated = match target {
             ClientNavigatorTarget::Machine { endpoint_id } => {
                 self.activate_endpoint(endpoint_id, outcome)
@@ -662,7 +677,9 @@ impl ClientShellState {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     if let Some(content_changed) = navigator.query.handle_key(key) {
                         if content_changed {
-                            navigator.filter = None;
+                            if navigator.filter != Some(ClientNavigatorFilter::Later) {
+                                navigator.filter = None;
+                            }
                             navigator.selected = None;
                         }
                         outcome.repaint = true;
@@ -734,7 +751,9 @@ impl ClientShellState {
             if !shifted_without_evidence && crate::input::keybind_help_text_char(key) == Some('/') {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.search_focused = true;
-                    navigator.filter = None;
+                    if navigator.filter != Some(ClientNavigatorFilter::Later) {
+                        navigator.filter = None;
+                    }
                 }
                 outcome.repaint = true;
                 return;
@@ -1062,6 +1081,12 @@ impl ClientShellState {
     }
 
     pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+        if self
+            .active_parking()
+            .is_some_and(|parking| !parking.shows_tab(&tab_id))
+        {
+            return;
+        }
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
             let target = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
             (self.config.confirm_close

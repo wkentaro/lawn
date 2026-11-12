@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use crate::api::schema::IntegrationTarget;
 
 pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
@@ -26,7 +27,7 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
         [] => false,
         [flag] if flag == "--outdated-only" => true,
         _ => {
-            eprintln!("usage: herdr integration status [--outdated-only]");
+            eprintln!("usage: lawn integration status [--outdated-only]");
             return Ok(2);
         }
     };
@@ -147,13 +148,13 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationCommandTarget>> {
     let Some(target) = args.first().map(|arg| arg.as_str()) else {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
+            "usage: lawn integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
+            "usage: lawn integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     }
@@ -192,42 +193,42 @@ fn parse_integration_target(
 }
 
 fn print_integration_help() {
-    eprintln!("herdr integration commands:");
-    eprintln!("  herdr integration install pi");
-    eprintln!("  herdr integration install omp");
-    eprintln!("  herdr integration install claude");
-    eprintln!("  herdr integration install codex");
-    eprintln!("  herdr integration install copilot");
-    eprintln!("  herdr integration install devin");
-    eprintln!("  herdr integration install droid");
-    eprintln!("  herdr integration install kimi");
-    eprintln!("  herdr integration install opencode");
-    eprintln!("  herdr integration install kilo");
-    eprintln!("  herdr integration install hermes");
-    eprintln!("  herdr integration install qodercli");
-    eprintln!("  herdr integration install qwen");
-    eprintln!("  herdr integration install letta");
-    eprintln!("  herdr integration install cursor");
-    eprintln!("  herdr integration install mastracode");
-    eprintln!("  herdr integration install antigravity-cli");
-    eprintln!("  herdr integration install grok");
-    eprintln!("  herdr integration uninstall pi");
-    eprintln!("  herdr integration uninstall omp");
-    eprintln!("  herdr integration uninstall claude");
-    eprintln!("  herdr integration uninstall codex");
-    eprintln!("  herdr integration uninstall copilot");
-    eprintln!("  herdr integration uninstall devin");
-    eprintln!("  herdr integration uninstall droid");
-    eprintln!("  herdr integration uninstall kimi");
-    eprintln!("  herdr integration uninstall opencode");
-    eprintln!("  herdr integration uninstall kilo");
-    eprintln!("  herdr integration uninstall hermes");
-    eprintln!("  herdr integration uninstall qodercli");
-    eprintln!("  herdr integration uninstall qwen");
-    eprintln!("  herdr integration uninstall letta");
-    eprintln!("  herdr integration uninstall cursor");
-    eprintln!("  herdr integration uninstall mastracode");
-    eprintln!("  herdr integration uninstall antigravity-cli");
-    eprintln!("  herdr integration uninstall grok");
-    eprintln!("  herdr integration status [--outdated-only]");
+    eprintln!("lawn integration commands:");
+    eprintln!("  lawn integration install pi");
+    eprintln!("  lawn integration install omp");
+    eprintln!("  lawn integration install claude");
+    eprintln!("  lawn integration install codex");
+    eprintln!("  lawn integration install copilot");
+    eprintln!("  lawn integration install devin");
+    eprintln!("  lawn integration install droid");
+    eprintln!("  lawn integration install kimi");
+    eprintln!("  lawn integration install opencode");
+    eprintln!("  lawn integration install kilo");
+    eprintln!("  lawn integration install hermes");
+    eprintln!("  lawn integration install qodercli");
+    eprintln!("  lawn integration install qwen");
+    eprintln!("  lawn integration install letta");
+    eprintln!("  lawn integration install cursor");
+    eprintln!("  lawn integration install mastracode");
+    eprintln!("  lawn integration install antigravity-cli");
+    eprintln!("  lawn integration install grok");
+    eprintln!("  lawn integration uninstall pi");
+    eprintln!("  lawn integration uninstall omp");
+    eprintln!("  lawn integration uninstall claude");
+    eprintln!("  lawn integration uninstall codex");
+    eprintln!("  lawn integration uninstall copilot");
+    eprintln!("  lawn integration uninstall devin");
+    eprintln!("  lawn integration uninstall droid");
+    eprintln!("  lawn integration uninstall kimi");
+    eprintln!("  lawn integration uninstall opencode");
+    eprintln!("  lawn integration uninstall kilo");
+    eprintln!("  lawn integration uninstall hermes");
+    eprintln!("  lawn integration uninstall qodercli");
+    eprintln!("  lawn integration uninstall qwen");
+    eprintln!("  lawn integration uninstall letta");
+    eprintln!("  lawn integration uninstall cursor");
+    eprintln!("  lawn integration uninstall mastracode");
+    eprintln!("  lawn integration uninstall antigravity-cli");
+    eprintln!("  lawn integration uninstall grok");
+    eprintln!("  lawn integration status [--outdated-only]");
 }

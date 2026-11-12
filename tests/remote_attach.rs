@@ -1,3 +1,4 @@
+// Modified for Lawn.
 #![cfg(unix)]
 
 use std::fs;
@@ -108,7 +109,7 @@ exit 255
 
     let inherited_path = std::env::var("PATH").unwrap_or_default();
     let path = format!("{}:{inherited_path}", temp_dir.display());
-    let child = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let child = Command::new(env!("CARGO_BIN_EXE_lawn"))
         .args(["--remote", "check-host"])
         .env("PATH", path)
         .env("FAKE_SSH_FRAMED", if framed_shell { "1" } else { "0" })
@@ -116,7 +117,7 @@ exit 255
         .env("FAKE_SSH_APPROVED", &approval_path)
         .env("FAKE_SSH_ADVANCED", &advanced_path)
         .env("FAKE_SSH_FIRST_DONE", &first_done_path)
-        .env("HERDR_CONFIG_PATH", temp_dir.join("config.toml"))
+        .env("LAWN_CONFIG_PATH", temp_dir.join("config.toml"))
         .env_remove("HERDR_ENV")
         .env_remove("HERDR_SESSION")
         .env_remove("HERDR_SOCKET_PATH")

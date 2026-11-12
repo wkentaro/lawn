@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use clap::Command;
 
 use crate::api::schema::common::NotificationShowProjection;
@@ -7,7 +8,7 @@ use super::super::projection::{self, ParseError};
 
 pub(crate) fn command() -> Command {
     Command::new("notification")
-        .about("Show Herdr notifications")
+        .about("Show Lawn notifications")
         .subcommand_required(true)
         .subcommand(
             projection::command("show", NotificationShowProjection::arguments())
@@ -26,7 +27,7 @@ pub(crate) fn request(args: &[String]) -> Result<Request, ParseError> {
         }
         _ => args,
     };
-    projection::parse(command().bin_name("herdr notification"), args, |matches| {
+    projection::parse(command().bin_name("lawn notification"), args, |matches| {
         let matches = matches
             .subcommand_matches("show")
             .ok_or_else(|| ParseError::Usage("missing notification show command".into()))?;

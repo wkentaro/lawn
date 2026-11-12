@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
 use super::*;
@@ -10,6 +11,7 @@ pub(super) struct CachedEndpointSnapshot<'a> {
     pub(super) label: &'a str,
     pub(super) status: ClientEndpointStatus,
     pub(super) snapshot: &'a ClientShellSnapshot,
+    pub(super) parking: &'a lawn::PaneParking,
     pub(super) agent_recency: &'a HashMap<String, u64>,
     pub(super) agent_presentation: &'a super::endpoint_agent_state::EndpointAgentPresentation,
 }
@@ -36,6 +38,7 @@ pub(super) fn cached_endpoint_snapshots(
                     label: &endpoint.label,
                     status: endpoint.status,
                     snapshot,
+                    parking: &endpoint.parking,
                     agent_recency: &endpoint.agent_recency,
                     agent_presentation: &endpoint.agent_presentation,
                 })
@@ -87,6 +90,7 @@ pub(super) fn aggregate_agent_rows<'a>(
                     .snapshot
                     .agents
                     .iter()
+                    .filter(move |agent| !endpoint.parking.hides_pane(&agent.pane_id))
                     .map(move |agent| AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
@@ -135,6 +139,9 @@ pub(super) fn aggregate_agent_rows<'a>(
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
+                    if endpoint.parking.hides_pane(&pane_id) {
+                        return None;
+                    }
                     let agent = endpoint
                         .snapshot
                         .agents
@@ -286,8 +293,9 @@ pub(super) fn navigator_rows(
         Some(ClientNavigatorFilter::Working) => status == crate::api::schema::AgentStatus::Working,
         Some(ClientNavigatorFilter::Idle) => status == crate::api::schema::AgentStatus::Idle,
         Some(ClientNavigatorFilter::Done) => status == crate::api::schema::AgentStatus::Done,
-        None => true,
+        None | Some(ClientNavigatorFilter::Later) => true,
     };
+    let later = navigator.filter == Some(ClientNavigatorFilter::Later);
     let words = query.split_whitespace().collect::<Vec<_>>();
     let text = |value: &str| {
         if words.is_empty() {
@@ -297,7 +305,7 @@ pub(super) fn navigator_rows(
         words.iter().all(|word| value.contains(word))
     };
     let filtering = navigator.filter.is_some() || !query.is_empty();
-    let federated = endpoints.len() > 1;
+    let federated = later || endpoints.len() > 1;
     let depth_offset = u8::from(federated);
     let mut rows = Vec::new();
 
@@ -323,6 +331,9 @@ pub(super) fn navigator_rows(
             }
             let mut panes_by_tab = HashMap::new();
             for pane in &snapshot.panes {
+                if endpoint.parking.hides_pane(&pane.pane_id) != later {
+                    continue;
+                }
                 panes_by_tab
                     .entry(pane.tab_id.as_str())
                     .or_insert_with(Vec::new)
@@ -408,7 +419,7 @@ pub(super) fn navigator_rows(
                                     workspace.label, tab.label, pane.pane_id
                                 ),
                                 agent: agent_kind.map(str::to_owned),
-                                status: Some(status),
+                                status: agent_kind.map(|_| status),
                                 stale,
                                 current: endpoint.endpoint_id == *active_endpoint_id
                                     && snapshot.focused_pane_id.as_deref() == Some(&pane.pane_id),
@@ -442,7 +453,7 @@ pub(super) fn navigator_rows(
                 }
             }
         }
-        if !filtering || endpoint_query_matches || !endpoint_rows.is_empty() {
+        if !filtering || (!later && endpoint_query_matches) || !endpoint_rows.is_empty() {
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,

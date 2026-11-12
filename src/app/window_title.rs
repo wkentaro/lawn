@@ -1,3 +1,4 @@
+// Modified for Lawn.
 //! Outer terminal window title.
 //!
 //! Herdr is a terminal emulator, so `OSC 0`/`OSC 2` written by a pane stops at
@@ -52,18 +53,31 @@ impl App {
                 .get(workspace_index)
                 .map(|workspace| (workspace_index, workspace.active_tab_index()))
         });
-        self.window_title_for_target(target)
+        let pane_id = target.and_then(|(workspace_index, tab_index)| {
+            self.state
+                .workspaces
+                .get(workspace_index)?
+                .tabs
+                .get(tab_index)
+                .map(|tab| tab.layout.focused())
+        });
+        self.window_title_for_target(target, pane_id)
     }
 
     pub(crate) fn window_title_for(
         &self,
         workspace_index: usize,
         tab_index: usize,
+        pane_id: Option<crate::layout::PaneId>,
     ) -> Option<String> {
-        self.window_title_for_target(Some((workspace_index, tab_index)))
+        self.window_title_for_target(Some((workspace_index, tab_index)), pane_id)
     }
 
-    fn window_title_for_target(&self, target: Option<(usize, usize)>) -> Option<String> {
+    fn window_title_for_target(
+        &self,
+        target: Option<(usize, usize)>,
+        pane_id: Option<crate::layout::PaneId>,
+    ) -> Option<String> {
         let (template, hostname) = self.window_title_template.as_ref()?;
         let workspace =
             target.and_then(|(workspace_index, _)| self.state.workspaces.get(workspace_index));
@@ -75,7 +89,7 @@ impl App {
                 .get(tab_index)
         });
         let terminal = tab
-            .and_then(|tab| tab.terminal_id(tab.layout.focused()))
+            .and_then(|tab| tab.terminal_id(pane_id?))
             .and_then(|terminal_id| self.state.terminals.get(terminal_id));
 
         let mut title = String::new();

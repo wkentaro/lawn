@@ -1,4 +1,5 @@
 #Requires -Version 7.0
+# Modified for Lawn.
 param([Parameter(Mandatory)][string] $PlanPath)
 . "$PSScriptRoot/Common.ps1"
 $plan = Read-GauntletJson $PlanPath
@@ -6,7 +7,7 @@ $plan = Read-GauntletJson $PlanPath
 foreach ($item in @(Get-ChildItem Env:)) {
     if ($item.Name -like 'HERDR_*' -or $item.Name -in @('SSH_CONNECTION', 'SSH_TTY')) { Remove-Item "Env:$($item.Name)" }
 }
-$env:HERDR_CONFIG_PATH = $plan.config
+$env:LAWN_CONFIG_PATH = $plan.config
 $env:XDG_CONFIG_HOME = $plan.config_home
 $env:HERDR_SESSION = $plan.session
 if ($plan.profile -ne 'default') { $env:HERDR_WINDOWS_INPUT_PROBE = $plan.profile }

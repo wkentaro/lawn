@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,7 @@ struct RenderPipeline {
     app: App,
     client: ClientShellState,
     graphics_delivery: crate::kitty_graphics::surface::DeliveryCache,
+    presentation: Option<super::pane_presentation::ClientPanePresentation>,
 }
 
 impl RenderPipeline {
@@ -68,6 +70,7 @@ impl RenderPipeline {
             app,
             client,
             graphics_delivery: crate::kitty_graphics::surface::DeliveryCache::default(),
+            presentation: None,
         }
     }
 
@@ -82,6 +85,12 @@ impl RenderPipeline {
                 workspace_index,
                 tab_index: self.app.state.workspaces[workspace_index].active_tab_index(),
             });
+        let presented = target.and_then(|target| {
+            self.presentation.as_ref()?.layout(
+                &self.app.state.workspaces[target.workspace_index].tabs[target.tab_index],
+                Rect::new(0, 0, surface_size.cols, surface_size.rows),
+            )
+        });
         let rendered = super::client_shell::render_pane_surface(
             &mut self.app,
             target,
@@ -94,6 +103,7 @@ impl RenderPipeline {
             },
             &self.graphics_delivery,
             1,
+            presented,
         )
         .expect("benchmark surface");
         let server_elapsed = started.elapsed();
@@ -263,10 +273,11 @@ fn profile_snapshot_encoding(
             }
         }
         let started = Instant::now();
-        let (template, completions) = super::client_shell::snapshot_with_completions(
+        let (template, completions, _) = super::client_shell::snapshot_with_completions(
             &pipeline.app,
             "bench-boot",
             1,
+            None,
             None,
             None,
         );
@@ -496,6 +507,7 @@ fn print_surface_damage_profiles() {
             HostCellSize::default(),
             &pipeline.graphics_delivery,
             1,
+            None,
         )
         .expect("benchmark surface");
         let mut surface = PaneSurfaceFrame {
@@ -548,6 +560,7 @@ fn print_surface_reuse_profiles() {
                 HostCellSize::default(),
                 &pipeline.graphics_delivery,
                 1,
+                None,
             )
             .expect("benchmark surface");
             let surface = PaneSurfaceFrame {
@@ -613,6 +626,76 @@ async fn render_scale_profile() {
     print_token_rule_profiles();
     print_surface_reuse_profiles();
     print_surface_damage_profiles();
+    print_pane_presentation_profiles();
+}
+
+fn print_pane_presentation_profiles() {
+    for (label, build) in [
+        ("background", workspaces as fn(usize) -> Vec<Workspace>),
+        ("active", active_panes),
+    ] {
+        for policy in ["native", "empty", "parked", "later"] {
+            let rows = [1, 15].map(|count| {
+                let mut pipeline = RenderPipeline::new(build(count));
+                pipeline.app.state.ensure_test_terminals();
+                if policy != "native" {
+                    let locations =
+                        super::pane_presentation::terminal_locations(&pipeline.app.state);
+                    let request =
+                        crate::protocol::endpoint::pane_presentation::SetPanePresentation {
+                            boot_id: "bench-boot".into(),
+                            sequence: 1,
+                            hidden_terminals: if policy == "parked" || policy == "later" {
+                                let mut ordered = locations.iter().collect::<Vec<_>>();
+                                ordered.sort_unstable_by_key(|(_, location)| {
+                                    (
+                                        location.target.workspace_index,
+                                        location.target.tab_index,
+                                        location.pane_id.raw(),
+                                    )
+                                });
+                                ordered
+                                    .into_iter()
+                                    .enumerate()
+                                    .filter(|(i, _)| i.is_multiple_of(2))
+                                    .map(|(_, (id, _))| (*id).to_owned())
+                                    .collect()
+                            } else {
+                                Vec::new()
+                            },
+                            read_only_terminals: Vec::new(),
+                            preview_terminal: None,
+                            focus_terminal: None,
+                        };
+                    let root = std::env::temp_dir().join(format!("lawn-pane-profile-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+                    std::fs::create_dir(&root).unwrap();
+                    let preferences = root.join("chrome.json");
+                    std::fs::write(preferences.with_extension("parking.json"), serde_json::to_vec(&serde_json::json!({"version": 1, "terminals": request.hidden_terminals})).unwrap()).unwrap();
+                    let config = ClientShellConfig::from_config(&Config::default()).with_preferences_path(preferences);
+                    pipeline.client = ClientShellState::new(config);
+                    let endpoint = crate::client::endpoint::ClientEndpointId::Local;
+                    pipeline.client.set_endpoint_parking_supported(&endpoint, true);
+                    pipeline.presentation = Some(super::pane_presentation::ClientPanePresentation::new(request, &locations));
+                    let (snapshot, _, identities) = super::client_shell::snapshot_with_completions(&pipeline.app, "bench-boot", 1, None, None, pipeline.presentation.as_ref());
+                    pipeline.client.set_endpoint_snapshot_for_generation(&endpoint, 7, Box::new(snapshot));
+                    black_box(pipeline.client.tick_parking(Instant::now()));
+                    pipeline.client.set_endpoint_pane_identities(&endpoint, 7, identities.unwrap());
+                    std::fs::remove_dir_all(root).unwrap();
+                    if policy == "later" {
+                        pipeline.render_once();
+                        black_box(pipeline.client.handle_raw_events(vec![crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), column: 2, row: ROWS - 3,
+                            modifiers: crossterm::event::KeyModifiers::empty(),
+                        })]));
+                    }
+                }
+                (count, profile_pipeline(pipeline))
+            });
+            println!("pane presentation {label}: {policy}, fixed {COLS}x{ROWS}");
+            print_stage("server pane surface", &rows, |stats| stats.server);
+            print_stage("client shell composition", &rows, |stats| stats.client);
+        }
+    }
 }
 
 /// Dirty-row collection while output scrolls a large pane, the host's hot path

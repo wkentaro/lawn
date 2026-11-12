@@ -1,4 +1,6 @@
+// Modified for Lawn.
 use super::*;
+use crate::layout::PaneId;
 use crate::server::client_shell::resize_popup_runtime;
 use crate::server::clients::ClientShellTopology;
 
@@ -12,25 +14,16 @@ pub(super) struct ShellFocusTarget {
 fn classify_shell_focus_transition<'a>(
     before: Option<&'a ShellFocusTarget>,
     after: Option<&'a ShellFocusTarget>,
-    focused_tabs_before: &HashSet<String>,
-    focused_tabs_after: &HashSet<String>,
+    focused_panes_before: &HashSet<PaneId>,
+    focused_panes_after: &HashSet<PaneId>,
 ) -> (Option<&'a ShellFocusTarget>, Option<&'a ShellFocusTarget>) {
-    if before == after {
-        return (None, None);
-    }
-    if before.map(|target| target.tab_id.as_str()) == after.map(|target| target.tab_id.as_str()) {
-        return match (before, after) {
-            (Some(before), Some(after)) if focused_tabs_after.contains(&after.tab_id) => {
-                (Some(before), Some(after))
-            }
-            _ => (None, None),
-        };
-    }
     let lost = before.filter(|target| {
-        focused_tabs_before.contains(&target.tab_id) && !focused_tabs_after.contains(&target.tab_id)
+        focused_panes_before.contains(&target.pane_id)
+            && !focused_panes_after.contains(&target.pane_id)
     });
     let gained = after.filter(|target| {
-        !focused_tabs_before.contains(&target.tab_id) && focused_tabs_after.contains(&target.tab_id)
+        !focused_panes_before.contains(&target.pane_id)
+            && focused_panes_after.contains(&target.pane_id)
     });
     (lost, gained)
 }
@@ -145,6 +138,8 @@ impl HeadlessServer {
         self.tab_geometry_controllers.retain(|tab_id, client_id| {
             topology.tab_workspace_ids.contains_key(tab_id) && live_clients.contains(client_id)
         });
+        let mut placements = None;
+        let app = &self.app;
         for client in self
             .clients
             .values_mut()
@@ -157,6 +152,29 @@ impl HeadlessServer {
                 }
             });
             location.reconcile(&topology);
+            if let Some(presentation) = client.pane_presentation.as_mut() {
+                let placements = placements.get_or_insert_with(|| {
+                    crate::server::pane_presentation::terminal_locations(&app.state)
+                });
+                presentation.refresh(placements);
+                if let Some((workspace_index, tab_index)) = location
+                    .focused_tab_id()
+                    .and_then(|id| app.parse_tab_id(id))
+                {
+                    let target = presentation.reflow_target(
+                        &app.state,
+                        crate::ui::TabSurfaceTarget {
+                            workspace_index,
+                            tab_index,
+                        },
+                    );
+                    if let Some(tab_id) =
+                        app.public_tab_id(target.workspace_index, target.tab_index)
+                    {
+                        location.focus_tab(app.public_workspace_id(target.workspace_index), tab_id);
+                    }
+                }
+            }
         }
     }
 
@@ -169,7 +187,7 @@ impl HeadlessServer {
             return;
         };
         let focus_before = self.shell_focus_targets();
-        let focused_tabs_before = self.focused_shell_tabs();
+        let focused_panes_before = self.focused_shell_panes();
         for client in self
             .clients
             .values_mut()
@@ -180,7 +198,7 @@ impl HeadlessServer {
             }
         }
         let (lost, gained) =
-            self.shell_location_focus_transitions(focus_before, &focused_tabs_before);
+            self.shell_location_focus_transitions(focus_before, &focused_panes_before);
         self.app.accept_current_focus_with_api_events();
         self.send_shell_focus_transitions(&lost, &gained);
     }
@@ -200,7 +218,7 @@ impl HeadlessServer {
         true
     }
 
-    fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
+    pub(super) fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
@@ -366,37 +384,32 @@ impl HeadlessServer {
         }
     }
 
-    fn focus_target_for_surface(
-        &self,
-        target: crate::ui::TabSurfaceTarget,
-    ) -> Option<ShellFocusTarget> {
-        let pane_id = self
+    pub(super) fn shell_focus_target(&self, client_id: u64) -> Option<ShellFocusTarget> {
+        let target = self.shell_target_for_client(client_id)?;
+        let tab = self
             .app
             .state
             .workspaces
             .get(target.workspace_index)?
             .tabs
-            .get(target.tab_index)?
-            .layout
-            .focused();
+            .get(target.tab_index)?;
         Some(ShellFocusTarget {
             tab_id: self.tab_id_for_target(target)?,
             workspace_index: target.workspace_index,
-            pane_id,
+            pane_id: self.focused_pane_for_client(client_id, tab)?,
         })
     }
 
-    pub(super) fn shell_focus_target(&self, client_id: u64) -> Option<ShellFocusTarget> {
-        self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
-    }
-
-    pub(super) fn focused_shell_tabs(&self) -> HashSet<String> {
+    pub(super) fn focused_shell_panes(&self) -> HashSet<PaneId> {
         self.clients
             .iter()
             .filter(|(_, client)| {
                 client.is_active_shell_client() && client.outer_terminal_focus == Some(true)
             })
-            .filter_map(|(&client_id, _)| self.shell_tab_id_for_client(client_id))
+            .filter_map(|(&client_id, _)| {
+                self.shell_focus_target(client_id)
+                    .map(|target| target.pane_id)
+            })
             .collect()
     }
 
@@ -420,29 +433,32 @@ impl HeadlessServer {
     fn shell_location_focus_transitions(
         &self,
         focus_before: Vec<(u64, Option<ShellFocusTarget>)>,
-        focused_tabs_before: &HashSet<String>,
+        focused_panes_before: &HashSet<PaneId>,
     ) -> (
-        HashMap<String, ShellFocusTarget>,
-        HashMap<String, ShellFocusTarget>,
+        HashMap<PaneId, ShellFocusTarget>,
+        HashMap<PaneId, ShellFocusTarget>,
     ) {
-        let focused_tabs_after = self.focused_shell_tabs();
-        let mut lost = HashMap::<String, ShellFocusTarget>::new();
-        let mut gained = HashMap::<String, ShellFocusTarget>::new();
+        let mut focus_before = focus_before.into_iter().collect::<HashMap<_, _>>();
+        for (client_id, _) in self.shell_focus_targets() {
+            focus_before.entry(client_id).or_insert(None);
+        }
+        let focused_panes_after = self.focused_shell_panes();
+        let mut lost = HashMap::<PaneId, ShellFocusTarget>::new();
+        let mut gained = HashMap::<PaneId, ShellFocusTarget>::new();
         for (client_id, before) in focus_before {
             let after = self.shell_focus_target(client_id);
             let (lost_target, gained_target) = classify_shell_focus_transition(
                 before.as_ref(),
                 after.as_ref(),
-                focused_tabs_before,
-                &focused_tabs_after,
+                focused_panes_before,
+                &focused_panes_after,
             );
             if let Some(target) = lost_target {
-                lost.entry(target.tab_id.clone())
-                    .or_insert_with(|| target.clone());
+                lost.entry(target.pane_id).or_insert_with(|| target.clone());
             }
             if let Some(target) = gained_target {
                 gained
-                    .entry(target.tab_id.clone())
+                    .entry(target.pane_id)
                     .or_insert_with(|| target.clone());
             }
         }
@@ -451,8 +467,8 @@ impl HeadlessServer {
 
     fn send_shell_focus_transitions(
         &self,
-        lost: &HashMap<String, ShellFocusTarget>,
-        gained: &HashMap<String, ShellFocusTarget>,
+        lost: &HashMap<PaneId, ShellFocusTarget>,
+        gained: &HashMap<PaneId, ShellFocusTarget>,
     ) {
         for target in lost.values() {
             self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
@@ -465,10 +481,10 @@ impl HeadlessServer {
     pub(super) fn finish_shell_location_reconciliation(
         &mut self,
         focus_before: Vec<(u64, Option<ShellFocusTarget>)>,
-        focused_tabs_before: &HashSet<String>,
+        focused_panes_before: &HashSet<PaneId>,
     ) {
         let (lost, gained) =
-            self.shell_location_focus_transitions(focus_before, focused_tabs_before);
+            self.shell_location_focus_transitions(focus_before, focused_panes_before);
         self.app.accept_current_focus_without_events();
         self.send_shell_focus_transitions(&lost, &gained);
     }
@@ -477,11 +493,15 @@ impl HeadlessServer {
         &self,
         before: Option<&ShellFocusTarget>,
         after: Option<&ShellFocusTarget>,
-        focused_tabs_before: &HashSet<String>,
-        focused_tabs_after: &HashSet<String>,
+        focused_panes_before: &HashSet<PaneId>,
+        focused_panes_after: &HashSet<PaneId>,
     ) {
-        let (lost, gained) =
-            classify_shell_focus_transition(before, after, focused_tabs_before, focused_tabs_after);
+        let (lost, gained) = classify_shell_focus_transition(
+            before,
+            after,
+            focused_panes_before,
+            focused_panes_after,
+        );
         if let Some(target) = lost {
             self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
         }
@@ -511,8 +531,16 @@ impl HeadlessServer {
         else {
             return false;
         };
+        if self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.pane_presentation.as_ref())
+            .is_some_and(|presentation| !presentation.presents(pane_id))
+        {
+            return false;
+        }
         if tab.zoomed {
-            tab.layout.focused() == pane_id
+            self.focused_pane_for_client(client_id, tab) == Some(pane_id)
         } else {
             tab.layout.pane_ids().contains(&pane_id)
         }
@@ -580,30 +608,40 @@ impl HeadlessServer {
         if self.app_client_count() == 1 {
             for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
                 for tab_index in 0..workspace.tabs.len() {
-                    crate::ui::resize_tab_surface(
+                    crate::ui::resize_tab_surface_presented(
                         &self.app.state,
                         &self.app.terminal_runtimes,
                         workspace_index,
                         tab_index,
                         area,
                         cell_size,
+                        self.pane_layout_for_client(
+                            client_id,
+                            Some(crate::ui::TabSurfaceTarget {
+                                workspace_index,
+                                tab_index,
+                            }),
+                            area,
+                        ),
                     );
                 }
             }
         } else {
-            crate::ui::compute_tab_surface_for(
+            crate::ui::compute_tab_surface_for_presented(
                 &self.app.state,
                 &self.app.terminal_runtimes,
                 Some(target),
                 area,
                 true,
                 cell_size,
+                self.pane_layout_for_client(client_id, Some(target), area),
             );
         }
         if self
             .popup_owner_tab_id
             .as_deref()
             .is_some_and(|owner| self.tab_id_for_target(target).as_deref() == Some(owner))
+            && self.shell_client_shows_popup(client_id)
         {
             let _ = resize_popup_runtime(&self.app, Rect::new(0, 0, cols, rows), cell_size);
         }
@@ -864,7 +902,7 @@ impl HeadlessServer {
             (original, proxy_rx)
         });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false);
+        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false, None);
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
@@ -910,19 +948,90 @@ impl HeadlessServer {
     pub(super) fn handle_client_shell_api_request(
         &mut self,
         client_id: u64,
-        msg: api::ApiRequestMessage,
+        mut msg: api::ApiRequestMessage,
     ) -> bool {
+        let internal_changed = self.drain_all_internal_events_with_forwarding();
+        if self.shutting_down || self.host_shutdown_requested() {
+            Self::reject_api_request_for_shutdown(msg);
+            return internal_changed;
+        }
         let focus_before = self.shell_focus_target(client_id);
-        let focused_tabs_before = self.focused_shell_tabs();
+        let focused_panes_before = self.focused_shell_panes();
         let method_claims_geometry = Self::shell_endpoint_claims_geometry(&msg.request.method);
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let all_focus_before = reconcile.then(|| self.shell_focus_targets());
+        let all_focus_before = self.shell_focus_targets();
+        if !self.resolve_client_pane_target(client_id, &mut msg.request.method) {
+            let _ = msg
+                .respond_to
+                .send(crate::server::client_commands::error_response(
+                    msg.request.id,
+                    "pane_not_found",
+                    "this client has no visible focused pane",
+                ));
+            return internal_changed;
+        }
+        let source = match &msg.request.method {
+            api::schema::Method::PaneFocusDirection(params) => Some(params.pane_id.as_deref()),
+            api::schema::Method::PaneResize(params) => Some(params.pane_id.as_deref()),
+            api::schema::Method::PaneSwap(params) if params.direction.is_some() => {
+                Some(params.pane_id.as_deref())
+            }
+            _ => None,
+        };
+        let presented_layout = source.and_then(|source| {
+            let (cols, rows) = self
+                .clients
+                .get(&client_id)
+                .map_or((0, 0), |client| client.terminal_size);
+            let target = source
+                .and_then(|id| self.app.parse_pane_id(id))
+                .and_then(|(workspace_index, pane)| {
+                    Some(crate::ui::TabSurfaceTarget {
+                        workspace_index,
+                        tab_index: self.app.state.workspaces[workspace_index]
+                            .find_tab_index_for_pane(pane)?,
+                    })
+                })
+                .or_else(|| self.shell_target_for_client(client_id));
+            self.pane_layout_for_client(client_id, target, Rect::new(0, 0, cols, rows))
+        });
+        let directional_move = match (&msg.request.method, presented_layout.as_ref()) {
+            (api::schema::Method::PaneFocusDirection(params), Some(layout)) => params
+                .pane_id
+                .as_deref()
+                .and_then(|id| self.app.parse_pane_id(id))
+                .and_then(|(_, id)| layout.panes.iter().find(|pane| pane.id == id))
+                .and_then(|source| {
+                    crate::layout::find_in_direction(source, params.direction.into(), &layout.panes)
+                })
+                .is_some(),
+            _ => false,
+        };
+        let location_before = self
+            .clients
+            .get(&client_id)
+            .and_then(|client| client.shell_location.clone());
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
+        let presentation_request = self
+            .clients
+            .get(&client_id)
+            .filter(|client| client.pane_presentation.is_some())
+            .map(|_| super::pane_presentation::ClientPaneRequest {
+                client_id,
+                deactivate_focus: reconcile || navigation_changed || directional_move,
+                layout: presented_layout,
+                location_before,
+            });
         self.set_default_shell_target_from_client(client_id);
         let popup_before = self.app.state.popup_pane.is_some();
         let popup_owner = self.shell_tab_id_for_client(client_id);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
+        let changed = self.handle_api_request_with_shutdown_check_inner(
+            msg,
+            false,
+            true,
+            presentation_request,
+        );
         self.focus_shell_client_on_default_target(client_id);
         if !popup_before && self.app.state.popup_pane.is_some() {
             self.popup_owner_tab_id = popup_owner;
@@ -931,18 +1040,7 @@ impl HeadlessServer {
             self.reconcile_client_shell_locations();
         }
         let focus_after = self.shell_focus_target(client_id);
-        if let Some(all_focus_before) = all_focus_before {
-            self.finish_shell_location_reconciliation(all_focus_before, &focused_tabs_before);
-        } else {
-            let focused_tabs_after = self.focused_shell_tabs();
-            self.app.accept_current_focus_without_events();
-            self.send_shell_navigation_focus_events(
-                focus_before.as_ref(),
-                focus_after.as_ref(),
-                &focused_tabs_before,
-                &focused_tabs_after,
-            );
-        }
+        self.finish_shell_location_reconciliation(all_focus_before, &focused_panes_before);
         if focus_before != focus_after {
             if let Some(target) = focus_after {
                 self.app
@@ -956,6 +1054,45 @@ impl HeadlessServer {
                 self.claim_shell_tab_geometry(client_id, false)
                     || self.resize_shell_tab_if_controller(client_id, false)
             };
-        changed | navigation_changed | geometry_changed
+        internal_changed | changed | navigation_changed | geometry_changed
+    }
+}
+
+#[cfg(test)]
+mod presentation_focus_tests {
+    use super::*;
+    fn target(id: u32) -> ShellFocusTarget {
+        ShellFocusTarget {
+            tab_id: "tab".into(),
+            workspace_index: 0,
+            pane_id: PaneId::from_raw(id),
+        }
+    }
+    #[test]
+    fn one_client_changing_panes_keeps_another_clients_terminal_focused() {
+        let first = target(1);
+        let second = target(2);
+        let (lost, gained) = classify_shell_focus_transition(
+            Some(&first),
+            Some(&second),
+            &HashSet::from([first.pane_id]),
+            &HashSet::from([first.pane_id, second.pane_id]),
+        );
+        assert!(lost.is_none());
+        assert_eq!(gained, Some(&second));
+    }
+    #[test]
+    fn surface_activation_and_deactivation_change_focus_for_the_same_target() {
+        let target = target(1);
+        let empty = HashSet::new();
+        let focused = HashSet::from([target.pane_id]);
+        assert_eq!(
+            classify_shell_focus_transition(Some(&target), Some(&target), &empty, &focused),
+            (None, Some(&target))
+        );
+        assert_eq!(
+            classify_shell_focus_transition(Some(&target), Some(&target), &focused, &empty),
+            (Some(&target), None)
+        );
     }
 }

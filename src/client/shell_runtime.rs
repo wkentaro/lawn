@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 pub(super) fn dispatch_client_shell_actions(
@@ -12,6 +13,35 @@ pub(super) fn dispatch_client_shell_actions(
     let mut repaint = false;
     for action in actions {
         match action {
+            shell::ClientShellAction::PanePresentation {
+                endpoint_id,
+                generation,
+                request,
+                releases,
+            } => {
+                let current = endpoints
+                    .connection(&endpoint_id)
+                    .is_some_and(|connection| {
+                        generation.is_none_or(|generation| generation == connection.generation)
+                            && connection.negotiation.supports_capability(
+                                crate::protocol::endpoint::pane_presentation::CAPABILITY,
+                            )
+                    });
+                if current {
+                    for release in releases {
+                        endpoints.send_to(&endpoint_id, &release);
+                    }
+                    let data = serde_json::to_string(&request)
+                        .expect("pane policy contains JSON strings and integers");
+                    endpoints.send_to(
+                        &endpoint_id,
+                        &ClientMessage::EndpointControl {
+                            kind: crate::protocol::endpoint::pane_presentation::SET_KIND.into(),
+                            data,
+                        },
+                    );
+                }
+            }
             shell::ClientShellAction::Endpoint {
                 endpoint_id,
                 boot_id,

@@ -1,3 +1,4 @@
+// Modified for Lawn.
 use super::*;
 
 #[test]
@@ -149,7 +150,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
     let parent = state.hits.workspaces[0].rect;
     let status_cell = usize::from(parent.y) * usize::from(collapsed.width)
         + usize::from(parent.x.saturating_add(1));
-    assert_eq!(
+    assert_ne!(
         collapsed.cells[status_cell].fg,
         crate::protocol::color_to_u32(state.config.palette.red)
     );
@@ -650,187 +651,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
 }
 
 #[test]
-fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
-    let mut projected = snapshot();
-    let mut second_pane = projected.panes[0].clone();
-    second_pane.pane_id = "pane_2".into();
-    second_pane.focused = false;
-    projected.panes.push(second_pane);
-    projected.agents = vec![
-        ClientShellAgent {
-            pane_id: "pane_1".into(),
-            workspace_id: "ws_1".into(),
-            tab_id: "tab_1".into(),
-            name: Some("pi one".into()),
-            display_agent: None,
-            agent: Some("pi".into()),
-            title: None,
-            terminal_title: Some("first title".into()),
-            terminal_title_stripped: Some("first".into()),
-            agent_status: AgentStatus::Done,
-            state_change_seq: 10,
-            state_labels: Vec::new(),
-            tokens: vec![("summary".into(), "review complete".into())],
-            focused: true,
-        },
-        ClientShellAgent {
-            pane_id: "pane_2".into(),
-            workspace_id: "ws_1".into(),
-            tab_id: "tab_1".into(),
-            name: Some("pi two".into()),
-            display_agent: None,
-            agent: Some("pi".into()),
-            title: None,
-            terminal_title: Some("second title".into()),
-            terminal_title_stripped: Some("second".into()),
-            agent_status: AgentStatus::Blocked,
-            state_change_seq: 20,
-            state_labels: vec![("blocked".into(), "needs input".into())],
-            tokens: vec![("summary".into(), "waiting for Can".into())],
-            focused: false,
-        },
-    ];
-    let mut config = Config::default();
-    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
-    config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
-    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-    config.ui.sidebar.agents.rows_by_agent.insert(
-        "pi".into(),
-        vec![
-            vec![
-                crate::config::AgentSidebarToken::StateIcon,
-                crate::config::AgentSidebarToken::StateText,
-            ],
-            vec![
-                crate::config::AgentSidebarToken::Agent,
-                crate::config::AgentSidebarToken::Custom("summary".into()),
-            ],
-        ],
-    );
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-
-    let frame = state.compose(106, 30).expect("agent sidebar frame");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("× needs input"), "frame: {text}");
-    assert!(text.contains("pi two"), "frame: {text}");
-    assert!(text.contains("waiting for"), "frame: {text}");
-    assert_eq!(
-        state
-            .hits
-            .agents
-            .first()
-            .map(|(_, pane_id)| pane_id.as_str()),
-        Some("pane_2")
-    );
-
-    let first = state.hits.agents[0].0;
-    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: first.x,
-        row: first.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let [ClientShellAction::Endpoint { request, .. }] = &click.actions[..] else {
-        panic!("agent row should focus through endpoint API");
-    };
-    assert!(matches!(
-        &request.method,
-        crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"
-    ));
-
-    state.compose(106, 10).expect("short agent sidebar frame");
-    assert_eq!(
-        state
-            .hits
-            .agents
-            .first()
-            .map(|(_, pane_id)| pane_id.as_str()),
-        Some("pane_2")
-    );
-    let body = state.hits.agent_body;
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: body.x,
-        row: body.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    state
-        .compose(106, 10)
-        .expect("scrolled agent sidebar frame");
-    assert_eq!(
-        state
-            .hits
-            .agents
-            .first()
-            .map(|(_, pane_id)| pane_id.as_str()),
-        Some("pane_1")
-    );
-
-    state.sidebar_collapsed = true;
-    let compact = state.compose(106, 30).expect("compact agent sidebar frame");
-    let blocked = state
-        .hits
-        .agents
-        .iter()
-        .find(|(_, pane_id)| pane_id == "pane_2")
-        .expect("blocked compact agent")
-        .0;
-    let row_start = blocked.y as usize * compact.width as usize + blocked.x as usize;
-    assert_ne!(compact.cells[row_start].fg, compact.cells[row_start + 2].fg);
-    assert_eq!(compact.cells[row_start].bg, compact.cells[row_start + 2].bg);
-}
-
-#[test]
-fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
-    let mut projected = snapshot();
-    projected.tabs[0].label = "second".into();
-    projected.tabs[0].custom_label = true;
-    projected.agents = vec![ClientShellAgent {
-        pane_id: "pane_1".into(),
-        workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
-        name: Some("reviewer".into()),
-        display_agent: None,
-        agent: Some("pi".into()),
-        title: None,
-        terminal_title: None,
-        terminal_title_stripped: None,
-        agent_status: AgentStatus::Working,
-        state_change_seq: 1,
-        state_labels: Vec::new(),
-        tokens: Vec::new(),
-        focused: true,
-    }];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-    let frame = state.compose(106, 30).expect("agent sidebar frame");
-    let row = state.hits.agents.first().expect("agent row hit").0;
-    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
-
-    for (label, needle) in [("tab", "second"), ("agent", "reviewer"), ("separator", "·")] {
-        let (x, y) = cell_symbol_position(&frame, row, needle);
-        let cell = buffer.cell((x, y)).expect("muted sidebar cell");
-        assert!(
-            !cell.modifier.contains(Modifier::DIM),
-            "{label} cell at ({x},{y}) should not stack terminal faint: {cell:?}"
-        );
-    }
-}
-
-#[test]
-fn workspace_state_text_does_not_stack_terminal_faint() {
+fn workspace_state_text_is_absent_from_navigation() {
     use crate::config::SpaceSidebarToken;
 
     let mut config = Config::default();
@@ -843,17 +664,19 @@ fn workspace_state_text_does_not_stack_terminal_faint() {
     state.set_pane_surface(surface());
     let frame = state.compose(106, 30).expect("workspace sidebar frame");
     let rect = state.hits.workspaces.first().expect("workspace hit").rect;
-    let buffer = frame.to_ratatui_buffer().expect("workspace sidebar buffer");
-    let (x, y) = cell_symbol_position(&frame, rect, "idle");
-    let cell = buffer.cell((x, y)).expect("workspace state text cell");
-    assert!(
-        !cell.modifier.contains(Modifier::DIM),
-        "workspace state text at ({x},{y}) should not stack terminal faint: {cell:?}"
-    );
+    assert_eq!(rect.height, 1);
+    let text: String = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect();
+    assert!(!text.contains("idle"));
+    assert!(!text.contains("○"));
+    assert!(!text.contains(" agents"));
 }
 
 #[test]
-fn active_agent_view_controls_sidebar_order_and_focus_indices() {
+fn active_agent_view_preserves_keyboard_focus_indices() {
     let mut projected = snapshot();
     let mut second_pane = projected.panes[0].clone();
     second_pane.pane_id = "pane_2".into();
@@ -919,12 +742,10 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     state.set_pane_surface(surface());
     state.compose(106, 30).expect("filtered agent sidebar");
     assert_eq!(
-        state
-            .hits
-            .agents
-            .iter()
-            .map(|(_, pane_id)| pane_id.as_str())
-            .collect::<Vec<_>>(),
+        super::super::agent_sidebar::ordered_agent_pane_ids(
+            state.snapshot.as_deref().unwrap(),
+            state.config.agent_panel_sort
+        ),
         vec!["pane_2", "pane_3"]
     );
     assert_eq!(state.hits.agent_sort_toggle, Rect::default());
@@ -956,64 +777,6 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
                 crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"
             )
     ));
-}
-
-#[test]
-fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
-    let path = std::env::temp_dir().join(format!(
-        "herdr-shell-agent-sort-{}-{}.json",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos()
-    ));
-    let mut projected = snapshot();
-    projected.agents.push(ClientShellAgent {
-        pane_id: "pane_1".into(),
-        workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
-        name: Some("pi".into()),
-        display_agent: None,
-        agent: Some("pi".into()),
-        title: None,
-        terminal_title: None,
-        terminal_title_stripped: None,
-        agent_status: AgentStatus::Working,
-        state_change_seq: 1,
-        state_labels: Vec::new(),
-        tokens: Vec::new(),
-        focused: true,
-    });
-    let config =
-        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
-    let mut state = ClientShellState::new(config);
-    state.set_snapshot(Box::new(projected));
-    state.set_pane_surface(surface());
-    state.compose(106, 30).expect("agent sidebar frame");
-    let toggle = state.hits.agent_sort_toggle;
-
-    let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: toggle.x,
-        row: toggle.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-
-    assert_eq!(
-        state.config.agent_panel_sort,
-        crate::config::AgentPanelSortConfig::Priority
-    );
-    assert!(click.actions.is_empty());
-    let reloaded_config =
-        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
-    let reloaded = ClientShellState::new(reloaded_config);
-    assert_eq!(
-        reloaded.config.agent_panel_sort,
-        crate::config::AgentPanelSortConfig::Priority
-    );
-    assert!(reloaded.agent_panel_sort_manual);
-    std::fs::remove_file(path).expect("remove agent sort preferences");
 }
 
 #[test]
