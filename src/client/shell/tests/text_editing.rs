@@ -27,10 +27,7 @@ fn shell(field: usize) -> ClientShellState {
                 &mut ClientShellInput::default(),
             );
         }
-        6 => {
-            state.open_navigator_overlay();
-            state.handle_input_bytes(b"/");
-        }
+        6 => state.open_navigator_overlay(),
         7 => {
             state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                 query: TextEditor::default(),

@@ -1704,6 +1704,7 @@ async fn goto_search_opens_on_shifted_slash_from_a_report_all_pane() {
     ] {
         let mut herdr = HerdrPath::new(HostProfile::Kitty, pane_mode);
         herdr.state.open_navigator_overlay();
+        herdr.feed(b"\x1b");
         assert_eq!(herdr.feed(press), None, "{}", show(pane_mode));
         assert_eq!(herdr.feed(release), None, "{}", show(pane_mode));
         assert!(
@@ -1737,6 +1738,7 @@ async fn goto_search_opens_only_for_a_typed_slash() {
     ] {
         let mut herdr = HerdrPath::new(HostProfile::Kitty, pane_mode);
         herdr.state.open_navigator_overlay();
+        herdr.feed(b"\x1b");
         let _ = herdr.feed(press);
         let focused = matches!(
             &herdr.state.overlay,
