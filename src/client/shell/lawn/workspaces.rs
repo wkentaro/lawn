@@ -172,38 +172,88 @@ impl ClientShellState {
                 })
     }
 
-    pub(super) fn focus_after_parked_close(&mut self, outcome: &mut ClientShellInput) {
-        let Some(endpoint) = self
-            .endpoints
-            .iter_mut()
-            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            .filter(|endpoint| endpoint.parking.available())
-        else {
+    pub(crate) fn focus_after_parked_close(&mut self, outcome: &mut ClientShellInput) {
+        let Some(index) = self.endpoints.iter().position(|endpoint| {
+            endpoint.endpoint_id == self.active_endpoint_id && endpoint.parking.available()
+        }) else {
             return;
         };
-        let Some(departed) = endpoint.parking.departed_workspace.take() else {
+        let Some(departed) = self.endpoints[index].parking.departed_workspace.take() else {
             return;
         };
+        let endpoint = &self.endpoints[index];
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             return;
         };
-        if snapshot.focused_workspace_id.as_deref() != Some(&departed)
-            || endpoint.parking.shows_workspace(&departed)
+        if snapshot.focused_workspace_id != departed.focused_workspace
+            || snapshot
+                .focused_workspace_id
+                .as_deref()
+                .is_some_and(|workspace| endpoint.parking.shows_workspace(workspace))
             || endpoint.parking.preview_pane().is_some()
         {
             return;
         }
-        let Some(workspace_id) = snapshot
+        let visible: HashSet<_> = snapshot
             .workspaces
             .iter()
-            .find(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
-            .map(|workspace| workspace.workspace_id.clone())
-        else {
-            return;
+            .filter(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
+            .map(|workspace| workspace.workspace_id.as_str())
+            .collect();
+        let source = departed.origin.as_deref().unwrap_or(snapshot);
+        let mobile = self.mobile_layout_active();
+        let flat = self.sidebar_collapsed && !mobile;
+        let empty_groups = HashSet::new();
+        let groups = if flat || mobile {
+            &empty_groups
+        } else {
+            self.collapsed_groups_for_endpoint(&endpoint.endpoint_id)
+                .unwrap_or(&empty_groups)
         };
-        self.push_endpoint_method(
-            Method::WorkspaceFocus(WorkspaceTarget { workspace_id }),
-            outcome,
-        );
+        let mut entries =
+            super::super::sidebar::workspace_entries_matching(source, groups, |workspace| {
+                workspace.workspace_id == departed.workspace_id
+                    || visible.contains(workspace.workspace_id.as_str())
+            });
+        if flat {
+            entries.sort_by_key(|entry| entry.index);
+        }
+        let origin = entries
+            .iter()
+            .position(|entry| source.workspaces[entry.index].workspace_id == departed.workspace_id)
+            .or_else(|| {
+                let group = source
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.workspace_id == departed.workspace_id)?
+                    .worktree
+                    .as_ref()?;
+                entries.iter().position(|entry| {
+                    source.workspaces[entry.index]
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|candidate| {
+                            candidate.key == group.key && !candidate.is_linked_worktree
+                        })
+                })
+            })
+            .unwrap_or(0);
+        let neighbor = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                visible.contains(source.workspaces[entry.index].workspace_id.as_str())
+            })
+            .min_by_key(|(index, _)| (index.abs_diff(origin), *index < origin))
+            .map(|(_, entry)| source.workspaces[entry.index].workspace_id.clone());
+        if let Some(workspace_id) = neighbor {
+            self.reveal_workspace(&workspace_id);
+            self.push_endpoint_method(
+                Method::WorkspaceFocus(WorkspaceTarget { workspace_id }),
+                outcome,
+            );
+        } else {
+            self.handle_endpoint_navigation(crate::input::KeybindAction::NextWorkspace, outcome);
+        }
     }
 }

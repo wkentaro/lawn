@@ -120,7 +120,6 @@ impl ClientShellState {
             self.receive_endpoint_unavailable(message);
             outcome.repaint = true;
         }
-        self.focus_after_parked_close(&mut outcome);
         outcome
     }
 

@@ -20,12 +20,13 @@ pub(in crate::client::shell) struct PaneParking {
     prune_candidates: BTreeSet<String>,
     pane_tabs: HashMap<String, String>,
     pane_workspaces: HashMap<String, String>,
+    focused_workspace: Option<String>,
     all_tabs: HashSet<String>,
     all_workspaces: HashSet<String>,
     pub(super) hidden_panes: HashSet<String>,
     visible_tabs: HashSet<String>,
     visible_workspaces: HashSet<String>,
-    pub(super) departed_workspace: Option<String>,
+    pub(in crate::client::shell) departed_workspace: Option<WorkspaceDeparture>,
     terminal_panes: HashMap<String, String>,
     dirty: bool,
     failed: bool,
@@ -33,6 +34,13 @@ pub(in crate::client::shell) struct PaneParking {
     last_error: Option<String>,
     notice: Option<String>,
     repaint: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::client::shell) struct WorkspaceDeparture {
+    pub(in crate::client::shell) workspace_id: String,
+    pub(in crate::client::shell) focused_workspace: Option<String>,
+    pub(in crate::client::shell) origin: Option<Box<ClientShellSnapshot>>,
 }
 
 impl PaneParking {
@@ -192,6 +200,7 @@ impl PaneParking {
             self.visible_tabs.clear();
             self.visible_workspaces.clear();
             self.pane_workspaces.clear();
+            self.focused_workspace = None;
             self.departed_workspace = None;
             self.preview_return = None;
             self.last_poll = None;
@@ -205,14 +214,35 @@ impl PaneParking {
             .iter()
             .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
             .collect();
-        if let Some(workspace) = snapshot.focused_workspace_id.as_ref().filter(|workspace| {
-            self.pane_workspaces.iter().any(|(pane, owner)| {
-                owner == *workspace && !self.hides_pane(pane) && !pane_workspaces.contains_key(pane)
+        let removed_workspace = self.focused_workspace.as_ref().filter(|workspace| {
+            snapshot.focused_workspace_id.as_ref() != Some(*workspace)
+                && !snapshot
+                    .workspaces
+                    .iter()
+                    .any(|candidate| &candidate.workspace_id == *workspace)
+        });
+        if let Some(workspace) = snapshot
+            .focused_workspace_id
+            .as_ref()
+            .into_iter()
+            .chain(removed_workspace)
+            .find(|workspace| {
+                self.pane_workspaces.iter().any(|(pane, owner)| {
+                    owner == *workspace
+                        && !self.hides_pane(pane)
+                        && !pane_workspaces.contains_key(pane)
+                })
             })
-        }) {
+        {
             // A park changes visibility; only a vanished active pane triggers departure.
-            self.departed_workspace = Some(workspace.clone());
+            // The server may already have selected a parked-only neighbor after a close.
+            self.departed_workspace = Some(WorkspaceDeparture {
+                workspace_id: workspace.clone(),
+                focused_workspace: snapshot.focused_workspace_id.clone(),
+                origin: None,
+            });
         }
+        self.focused_workspace = snapshot.focused_workspace_id.clone();
         self.pane_workspaces = pane_workspaces;
         self.all_workspaces = snapshot
             .workspaces
