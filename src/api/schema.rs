@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod background;
 pub mod commands;
 pub mod common;
 pub mod events;
@@ -16,6 +17,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 pub use agents::*;
+pub use background::*;
 pub use commands::*;
 pub use common::*;
 pub use events::*;
@@ -145,6 +147,8 @@ operations::define_operations! {
     PluginPaneOpen(PluginPaneOpenParams) => "plugin.pane.open", true, false;
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
+    BackgroundReport(BackgroundReportParams) => "background.report", false, true;
+    BackgroundList(PaneTarget) => "background.list", false, true;
 }
 
 #[cfg(test)]

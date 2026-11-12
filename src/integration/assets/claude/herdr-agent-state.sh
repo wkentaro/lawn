@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=claude
-# HERDR_INTEGRATION_VERSION=11
+# HERDR_INTEGRATION_VERSION=12
 
 set -eu
 
@@ -13,7 +13,7 @@ trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session) ;;
+  session|subagent-start|subagent-stop) ;;
   *) exit 0 ;;
 esac
 
@@ -48,42 +48,53 @@ if hook_input_file:
     except Exception:
         hook_input = {}
 
+if not isinstance(hook_input, dict):
+    raise SystemExit(0)
 if "CURSOR_VERSION" in os.environ or "cursor_version" in hook_input:
     raise SystemExit(0)
-hook_event_name = str(hook_input.get("hook_event_name") or "")
-if hook_event_name != "SessionStart":
-    raise SystemExit(0)
-is_subagent = bool(hook_input.get("agent_id"))
-if is_subagent:
+hook_event_name = hook_input.get("hook_event_name")
+session_id = hook_input.get("session_id")
+if not isinstance(session_id, str) or not session_id:
     raise SystemExit(0)
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
-report_seq = time.time_ns()
-session_id = hook_input.get("session_id")
-agent_session_id = session_id if isinstance(session_id, str) and session_id else None
-transcript_path = hook_input.get("transcript_path")
-agent_session_path = transcript_path if isinstance(transcript_path, str) and transcript_path else None
-session_start_source = hook_input.get("source") if hook_event_name == "SessionStart" else None
-if not isinstance(session_start_source, str) or not session_start_source:
-    session_start_source = None
-if agent_session_id:
+if action == "session":
+    if hook_event_name != "SessionStart" or hook_input.get("agent_id"):
+        raise SystemExit(0)
     params = {
         "pane_id": pane_id,
         "source": source,
         "agent": "claude",
-        "seq": report_seq,
-        "agent_session_id": agent_session_id,
+        "seq": time.time_ns(),
+        "agent_session_id": session_id,
     }
-    if agent_session_path:
-        params["agent_session_path"] = agent_session_path
-    if session_start_source:
+    transcript_path = hook_input.get("transcript_path")
+    if isinstance(transcript_path, str) and transcript_path:
+        params["agent_session_path"] = transcript_path
+    session_start_source = hook_input.get("source")
+    if isinstance(session_start_source, str) and session_start_source:
         params["session_start_source"] = session_start_source
-    request = {
-        "id": request_id,
-        "method": "pane.report_agent_session",
-        "params": params,
-    }
+    method = "pane.report_agent_session"
 else:
-    raise SystemExit(0)
+    events = {
+        "subagent-start": ("SubagentStart", "subagent_started"),
+        "subagent-stop": ("SubagentStop", "subagent_stop_observed"),
+    }
+    expected_hook_event, event = events[action]
+    task_id = hook_input.get("agent_id")
+    if hook_event_name != expected_hook_event or not session_id.strip() or not isinstance(task_id, str) or not task_id.strip():
+        raise SystemExit(0)
+    params = {
+        "pane_id": pane_id,
+        "source": source,
+        "session_id": session_id,
+        "event": event,
+        "task_id": task_id,
+    }
+    task_type = hook_input.get("agent_type")
+    if isinstance(task_type, str) and task_type.strip():
+        params["task_type"] = task_type
+    method = "background.report"
+request = {"id": request_id, "method": method, "params": params}
 
 try:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

@@ -682,3 +682,137 @@ function requestSessionPath(request: unknown): unknown {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+async function runClaudeHook(
+  action: string,
+  payload: unknown,
+  environment: Record<string, string> = {},
+) {
+  const env = { ...process.env, ...environment };
+  if (!("CURSOR_VERSION" in environment)) delete env.CURSOR_VERSION;
+  const command = originalPlatform === "win32"
+    ? ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        join(import.meta.dir, "claude/herdr-agent-state.ps1"), action]
+    : ["sh", join(import.meta.dir, "claude/herdr-agent-state.sh"), action];
+  const child = Bun.spawn(command, {
+    env,
+    stdin: new Blob([typeof payload === "string" ? payload : JSON.stringify(payload)]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
+}
+
+for (const [action, hookEvent, event] of [
+  ["subagent-start", "SubagentStart", "subagent_started"],
+  ["subagent-stop", "SubagentStop", "subagent_stop_observed"],
+] as const) {
+  const recordingName = action === "subagent-start" ? "claude-start" : "claude-stop";
+  test(`Claude ${hookEvent} reports only structured subagent observations`, async () => {
+    const requests = await startRecordingServer(recordingName);
+    await runClaudeHook(action, {
+      hook_event_name: hookEvent,
+      session_id: "root-session",
+      agent_id: "child-123",
+      agent_type: "Explore λ",
+      stop_hook_active: true,
+      transcript_path: "/does/not/exist/root.jsonl",
+      agent_transcript_path: "/does/not/exist/child.jsonl",
+      last_assistant_message: "Do not capture this message",
+      background_tasks: [{ id: "shell-123", status: "running" }],
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      method: "background.report",
+      params: {
+        pane_id: "test:p1",
+        source: "herdr:claude",
+        session_id: "root-session",
+        event,
+        task_id: "child-123",
+        task_type: "Explore λ",
+      },
+    });
+    expect(Object.keys((requests[0] as any).params).sort()).toEqual(
+      ["pane_id", "source", "session_id", "event", "task_id", "task_type"].sort(),
+    );
+  });
+
+  test(`Claude ${hookEvent} omits absent or invalid optional agent types`, async () => {
+    const requests = await startRecordingServer(`${recordingName}-opt`);
+    for (const agent_type of [undefined, "", " ", 123, {}]) {
+      await runClaudeHook(action, {
+        hook_event_name: hookEvent,
+        session_id: "root-session",
+        agent_id: "child-123",
+        agent_type,
+      });
+    }
+    expect(requests).toHaveLength(5);
+    for (const request of requests as any[]) {
+      expect(request.method).toBe("background.report");
+      expect(request.params).not.toHaveProperty("task_type");
+    }
+  }, 30_000);
+
+  test(`Claude ${hookEvent} ignores malformed identity and mismatched events`, async () => {
+    const requests = await startRecordingServer(`${recordingName}-bad`);
+    const valid = { hook_event_name: hookEvent, session_id: "root-session", agent_id: "child-123" };
+    for (const payload of [
+      "{", [], null, 123,
+      { ...valid, session_id: undefined },
+      { ...valid, session_id: 123 },
+      { ...valid, session_id: "" },
+      { ...valid, session_id: " " },
+      { ...valid, agent_id: undefined },
+      { ...valid, agent_id: " " },
+      { ...valid, agent_id: {} },
+      { ...valid, hook_event_name: "SessionStart" },
+      { ...valid, hook_event_name: hookEvent === "SubagentStart" ? "SubagentStop" : "SubagentStart" },
+      { ...valid, cursor_version: "compatibility" },
+    ]) {
+      await runClaudeHook(action, payload);
+    }
+    await runClaudeHook(action, valid, { CURSOR_VERSION: "compatibility" });
+    await runClaudeHook(action, valid, { HERDR_ENV: "0" });
+    await runClaudeHook(action, valid, { HERDR_PANE_ID: "" });
+    await runClaudeHook(action, valid, { HERDR_SOCKET_PATH: "" });
+    expect(requests).toEqual([]);
+  }, 30_000);
+}
+
+test.skipIf(originalPlatform === "win32")("Claude SessionStart preserves root identity and source without reporting state", async () => {
+  const requests = await startRecordingServer("claude-root-session");
+  for (const source of ["startup", "resume", "clear", "compact", "fork"]) {
+    await runClaudeHook("session", {
+      hook_event_name: "SessionStart",
+      session_id: "root-session",
+      transcript_path: "/unread/한국어/session.jsonl",
+      source,
+      agent_type: "custom-root-agent",
+    });
+  }
+  expect(requests).toHaveLength(5);
+  expect((requests as any[]).map(request => request.params.session_start_source))
+    .toEqual(["startup", "resume", "clear", "compact", "fork"]);
+  for (const request of requests as any[]) {
+    expect(request.method).toBe("pane.report_agent_session");
+    expect(request.params).toMatchObject({
+      agent: "claude", source: "herdr:claude", pane_id: "test:p1",
+      agent_session_id: "root-session", agent_session_path: "/unread/한국어/session.jsonl",
+    });
+    expect(request.params).not.toHaveProperty("state");
+    expect(typeof request.params.seq).toBe("number");
+  }
+  for (const event of ["SessionStart", "SubagentStart", "SubagentStop"]) {
+    await runClaudeHook("session", {
+      hook_event_name: event, session_id: "root-session", agent_id: "child-123",
+    });
+  }
+  expect(requests).toHaveLength(5);
+});

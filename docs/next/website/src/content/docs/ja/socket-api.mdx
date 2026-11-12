@@ -104,6 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | イベント | `events.subscribe`、`events.wait` |
+| バックグラウンド | `background.report`、`background.list` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -564,6 +565,14 @@ JSON のデコードまで到達したリクエスト行では、メソッドや
   }
 }
 ```
+
+Claude Code のフックは `background.report` に `pane_id`、`source: "herdr:claude"`、現在のルート `session_id` を送ります。`event` は `subagent_started` または `subagent_stop_observed` です。`task_id` にはネイティブの `agent_id` を使い、`agent_type` があれば `task_type` に含めます。これらの過去の観測情報はエージェントの状態、wait、通知に影響しません。
+
+```json
+{"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}
+```
+
+`background.list` は `result.type: "background_list"`、`terminal_id`、`background` を返します。`background` には `session_id`、`coverage: "observations_only"`、`current_state: "unknown"` と、`observation` が `start_observed` または `stop_observed` の `records` が含まれます。`start_observed_at_ms` と `stop_observed_at_ms` はサーバーが最初に受信した Unix 時刻のミリ秒値で、未観測なら `null` です。停止の観測は終了や成功を保証しません。Herdr はターミナルごとに最大 128 個のタスク ID をメモリに記録し、それを超える ID を記録しなかった場合は `truncated: true` を返します。ルートセッションの識別が変わると記録を消去します。同じ ID で resume した場合は過去の観測情報を保持し、現在の状態は不明のままです。
 
 Herdr に保存されたネイティブセッション参照があるとき、`pane.get`、`pane.list`、`agent.get`、`agent.list` は読み取り専用の `agent_session` オブジェクトを公開します:
 

@@ -3035,6 +3035,18 @@ impl HeadlessServer {
             return changed;
         }
 
+        // Background observations leave detection, completion and presentation unchanged.
+        if matches!(
+            &msg.request.method,
+            api::schema::Method::BackgroundReport(_) | api::schema::Method::BackgroundList(_)
+        ) {
+            let response = self
+                .app
+                .handle_api_request_after_internal_events_drained(msg.request);
+            let _ = msg.respond_to.send(response);
+            return changed;
+        }
+
         // Capture toast and effective pane states before the API call so we can
         // forward resulting client-local notifications. API requests like
         // pane.report_agent trigger handle_internal_event internally, which

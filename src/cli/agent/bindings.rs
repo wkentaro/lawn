@@ -7,7 +7,8 @@ use crate::api::schema::agents::{
 };
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams,
-    AgentStatus, AgentTarget, AgentWaitParams, ReadFormat, ReadSource, READ_FORMATS, READ_SOURCES,
+    AgentStatus, AgentTarget, AgentWaitParams, PaneTarget, ReadFormat, ReadSource, READ_FORMATS,
+    READ_SOURCES,
 };
 pub(crate) use crate::cli::projection::optional_text;
 use crate::cli::projection::{
@@ -226,6 +227,7 @@ cli_projection! {
 }
 
 pub(crate) enum Operation {
+    BackgroundList(PaneTarget),
     List,
     Get(AgentTarget),
     Focus(AgentTarget),
@@ -247,6 +249,11 @@ pub(crate) fn command() -> Command {
     Command::new("agent")
         .about("Control and inspect agent panes")
         .subcommand_required(true)
+        .subcommand(Command::new("background")
+            .about("Inspect historical background task observations")
+            .subcommand_required(true)
+            .subcommand(leaf("list", crate::cli::pane::bindings::PaneTargetProjection::arguments(), "List background observations as JSON")
+                .arg(clap::Arg::new("json").long("json").action(clap::ArgAction::SetTrue))))
         .subcommand(leaf("list", Vec::new(), "List agents"))
         .subcommand(leaf("get", TargetProjection::arguments(), "Show an agent"))
         .subcommand(leaf("focus", TargetProjection::arguments(), "Focus an agent"))
@@ -278,6 +285,14 @@ pub(crate) fn from_matches(matches: &ArgMatches) -> Result<Operation, ParseError
         return Err(ParseError::Usage("missing agent command".into()));
     };
     Ok(match name {
+        "background" => {
+            let Some(("list", matches)) = matches.subcommand() else {
+                return Err(ParseError::Usage("missing background list command".into()));
+            };
+            Operation::BackgroundList(
+                crate::cli::pane::bindings::PaneTargetProjection::from_matches(matches)?,
+            )
+        }
         "list" => Operation::List,
         "get" => Operation::Get(TargetProjection::from_matches(matches)?),
         "focus" => Operation::Focus(TargetProjection::from_matches(matches)?),

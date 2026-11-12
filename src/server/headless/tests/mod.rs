@@ -1,6 +1,7 @@
 // Modified for Lawn.
 use super::*;
 
+mod endpoint_requests;
 mod event_fairness;
 mod native_graphics;
 #[path = "pane_move.rs"]

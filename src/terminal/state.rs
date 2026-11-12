@@ -127,6 +127,7 @@ struct RecentAgentProcessExit {
 /// pane/view state no longer owns terminal identity, cwd, labels, or agent
 /// metadata.
 pub struct TerminalState {
+    pub(super) background: super::background::BackgroundObservations,
     pub id: TerminalId,
     pub cwd: PathBuf,
     pub detected_agent: Option<Agent>,
@@ -167,6 +168,7 @@ pub struct TerminalState {
 impl TerminalState {
     pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
         Self {
+            background: super::background::BackgroundObservations::default(),
             id,
             cwd,
             detected_agent: None,
@@ -1438,6 +1440,7 @@ impl TerminalState {
         session: crate::agent_resume::PersistedAgentSession,
     ) {
         self.persisted_agent_session = Some(session);
+        self.reconcile_background_owner();
     }
 
     pub fn set_managed_agent_launch_session(
@@ -1446,6 +1449,7 @@ impl TerminalState {
     ) {
         self.persisted_agent_session = Some(session.clone());
         self.managed_agent_launch_session = Some(session);
+        self.reconcile_background_owner();
     }
 
     pub fn set_agent_session_ref(
@@ -2322,9 +2326,11 @@ impl TerminalState {
         self.agent_name = None;
         self.agent_name_owner = None;
         self.managed_agent = None;
+        self.reconcile_background_owner();
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
+        self.background = super::background::BackgroundObservations::default();
         self.detected_agent = None;
         self.fallback_state = AgentState::Unknown;
         self.fallback_visible_blocker = false;
@@ -2409,6 +2415,7 @@ impl TerminalState {
         previous_presentation: EffectivePresentation,
         now: Instant,
     ) -> Option<EffectiveStateChange> {
+        self.reconcile_background_owner();
         let state = if self.visible_blocker_overrides_hook() {
             AgentState::Blocked
         } else {

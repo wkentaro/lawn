@@ -104,6 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | 事件 | `events.subscribe`、`events.wait` |
+| 后台 | `background.report`、`background.list` |
 | 集成 | `integration.install`、`integration.uninstall` |
 | 插件 | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -560,6 +561,14 @@ Herdr 在本地 socket 上使用换行分隔的 JSON。在 Unix 上,那个 socke
   }
 }
 ```
+
+Claude Code 钩子通过 `background.report` 发送 `pane_id`、`source: "herdr:claude"` 和当前根会话的 `session_id`。`event` 为 `subagent_started` 或 `subagent_stop_observed`。`task_id` 使用原生 `agent_id`，有 `agent_type` 时通过 `task_type` 发送。这些历史观测记录不影响智能体状态、等待或通知。
+
+```json
+{"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}
+```
+
+`background.list` 返回 `result.type: "background_list"`、`terminal_id` 和 `background`。`background` 包含 `session_id`、`coverage: "observations_only"`、`current_state: "unknown"` 和 `records`，记录的 `observation` 为 `start_observed` 或 `stop_observed`。`start_observed_at_ms` 和 `stop_observed_at_ms` 是服务器首次收到相应观测的 Unix 毫秒时间戳，未观测时为 `null`。停止观测不能证明任务已经终止或成功。Herdr 为每个终端在内存中最多保留 128 个任务 ID，遗漏更多 ID 时设置 `truncated: true`。根会话身份改变时会清除记录；以同一 ID 恢复会话时保留历史观测，当前状态仍为未知。
 
 Herdr 存有原生会话引用时,`pane.get`、`pane.list`、`agent.get` 和 `agent.list` 暴露一个只读的 `agent_session` 对象:
 

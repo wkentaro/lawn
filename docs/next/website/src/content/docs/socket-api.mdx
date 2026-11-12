@@ -108,6 +108,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
 | Events | `events.subscribe`, `events.wait` |
+| Background | `background.report`, `background.list` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
 
@@ -704,6 +705,14 @@ Both methods accept an optional `resume_argv` array with the command that resume
   }
 }
 ```
+
+Claude Code hooks use `background.report` with `pane_id`, `source: "herdr:claude"`, the current root `session_id`, `event` set to `subagent_started` or `subagent_stop_observed`, native `agent_id` as `task_id`, and optional `agent_type` as `task_type`. These historical observations leave agent status, waits, and notifications unchanged.
+
+```json
+{"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}
+```
+
+`background.list` returns `result.type: "background_list"`, `terminal_id`, and `background`. The background data includes `session_id`, `coverage: "observations_only"`, `current_state: "unknown"`, and `records` with `observation` set to `start_observed` or `stop_observed`. `start_observed_at_ms` and `stop_observed_at_ms` are first server receipt times in Unix milliseconds, or `null` if unobserved. A stop observation does not prove termination or success. Herdr keeps at most 128 task IDs in memory per terminal and sets `truncated: true` if it omits more. Changing the root session identity clears the records; resuming the same ID retains historical observations with current state unknown.
 
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` expose a read-only `agent_session` object when Herdr has a stored native session reference:
 

@@ -278,6 +278,10 @@ pub enum ResponseResult {
         projection_revision: u64,
     },
     Ok {},
+    BackgroundList {
+        terminal_id: String,
+        background: super::background::BackgroundSnapshot,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

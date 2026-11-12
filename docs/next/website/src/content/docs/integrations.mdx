@@ -109,9 +109,9 @@ Install the Claude Code hook:
 herdr integration install claude
 ```
 
-The hook reports Claude Code session identity to the local Herdr socket on session start. Claude Code state comes from Herdr's screen manifest detection.
+The hooks report Claude Code's root session identity on `SessionStart` and historical subagent observations on `SubagentStart` and `SubagentStop` to the local Herdr socket. A stop observation does not prove termination or task success. Read the observations with `herdr agent background list w1:p1 --json`. Claude Code state still comes from Herdr's screen manifest detection.
 
-Claude integration v10 matches only the documented `SessionStart` sources: `startup`, `resume`, `clear`, `compact`, and `fork`. This prevents Grok's `new` and `load` events from launching the imported Herdr Claude hook, without disabling unrelated Claude-compatible hooks. Reinstall the Claude integration after upgrading to migrate the previous wildcard matcher. New Claude source values require an integration update.
+The `SessionStart` matcher accepts only the documented sources: `startup`, `resume`, `clear`, `compact`, and `fork`. This prevents Grok's `new` and `load` events from launching the imported Herdr Claude hook, without disabling unrelated Claude-compatible hooks. Reinstall the Claude integration after upgrading to update the matcher and register the subagent hooks. New Claude source values require an integration update.
 
 Herdr uses `~/.claude` by default, or `CLAUDE_CONFIG_DIR` when set. The Claude config directory must already exist. Install writes `hooks/herdr-agent-state.sh` and updates `settings.json` with Herdr hook entries. Uninstall removes the matching hook entries and deletes the hook script.
 

@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod background;
 mod env;
 mod integrations;
 mod layouts;
@@ -1116,6 +1117,12 @@ impl App {
             Method::TabMove(params) => return self.handle_tab_move(request.id, params),
             Method::TabClose(target) => return self.handle_tab_close(request.id, target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
+            Method::BackgroundReport(params) => {
+                return self.handle_background_report(request.id, params)
+            }
+            Method::BackgroundList(params) => {
+                return self.handle_background_list(request.id, params)
+            }
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),

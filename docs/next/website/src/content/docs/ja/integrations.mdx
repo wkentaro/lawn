@@ -111,9 +111,9 @@ Claude Code フックをインストールします:
 herdr integration install claude
 ```
 
-このフックは、セッション開始時に Claude Code のセッション識別をローカルの Herdr ソケットに報告します。Claude Code の状態は Herdr のスクリーンマニフェスト検出から得られます。
+フックは `SessionStart` で Claude Code のルートセッション識別を、`SubagentStart` と `SubagentStop` でサブエージェントの過去の観測情報をローカルの Herdr ソケットに報告します。停止の観測は終了や作業の成功を保証しません。`herdr agent background list w1:p1 --json` で観測情報を読み取れます。Claude Code の状態は引き続き Herdr のスクリーンマニフェスト検出から得られます。
 
-Claude 統合 v10 は、文書化された `SessionStart` の source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に Claude 統合を再インストールして、従来のワイルドカードマッチャーを移行してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
+`SessionStart` のマッチャーは、文書化された source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に Claude 統合を再インストールして、マッチャーを更新しサブエージェントのフックを登録してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
 
 Herdr はデフォルトで `~/.claude` を使い、`CLAUDE_CONFIG_DIR` が設定されていればそちらを使います。Claude の設定ディレクトリはあらかじめ存在している必要があります。インストールは `hooks/herdr-agent-state.sh` を書き込み、`settings.json` に Herdr のフックエントリを追加します。アンインストールは一致するフックエントリを削除し、フックスクリプトを削除します。
 
