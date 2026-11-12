@@ -200,6 +200,8 @@ pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
 // These are documented in vendor/libghostty-vt/include/ghostty/vt/terminal.h,
 // but the generated bindings do not currently expose named constants for them.
 const TERMINAL_DATA_COLOR_FOREGROUND: ffi::GhosttyTerminalData = 18;
+const TERMINAL_DATA_COLOR_BACKGROUND: ffi::GhosttyTerminalData = 19;
+const TERMINAL_DATA_COLOR_PALETTE: ffi::GhosttyTerminalData = 21;
 const TERMINAL_DATA_COLOR_CURSOR: ffi::GhosttyTerminalData = 20;
 
 const KITTY_IMAGE_STORAGE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
@@ -1288,6 +1290,73 @@ impl Terminal {
         Ok((wide, graphemes))
     }
 
+    /// Visit styled cells without updating viewport or renderer dirty state.
+    pub fn for_each_screen_row_styled_cell(
+        &self,
+        row: u32,
+        max_cols: u16,
+        mut visit: impl FnMut(CellWide, &[u32], CellStyle, Option<CellColor>),
+    ) -> Result<(), Error> {
+        if row as usize >= self.total_rows()? {
+            return Ok(());
+        }
+        let mut grid_ref = self.grid_ref(ghostty_screen_point(0, row))?;
+        let mut graphemes = Vec::new();
+        for x in 0..max_cols.min(self.cols()?) {
+            grid_ref.x = x;
+            let mut raw = ffi::GhosttyCell::default();
+            let mut style = ffi::GhosttyStyle {
+                size: mem::size_of::<ffi::GhosttyStyle>(),
+                ..Default::default()
+            };
+            // SAFETY: the grid reference is valid under the terminal borrow.
+            unsafe {
+                ffi::ghostty_grid_ref_cell(&grid_ref, &mut raw).into_result()?;
+                ffi::ghostty_grid_ref_style(&grid_ref, &mut style).into_result()?;
+            }
+            grid_ref_graphemes_into(&grid_ref, &mut graphemes)?;
+            visit(
+                grid_ref_wide(&grid_ref)?,
+                &graphemes,
+                style.into(),
+                cell_content_bg_color(raw)?,
+            );
+        }
+        Ok(())
+    }
+
+    /// Effective colors and palette, read without consuming terminal dirty flags.
+    pub fn screen_colors(&self, previous: RenderColors) -> Result<RenderColors, Error> {
+        let mut palette = [ffi::GhosttyColorRgb::default(); 256];
+        // SAFETY: this data kind writes exactly 256 RGB entries.
+        unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw,
+                TERMINAL_DATA_COLOR_PALETTE,
+                palette.as_mut_ptr().cast(),
+            )
+            .into_result()?;
+        }
+        let mut foreground = previous.foreground;
+        let mut background = previous.background;
+        // RenderState retains both defaults until the terminal provides both.
+        if let (Some(fg), Some(bg)) = (
+            self.get_optional_rgb_color(TERMINAL_DATA_COLOR_FOREGROUND)?,
+            self.get_optional_rgb_color(TERMINAL_DATA_COLOR_BACKGROUND)?,
+        ) {
+            (foreground, background) = if self.mode_get(5)? {
+                (bg, fg)
+            } else {
+                (fg, bg)
+            };
+        }
+        Ok(RenderColors {
+            foreground,
+            background,
+            palette: palette.map(Into::into),
+        })
+    }
+
     pub fn screen_text_rows(&self) -> Result<Vec<ScreenTextRow>, Error> {
         self.screen_text_rows_range(0, usize::MAX)
     }
@@ -2373,6 +2442,46 @@ fn grid_ref_graphemes_into(
     }
     buffer.truncate(required);
     Ok(())
+}
+
+fn cell_content_bg_color(raw: ffi::GhosttyCell) -> Result<Option<CellColor>, Error> {
+    let mut tag = ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_CODEPOINT;
+    unsafe {
+        ffi::ghostty_cell_get(
+            raw,
+            ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CONTENT_TAG,
+            (&mut tag as *mut ffi::GhosttyCellContentTag).cast(),
+        )
+        .into_result()?;
+    }
+
+    match tag {
+        ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
+            let mut index = 0u8;
+            unsafe {
+                ffi::ghostty_cell_get(
+                    raw,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_PALETTE,
+                    (&mut index as *mut u8).cast(),
+                )
+                .into_result()?;
+            }
+            Ok(Some(CellColor::Palette(index)))
+        }
+        ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
+            let mut color = ffi::GhosttyColorRgb::default();
+            unsafe {
+                ffi::ghostty_cell_get(
+                    raw,
+                    ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_RGB,
+                    (&mut color as *mut ffi::GhosttyColorRgb).cast(),
+                )
+                .into_result()?;
+            }
+            Ok(Some(CellColor::Rgb(color.into())))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn grid_ref_wide(grid_ref: &ffi::GhosttyGridRef) -> Result<CellWide, Error> {
@@ -3603,44 +3712,7 @@ impl<'a> RowCellIter<'a> {
     }
 
     pub fn content_bg_color(&self) -> Result<Option<CellColor>, Error> {
-        let raw = self.raw_cell()?;
-        let mut tag = ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_CODEPOINT;
-        unsafe {
-            ffi::ghostty_cell_get(
-                raw,
-                ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CONTENT_TAG,
-                (&mut tag as *mut ffi::GhosttyCellContentTag).cast(),
-            )
-            .into_result()?;
-        }
-
-        match tag {
-            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
-                let mut index = 0u8;
-                unsafe {
-                    ffi::ghostty_cell_get(
-                        raw,
-                        ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_PALETTE,
-                        (&mut index as *mut u8).cast(),
-                    )
-                    .into_result()?;
-                }
-                Ok(Some(CellColor::Palette(index)))
-            }
-            ffi::GhosttyCellContentTag_GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
-                let mut color = ffi::GhosttyColorRgb::default();
-                unsafe {
-                    ffi::ghostty_cell_get(
-                        raw,
-                        ffi::GhosttyCellData_GHOSTTY_CELL_DATA_COLOR_RGB,
-                        (&mut color as *mut ffi::GhosttyColorRgb).cast(),
-                    )
-                    .into_result()?;
-                }
-                Ok(Some(CellColor::Rgb(color.into())))
-            }
-            _ => Ok(None),
-        }
+        cell_content_bg_color(self.raw_cell()?)
     }
 
     pub fn fg_color(&self) -> Result<Option<RgbColor>, Error> {
@@ -4841,6 +4913,70 @@ mod tests {
                 .for_each_screen_row_cell(u32::MAX, |_, _| panic!("out-of-range row"))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn styled_screen_rows_preserve_native_styles_colors_and_viewport() {
+        let mut terminal = Terminal::new(12, 3, 100).unwrap();
+        let baseline = RenderState::new().unwrap().colors().unwrap();
+        assert_eq!(terminal.screen_colors(baseline).unwrap(), baseline);
+        terminal.write("old\r\n".repeat(10).as_bytes());
+        terminal.write(
+            "\x1b]4;18;rgb:11/22/33\x07\x1b]10;#abcdef\x07\x1b]11;#123456\x07\x1b[38;5;18;1m界e\u{301}\x1b[0m\x1b[48;5;4m\x1b[K".as_bytes(),
+        );
+        terminal.scroll_viewport_delta(-8);
+        let viewport = terminal.scrollbar().unwrap();
+        let row = terminal.total_rows().unwrap() as u32 - 1;
+        let mut cells = Vec::new();
+        terminal
+            .for_each_screen_row_styled_cell(row, 4, |wide, graphemes, style, background| {
+                cells.push((wide, graphemes.to_vec(), style, background));
+            })
+            .unwrap();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0].0, CellWide::Wide);
+        assert_eq!(cells[0].1, vec!['界' as u32]);
+        assert_eq!(cells[0].2.fg_color, Some(CellColor::Palette(18)));
+        assert!(cells[0].2.bold);
+        assert_eq!(cells[1].0, CellWide::SpacerTail);
+        assert_eq!(cells[2].1, vec!['e' as u32, 0x301]);
+        assert_eq!(cells[3].3, Some(CellColor::Palette(4)));
+        terminal
+            .for_each_screen_row_styled_cell(row, 0, |_, _, _, _| panic!("zero-width row"))
+            .unwrap();
+        terminal
+            .for_each_screen_row_styled_cell(u32::MAX, 4, |_, _, _, _| panic!("out-of-range row"))
+            .unwrap();
+        let colors = terminal.screen_colors(baseline).unwrap();
+        assert_eq!(
+            colors.foreground,
+            RgbColor {
+                r: 0xab,
+                g: 0xcd,
+                b: 0xef
+            }
+        );
+        assert_eq!(
+            colors.background,
+            RgbColor {
+                r: 0x12,
+                g: 0x34,
+                b: 0x56
+            }
+        );
+        assert_eq!(
+            colors.palette[18],
+            RgbColor {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            }
+        );
+        assert_eq!(terminal.scrollbar().unwrap(), viewport);
+        terminal.write(b"\x1b[?5h");
+        let reversed = terminal.screen_colors(colors).unwrap();
+        assert_eq!(reversed.foreground, colors.background);
+        assert_eq!(reversed.background, colors.foreground);
     }
 
     #[test]
