@@ -1736,6 +1736,30 @@
           ],
           "type": "object"
         },
+        "BackgroundShellReportParams": {
+          "additionalProperties": false,
+          "properties": {
+            "observation": {
+              "$ref": "#/schemas/request/$defs/ShellObservation"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "session_id",
+            "observation"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -3956,6 +3980,106 @@
           },
           "required": [
             "socket_path"
+          ],
+          "type": "object"
+        },
+        "ShellObservation": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "event": {
+                  "const": "snapshot_observed",
+                  "type": "string"
+                },
+                "hook_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "hook_event": {
+                  "$ref": "#/schemas/request/$defs/ShellSnapshotHook"
+                },
+                "tasks": {
+                  "items": {
+                    "$ref": "#/schemas/request/$defs/ShellTask"
+                  },
+                  "type": "array"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "event",
+                "hook_event",
+                "tasks",
+                "truncated"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "command": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "event": {
+                  "const": "bash_background_observed",
+                  "type": "string"
+                },
+                "hook_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "tool_use_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event",
+                "task_id",
+                "tool_use_id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ShellSnapshotHook": {
+          "enum": [
+            "Stop",
+            "SubagentStop"
+          ],
+          "type": "string"
+        },
+        "ShellTask": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reported_status": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "reported_status"
           ],
           "type": "object"
         },
@@ -6426,6 +6550,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "background.shell.report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BackgroundShellReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6985,6 +7125,16 @@
               "type": [
                 "string",
                 "null"
+              ]
+            },
+            "shell_observations": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ShellObservations"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "truncated": {
@@ -10898,6 +11048,151 @@
             "panes",
             "layouts",
             "agents"
+          ],
+          "type": "object"
+        },
+        "ShellObservationRecord": {
+          "oneOf": [
+            {
+              "properties": {
+                "event": {
+                  "const": "snapshot_observed",
+                  "type": "string"
+                },
+                "hook_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "hook_event": {
+                  "$ref": "#/schemas/success_response/$defs/ShellSnapshotHook"
+                },
+                "tasks": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ShellTask"
+                  },
+                  "type": "array"
+                },
+                "truncated": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "event",
+                "hook_event",
+                "tasks",
+                "truncated"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "command": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "event": {
+                  "const": "bash_background_observed",
+                  "type": "string"
+                },
+                "hook_agent_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "task_id": {
+                  "type": "string"
+                },
+                "tool_use_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event",
+                "task_id",
+                "tool_use_id"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "received_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "received_at_ms"
+          ],
+          "type": "object"
+        },
+        "ShellObservations": {
+          "properties": {
+            "bash_reports": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ShellObservationRecord"
+              },
+              "type": "array"
+            },
+            "current_state": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundCurrentState"
+            },
+            "last_received_snapshot": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ShellObservationRecord"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "outcome": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundCurrentState"
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "current_state",
+            "outcome",
+            "bash_reports",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "ShellSnapshotHook": {
+          "enum": [
+            "Stop",
+            "SubagentStop"
+          ],
+          "type": "string"
+        },
+        "ShellTask": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reported_status": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "reported_status"
           ],
           "type": "object"
         },

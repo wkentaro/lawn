@@ -975,7 +975,11 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
-    assert!(settings["hooks"].get("PostToolUse").is_none());
+    assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "^Bash$");
+    assert!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with("bash-background"));
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     for (event, action) in [
         ("SubagentStart", "subagent-start"),
@@ -989,7 +993,11 @@ fn install_claude_writes_hook_and_updates_settings() {
             .unwrap()
             .ends_with(action));
     }
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert!(settings["hooks"]["Stop"][0].get("matcher").is_none());
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" stop"));
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -1038,7 +1046,11 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
     assert!(settings["hooks"].get("PermissionRequest").is_none());
-    assert!(settings["hooks"].get("PostToolUse").is_none());
+    assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "^Bash$");
+    assert!(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with("bash-background"));
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
     for (event, action) in [
         ("SubagentStart", "subagent-start"),
@@ -1052,7 +1064,11 @@ fn install_claude_is_idempotent_for_hook_entries() {
             .unwrap()
             .ends_with(action));
     }
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert!(settings["hooks"]["Stop"][0].get("matcher").is_none());
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" stop"));
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
     std::env::remove_var("HOME");
@@ -1130,7 +1146,11 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
     );
     assert!(settings["hooks"].get("UserPromptSubmit").is_none());
     assert!(settings["hooks"].get("PreToolUse").is_none());
-    assert!(settings["hooks"].get("Stop").is_none());
+    assert!(settings["hooks"]["Stop"][0].get("matcher").is_none());
+    assert!(settings["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with(" stop"));
 
     std::env::remove_var("HOME");
     let _ = fs::remove_dir_all(base);
@@ -1360,7 +1380,10 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
             }],
             "PostToolUse": [{
                 "matcher": "*",
-                "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
+                "hooks": [
+                    {"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10},
+                    {"type": "command", "command": hook_command(&hook_path, Some("bash-background")), "timeout": 10}
+                ]
             }],
             "PostToolUseFailure": [{
                 "matcher": "*",
@@ -1379,7 +1402,10 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
             }],
             "Stop": [{
                 "matcher": "*",
-                "hooks": [{"type": "command", "command": format!("bash '{}' idle", hook_path.display()), "timeout": 10}]
+                "hooks": [
+                    {"type": "command", "command": format!("bash '{}' idle", hook_path.display()), "timeout": 10},
+                    {"type": "command", "command": hook_command(&hook_path, Some("stop")), "timeout": 10}
+                ]
             }],
             "SessionEnd": [{
                 "matcher": "*",

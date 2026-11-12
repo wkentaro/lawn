@@ -38,7 +38,9 @@ impl HeadlessServer {
         // Runtime observations do not acquire a presentation command lease or focus.
         if matches!(
             &request.method,
-            api::schema::Method::BackgroundList(_) | api::schema::Method::BackgroundReport(_)
+            api::schema::Method::BackgroundList(_)
+                | api::schema::Method::BackgroundReport(_)
+                | api::schema::Method::BackgroundShellReport(_)
         ) {
             let internal_changed = if self.shutting_down || self.host_shutdown_requested() {
                 false
@@ -55,15 +57,21 @@ impl HeadlessServer {
                 self.app
                     .handle_api_request_after_internal_events_drained(*request)
             };
-            self.send_to_client(
-                client_id,
-                ServerMessage::ClientShellEndpointResponseChunk {
-                    boot_id,
-                    request_id,
-                    final_chunk: true,
-                    data: response.into_bytes(),
-                },
-            );
+            for (final_chunk, chunk) in
+                crate::server::client_commands::endpoint_response_chunks(response.as_bytes())
+            {
+                if !self.send_to_client(
+                    client_id,
+                    ServerMessage::ClientShellEndpointResponseChunk {
+                        boot_id: boot_id.clone(),
+                        request_id: request_id.clone(),
+                        final_chunk,
+                        data: chunk.to_vec(),
+                    },
+                ) {
+                    break;
+                }
+            }
             return internal_changed;
         }
         let surface_active = client.shell_surface_active;

@@ -1,8 +1,18 @@
-use crate::api::schema::{BackgroundReportParams, PaneTarget, ResponseResult};
+use crate::api::schema::{
+    BackgroundReportParams, BackgroundShellReportParams, PaneTarget, ResponseResult,
+};
 use crate::app::App;
 use crate::terminal::TerminalId;
 
 use super::responses::{encode_error, encode_success};
+
+fn received_at_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u64::MAX as u128) as u64
+}
 
 impl App {
     fn background_terminal_id(&self, target: &str) -> Option<TerminalId> {
@@ -21,18 +31,39 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return encode_error(id, "pane_not_found", "background report terminal not found");
         };
-        let received_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u64::MAX as u128) as u64;
         match terminal.report_background(
             &params.source,
             &params.session_id,
             params.event,
             &params.task_id,
             params.task_type.as_deref(),
-            received_at_ms,
+            received_at_ms(),
+        ) {
+            Ok(()) => encode_success(id, ResponseResult::Ok {}),
+            Err(code) => encode_error(
+                id,
+                code,
+                "background report requires bounded fields and the current Claude root session",
+            ),
+        }
+    }
+
+    pub(super) fn handle_background_shell_report(
+        &mut self,
+        id: String,
+        params: BackgroundShellReportParams,
+    ) -> String {
+        let Some(terminal_id) = self.background_terminal_id(&params.pane_id) else {
+            return encode_error(id, "pane_not_found", "background report pane not found");
+        };
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return encode_error(id, "pane_not_found", "background report terminal not found");
+        };
+        match terminal.report_background_shell(
+            &params.source,
+            &params.session_id,
+            params.observation,
+            received_at_ms(),
         ) {
             Ok(()) => encode_success(id, ResponseResult::Ok {}),
             Err(code) => encode_error(
@@ -118,6 +149,52 @@ mod tests {
         })
     }
 
+    fn shell_report(pane_id: String, session_id: &str) -> Method {
+        Method::BackgroundShellReport(BackgroundShellReportParams {
+            pane_id,
+            source: "herdr:claude".into(),
+            session_id: session_id.into(),
+            observation: crate::terminal::background::ShellObservation::BashBackgroundObserved {
+                task_id: "shell".into(),
+                tool_use_id: "tool".into(),
+                hook_agent_id: None,
+                command: None,
+            },
+        })
+    }
+
+    #[test]
+    fn background_shell_json_dispatch_is_observational_and_owner_scoped() {
+        let (mut app, pane_id, terminal_id) = app();
+        let before = app.session_snapshot();
+        assert_eq!(
+            request(&mut app, shell_report(pane_id.clone(), "foreign"))["error"]["code"],
+            "background_owner_mismatch"
+        );
+        assert!(app.state.terminals[&terminal_id]
+            .background_snapshot()
+            .shell_observations
+            .is_none());
+        assert_eq!(
+            request(&mut app, shell_report(pane_id.clone(), "root"))["result"]["type"],
+            "ok"
+        );
+        let listed = request(&mut app, Method::BackgroundList(PaneTarget { pane_id }));
+        let shell = &listed["result"]["background"]["shell_observations"];
+        assert_eq!(shell["bash_reports"][0]["task_id"], "shell");
+        assert!(shell["bash_reports"][0]["received_at_ms"].as_u64().unwrap() > 0);
+        assert_eq!(shell["last_received_snapshot"], serde_json::Value::Null);
+        assert_eq!(shell["current_state"], "unknown");
+        assert_eq!(shell["outcome"], "unknown");
+        assert_eq!(app.session_snapshot(), before);
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(terminal.last_agent_completion_seq, None);
+        assert!(terminal.hook_authority.is_none());
+        assert!(terminal.hook_report_is_newer("herdr:claude", Some(1)));
+        app.state.assert_invariants_for_test();
+    }
+
     #[test]
     fn background_json_dispatch_is_observational_and_owner_scoped() {
         let (mut app, pane_id, terminal_id) = app();
@@ -171,6 +248,10 @@ mod tests {
     #[test]
     fn background_observations_follow_terminal_when_pane_moves() {
         let (mut app, pane_id, terminal_id) = app();
+        assert_eq!(
+            request(&mut app, shell_report(pane_id.clone(), "root"))["result"]["type"],
+            "ok"
+        );
         request(
             &mut app,
             report(
@@ -205,6 +286,14 @@ mod tests {
         assert_eq!(
             listed["result"]["background"]["records"][0]["task_id"],
             "child"
+        );
+        assert_eq!(
+            listed["result"]["background"]["shell_observations"]["bash_reports"][0]["task_id"],
+            "shell"
+        );
+        assert_eq!(
+            request(&mut app, shell_report(new_pane_id.into(), "root"))["result"]["type"],
+            "ok"
         );
         app.state.assert_invariants_for_test();
     }

@@ -111,9 +111,13 @@ Claude Code フックをインストールします:
 herdr integration install claude
 ```
 
-フックは `SessionStart` で Claude Code のルートセッション識別を、`SubagentStart` と `SubagentStop` でサブエージェントの過去の観測情報をローカルの Herdr ソケットに報告します。停止の観測は終了や作業の成功を保証しません。`herdr agent background list w1:p1 --json` で観測情報を読み取れます。Claude Code の状態は引き続き Herdr のスクリーンマニフェスト検出から得られます。
+フックは `SessionStart` で Claude Code のルートセッション識別を、`SubagentStart` と `SubagentStop` でサブエージェントの過去の観測情報をローカルの Herdr ソケットに報告します。停止の観測は終了や作業の成功を保証しません。
 
-`SessionStart` のマッチャーは、文書化された source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に Claude 統合を再インストールして、マッチャーを更新しサブエージェントのフックを登録してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
+`Stop` と `SubagentStop` では、ネイティブの `background_tasks` フィールドがあればシェルのスナップショットも報告します。ネイティブの `type` が `shell` と完全に一致する項目だけを残します。フィールドがなければスナップショットを送らず、空の配列なら空のスナップショットを記録します。Bash の `PostToolUse` では、構造化された `tool_response.backgroundTaskId` をバックグラウンドタスクの観測根拠にします。`run_in_background` の指定だけでは根拠になりません。コマンドはネイティブの構造化されたフック入力から取得し、Claude がすでに切り詰めている場合があります。Herdr はコマンド出力を読み取らず、ライブ出力も購読しません。
+
+既存の `herdr agent background list w1:p1 --json` コマンドで観測情報を読み取れます。シェルのスナップショットはフックイベント時点の観測情報です。受信順から、送信元で最後に生成されたスナップショットは特定できません。報告された状態から現在の状態は確認できず、タスクが一覧から消えても完了したとは判断できません。結果は不明のままです。報告元のサブエージェント ID はタスクの所有者を示しません。Claude Code の状態は引き続き Herdr のスクリーンマニフェスト検出から得られ、待機と通知の動作も変わりません。報告の形式と保持上限は [Socket API](/ja/docs/socket-api/#エージェント状態の報告) を参照してください。
+
+`SessionStart` のマッチャーは、文書化された source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に `herdr integration install claude` で再インストールして、マッチャーを更新し、サブエージェント、`Stop`、Bash の `PostToolUse` フックを登録してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
 
 Herdr はデフォルトで `~/.claude` を使い、`CLAUDE_CONFIG_DIR` が設定されていればそちらを使います。Claude の設定ディレクトリはあらかじめ存在している必要があります。インストールは `hooks/herdr-agent-state.sh` を書き込み、`settings.json` に Herdr のフックエントリを追加します。アンインストールは一致するフックエントリを削除し、フックスクリプトを削除します。
 

@@ -150,6 +150,7 @@ operations::define_operations! {
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
     BackgroundReport(BackgroundReportParams) => "background.report", false, true;
     BackgroundList(PaneTarget) => "background.list", false, true;
+    BackgroundShellReport(BackgroundShellReportParams) => "background.shell.report", false, true;
 }
 
 #[cfg(test)]

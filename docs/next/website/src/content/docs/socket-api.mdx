@@ -108,7 +108,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
 | Events | `events.subscribe`, `events.wait` |
-| Background | `background.report`, `background.list` |
+| Background | `background.report`, `background.shell.report`, `background.list` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
 
@@ -708,11 +708,78 @@ Both methods accept an optional `resume_argv` array with the command that resume
 
 Claude Code hooks use `background.report` with `pane_id`, `source: "herdr:claude"`, the current root `session_id`, `event` set to `subagent_started` or `subagent_stop_observed`, native `agent_id` as `task_id`, and optional `agent_type` as `task_type`. These historical observations leave agent status, waits, and notifications unchanged.
 
+`background.shell.report` accepts a strict envelope containing `pane_id`, `source: "herdr:claude"`, the current root `session_id`, and a nested `observation`. The `event` tag belongs inside `observation`. A shell snapshot report looks like this:
+
+```json
+{
+  "id": "req_shell_snapshot",
+  "method": "background.shell.report",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "observation": {
+      "event": "snapshot_observed",
+      "hook_event": "SubagentStop",
+      "hook_agent_id": "agent-review",
+      "tasks": [{"task_id":"shell-1","reported_status":"running","command":"npm test"}],
+      "truncated": false
+    }
+  }
+}
+```
+
+`snapshot_observed` reports the native `background_tasks` snapshot from `Stop` or `SubagentStop`, filtered to entries whose native `type` is exactly `shell`. An absent `background_tasks` field sends no snapshot and leaves the retained snapshot unchanged. An empty array sends a snapshot with `tasks: []`. `reported_status` preserves the native status text, including unfamiliar values, without confirming current state. `hook_agent_id` is required for `SubagentStop` and optional for `Stop` or Bash reports when present in the native payload. It identifies the reporter, not the owner of every task in the session snapshot.
+
+Bash `PostToolUse` reports use structured `tool_response.backgroundTaskId` as `task_id` and retain the separate native `tool_use_id`. `run_in_background` intent alone does not produce an observation:
+
+```json
+{
+  "id": "req_shell_bash",
+  "method": "background.shell.report",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "observation": {
+      "event": "bash_background_observed",
+      "task_id": "shell-1",
+      "tool_use_id": "tool-1",
+      "command": "npm test"
+    }
+  }
+}
+```
+
+The optional `command` comes from native structured hook input and may already be clipped by Claude. Herdr does not capture task descriptions, assistant messages, transcripts, output paths, or command output. These hooks provide no continuous completion feed or live output subscription.
+
+Identity fields are limited to 256 UTF-8 bytes each, `reported_status` to 128 bytes, and commands to 4096 bytes. Commands may contain newlines; other displayed text rejects control characters. Hooks accept at most 1 MiB of raw input before JSON parsing. A snapshot holds at most 128 shell entries; its `truncated` flag discloses omissions. Do not treat a truncated snapshot as a complete observation.
+
 ```json
 {"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}
 ```
 
 `background.list` returns `result.type: "background_list"`, `terminal_id`, and `background`. The background data includes `session_id`, `coverage: "observations_only"`, `current_state: "unknown"`, and `records` with `observation` set to `start_observed` or `stop_observed`. `start_observed_at_ms` and `stop_observed_at_ms` are first server receipt times in Unix milliseconds, or `null` if unobserved. A stop observation does not prove termination or success. Herdr keeps at most 128 task IDs in memory per terminal and sets `truncated: true` if it omits more. Changing the root session identity clears the records; resuming the same ID retains historical observations with current state unknown.
+
+The `background` object can also include the optional `shell_observations` field:
+
+```json
+{
+  "shell_observations": {
+    "current_state": "unknown",
+    "outcome": "unknown",
+    "last_received_snapshot": null,
+    "bash_reports": [],
+    "truncated": false
+  }
+}
+```
+
+`last_received_snapshot` is `null` until Herdr receives a snapshot. Otherwise it contains the snapshot observation and `received_at_ms`, a server receipt time in Unix milliseconds. Herdr keeps only the last received snapshot. Receipt order does not prove which snapshot the source produced last. A received snapshot with `tasks: []` differs from never receiving a snapshot. Neither an empty snapshot nor a task's disappearance closes historical Bash observations or proves completion.
+
+`bash_reports` holds at most 128 distinct historical observations, each with its first `received_at_ms`. Herdr deduplicates them by `task_id`, `tool_use_id`, and reporter ID. `shell_observations.truncated` reports dropped Bash observations; the retained snapshot has its own `truncated` flag. Same-session resume retains shell history. Root session replacement or terminal respawn clears it.
+
+Shell `current_state` and `outcome` remain `unknown`. Native `reported_status` is an observation at the hook event. These records cannot establish current task membership, a running count, or success. Shell observations leave agent state, waits, and completion notifications unchanged. Read them through the existing `herdr agent background list <pane> --json` command.
 
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` expose a read-only `agent_session` object when Herdr has a stored native session reference:
 

@@ -21,24 +21,34 @@ const SESSION_START_MATCHER: &str = "^(startup|resume|clear|compact|fork)$";
 struct HookRegistration {
     event: &'static str,
     action: &'static str,
-    matcher: &'static str,
+    matcher: Option<&'static str>,
 }
 
 const HOOK_REGISTRATIONS: &[HookRegistration] = &[
     HookRegistration {
         event: "SessionStart",
         action: "session",
-        matcher: SESSION_START_MATCHER,
+        matcher: Some(SESSION_START_MATCHER),
     },
     HookRegistration {
         event: "SubagentStart",
         action: "subagent-start",
-        matcher: "*",
+        matcher: Some("*"),
     },
     HookRegistration {
         event: "SubagentStop",
         action: "subagent-stop",
-        matcher: "*",
+        matcher: Some("*"),
+    },
+    HookRegistration {
+        event: "Stop",
+        action: "stop",
+        matcher: None,
+    },
+    HookRegistration {
+        event: "PostToolUse",
+        action: "bash-background",
+        matcher: Some("^Bash$"),
     },
 ];
 
@@ -50,7 +60,7 @@ struct HookRemoval {
 const HOOK_REMOVALS: &[HookRemoval] = &[
     HookRemoval {
         event: "PostToolUse",
-        actions: &["working"],
+        actions: &["working", "bash-background"],
     },
     HookRemoval {
         event: "PostToolUseFailure",
@@ -82,7 +92,7 @@ const HOOK_REMOVALS: &[HookRemoval] = &[
     },
     HookRemoval {
         event: "Stop",
-        actions: &["idle"],
+        actions: &["idle", "stop"],
     },
     HookRemoval {
         event: "SessionEnd",
@@ -106,7 +116,7 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
             hook.event,
             hook_command(hook_path, Some(hook.action)),
             10,
-            Some(hook.matcher),
+            hook.matcher,
         )?;
     }
 
@@ -397,27 +407,33 @@ fn removal_commands(policy: &HookRemoval, hook_path: &Path) -> Vec<String> {
 }
 
 fn canonical_hook_value(hook_path: &Path, hook: &HookRegistration) -> Value {
-    serde_json_value!({
-        "matcher": hook.matcher,
+    let mut value = serde_json_value!({
         "hooks": [{
             "type": "command",
             "command": hook_command(hook_path, Some(hook.action)),
             "timeout": 10,
         }],
-    })
+    });
+    if let Some(matcher) = hook.matcher {
+        value["matcher"] = serde_json_value!(matcher);
+    }
+    value
 }
 
 fn canonical_hook_input(hook_path: &Path, hook: &HookRegistration) -> CstInputValue {
     let command = hook_command(hook_path, Some(hook.action));
-    let matcher = hook.matcher;
-    json!({
-        matcher: matcher,
-        hooks: [{
+    let mut properties = vec![(
+        "hooks".into(),
+        json!([{
             "type": "command",
             command: command,
             timeout: 10u64,
-        }],
-    })
+        }]),
+    )];
+    if let Some(matcher) = hook.matcher {
+        properties.insert(0, ("matcher".into(), CstInputValue::String(matcher.into())));
+    }
+    CstInputValue::Object(properties)
 }
 
 fn append_hooks_property_compact(
@@ -577,9 +593,12 @@ fn append_to_container(
 
 fn canonical_hook_json(hook_path: &Path, hook: &HookRegistration) -> io::Result<String> {
     let command = serde_json::to_string(&hook_command(hook_path, Some(hook.action)))?;
-    let matcher = hook.matcher;
+    let matcher = hook
+        .matcher
+        .map(|matcher| format!("\"matcher\":\"{matcher}\","))
+        .unwrap_or_default();
     Ok(format!(
-        "{{\"matcher\":\"{matcher}\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}}]}}"
+        "{{{matcher}\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}}]}}"
     ))
 }
 
@@ -773,6 +792,23 @@ mod tests {
     }
 
     #[test]
+    fn shell_hooks_use_unmatched_stop_and_exact_bash_matcher() {
+        let (settings_path, hook_path) = paths();
+        let installed = install("{}", settings_path, hook_path).unwrap();
+        let settings: Value = serde_json::from_str(&installed).unwrap();
+        assert!(settings["hooks"]["Stop"][0].get("matcher").is_none());
+        let matcher = settings["hooks"]["PostToolUse"][0]["matcher"]
+            .as_str()
+            .unwrap();
+        assert_eq!(matcher, "^Bash$");
+        let pattern = regex::Regex::new(matcher).unwrap();
+        assert!(pattern.is_match("Bash"));
+        for tool in ["bash", "Shell", "BashOther", "OtherBash", ""] {
+            assert!(!pattern.is_match(tool));
+        }
+    }
+
+    #[test]
     fn install_is_a_byte_exact_noop_for_a_canonical_hook() {
         let (settings_path, hook_path) = paths();
         let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).unwrap();
@@ -826,7 +862,6 @@ mod tests {
     fn install_preserves_canonical_session_start_position_during_migration() {
         let (settings_path, hook_path) = paths();
         let canonical = canonical_hook_json(hook_path, &HOOK_REGISTRATIONS[0]).unwrap();
-        let background = background_hooks_json(hook_path);
         let old_command = serde_json::to_string(&hook_command(hook_path, Some("working"))).unwrap();
         let session_start = format!(
             "\"SessionStart\":[{canonical},{{\"matcher\":\"foreign\",\"hooks\":[{{\"type\":\"command\",\"command\":\"echo keep\"}}]}}]"
@@ -838,11 +873,20 @@ mod tests {
         ]
         .concat();
         let input = ["{\"hooks\":{", &session_start, ",", &old_event, "}}"].concat();
-        let expected = ["{\"hooks\":{", &session_start, ",", &background, "}}"].concat();
-
         let updated = install(&input, settings_path, hook_path).unwrap();
-
-        assert_eq!(updated, expected);
+        assert!(updated.starts_with(&format!("{{\"hooks\":{{{session_start},")));
+        assert!(!updated.contains(&old_command));
+        let parsed: Value = serde_json::from_str(&updated).unwrap();
+        for hook in &HOOK_REGISTRATIONS[1..] {
+            assert_eq!(
+                parsed["hooks"][hook.event],
+                serde_json_value!([canonical_hook_value(hook_path, hook)])
+            );
+        }
+        assert_eq!(
+            install(&updated, settings_path, hook_path).unwrap(),
+            updated
+        );
     }
 
     #[test]
@@ -938,13 +982,15 @@ mod tests {
             r#"{"hooks":{"SessionStart":{}}}"#,
             r#"{"hooks":{"SubagentStart":{}}}"#,
             r#"{"hooks":{"SubagentStop":{}}}"#,
+            r#"{"hooks":{"Stop":{}}}"#,
+            r#"{"hooks":{"PostToolUse":{}}}"#,
         ] {
             assert!(install(input, settings_path, hook_path).is_err());
         }
     }
 
     #[test]
-    fn subagent_hooks_migrate_deduplicate_and_uninstall_without_changing_user_hooks() {
+    fn background_hooks_migrate_deduplicate_and_uninstall_without_changing_user_hooks() {
         let (settings_path, hook_path) = paths();
         for hook in &HOOK_REGISTRATIONS[1..] {
             let canonical = canonical_hook_json(hook_path, hook).unwrap();
@@ -980,13 +1026,15 @@ mod tests {
     #[test]
     fn install_and_uninstall_preserve_unowned_empty_hook_groups() {
         let (settings_path, hook_path) = paths();
-        let input = r#"{"hooks":{"SessionStart":[{"matcher":"keep-root","hooks":[]}],"SubagentStart":[{"matcher":"keep-start","hooks":[]}],"SubagentStop":[{"matcher":"keep-stop","hooks":[]}]}}"#;
+        let input = r#"{"hooks":{"SessionStart":[{"matcher":"keep-root","hooks":[]}],"SubagentStart":[{"matcher":"keep-start","hooks":[]}],"SubagentStop":[{"matcher":"keep-stop","hooks":[]}],"Stop":[{"matcher":"keep-stop-observation","hooks":[]}],"PostToolUse":[{"matcher":"keep-tool","hooks":[]}]}}"#;
         let installed = install(input, settings_path, hook_path).unwrap();
         let parsed: Value = serde_json::from_str(&installed).unwrap();
         for (event, matcher) in [
             ("SessionStart", "keep-root"),
             ("SubagentStart", "keep-start"),
             ("SubagentStop", "keep-stop"),
+            ("Stop", "keep-stop-observation"),
+            ("PostToolUse", "keep-tool"),
         ] {
             assert_eq!(parsed["hooks"][event].as_array().unwrap().len(), 2);
             assert_eq!(parsed["hooks"][event][0]["matcher"], matcher);

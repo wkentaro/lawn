@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use super::TerminalState;
 
+mod shell;
+pub use shell::{ShellObservation, ShellObservations};
+
 const MAX_TASKS: usize = 128;
 const MAX_ID_BYTES: usize = 256;
 const MAX_TYPE_BYTES: usize = 128;
@@ -60,6 +63,8 @@ pub struct BackgroundSnapshot {
     pub records: Vec<BackgroundRecord>,
     pub revision: u64,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_observations: Option<ShellObservations>,
 }
 
 #[derive(Default)]
@@ -68,6 +73,7 @@ pub(super) struct BackgroundObservations {
     records: Vec<BackgroundRecord>,
     revision: u64,
     truncated: bool,
+    shell: Option<ShellObservations>,
 }
 
 fn bounded_text(value: &str, max_bytes: usize) -> bool {
@@ -117,23 +123,12 @@ impl TerminalState {
         task_type: Option<&str>,
         received_at_ms: u64,
     ) -> Result<(), &'static str> {
-        if source != "herdr:claude"
-            || !bounded_text(session_id, MAX_ID_BYTES)
-            || !bounded_text(task_id, MAX_ID_BYTES)
+        if !bounded_text(task_id, MAX_ID_BYTES)
             || task_type.is_some_and(|value| !bounded_text(value, MAX_TYPE_BYTES))
         {
             return Err("invalid_background_report");
         }
-        if self.background_session_id() != Some(session_id)
-            || self
-                .detected_agent
-                .is_some_and(|agent| agent != crate::detect::Agent::Claude)
-            || self.hook_authority.as_ref().is_some_and(|authority| {
-                authority.source != source || authority.agent_label != "claude"
-            })
-        {
-            return Err("background_owner_mismatch");
-        }
+        self.validate_background_owner(source, session_id)?;
         self.reconcile_background_owner();
         let observations = &mut self.background;
         observations
@@ -189,6 +184,27 @@ impl TerminalState {
         Ok(())
     }
 
+    fn validate_background_owner(
+        &self,
+        source: &str,
+        session_id: &str,
+    ) -> Result<(), &'static str> {
+        if source != "herdr:claude" || !bounded_text(session_id, MAX_ID_BYTES) {
+            return Err("invalid_background_report");
+        }
+        if self.background_session_id() != Some(session_id)
+            || self
+                .detected_agent
+                .is_some_and(|agent| agent != crate::detect::Agent::Claude)
+            || self.hook_authority.as_ref().is_some_and(|authority| {
+                authority.source != source || authority.agent_label != "claude"
+            })
+        {
+            return Err("background_owner_mismatch");
+        }
+        Ok(())
+    }
+
     pub(crate) fn background_snapshot(&self) -> BackgroundSnapshot {
         let current_session = self.background_session_id();
         let current_owner = current_session == self.background.session_id.as_deref();
@@ -207,6 +223,9 @@ impl TerminalState {
                 0
             },
             truncated: current_owner && self.background.truncated,
+            shell_observations: current_owner
+                .then(|| self.background.shell.clone())
+                .flatten(),
         }
     }
 }
