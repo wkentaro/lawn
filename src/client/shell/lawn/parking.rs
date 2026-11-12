@@ -594,6 +594,29 @@ mod tests {
     }
 
     #[test]
+    fn parked_terminals_survive_a_replacement_server_boot() {
+        let path = path();
+        let (mut model, mut snapshot, now) = connected(Some(path.clone()));
+        model.park("pane_1").unwrap();
+        let request = model.poll(now).unwrap();
+        acknowledgement(&mut model, &mut snapshot, request.sequence, None);
+
+        snapshot.boot_id = "replacement-server".into();
+        model.observe_snapshot(Some(7), &snapshot);
+        let request = model.poll(now).unwrap();
+        assert_eq!(request.hidden_terminals, ["terminal-one"]);
+        acknowledgement(&mut model, &mut snapshot, request.sequence, None);
+
+        assert!(model.available());
+        assert!(model.hides_pane("pane_1"));
+        assert_eq!(model.parked_terminals().count(), 1);
+        let mut saved = ParkingStore::new(Some(path.clone()));
+        saved.reload().unwrap();
+        assert!(saved.terminals.contains("terminal-one"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn another_window_restoring_the_record_does_not_make_a_preview_writable() {
         let path = path();
         let (mut model, mut snapshot, now) = connected(Some(path.clone()));
