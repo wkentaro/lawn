@@ -2873,6 +2873,13 @@ impl HeadlessServer {
                 params.lines,
                 params.format,
             ),
+            // Styled cells cannot use the text-only frozen harvest snapshot.
+            api::schema::Method::PaneSnapshot(params) => (
+                self.app.resolve_pane_target(&params.pane_id),
+                api::schema::ReadSource::Detection,
+                None,
+                api::schema::ReadFormat::Ansi,
+            ),
             _ => return AltScreenReadConflict::None,
         };
         let Some(target) = target else {
@@ -2966,7 +2973,17 @@ impl HeadlessServer {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
             AltScreenReadConflict::Defer => {
-                self.deferred_alt_screen_reads.push(msg);
+                if matches!(&msg.request.method, api::schema::Method::PaneSnapshot(_)) {
+                    let _ = msg
+                        .respond_to
+                        .send(crate::server::client_commands::error_response(
+                            msg.request.id,
+                            "endpoint_busy",
+                            "a terminal read is already in progress; retry when it completes",
+                        ));
+                } else {
+                    self.deferred_alt_screen_reads.push(msg);
+                }
                 return false;
             }
         };

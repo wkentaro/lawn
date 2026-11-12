@@ -96,7 +96,10 @@ impl HeadlessServer {
             self.send_to_client(client_id, message);
             return false;
         }
-        let read_only = matches!(&request.method, api::schema::Method::PaneRead(_));
+        let read_only = matches!(
+            &request.method,
+            api::schema::Method::PaneRead(_) | api::schema::Method::PaneSnapshot(_)
+        );
         if !surface_active && !read_only {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -152,10 +155,8 @@ impl HeadlessServer {
             client.shell_deferred_navigation_response = deferred_navigation.then(Vec::new);
         }
         let read_conflict = self.alt_screen_read_conflict(&request);
-        if let api::schema::Method::PaneRead(mut params) = request.method {
-            // Endpoint reads must not enter the client-local presentation lane or
-            // trigger interactive alternate-screen scrolling.
-            params.intent = api::schema::ReadIntent::Passive;
+        if read_only {
+            // Passive reads never promote this client or enter the presentation lane.
             let response = if self.shutting_down || self.host_shutdown_requested() {
                 crate::server::client_commands::error_response(
                     api_request_id,
@@ -169,7 +170,20 @@ impl HeadlessServer {
                     "a terminal read is already in progress; retry when it completes",
                 )
             } else {
-                let mut response = self.app.handle_pane_read(api_request_id, params);
+                let mut response = match request.method {
+                    api::schema::Method::PaneRead(mut params) => {
+                        params.intent = api::schema::ReadIntent::Passive;
+                        self.app.handle_pane_read(api_request_id, params)
+                    }
+                    api::schema::Method::PaneSnapshot(params) => {
+                        self.app.handle_pane_snapshot(api_request_id, params)
+                    }
+                    _ => crate::server::client_commands::error_response(
+                        api_request_id,
+                        "unsupported_command",
+                        "method is not a passive terminal read",
+                    ),
+                };
                 if let AltScreenReadConflict::Frozen(snapshot) = read_conflict {
                     if let Ok(mut success) =
                         serde_json::from_str::<api::schema::SuccessResponse>(&response)

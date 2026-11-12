@@ -1,4 +1,5 @@
 pub(crate) mod background;
+mod cell_snapshot;
 mod history_read;
 mod id;
 mod runtime;
@@ -6,6 +7,7 @@ mod runtime_registry;
 pub mod state;
 mod title;
 
+pub use cell_snapshot::TerminalCellSnapshot;
 pub(crate) use history_read::{merge_scrolled_up, snapshot_text, ScreenSnapshot, UpwardMerge};
 pub use id::TerminalId;
 pub use runtime::TerminalRuntime;

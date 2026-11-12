@@ -268,6 +268,11 @@ mod tests {
         );
 
         assert_eq!(
+            actual.remove("pane.snapshot").as_deref(),
+            Some("a6ace65cfe47d808c5d86a6104cb4b471480e7f7c27cbbd3dc2e1ad0ce5b0cd7")
+        );
+
+        assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
         );

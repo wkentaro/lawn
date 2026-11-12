@@ -13,9 +13,9 @@ use crate::api::schema::{
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneSendTextParams, PaneSnapshotParams, PaneSnapshotResult, PaneSplitParams, PaneSwapParams,
+    PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode,
+    PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -1553,6 +1553,55 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
+    pub(crate) fn handle_pane_snapshot(&self, id: String, params: PaneSnapshotParams) -> String {
+        if params.max_cols == 0
+            || params.max_rows == 0
+            || params.max_cols > 512
+            || params.max_rows > 256
+            || u32::from(params.max_cols) * u32::from(params.max_rows) > 32768
+        {
+            return encode_error(
+                id,
+                "invalid_params",
+                "snapshot bounds must be positive, at most 512 columns, 256 rows, and 32768 cells",
+            );
+        }
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some((terminal, _)) = self.lookup_runtime(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(snapshot) = terminal.cell_snapshot(params.max_cols, params.max_rows) else {
+            return encode_error(
+                id,
+                "endpoint_busy",
+                "terminal snapshot is temporarily unavailable",
+            );
+        };
+        let result = ResponseResult::PaneSnapshot {
+            snapshot: PaneSnapshotResult {
+                pane_id: public_pane_id,
+                snapshot,
+            },
+        };
+        match serde_json::to_string(&crate::api::schema::SuccessResponse {
+            id: id.clone(),
+            result,
+        }) {
+            Ok(response) if response.len() <= 8 * 1024 * 1024 => response,
+            Ok(_) => encode_error(
+                id,
+                "snapshot_too_large",
+                "request a smaller snapshot region",
+            ),
+            Err(error) => encode_error(id, "serialization_error", error.to_string()),
+        }
+    }
+
     pub(crate) fn handle_pane_read(&mut self, id: String, params: PaneReadParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -2388,6 +2437,89 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
         (app, public_pane_id)
+    }
+
+    #[test]
+    fn pane_snapshot_validates_bounds_before_reading_terminal() {
+        let (app, _) = app_with_test_workspace();
+        for (max_cols, max_rows) in [(0, 1), (1, 0), (513, 1), (1, 257), (512, 65)] {
+            let response = app.handle_pane_snapshot(
+                "snapshot".into(),
+                PaneSnapshotParams {
+                    pane_id: "missing".into(),
+                    max_cols,
+                    max_rows,
+                },
+            );
+            let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+            assert_eq!(error.error.code, "invalid_params");
+        }
+        let response = app.handle_pane_snapshot(
+            "snapshot".into(),
+            PaneSnapshotParams {
+                pane_id: "missing".into(),
+                max_cols: 80,
+                max_rows: 24,
+            },
+        );
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_not_found");
+    }
+
+    #[tokio::test]
+    async fn pane_snapshot_roundtrips_styled_cells_through_public_dispatcher() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let internal_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.insert_test_runtime(
+            internal_pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                80,
+                24,
+                b"\x1b[38;2;10;20;30mcolored\x1b[0m",
+            ),
+        );
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "snapshot".into(),
+            method: crate::api::schema::Method::PaneSnapshot(PaneSnapshotParams {
+                pane_id: pane_id.clone(),
+                max_cols: 8,
+                max_rows: 1,
+            }),
+        });
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneSnapshot { snapshot } = response.result else {
+            panic!("snapshot response")
+        };
+        assert_eq!(snapshot.pane_id, pane_id);
+        assert_eq!(snapshot.snapshot.source_cols, 80);
+        assert_eq!(snapshot.snapshot.width, 8);
+        assert_eq!(snapshot.snapshot.height, 1);
+        assert_eq!(snapshot.snapshot.cells.len(), 8);
+        assert_eq!(snapshot.snapshot.cells[0].symbol, "c");
+        assert_eq!(
+            snapshot.snapshot.cells[0].fg,
+            crate::protocol::color_to_u32(ratatui::style::Color::Rgb(10, 20, 30))
+        );
+    }
+
+    #[tokio::test]
+    async fn pane_snapshot_retries_synchronized_output_without_returning_partial_cells() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let internal_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.insert_test_runtime(
+            internal_pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"\x1b[?2026hpartial"),
+        );
+        let response = app.handle_pane_snapshot(
+            "snapshot".into(),
+            PaneSnapshotParams {
+                pane_id,
+                max_cols: 80,
+                max_rows: 24,
+            },
+        );
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "endpoint_busy");
     }
 
     #[test]

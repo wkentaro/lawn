@@ -400,6 +400,20 @@ crate::cli::projection::cli_params! {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneSnapshotParams {
+    pub pane_id: String,
+    pub max_cols: u16,
+    pub max_rows: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneSnapshotResult {
+    pub pane_id: String,
+    #[serde(flatten)]
+    pub snapshot: crate::terminal::TerminalCellSnapshot,
+}
+
 crate::cli::projection::cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct PaneReportAgentParams => PaneReportAgentProjection {

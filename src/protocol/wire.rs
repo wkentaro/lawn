@@ -693,7 +693,7 @@ pub enum AttachScrollSource {
 
 /// A single cell in a rendered frame, serialized independently from ratatui's
 /// `Cell` type to keep the wire protocol stable.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, bincode::Decode)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1–2 chars).
     pub symbol: String,

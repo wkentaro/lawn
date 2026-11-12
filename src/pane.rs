@@ -3530,6 +3530,14 @@ impl PaneRuntime {
         self.terminal.visible_ansi()
     }
 
+    pub(crate) fn cell_snapshot(
+        &self,
+        max_cols: u16,
+        max_rows: u16,
+    ) -> Option<crate::terminal::TerminalCellSnapshot> {
+        self.terminal.cell_snapshot(max_cols, max_rows)
+    }
+
     pub fn detection_text(&self) -> String {
         self.terminal.detection_text()
     }

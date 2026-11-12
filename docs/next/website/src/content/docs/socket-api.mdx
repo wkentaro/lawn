@@ -103,7 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -862,6 +862,16 @@ herdr pane read w1:p1 --source detection
 
 `recent-unwrapped` is useful for logs because it ignores soft wrapping.
 `detection` returns the bottom-buffer snapshot used by agent screen detection.
+
+`pane.snapshot` returns a passive snapshot of the latest terminal output with its original wrapping and cell styling. It does not resize the terminal, move its viewport, or change focus.
+
+```json
+{"id":"snapshot-1","method":"pane.snapshot","params":{"pane_id":"w1:p1","max_cols":80,"max_rows":24}}
+```
+
+Both bounds are required and positive. Requests may contain at most 512 columns, 256 rows, and 32768 cells. The serialized response is limited to 8 MiB; request a smaller region on `snapshot_too_large`. Retry `endpoint_busy` after synchronized output or another terminal read finishes.
+
+The `pane_snapshot` result contains `snapshot.pane_id`, native `source_cols` and `source_rows`, absolute `start_row`, captured `width` and `height`, packed terminal defaults `default_fg` and `default_bg`, and a row-major `cells` array. Each cell carries its `symbol`, packed `fg` and `bg`, `modifier` bits, `skip`, and `hyperlink`. Colors use `0x02000000 | RGB` for RGB, `0x01000000 | index` for indexed colors, and zero for the host default. Apply `default_fg` and `default_bg` to any unused display area using the same color encoding. The snapshot uses the same cell encoding as normal terminal frames; graphics and cursor placement are omitted.
 
 ## Waiting for state
 

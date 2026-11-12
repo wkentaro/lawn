@@ -368,6 +368,14 @@ impl TerminalRuntime {
         self.0.visible_ansi()
     }
 
+    pub(crate) fn cell_snapshot(
+        &self,
+        max_cols: u16,
+        max_rows: u16,
+    ) -> Option<crate::terminal::TerminalCellSnapshot> {
+        self.0.cell_snapshot(max_cols, max_rows)
+    }
+
     pub fn detection_text(&self) -> String {
         self.0.detection_text()
     }
