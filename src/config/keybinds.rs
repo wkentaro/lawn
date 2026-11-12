@@ -382,7 +382,7 @@ pub struct Keybinds {
     pub rename_pane: ActionKeybinds,
     pub park_pane: ActionKeybinds,
     pub restore_pane: ActionKeybinds,
-    pub open_later: ActionKeybinds,
+    pub open_parked: ActionKeybinds,
 
     pub edit_scrollback: ActionKeybinds,
     pub clear_pane: ActionKeybinds,
@@ -569,7 +569,7 @@ impl Config {
             rename_pane: empty_action!(),
             park_pane: empty_action!(),
             restore_pane: empty_action!(),
-            open_later: empty_action!(),
+            open_parked: empty_action!(),
 
             edit_scrollback: empty_action!(),
             clear_pane: empty_action!(),
@@ -721,7 +721,7 @@ impl Config {
             apply_action!(keybinds.rename_pane, rename_pane, source);
             apply_action!(keybinds.park_pane, park_pane, source);
             apply_action!(keybinds.restore_pane, restore_pane, source);
-            apply_action!(keybinds.open_later, open_later, source);
+            apply_action!(keybinds.open_parked, open_parked, source);
 
             apply_action!(keybinds.edit_scrollback, edit_scrollback, source);
             apply_action!(keybinds.clear_pane, clear_pane, source);

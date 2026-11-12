@@ -295,8 +295,8 @@ impl ClientShellState {
         let Some(target) = target else {
             return;
         };
-        let later = matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref navigator)) if navigator.filter == Some(ClientNavigatorFilter::Later));
-        if later {
+        let parked = matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref navigator)) if navigator.filter == Some(ClientNavigatorFilter::Parked));
+        if parked {
             if let ClientNavigatorTarget::Pane {
                 endpoint_id,
                 pane_id,
@@ -677,7 +677,7 @@ impl ClientShellState {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     if let Some(content_changed) = navigator.query.handle_key(key) {
                         if content_changed {
-                            if navigator.filter != Some(ClientNavigatorFilter::Later) {
+                            if navigator.filter != Some(ClientNavigatorFilter::Parked) {
                                 navigator.filter = None;
                             }
                             navigator.selected = None;
@@ -751,7 +751,7 @@ impl ClientShellState {
             if !shifted_without_evidence && crate::input::keybind_help_text_char(key) == Some('/') {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.search_focused = true;
-                    if navigator.filter != Some(ClientNavigatorFilter::Later) {
+                    if navigator.filter != Some(ClientNavigatorFilter::Parked) {
                         navigator.filter = None;
                     }
                 }

@@ -233,9 +233,9 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
-    pub(super) later: &'a mut lawn::LaterState,
-    pub(super) later_height: u16,
-    pub(super) later_rows: &'a [ClientNavigatorRow],
+    pub(super) parked: &'a mut lawn::ParkedState,
+    pub(super) parked_height: u16,
+    pub(super) parked_rows: &'a [ClientNavigatorRow],
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -319,13 +319,13 @@ pub(super) fn render_shell(
             );
         }
     }
-    lawn::render_later(
+    lawn::render_parked(
         buffer,
         layout.sidebar,
-        state.later_height,
+        state.parked_height,
         state.endpoints,
-        state.later_rows,
-        state.later,
+        state.parked_rows,
+        state.parked,
         config,
         &mut hits,
     );

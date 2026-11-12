@@ -594,7 +594,7 @@ fn hidden_sidebar_mode_uses_the_keybinding_without_a_toggle_button() {
         let toggle = state.hits.sidebar_toggle;
         assert!(!toggle.is_empty());
         assert_eq!(state.hits.global_launcher.y, 26);
-        assert_eq!(state.hits.later_toggle.y, 25);
+        assert_eq!(state.hits.parked_toggle.y, 25);
 
         state.config = ClientShellConfig::from_config(&config);
         let frame = state.compose(100, 28).expect("hidden-mode sidebar");
@@ -603,24 +603,27 @@ fn hidden_sidebar_mode_uses_the_keybinding_without_a_toggle_button() {
         assert!(!buffer.content.iter().any(|cell| cell.symbol() == "«"));
         assert_eq!(state.hits.new_workspace.y, 27);
         assert_eq!(state.hits.global_launcher.y, 27);
-        assert_eq!(state.hits.later_toggle.y, 26);
+        assert_eq!(state.hits.parked_toggle.y, 26);
         assert_eq!(
             state.hits.workspace_body.bottom(),
-            state.hits.later_toggle.y
+            state.hits.parked_toggle.y
         );
 
-        let later = state.hits.later_toggle;
+        let parked = state.hits.parked_toggle;
         state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: later.x,
-            row: later.y,
+            column: parked.x,
+            row: parked.y,
             modifiers: KeyModifiers::NONE,
         })]);
-        state.compose(100, 28).expect("expanded Later section");
-        assert_eq!(state.hits.later_body.bottom(), state.hits.global_launcher.y);
+        state.compose(100, 28).expect("expanded Parked section");
+        assert_eq!(
+            state.hits.parked_body.bottom(),
+            state.hits.global_launcher.y
+        );
         assert_eq!(
             state.hits.workspace_body.bottom(),
-            state.hits.later_toggle.y
+            state.hits.parked_toggle.y
         );
         assert!(!state.sidebar_collapsed);
 

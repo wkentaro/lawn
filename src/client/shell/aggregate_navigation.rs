@@ -293,9 +293,9 @@ pub(super) fn navigator_rows(
         Some(ClientNavigatorFilter::Working) => status == crate::api::schema::AgentStatus::Working,
         Some(ClientNavigatorFilter::Idle) => status == crate::api::schema::AgentStatus::Idle,
         Some(ClientNavigatorFilter::Done) => status == crate::api::schema::AgentStatus::Done,
-        None | Some(ClientNavigatorFilter::Later) => true,
+        None | Some(ClientNavigatorFilter::Parked) => true,
     };
-    let later = navigator.filter == Some(ClientNavigatorFilter::Later);
+    let parked = navigator.filter == Some(ClientNavigatorFilter::Parked);
     let words = query.split_whitespace().collect::<Vec<_>>();
     let text = |value: &str| {
         if words.is_empty() {
@@ -331,7 +331,7 @@ pub(super) fn navigator_rows(
             }
             let mut panes_by_tab = HashMap::new();
             for pane in &snapshot.panes {
-                if endpoint.parking.hides_pane(&pane.pane_id) != later {
+                if endpoint.parking.hides_pane(&pane.pane_id) != parked {
                     continue;
                 }
                 panes_by_tab
@@ -453,7 +453,7 @@ pub(super) fn navigator_rows(
                 }
             }
         }
-        if !filtering || (!later && endpoint_query_matches) || !endpoint_rows.is_empty() {
+        if !filtering || (!parked && endpoint_query_matches) || !endpoint_rows.is_empty() {
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
