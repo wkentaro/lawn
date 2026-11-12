@@ -266,12 +266,18 @@ fn parked_launcher_includes_parked_terminal_and_goto_excludes_it() {
     let parked = request(&mut state);
     acknowledge(&mut state, &parked, None);
     state.open_navigator_overlay();
-    let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-        panic!("Jump")
-    };
-    let active =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-    assert!(!active.iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_1")));
+    for query in ["", "client-shell", "main"] {
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+            panic!("Jump")
+        };
+        navigator.query = query.into();
+        let active =
+            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        assert!(
+            active.is_empty(),
+            "parked-only workspace appears for {query:?}"
+        );
+    }
     state.open_parked();
     state.handle_input_bytes(b"client-shell");
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
@@ -983,7 +989,16 @@ fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
         panic!("Jump")
     };
-    assert!(render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator).iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Workspace { workspace_id, .. } if workspace_id == "ws_1")));
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let workspaces = rows
+        .iter()
+        .filter_map(|row| match &row.target {
+            ClientNavigatorTarget::Workspace { workspace_id, .. } => Some(workspace_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(workspaces, ["ws_2"]);
     assert!(state
         .navigation_workspace_entries(state.snapshot.as_deref().unwrap())
         .iter()
