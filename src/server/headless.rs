@@ -2783,7 +2783,7 @@ impl HeadlessServer {
                 params.format,
             ),
             Method::PaneRead(params) if params.intent == ReadIntent::Interactive => (
-                self.app.resolve_terminal_target(&params.pane_id).ok()?,
+                self.app.resolve_pane_target(&params.pane_id)?,
                 params.source,
                 params.lines,
                 params.format,
@@ -2868,7 +2868,7 @@ impl HeadlessServer {
                 params.format,
             ),
             api::schema::Method::PaneRead(params) => (
-                self.app.resolve_terminal_target(&params.pane_id).ok(),
+                self.app.resolve_pane_target(&params.pane_id),
                 params.source,
                 params.lines,
                 params.format,
