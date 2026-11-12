@@ -107,12 +107,12 @@ fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
     assert_eq!(state.focused_tab_count(), 0);
     assert!(state.hits.tabs.is_empty());
     assert!(state.hits.panes.is_empty());
-    assert!(frame_rows(&frame).join("\n").contains("Open Later"));
+    assert!(frame_rows(&frame).join("\n").contains("Open Parked"));
     let open = state.hits.open_later;
     assert!(!open.is_empty());
     click(&mut state, open);
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("Later")
+        panic!("Parked")
     };
     assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Later));
     navigator.selected = Some(ClientNavigatorTarget::Pane {
@@ -124,7 +124,7 @@ fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
     assert_eq!(preview.preview_terminal.as_deref(), Some("terminal-pane_1"));
     acknowledge(&mut state, &preview, Some("pane_1"));
     let frame = state.compose(100, 24).unwrap();
-    assert!(frame_rows(&frame).join("\n").contains("Restore"));
+    assert!(frame_rows(&frame).join("\n").contains("Unpark"));
     let restore = state.hits.restore_pane;
     assert!(!restore.is_empty());
     assert!(frame.cursor.is_none());
@@ -172,7 +172,7 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
     state.handle_input_bytes(b"/");
     state.handle_input_bytes(b"client-shell");
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-        panic!("Later search")
+        panic!("Parked search")
     };
     assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Later));
     let rows =

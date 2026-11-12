@@ -48,7 +48,7 @@ pub(super) fn global_menu_items(
         ));
     }
     items.push((
-        "Later",
+        "Parked",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenLater),
     ));
     items.push((

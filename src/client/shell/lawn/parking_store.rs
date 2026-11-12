@@ -22,24 +22,24 @@ fn read(path: &Path) -> Result<BTreeSet<String>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
-        Err(error) => return Err(format!("Cannot read Later: {error}")),
+        Err(error) => return Err(format!("Cannot read parked panes: {error}")),
     };
     let mut bytes = Vec::new();
     file.take(MAX_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("Cannot read Later: {error}"))?;
+        .map_err(|error| format!("Cannot read parked panes: {error}"))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("Later's saved state is too large".into());
+        return Err("Saved parking state is too large".into());
     }
-    let saved: SavedParking =
-        serde_json::from_slice(&bytes).map_err(|error| format!("Cannot read Later: {error}"))?;
+    let saved: SavedParking = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Cannot read parked panes: {error}"))?;
     if saved.version != 1
         || saved
             .terminals
             .iter()
             .any(|id| id.is_empty() || id.len() > 128)
     {
-        return Err("Later's saved state has an unsupported format".into());
+        return Err("Saved parking state has an unsupported format".into());
     }
     Ok(saved.terminals)
 }
@@ -49,9 +49,9 @@ fn write(path: &Path, terminals: &BTreeSet<String>) -> Result<(), String> {
         version: 1,
         terminals: terminals.clone(),
     })
-    .map_err(|error| format!("Cannot save Later: {error}"))?;
+    .map_err(|error| format!("Cannot save parked panes: {error}"))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("Later's saved state is too large".into());
+        return Err("Saved parking state is too large".into());
     }
     let temp = path.with_extension(format!(
         "tmp-{}-{}",
@@ -62,7 +62,7 @@ fn write(path: &Path, terminals: &BTreeSet<String>) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(&temp)
-        .map_err(|error| format!("Cannot save Later: {error}"))?;
+        .map_err(|error| format!("Cannot save parked panes: {error}"))?;
     let result = (|| -> std::io::Result<()> {
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -71,7 +71,7 @@ fn write(path: &Path, terminals: &BTreeSet<String>) -> Result<(), String> {
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-    result.map_err(|error| format!("Cannot save Later: {error}"))
+    result.map_err(|error| format!("Cannot save parked panes: {error}"))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -104,17 +104,18 @@ impl ParkingStore {
             change(&mut self.terminals);
             return Ok(before != self.terminals);
         };
-        let parent = path.parent().ok_or("Invalid Later state path")?;
-        std::fs::create_dir_all(parent).map_err(|error| format!("Cannot save Later: {error}"))?;
+        let parent = path.parent().ok_or("Invalid parking state path")?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Cannot save parked panes: {error}"))?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(path.with_extension("lock"))
-            .map_err(|error| format!("Cannot lock Later: {error}"))?;
+            .map_err(|error| format!("Cannot lock parked panes: {error}"))?;
         lock.lock()
-            .map_err(|error| format!("Cannot lock Later: {error}"))?;
+            .map_err(|error| format!("Cannot lock parked panes: {error}"))?;
         let mut next = read(path)?;
         let before = next.clone();
         change(&mut next);

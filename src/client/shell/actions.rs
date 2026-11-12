@@ -55,9 +55,7 @@ impl ClientShellState {
                             | crate::input::KeybindAction::SwapPaneDown
                     )
                 {
-                    self.receive_endpoint_unavailable(
-                        "Restore this pane before changing it".into(),
-                    );
+                    self.receive_endpoint_unavailable("Unpark this pane before changing it".into());
                     outcome.repaint = true;
                     return;
                 }
@@ -223,7 +221,7 @@ impl ClientShellState {
             crate::input::KeybindMatch::Command(command) => {
                 if self.has_parking_preview() {
                     self.receive_endpoint_unavailable(
-                        "Restore this pane before running a command".into(),
+                        "Unpark this pane before running a command".into(),
                     );
                     outcome.repaint = true;
                     return;
