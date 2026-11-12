@@ -410,9 +410,9 @@ pub struct KeysConfig {
     pub rename_pane: BindingConfig,
     /// Park the focused workspace pane in Lawn. Unset by default.
     pub park_pane: BindingConfig,
-    /// Restore the current Later preview. Unset by default.
+    /// Unpark the current parked pane preview. Unset by default.
     pub restore_pane: BindingConfig,
-    /// Open the Later picker. Unset by default.
+    /// Open the Parked picker. Unset by default.
     pub open_later: BindingConfig,
 
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".

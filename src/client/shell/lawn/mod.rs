@@ -307,7 +307,7 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " Restore ",
+                " Unpark ",
                 Style::default().fg(p.accent),
             );
             self.hits.restore_pane = button;
@@ -336,7 +336,7 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " Open Later ",
+                " Open Parked ",
                 Style::default().fg(p.accent).bg(p.surface0),
             );
             self.hits.open_later = button;

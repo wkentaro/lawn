@@ -89,7 +89,7 @@ pub(in crate::client::shell) fn render(
         area.x,
         area.y,
         area.width,
-        &format!(" {marker} later"),
+        &format!(" {marker} parked"),
         Style::default().fg(p.overlay0),
     );
     put_right_text(
