@@ -204,6 +204,10 @@ impl ClientShellState {
             selected: None,
             scroll: 0,
             filter: None,
+            parked: false,
+            machine: None,
+            machine_scroll: 0,
+            workspace: None,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -226,6 +230,21 @@ impl ClientShellState {
         }
         let selected =
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
+        if navigator.parked {
+            let panes = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            if let Some(position) = panes.iter().position(|index| *index == selected) {
+                let next = (position as isize + delta)
+                    .clamp(0, panes.len().saturating_sub(1) as isize)
+                    as usize;
+                navigator.selected = Some(rows[panes[next]].target.clone());
+            }
+            return;
+        }
         let next =
             (selected as isize + delta).clamp(0, rows.len().saturating_sub(1) as isize) as usize;
         navigator.selected = Some(rows[next].target.clone());
@@ -243,7 +262,19 @@ impl ClientShellState {
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
         // Keep the selection in the dragged viewport so rendering does not snap back to it.
         let selected = selected.clamp(navigator.scroll, navigator.scroll + viewport_rows - 1);
-        navigator.selected = rows.get(selected).map(|row| row.target.clone());
+        navigator.selected = if navigator.parked {
+            rows.iter()
+                .enumerate()
+                .filter(|(index, row)| {
+                    *index >= navigator.scroll
+                        && *index < navigator.scroll + viewport_rows
+                        && matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                })
+                .min_by_key(|(index, _)| index.abs_diff(selected))
+                .map(|(_, row)| row.target.clone())
+        } else {
+            rows.get(selected).map(|row| row.target.clone())
+        };
     }
 
     fn move_navigator_workspace(&mut self, forward: bool) {
@@ -295,7 +326,7 @@ impl ClientShellState {
         let Some(target) = target else {
             return;
         };
-        let parked = matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref navigator)) if navigator.filter == Some(ClientNavigatorFilter::Parked));
+        let parked = matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref navigator)) if navigator.parked);
         if parked {
             if let ClientNavigatorTarget::Pane {
                 endpoint_id,
@@ -482,7 +513,9 @@ impl ClientShellState {
             }
             Some(ClientShellOverlay::Navigator(navigator)) if navigator.search_focused => {
                 if navigator.query.insert(text) {
-                    navigator.filter = None;
+                    if !navigator.parked {
+                        navigator.filter = None;
+                    }
                     navigator.selected = None;
                 }
                 true
@@ -677,7 +710,7 @@ impl ClientShellState {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     if let Some(content_changed) = navigator.query.handle_key(key) {
                         if content_changed {
-                            if navigator.filter != Some(ClientNavigatorFilter::Parked) {
+                            if !navigator.parked {
                                 navigator.filter = None;
                             }
                             navigator.selected = None;
@@ -709,7 +742,14 @@ impl ClientShellState {
             }
             if code == KeyCode::Backspace && modifiers.is_empty() {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    if navigator.filter.take().is_some() {
+                    if navigator.parked {
+                        if navigator.workspace.take().is_none()
+                            && navigator.machine.take().is_none()
+                        {
+                            navigator.filter = None;
+                        }
+                        navigator.selected = None;
+                    } else if navigator.filter.take().is_some() {
                         navigator.selected = None;
                     }
                 }
@@ -731,7 +771,12 @@ impl ClientShellState {
                         &self.active_endpoint_id,
                         navigator,
                     )
-                    .last()
+                    .iter()
+                    .rev()
+                    .find(|row| {
+                        !navigator.parked
+                            || matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                    })
                     .map(|row| row.target.clone()),
                     _ => None,
                 });
@@ -751,7 +796,7 @@ impl ClientShellState {
             if !shifted_without_evidence && crate::input::keybind_help_text_char(key) == Some('/') {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.search_focused = true;
-                    if navigator.filter != Some(ClientNavigatorFilter::Parked) {
+                    if !navigator.parked {
                         navigator.filter = None;
                     }
                 }
@@ -786,7 +831,9 @@ impl ClientShellState {
                 _ => None,
             } {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
+                    if !navigator.parked {
+                        navigator.query.clear();
+                    }
                     navigator.filter = Some(filter);
                     navigator.selected = None;
                 }
@@ -795,7 +842,9 @@ impl ClientShellState {
             }
             if code == KeyCode::Char('a') && modifiers.is_empty() {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
+                    if !navigator.parked {
+                        navigator.query.clear();
+                    }
                     navigator.filter = None;
                     navigator.selected = None;
                 }

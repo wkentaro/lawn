@@ -132,6 +132,10 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_popup: Rect,
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(super) navigator_filters: Vec<(Rect, Option<ClientNavigatorFilter>)>,
+    pub(super) navigator_machine_pages: Vec<(Rect, usize)>,
+    pub(super) navigator_preview: Rect,
+    pub(super) navigator_close: Rect,
     pub(super) navigator_scrollbar: Rect,
     pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) worktree_search: Rect,
@@ -343,7 +347,6 @@ pub(super) struct ClientRenameOverlay {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClientNavigatorFilter {
-    Parked,
     Blocked,
     Working,
     Idle,
@@ -385,6 +388,10 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
     pub(super) filter: Option<ClientNavigatorFilter>,
+    pub(super) parked: bool,
+    pub(super) machine: Option<ClientEndpointId>,
+    pub(super) machine_scroll: usize,
+    pub(super) workspace: Option<(ClientEndpointId, String)>,
 }
 
 #[derive(Debug)]
