@@ -741,7 +741,7 @@ fn update_ready_menu_opens_client_owned_release_notes_and_dismisses_by_version()
         menu_buffer[(update_row.x + 3, update_row.y)].fg,
         state.config.palette.text
     );
-    state.activate_global_menu_item(3, &mut ClientShellInput::default());
+    state.activate_global_menu_item(3, false, &mut ClientShellInput::default());
     let notes = state.compose(106, 30).expect("release notes");
     let bottom_row_start = usize::from(notes.width) * usize::from(notes.height - 1);
     let bottom_row = notes.cells[bottom_row_start..]
@@ -1062,7 +1062,7 @@ fn outdated_integration_badges_launcher_settings_and_settings_tab() {
     assert!(menu_text.contains("● settings"));
     assert!(!menu_text.contains("update ready"));
 
-    state.activate_global_menu_item(0, &mut ClientShellInput::default());
+    state.activate_global_menu_item(0, false, &mut ClientShellInput::default());
     let settings = state.compose(106, 30).expect("settings integration badge");
     let settings_text = settings
         .cells

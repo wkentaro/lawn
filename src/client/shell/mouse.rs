@@ -1405,7 +1405,7 @@ impl ClientShellState {
                         self.toggle_global_menu();
                         outcome.repaint = true;
                     } else if let Some((_, index)) = row_hit {
-                        self.activate_global_menu_item(index, outcome);
+                        self.activate_global_menu_item(index, false, outcome);
                     } else {
                         self.overlay = None;
                         outcome.repaint = true;

@@ -492,6 +492,35 @@ fn mobile_switcher_create_and_menu_rows_reuse_client_actions() {
 }
 
 #[test]
+fn mobile_menu_keeps_parked_access_without_sidebar_launcher() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Navigate;
+    state.compose(44, 30).expect("mobile menu");
+    assert!(state.hits.parked_launcher.is_empty());
+    let index = super::super::global_menu::global_menu_items(&snapshot(), true)
+        .iter()
+        .position(|(label, _)| *label == "parked")
+        .expect("mobile parked action");
+    let parked = state
+        .hits
+        .mobile_targets
+        .iter()
+        .find_map(|(rect, target)| {
+            matches!(target, ClientMobileTarget::Menu(i) if *i == index).then_some(*rect)
+        })
+        .expect("parked menu hit");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: parked.x,
+        row: parked.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref nav)) if nav.parked));
+}
+
+#[test]
 fn mobile_menu_keeps_inert_notes_open_and_cancel_without_workspace_in_navigate() {
     let mut source_config = Config::default();
     source_config.ui.prompt_new_workspace_name = true;

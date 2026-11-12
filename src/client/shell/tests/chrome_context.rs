@@ -394,6 +394,12 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(text.contains("keybinds"));
     assert!(text.contains("reload config"));
     assert!(text.contains("detach"));
+    assert!(
+        super::super::global_menu::global_menu_items(&snapshot(), false)
+            .iter()
+            .all(|(label, _)| *label != "parked")
+    );
+    assert_ne!(state.hits.parked_launcher, Rect::default());
 
     let keybinds = state.hits.global_menu_rows[1].0;
     let help = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -406,7 +412,7 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
 
     state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
-        highlighted: super::super::global_menu::global_menu_items(&snapshot())
+        highlighted: super::super::global_menu::global_menu_items(&snapshot(), false)
             .iter()
             .position(|(_, action)| {
                 *action
@@ -419,6 +425,32 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);
     assert!(state.overlay.is_none());
+}
+
+#[test]
+fn global_menu_detaches_after_resizing_to_mobile_width() {
+    for keyboard in [false, true] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        state.compose(106, 30).expect("desktop shell");
+        state.toggle_global_menu();
+        state.compose(44, 30).expect("resized global menu");
+        let outcome = if keyboard {
+            state.move_global_menu_selection(isize::MAX);
+            state.handle_input_bytes(b"\r")
+        } else {
+            let detach = state.hits.global_menu_rows.last().expect("detach row").0;
+            state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: detach.x,
+                row: detach.y,
+                modifiers: KeyModifiers::empty(),
+            })])
+        };
+        assert!(outcome.detach);
+        assert!(state.overlay.is_none());
+    }
 }
 
 #[test]
