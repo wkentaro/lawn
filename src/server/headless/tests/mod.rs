@@ -905,7 +905,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
 
 #[tokio::test]
 async fn endpoint_pane_read_keeps_active_and_inactive_surfaces_unchanged() {
-    for surface_active in [true, false] {
+    for (surface_active, snapshot) in [(true, false), (false, false), (true, true), (false, true)] {
         let mut server = test_headless_server();
         let mut workspace = crate::workspace::Workspace::test_new("endpoint");
         let pane = workspace.tabs[0].root_pane;
@@ -965,10 +965,17 @@ async fn endpoint_pane_read_keeps_active_and_inactive_surfaces_unchanged() {
 
         let request = || {
             Box::new(
-                serde_json::from_value(serde_json::json!({
-                    "id": "read-1", "method": "pane.read",
-                    "params": {"pane_id": pane_id, "source": "recent", "format": "text"}
-                }))
+                serde_json::from_value(if snapshot {
+                    serde_json::json!({
+                        "id": "read-1", "method": "pane.snapshot",
+                        "params": {"pane_id": pane_id, "max_cols": 40, "max_rows": 10}
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": "read-1", "method": "pane.read",
+                        "params": {"pane_id": pane_id, "source": "recent", "format": "text"}
+                    })
+                })
                 .expect("pane read request"),
             )
         };
@@ -1016,10 +1023,28 @@ async fn endpoint_pane_read_keeps_active_and_inactive_surfaces_unchanged() {
         let response: api::schema::SuccessResponse =
             serde_json::from_slice(&data).expect("read result");
         assert_eq!(response.id, "read-1");
-        let api::schema::ResponseResult::PaneRead { read } = response.result else {
-            panic!("expected pane read response");
-        };
-        assert!(read.text.contains("endpoint-read"));
+        match response.result {
+            api::schema::ResponseResult::PaneRead { read } if !snapshot => {
+                assert!(read.text.contains("endpoint-read"));
+            }
+            api::schema::ResponseResult::PaneSnapshot { snapshot: result } if snapshot => {
+                assert_eq!(result.pane_id, pane_id);
+                assert_eq!(result.snapshot.width, 40);
+                assert!(result.snapshot.height <= 10);
+                assert_eq!(
+                    result.snapshot.cells.len(),
+                    usize::from(result.snapshot.width) * usize::from(result.snapshot.height)
+                );
+                assert!(result
+                    .snapshot
+                    .cells
+                    .iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+                    .contains("endpoint-read"));
+            }
+            other => panic!("unexpected passive read result: {other:?}"),
+        }
         assert_eq!(server.foreground_client_id, foreground);
         assert_eq!(server.effective_size, size);
         assert_eq!(server.app.state.view.terminal_area, terminal_area);
@@ -4825,6 +4850,27 @@ fn moved_pane_alias_reads_use_frozen_history_during_harvest() {
             let (respond_to, response_rx) = std::sync::mpsc::channel();
             server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
                 request: api::schema::Request {
+                    id: "snapshot".into(),
+                    method: api::schema::Method::PaneSnapshot(api::schema::PaneSnapshotParams {
+                        pane_id: pane_id.clone(),
+                        max_cols: 40,
+                        max_rows: 10,
+                    }),
+                },
+                respond_to,
+                response_write_complete: None,
+            });
+            let error: api::schema::ErrorResponse = serde_json::from_str(
+                &response_rx
+                    .try_recv()
+                    .expect("immediate snapshot busy response"),
+            )
+            .unwrap();
+            assert_eq!(error.error.code, "endpoint_busy");
+            assert!(server.deferred_alt_screen_reads.is_empty());
+            let (respond_to, response_rx) = std::sync::mpsc::channel();
+            server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+                request: api::schema::Request {
                     id: "read".into(),
                     method: api::schema::Method::PaneRead(api::schema::PaneReadParams {
                         pane_id,
@@ -4852,7 +4898,7 @@ fn moved_pane_alias_reads_use_frozen_history_during_harvest() {
 
 #[test]
 fn terminal_control_rejects_attach_during_alt_screen_read() {
-    with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
+    with_terminal_session_test_server(|server, terminal_id, terminal_id_string, public_pane_id| {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();
         server.pending_alt_screen_reads.push(
             crate::server::alt_screen_read::PendingAltScreenRead::start(
@@ -4880,6 +4926,31 @@ fn terminal_control_rejects_attach_during_alt_screen_read() {
                 Instant::now(),
             ),
         );
+        let request = api::schema::Request {
+            id: "snapshot".into(),
+            method: api::schema::Method::PaneSnapshot(api::schema::PaneSnapshotParams {
+                pane_id: public_pane_id,
+                max_cols: 40,
+                max_rows: 10,
+            }),
+        };
+        assert!(matches!(
+            server.alt_screen_read_conflict(&request),
+            AltScreenReadConflict::Defer
+        ));
+        let (respond_to, response_rx) = std::sync::mpsc::channel();
+        assert!(
+            !server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+                request,
+                respond_to,
+                response_write_complete: None,
+            })
+        );
+        let error: api::schema::ErrorResponse =
+            serde_json::from_str(&response_rx.recv().expect("snapshot busy response"))
+                .expect("error response");
+        assert_eq!(error.error.code, "endpoint_busy");
+        assert!(server.deferred_alt_screen_reads.is_empty());
         let control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
 
         assert!(

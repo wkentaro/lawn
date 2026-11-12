@@ -688,6 +688,16 @@ herdr pane read w1:p1 --source detection
 `recent-unwrapped` はソフト折り返しを無視するのでログに便利です。
 `detection` は、エージェントのスクリーン検出が使う下部バッファのスナップショットを返します。
 
+`pane.snapshot` は、最新の端末出力を元の折り返しとセルの書式を保ったまま取得します。端末のサイズ、表示位置、フォーカスは変わりません。
+
+```json
+{"id":"snapshot-1","method":"pane.snapshot","params":{"pane_id":"w1:p1","max_cols":80,"max_rows":24}}
+```
+
+両方の上限値が必須で、正の数を指定します。要求できる範囲は最大512列、256行、32768セルです。シリアライズ後のレスポンスは8 MiBまでです。`snapshot_too_large` が返った場合は範囲を小さくしてください。`endpoint_busy` が返った場合は、同期出力または別の端末読み取りが終わってから再試行してください。
+
+`pane_snapshot` の結果には `snapshot.pane_id`、元の列数と行数を示す `source_cols` と `source_rows`、絶対行位置の `start_row`、取得した範囲の `width` と `height`、パックされた端末の既定色 `default_fg` と `default_bg`、行順の `cells` 配列が含まれます。各セルには `symbol`、パックされた `fg` と `bg`、`modifier` ビット、`skip`、`hyperlink` が含まれます。色の表現はRGB色が `0x02000000 | RGB`、インデックス色が `0x01000000 | index`、ホストの既定色が0です。表示領域に余白がある場合は、同じ色形式の `default_fg` と `default_bg` を使って塗りつぶします。通常の端末フレームと同じセル形式を使い、画像とカーソル位置は含めません。
+
 ## 状態の待機
 
 エージェントとスクリプトの協調には wait を使います。

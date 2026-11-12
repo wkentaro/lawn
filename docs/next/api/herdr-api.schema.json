@@ -3253,6 +3253,31 @@
           ],
           "type": "object"
         },
+        "PaneSnapshotParams": {
+          "properties": {
+            "max_cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "max_cols",
+            "max_rows"
+          ],
+          "type": "object"
+        },
         "PaneSplitParams": {
           "properties": {
             "cwd": {
@@ -5973,6 +5998,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.snapshot",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneSnapshotParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_agent",
               "type": "string"
             },
@@ -6956,6 +6997,55 @@
             "records",
             "revision",
             "truncated"
+          ],
+          "type": "object"
+        },
+        "CellData": {
+          "description": "A single cell in a rendered frame, serialized independently from ratatui's\n`Cell` type to keep the wire protocol stable.",
+          "properties": {
+            "bg": {
+              "description": "Background color as a packed u32.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "fg": {
+              "description": "Foreground color as a packed u32 (0xAARRGGBB or ratatui Color index).",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "hyperlink": {
+              "description": "Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "modifier": {
+              "description": "Bitmask of style modifiers (bold, italic, etc.) plus Herdr extension bits.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "skip": {
+              "description": "Whether this cell should be skipped during diff-based rendering.",
+              "type": "boolean"
+            },
+            "symbol": {
+              "description": "Grapheme cluster displayed in this cell (usually 1–2 chars).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "symbol",
+            "fg",
+            "bg",
+            "modifier",
+            "skip"
           ],
           "type": "object"
         },
@@ -8630,6 +8720,71 @@
           ],
           "type": "object"
         },
+        "PaneSnapshotResult": {
+          "description": "A bounded rectangle of the latest terminal screen at its native dimensions.",
+          "properties": {
+            "cells": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/CellData"
+              },
+              "type": "array"
+            },
+            "default_bg": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default_fg": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "height": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "source_cols": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "source_rows": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "start_row": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source_cols",
+            "source_rows",
+            "default_fg",
+            "default_bg",
+            "start_row",
+            "width",
+            "height",
+            "cells"
+          ],
+          "type": "object"
+        },
         "PaneSwapReason": {
           "enum": [
             "no_neighbor",
@@ -9978,6 +10133,22 @@
               "required": [
                 "type",
                 "read"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshot": {
+                  "$ref": "#/schemas/success_response/$defs/PaneSnapshotResult"
+                },
+                "type": {
+                  "const": "pane_snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshot"
               ],
               "type": "object"
             },

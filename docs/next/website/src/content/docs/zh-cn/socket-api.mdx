@@ -682,6 +682,16 @@ herdr pane read w1:p1 --source detection
 `recent-unwrapped` 对日志很有用,因为它忽略软折行。
 `detection` 返回智能体屏幕检测使用的底部缓冲区快照。
 
+`pane.snapshot` 被动获取最新的终端输出,保留原始折行和单元格样式。它不会调整终端大小、移动视口或改变焦点。
+
+```json
+{"id":"snapshot-1","method":"pane.snapshot","params":{"pane_id":"w1:p1","max_cols":80,"max_rows":24}}
+```
+
+两个上限参数均为必填项,且必须为正数。请求最多包含512列、256行和32768个单元格。序列化后的响应上限为8 MiB;收到 `snapshot_too_large` 时请缩小范围。收到 `endpoint_busy` 时,请在同步输出或另一个终端读取完成后重试。
+
+`pane_snapshot` 结果包含 `snapshot.pane_id`、原始列数和行数 `source_cols` 与 `source_rows`、绝对起始行 `start_row`、捕获区域的 `width` 与 `height`、打包的终端默认颜色 `default_fg` 与 `default_bg`,以及按行排列的 `cells` 数组。每个单元格包含 `symbol`、打包的 `fg` 与 `bg`、`modifier` 位、`skip` 和 `hyperlink`。RGB颜色使用 `0x02000000 | RGB`,索引颜色使用 `0x01000000 | index`,主机默认颜色为0。显示区域的空余部分使用相同颜色编码的 `default_fg` 与 `default_bg` 填充。快照沿用普通终端帧的单元格编码,不包含图形和光标位置。
+
 ## 等待状态
 
 用等待来协调智能体和脚本。

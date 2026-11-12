@@ -15,6 +15,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::layout::PaneId;
 use crate::protocol::CellData;
 
+mod cell_snapshot;
 #[cfg(test)]
 mod migration_tests;
 #[cfg(windows)]
@@ -497,6 +498,14 @@ impl PaneTerminal {
 
     pub fn visible_ansi(&self) -> String {
         self.ghostty.visible_ansi()
+    }
+
+    pub(crate) fn cell_snapshot(
+        &self,
+        max_cols: u16,
+        max_rows: u16,
+    ) -> Option<crate::terminal::TerminalCellSnapshot> {
+        self.ghostty.cell_snapshot(max_cols, max_rows)
     }
 
     pub fn detection_text(&self) -> String {
@@ -2187,6 +2196,29 @@ impl GhosttyPaneTerminal {
             .ok()
             .and_then(|mut core| ghostty_detection_text_for_cache(&mut core).ok())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn cell_snapshot(
+        &self,
+        max_cols: u16,
+        max_rows: u16,
+    ) -> Option<crate::terminal::TerminalCellSnapshot> {
+        if max_cols == 0
+            || max_rows == 0
+            || max_cols > 512
+            || max_rows > 256
+            || usize::from(max_cols) * usize::from(max_rows) > 32768
+        {
+            return None;
+        }
+        let core = self.try_lock_core()?;
+        match cell_snapshot::capture(&core, max_cols, max_rows) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                debug!(?error, "could not capture terminal cells");
+                None
+            }
+        }
     }
 
     fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, GhosttyPaneCore>> {
