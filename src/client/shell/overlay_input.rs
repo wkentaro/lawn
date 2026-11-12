@@ -220,33 +220,22 @@ impl ClientShellState {
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
-        if rows.is_empty() {
-            navigator.selected = None;
-            return;
-        }
-        let selected =
-            super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
-        if navigator.parked {
-            let panes = rows
-                .iter()
-                .enumerate()
-                .filter(|(_, row)| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
-            let next = panes
-                .iter()
-                .position(|index| *index == selected)
-                .map(|position| {
-                    (position as isize + delta).clamp(0, panes.len().saturating_sub(1) as isize)
-                        as usize
-                })
-                .unwrap_or(0);
-            navigator.selected = panes.get(next).map(|index| rows[*index].target.clone());
-            return;
-        }
-        let next =
-            (selected as isize + delta).clamp(0, rows.len().saturating_sub(1) as isize) as usize;
-        navigator.selected = Some(rows[next].target.clone());
+        let selected = super::aggregate_navigation::navigator_selected_index(&rows, navigator);
+        let panes = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let next = panes
+            .iter()
+            .position(|index| Some(*index) == selected)
+            .map(|position| {
+                (position as isize + delta).clamp(0, panes.len().saturating_sub(1) as isize)
+                    as usize
+            })
+            .unwrap_or(0);
+        navigator.selected = panes.get(next).map(|index| rows[*index].target.clone());
     }
 
     pub(super) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
@@ -262,19 +251,16 @@ impl ClientShellState {
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
         // Keep the selection in the dragged viewport so rendering does not snap back to it.
         let selected = selected.clamp(scroll, scroll + viewport_rows - 1);
-        navigator.selected = if navigator.parked {
-            rows.iter()
-                .enumerate()
-                .filter(|(index, row)| {
-                    *index >= scroll
-                        && *index < scroll + viewport_rows
-                        && matches!(row.target, ClientNavigatorTarget::Pane { .. })
-                })
-                .min_by_key(|(index, _)| index.abs_diff(selected))
-                .map(|(_, row)| row.target.clone())
-        } else {
-            rows.get(selected).map(|row| row.target.clone())
-        };
+        navigator.selected = rows
+            .iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                *index >= scroll
+                    && *index < scroll + viewport_rows
+                    && matches!(row.target, ClientNavigatorTarget::Pane { .. })
+            })
+            .min_by_key(|(index, _)| index.abs_diff(selected))
+            .map(|(_, row)| row.target.clone());
     }
 
     pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
@@ -289,49 +275,26 @@ impl ClientShellState {
             }
             _ => None,
         });
-        let Some(target) = target else {
-            return;
-        };
-        if let ClientNavigatorTarget::Pane {
+        let Some(ClientNavigatorTarget::Pane {
             endpoint_id,
             pane_id,
-        } = &target
-        {
-            if self.endpoints.iter().any(|endpoint| {
-                endpoint.endpoint_id == *endpoint_id && endpoint.parking.hides_pane(pane_id)
-            }) {
-                if self.parking_action(
-                    endpoint_id.clone(),
-                    pane_id.clone(),
-                    lawn::ParkingAction::Restore,
-                    outcome,
-                ) {
-                    self.overlay = None;
-                }
-                return;
-            }
-        }
-        let activated = match target {
-            ClientNavigatorTarget::Machine { endpoint_id } => {
-                self.activate_endpoint(endpoint_id, outcome)
-            }
-            ClientNavigatorTarget::Workspace {
-                endpoint_id,
-                workspace_id,
-            } => self.focus_or_activate(
-                endpoint_id,
-                ClientEndpointFocusTarget::Workspace(workspace_id),
-                outcome,
-            ),
-            ClientNavigatorTarget::Pane {
-                endpoint_id,
-                pane_id,
-            } => self.focus_or_activate(
-                endpoint_id,
-                ClientEndpointFocusTarget::Pane(pane_id),
-                outcome,
-            ),
+        }) = target
+        else {
+            return;
         };
+        if self.endpoints.iter().any(|endpoint| {
+            endpoint.endpoint_id == endpoint_id && endpoint.parking.hides_pane(&pane_id)
+        }) {
+            if self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Restore, outcome) {
+                self.overlay = None;
+            }
+            return;
+        }
+        let activated = self.focus_or_activate(
+            endpoint_id,
+            ClientEndpointFocusTarget::Pane(pane_id),
+            outcome,
+        );
         if activated {
             self.overlay = None;
         }

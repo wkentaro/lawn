@@ -2552,7 +2552,7 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
 }
 
 #[test]
-fn navigator_machine_selection_opens_its_remembered_view() {
+fn navigator_machine_heading_cannot_be_opened() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
     let selected = {
@@ -2578,14 +2578,11 @@ fn navigator_machine_selection_opens_its_remembered_view() {
     let mut outcome = ClientShellInput::default();
     state.accept_navigator_selection(&mut outcome);
 
+    assert!(outcome.actions.is_empty());
     assert!(matches!(
-        outcome.actions.as_slice(),
-        [ClientShellAction::ActivateEndpoint {
-            endpoint_id: activated,
-            target: None,
-        }] if activated == &endpoint_id
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
     ));
-    assert!(state.overlay.is_none());
 }
 
 #[test]
@@ -2934,7 +2931,7 @@ fn navigator_keeps_search_focused_while_browsing_across_machines() {
 }
 
 #[test]
-fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
+fn navigator_workspace_heading_cannot_be_opened() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
     let selected = {
@@ -2963,13 +2960,101 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
     let mut outcome = ClientShellInput::default();
     state.accept_navigator_selection(&mut outcome);
 
+    assert!(outcome.actions.is_empty());
     assert!(matches!(
-        outcome.actions.as_slice(),
-        [ClientShellAction::ActivateEndpoint {
-            endpoint_id: activated,
-            target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
-        }] if activated == &endpoint_id && workspace_id == "ws_1"
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
     ));
+}
+
+#[test]
+fn navigator_skips_headings_for_keyboard_mouse_and_scroll() {
+    let (mut state, remote) = state_with_remote();
+    state.open_navigator_overlay();
+    let local_pane = ClientNavigatorTarget::Pane {
+        endpoint_id: ClientEndpointId::Local,
+        pane_id: "pane_1".into(),
+    };
+    let remote_pane = ClientNavigatorTarget::Pane {
+        endpoint_id: remote,
+        pane_id: "pane_1".into(),
+    };
+    for (delta, expected) in [
+        (-1, &local_pane),
+        (1, &remote_pane),
+        (3, &remote_pane),
+        (-1, &local_pane),
+    ] {
+        state.move_navigator_selection(delta);
+        assert!(
+            matches!(&state.overlay, Some(ClientShellOverlay::Navigator(n))
+            if n.selected.as_ref() == Some(expected))
+        );
+    }
+    state.compose(106, 30).unwrap();
+    let headings = state
+        .hits
+        .navigator_rows
+        .iter()
+        .filter(|(_, target)| !matches!(target, ClientNavigatorTarget::Pane { .. }))
+        .map(|(rect, _)| *rect)
+        .collect::<Vec<_>>();
+    assert_eq!(headings.len(), 4);
+    for rect in headings {
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        assert!(outcome.actions.is_empty());
+        assert!(
+            matches!(&state.overlay, Some(ClientShellOverlay::Navigator(n))
+            if n.selected.as_ref() == Some(&local_pane))
+        );
+    }
+    // A viewport containing only headings has no actionable selection.
+    state.scroll_navigator_to(0, 2);
+    assert!(state.handle_input_bytes(b"\r").actions.is_empty());
+    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
+        panic!("navigator");
+    };
+    let rows = render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n);
+    assert!(super::super::aggregate_navigation::selected_navigator_target(&rows, n).is_none());
+}
+
+#[test]
+fn navigator_workspace_search_selects_only_matching_terminals() {
+    let (mut state, remote) = state_with_remote();
+    state.open_navigator_overlay();
+    state.handle_input_bytes(b"remote-workspace");
+    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
+        panic!("navigator");
+    };
+    let rows = render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n);
+    assert_eq!(rows.len(), 3);
+    assert!(rows.iter().any(|row| row.label == "remote-workspace"));
+    assert_eq!(
+        super::super::aggregate_navigation::selected_navigator_target(&rows, n),
+        Some(ClientNavigatorTarget::Pane {
+            endpoint_id: remote.clone(),
+            pane_id: "pane_1".into()
+        })
+    );
+
+    let mut empty = snapshot();
+    empty.workspaces[0].label = "remote-workspace".into();
+    empty.panes.clear();
+    empty.tabs.clear();
+    state.set_endpoint_snapshot(&remote, Box::new(empty));
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.is_empty());
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    state.compose(106, 30).unwrap();
+    assert!(state.hits.navigator_preview.is_empty());
 }
 
 fn aggregate_agent_text(state: &ClientShellState) -> String {

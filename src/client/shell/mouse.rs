@@ -1684,9 +1684,7 @@ impl ClientShellState {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
-                            if !navigator.parked
-                                || matches!(target, ClientNavigatorTarget::Pane { .. })
-                            {
+                            if matches!(target, ClientNavigatorTarget::Pane { .. }) {
                                 navigator.selected = Some(target);
                                 outcome.repaint = true;
                             }
