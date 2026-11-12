@@ -1017,8 +1017,8 @@ pub(crate) fn render_navigator_overlay(
                 .add_modifier(Modifier::DIM)
         } else if ix == selected {
             Style::default()
-                .fg(contrast(p))
-                .bg(p.accent)
+                .fg(p.text)
+                .bg(p.panel_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -1094,7 +1094,11 @@ pub(crate) fn render_navigator_overlay(
             rect.y,
             rect.width.saturating_sub(columns),
             &label,
-            st,
+            if ix == selected {
+                st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                st
+            },
         );
         if is_pane && !n.parked {
             put_text(
@@ -1107,16 +1111,17 @@ pub(crate) fn render_navigator_overlay(
                     st
                 } else {
                     st.fg(p.overlay0)
-                },
+                }
+                .remove_modifier(Modifier::UNDERLINED),
             );
         }
         if !n.parked || !r.stale {
             if let Some(status) = r.status {
                 let prefix = format!("{indent}{current}");
-                let status_style = if r.stale || ix == selected {
+                let status_style = if r.stale {
                     st
                 } else {
-                    Style::default().fg(status_color(status, p)).bg(p.panel_bg)
+                    st.fg(status_color(status, p))
                 };
                 put_text(
                     b,
@@ -1124,7 +1129,7 @@ pub(crate) fn render_navigator_overlay(
                     rect.y,
                     display_width(status_dot(status)),
                     status_dot(status),
-                    status_style,
+                    status_style.remove_modifier(Modifier::UNDERLINED),
                 );
             }
         }
