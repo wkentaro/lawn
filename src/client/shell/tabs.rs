@@ -128,14 +128,10 @@ pub(crate) fn render_tab_bar(
         }
         let rect = Rect::new(x, area.y, width, 1);
         let style = if tab.focused {
-            let base = Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent);
-            if tab.custom_label {
-                base.add_modifier(Modifier::BOLD)
-            } else {
-                base
-            }
+            Style::default()
+                .fg(palette.text)
+                .bg(palette.panel_bg)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else if tab.custom_label {
             Style::default().fg(palette.overlay1).bg(palette.surface0)
         } else {
@@ -157,7 +153,9 @@ pub(crate) fn render_tab_bar(
                 rect.y,
                 rect.width.saturating_sub(left),
                 status_icon(*status, config.status_indicators),
-                style.fg(status_color(*status, palette)),
+                style
+                    .fg(status_color(*status, palette))
+                    .remove_modifier(Modifier::UNDERLINED),
             );
         }
         hits.tabs.push((rect, tab.tab_id.clone()));
