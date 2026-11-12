@@ -168,6 +168,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             api_rx,
             event_hub.clone(),
             &received.manifest.snapshot,
+            &received.manifest.terminal_ids,
             &mut imports,
         )?;
         crate::server::handoff::report_restored(&mut received.stream)?;

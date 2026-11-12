@@ -42,6 +42,10 @@ pub(crate) struct HandoffManifest {
     pub expected_protocol: Option<u32>,
     pub snapshot: crate::persist::SessionSnapshot,
     pub panes: Vec<crate::handoff_runtime::HandoffRuntimeState>,
+    /// Terminal identity outlives the server, including panes without a PTY.
+    /// Older sources omit this map and retain legacy fresh-ID restoration.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub terminal_ids: std::collections::HashMap<u32, crate::terminal::TerminalId>,
     /// An outer window title set over the API outlives the server that took the
     /// call, so a handoff carries it rather than falling back to the config.
     /// Absent from manifests written before this field existed.
@@ -321,6 +325,7 @@ pub(crate) fn manifest_for(
         expected_protocol,
         snapshot,
         panes,
+        terminal_ids: Default::default(),
         api_window_title,
         host_shutdown_intent,
     }
@@ -587,6 +592,7 @@ mod tests {
             serde_json::from_value(value).expect("an older manifest should still load");
 
         assert!(older.host_shutdown_intent.is_none());
+        assert!(older.terminal_ids.is_empty());
     }
 
     #[test]
@@ -610,7 +616,7 @@ mod tests {
         let intent: crate::platform::HostShutdownIntent =
             serde_json::from_value(serde_json::json!({ "announced_at_ns": 42 }))
                 .expect("intent should deserialize");
-        let manifest = manifest_for(
+        let mut manifest = manifest_for(
             empty_snapshot(),
             Vec::new(),
             None,
@@ -618,6 +624,9 @@ mod tests {
             Some("deploying".to_string()),
             Some(intent),
         );
+        manifest
+            .terminal_ids
+            .insert(1, crate::terminal::TerminalId::alloc());
         let encoded = serde_json::to_vec(&manifest).expect("manifest should serialize");
 
         let older: PreHostShutdownManifest =
