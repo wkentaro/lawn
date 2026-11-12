@@ -2223,14 +2223,39 @@ fn parked_switcher_reserves_results_in_short_windows() {
                         Some(ClientShellOverlay::Navigator(_))
                     ));
                     assert!(matches!(
-                        state.navigator_preview_display(),
+                        state.navigator_preview_display(state.navigator_preview.area),
                         PreviewDisplay::None
                     ));
                     state.handle_input_bytes(b"client-shell");
+                    state.compose(width, height).unwrap();
+                    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref()
+                    else {
+                        panic!("parked picker remains open");
+                    };
+                    let rows = render::client_navigator_rows(
+                        &state.endpoints,
+                        &state.active_endpoint_id,
+                        navigator,
+                    );
                     assert!(matches!(
-                        state.navigator_preview_display(),
-                        PreviewDisplay::Loading
+                        aggregate_navigation::selected_navigator_target(&rows, navigator),
+                        Some(ClientNavigatorTarget::Pane { .. })
                     ));
+                    if state.navigator_preview.area.is_empty() {
+                        assert!(matches!(
+                            state.navigator_preview_display(state.navigator_preview.area),
+                            PreviewDisplay::None
+                        ));
+                        assert!(state
+                            .tick_navigator_preview(Instant::now())
+                            .actions
+                            .is_empty());
+                    } else {
+                        assert!(matches!(
+                            state.navigator_preview_display(state.navigator_preview.area),
+                            PreviewDisplay::Loading
+                        ));
+                    }
                 }
             }
         }
@@ -2288,4 +2313,21 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
         panic!("parked switcher")
     };
     assert!(n.query.as_str().is_empty());
+}
+
+#[test]
+fn empty_parked_picker_immediately_shows_select_terminal_without_polling() {
+    let mut state = state();
+    state.set_endpoint_methods(Some(vec!["pane.snapshot".into()]));
+    state.open_parked();
+    let frame = state.compose(120, 36).expect("coherent parked picker");
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Select a terminal"), "{text}");
+    assert!(!text.contains("Loading…"), "{text}");
+    let tick = state.tick_navigator_preview(Instant::now());
+    assert!(tick.actions.is_empty());
+    assert!(
+        !tick.repaint,
+        "an empty picker must render its final state immediately"
+    );
 }

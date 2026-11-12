@@ -1220,12 +1220,40 @@ pub(in crate::client::shell) fn render_navigator_preview(
     if area.is_empty() {
         return;
     }
+    if let PreviewDisplay::Cells(snapshot) = preview {
+        let rows = snapshot.height.min(area.height);
+        let cols = snapshot.width.min(area.width);
+        let default_fg = crate::protocol::u32_to_color(snapshot.default_fg);
+        let default_bg = crate::protocol::u32_to_color(snapshot.default_bg);
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &mut buffer[(area.x + x, area.y + y)];
+                cell.reset();
+                cell.fg = default_fg;
+                cell.bg = default_bg;
+                if y >= rows || x >= cols {
+                    continue;
+                }
+                let source =
+                    &snapshot.cells[usize::from(y) * usize::from(snapshot.width) + usize::from(x)];
+                let clipped = unicode_width::UnicodeWidthStr::width(source.symbol.as_str())
+                    > usize::from(cols - x);
+                cell.set_symbol(if clipped { " " } else { &source.symbol });
+                cell.fg = crate::protocol::u32_to_color(source.fg);
+                cell.bg = crate::protocol::u32_to_color(source.bg);
+                cell.modifier = Modifier::from_bits_retain(source.modifier);
+                cell.skip = source.skip;
+            }
+        }
+        return;
+    }
     let (text, color) = match preview {
         PreviewDisplay::Loading => ("Loading…", palette.overlay0),
         PreviewDisplay::Message(message) => (message, palette.overlay0),
         PreviewDisplay::None => ("Select a terminal", palette.overlay0),
         PreviewDisplay::Text("") => ("No output", palette.overlay0),
         PreviewDisplay::Text(text) => (text, palette.text),
+        PreviewDisplay::Cells(_) => unreachable!("cell preview rendered above"),
     };
     let skip = text
         .lines()
