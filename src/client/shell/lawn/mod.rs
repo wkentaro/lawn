@@ -333,7 +333,7 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " Unpark ",
+                " unpark ",
                 Style::default().fg(p.accent),
             );
             self.hits.restore_pane = button;
@@ -362,7 +362,7 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " Open Parked ",
+                " open parked ",
                 Style::default().fg(p.accent).bg(p.surface0),
             );
             self.hits.open_parked = button;

@@ -48,7 +48,7 @@ pub(super) fn global_menu_items(
         ));
     }
     items.push((
-        "Parked",
+        "parked",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenParked),
     ));
     items.push((

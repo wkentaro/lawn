@@ -729,7 +729,7 @@ pub(crate) fn render_navigator_overlay(
         q.y,
         q.width.saturating_sub(4),
         if n.filter == Some(ClientNavigatorFilter::Parked) {
-            " Parked "
+            " parked "
         } else {
             " Go to "
         },
@@ -742,7 +742,7 @@ pub(crate) fn render_navigator_overlay(
         format!(
             " / {}",
             match f {
-                ClientNavigatorFilter::Parked => "Parked",
+                ClientNavigatorFilter::Parked => "parked",
                 ClientNavigatorFilter::Blocked => "blocked",
                 ClientNavigatorFilter::Working => "working",
                 ClientNavigatorFilter::Idle => "idle",

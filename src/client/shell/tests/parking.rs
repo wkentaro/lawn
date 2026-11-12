@@ -159,7 +159,7 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     assert_eq!(state.focused_tab_count(), 0);
     assert!(state.hits.tabs.is_empty());
     assert!(state.hits.panes.is_empty());
-    assert!(frame_rows(&frame).join("\n").contains("Open Parked"));
+    assert!(frame_rows(&frame).join("\n").contains("open parked"));
     let open = state.hits.open_parked;
     assert!(!open.is_empty());
     click(&mut state, open);
@@ -176,7 +176,7 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     assert_eq!(preview.preview_terminal.as_deref(), Some("terminal-pane_1"));
     acknowledge(&mut state, &preview, Some("pane_1"));
     let frame = state.compose(100, 24).unwrap();
-    assert!(frame_rows(&frame).join("\n").contains("Unpark"));
+    assert!(frame_rows(&frame).join("\n").contains("unpark"));
     let restore = state.hits.restore_pane;
     assert!(!restore.is_empty());
     assert!(frame.cursor.is_none());
