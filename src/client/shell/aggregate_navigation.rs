@@ -333,6 +333,9 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
+                if !parked && !endpoint.parking.shows_workspace(&workspace.workspace_id) {
+                    continue;
+                }
                 let workspace_matches = words.is_empty()
                     || text(&format!(
                         "{} {} {}",
