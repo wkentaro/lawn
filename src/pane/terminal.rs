@@ -3220,6 +3220,14 @@ fn ghostty_buffer_symbol_into<'a>(
         }
     }
 
+    ghostty_normalize_buffer_symbol_in_place(symbol_scratch, wide);
+    Ok(symbol_scratch.as_str())
+}
+
+fn ghostty_normalize_buffer_symbol_in_place(
+    symbol_scratch: &mut String,
+    wide: crate::ghostty::CellWide,
+) {
     let expected_width = match wide {
         crate::ghostty::CellWide::Wide => 2,
         crate::ghostty::CellWide::Narrow | crate::ghostty::CellWide::SpacerHead => 1,
@@ -3234,8 +3242,6 @@ fn ghostty_buffer_symbol_into<'a>(
         symbol_scratch.clear();
         symbol_scratch.push_str(ghostty_blank_symbol_for_width(wide));
     }
-
-    Ok(symbol_scratch.as_str())
 }
 
 fn ghostty_reset_cell(
@@ -3291,13 +3297,13 @@ fn ghostty_cell_style(
     resolved_bg: Option<Color>,
     palette_overrides: Option<&PaletteOverrides>,
 ) -> Style {
-    let mut fg = basic
+    let fg = basic
         .style
         .fg_color
         .map(|color| ghostty_cell_color(color, palette_overrides))
         .or_else(|| cells.fg_color().ok().flatten().map(ghostty_color))
         .or(default_fg);
-    let mut bg = cells
+    let bg = cells
         .content_bg_color()
         .ok()
         .flatten()
@@ -3305,10 +3311,28 @@ fn ghostty_cell_style(
         .map(|color| ghostty_cell_color(color, palette_overrides))
         .or_else(|| cells.bg_color().ok().flatten().map(ghostty_color))
         .or(default_bg);
-    if basic.style.invisible {
-        fg = bg.or(default_bg);
+    ghostty_resolved_cell_style(
+        &basic.style,
+        fg,
+        bg,
+        resolved_fg,
+        resolved_bg,
+        palette_overrides,
+    )
+}
+
+fn ghostty_resolved_cell_style(
+    cell_style: &crate::ghostty::CellStyle,
+    mut fg: Option<Color>,
+    mut bg: Option<Color>,
+    resolved_fg: Option<Color>,
+    resolved_bg: Option<Color>,
+    palette_overrides: Option<&PaletteOverrides>,
+) -> Style {
+    if cell_style.invisible {
+        fg = bg;
     }
-    if basic.style.inverse {
+    if cell_style.inverse {
         // When the background is transparent (None), resolve it to the
         // actual terminal background color before swapping.  Otherwise
         // the swapped fg becomes None (Color::Reset) which the host
@@ -3324,33 +3348,32 @@ fn ghostty_cell_style(
     }
 
     let mut style = ghostty_default_style(fg, bg);
-    if let Some(underline_color) = basic
-        .style
+    if let Some(underline_color) = cell_style
         .underline_color
         .map(|color| ghostty_cell_color(color, palette_overrides))
     {
         style = style.underline_color(underline_color);
     }
     let mut modifiers = Modifier::empty();
-    if basic.style.bold {
+    if cell_style.bold {
         modifiers |= Modifier::BOLD;
     }
-    if basic.style.italic {
+    if cell_style.italic {
         modifiers |= Modifier::ITALIC;
     }
-    if basic.style.faint {
+    if cell_style.faint {
         modifiers |= Modifier::DIM;
     }
-    if basic.style.blink {
+    if cell_style.blink {
         modifiers |= Modifier::SLOW_BLINK;
     }
-    if basic.style.underlined {
+    if cell_style.underlined {
         modifiers |= Modifier::UNDERLINED;
     }
-    if basic.style.strikethrough {
+    if cell_style.strikethrough {
         modifiers |= Modifier::CROSSED_OUT;
     }
-    modifiers = crate::protocol::modifier_with_underline_style(modifiers, basic.style.underline);
+    modifiers = crate::protocol::modifier_with_underline_style(modifiers, cell_style.underline);
     style.add_modifier(modifiers)
 }
 
