@@ -467,14 +467,22 @@ pub(crate) fn workspace_entries(
     collapsed_groups: &HashSet<String>,
     parking: Option<&lawn::PaneParking>,
 ) -> Vec<WorkspaceEntry> {
+    workspace_entries_matching(snapshot, collapsed_groups, |workspace| {
+        parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
+    })
+}
+
+pub(in crate::client::shell) fn workspace_entries_matching(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+    visible: impl Fn(&ClientShellWorkspace) -> bool,
+) -> Vec<WorkspaceEntry> {
     let mut members = HashMap::<&str, Vec<usize>>::new();
     for (index, workspace) in snapshot
         .workspaces
         .iter()
         .enumerate()
-        .filter(|(_, workspace)| {
-            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
-        })
+        .filter(|(_, workspace)| visible(workspace))
     {
         if let Some(worktree) = &workspace.worktree {
             members.entry(&worktree.key).or_default().push(index);
@@ -503,9 +511,7 @@ pub(crate) fn workspace_entries(
         .workspaces
         .iter()
         .enumerate()
-        .filter(|(_, workspace)| {
-            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
-        })
+        .filter(|(_, workspace)| visible(workspace))
     {
         let Some(worktree) = workspace
             .worktree

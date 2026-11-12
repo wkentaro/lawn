@@ -2,6 +2,12 @@ use super::*;
 use crate::protocol::endpoint::pane_presentation::{PaneIdentities, SetPanePresentation};
 use std::time::Instant;
 
+fn tick(state: &mut ClientShellState) -> ClientShellInput {
+    let mut outcome = state.tick_parking(Instant::now());
+    state.focus_after_parked_close(&mut outcome);
+    outcome
+}
+
 fn request(state: &mut ClientShellState) -> SetPanePresentation {
     state
         .tick_parking(Instant::now())
@@ -100,7 +106,7 @@ fn parking_last_active_pane_opens_one_shell_in_its_current_directory() {
         assert!(creates[0].focus);
         let policy = request(&mut state);
         acknowledge(&mut state, &policy, None);
-        assert!(state.tick_parking(Instant::now()).actions.is_empty());
+        assert!(tick(&mut state).actions.is_empty());
         let mut repeated = ClientShellInput::default();
         state.parking_action(
             ClientEndpointId::Local,
@@ -356,7 +362,7 @@ fn policy_carries_held_key_release_before_hiding_its_terminal() {
     let mut state = state();
     assert!(!state.handle_input_bytes(b"\x1b[97;5u").requests.is_empty());
     binding(&mut state, crate::input::KeybindAction::ParkPane);
-    let outcome = state.tick_parking(Instant::now());
+    let outcome = tick(&mut state);
     let (releases, hidden) = outcome
         .actions
         .iter()
@@ -646,7 +652,7 @@ fn preview_releases_held_input_in_other_visible_panes_before_hiding_them() {
         lawn::ParkingAction::Park,
         &mut ClientShellInput::default(),
     );
-    let parked = state.tick_parking(Instant::now());
+    let parked = tick(&mut state);
     let request = parked
         .actions
         .into_iter()
@@ -667,7 +673,7 @@ fn preview_releases_held_input_in_other_visible_panes_before_hiding_them() {
         lawn::ParkingAction::Preview,
         &mut ClientShellInput::default(),
     );
-    let preview = state.tick_parking(Instant::now());
+    let preview = tick(&mut state);
     assert!(preview.actions.iter().any(|action| matches!(action, ClientShellAction::PanePresentation { request, releases, .. } if request.preview_terminal.as_deref() == Some("terminal-pane_2") && releases.iter().any(|message| matches!(message, ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" && events.iter().any(|event| matches!(event, ClientPaneInputEvent::Key { kind: crate::protocol::ClientKeyKind::Release, .. })))))));
     assert!(state
         .handle_input_bytes(b"\x1b[97;5:3u")
@@ -920,7 +926,7 @@ fn collapsed_machine_workspace_numbers_match_visible_workspace_shortcuts() {
 #[test]
 fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
     let mut state = parked_with_active_shell(false, false);
-    assert!(state.tick_parking(Instant::now()).actions.is_empty());
+    assert!(tick(&mut state).actions.is_empty());
     let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
     projected.panes.retain(|pane| pane.pane_id != "pane_2");
     projected.tabs.retain(|tab| tab.tab_id != "tab_2");
@@ -935,10 +941,10 @@ fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
     projected.revision += 1;
     state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
     acknowledge(&mut state, &policy, None);
-    let focused = state.tick_parking(Instant::now());
+    let focused = tick(&mut state);
     assert!(focused.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
         if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_2"))));
-    assert!(state.tick_parking(Instant::now()).actions.is_empty());
+    assert!(tick(&mut state).actions.is_empty());
     for collapsed in [false, true] {
         state.sidebar_collapsed = collapsed;
         state.compose(100, 24).unwrap();
@@ -964,6 +970,444 @@ fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
         .all(
             |entry| state.snapshot.as_ref().unwrap().workspaces[entry.index].workspace_id != "ws_1"
         ));
+}
+
+#[test]
+fn close_recovery_uses_the_nearest_workspace_in_sidebar_order() {
+    for (order, expected) in [
+        (["ws_2", "ws_1", "ws_3"], "ws_3"),
+        (["ws_2", "ws_3", "ws_1"], "ws_3"),
+        (["ws_1", "ws_2", "ws_3"], "ws_2"),
+    ] {
+        let mut state = parked_with_active_shell(false, false);
+        let mut projected = state.snapshot.as_deref().unwrap().clone();
+        let mut neighbor = projected.workspaces[1].clone();
+        neighbor.workspace_id = "ws_3".into();
+        neighbor.active_tab_id = "tab_4".into();
+        projected.workspaces.push(neighbor);
+        let mut tab = projected.tabs[2].clone();
+        tab.workspace_id = "ws_3".into();
+        tab.tab_id = "tab_4".into();
+        projected.tabs.push(tab);
+        let mut pane = projected.panes[2].clone();
+        pane.workspace_id = "ws_3".into();
+        pane.tab_id = "tab_4".into();
+        pane.pane_id = "pane_4".into();
+        projected.panes.push(pane);
+        projected.workspaces.sort_by_key(|workspace| {
+            order
+                .iter()
+                .position(|id| *id == workspace.workspace_id)
+                .unwrap()
+        });
+        projected.revision += 1;
+        state.set_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            7,
+            Box::new(projected),
+        );
+        let policy = SetPanePresentation {
+            boot_id: "boot-1".into(),
+            sequence: 2,
+            hidden_terminals: vec!["terminal-pane_1".into()],
+            read_only_terminals: vec![],
+            preview_terminal: None,
+            focus_terminal: None,
+        };
+        acknowledge(&mut state, &policy, Some("pane_2"));
+        let mut closed = state.snapshot.as_deref().unwrap().clone();
+        closed.panes.retain(|pane| pane.pane_id != "pane_2");
+        closed.tabs.retain(|tab| tab.tab_id != "tab_2");
+        closed.revision += 1;
+        state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
+        acknowledge(&mut state, &policy, None);
+        let focused = tick(&mut state);
+        assert!(
+            focused.actions.iter().any(|action| matches!(action,
+                ClientShellAction::Endpoint { request, .. }
+                    if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                        if target.workspace_id == expected)
+            )),
+            "order={order:?}, expected={expected}: {:?}",
+            focused.actions
+        );
+        assert!(tick(&mut state).actions.is_empty());
+    }
+}
+
+#[test]
+fn close_recovery_skips_a_parked_neighbor_selected_by_the_server() {
+    let mut state = parked_with_active_shell(false, false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_2".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    let mut neighbor = projected.workspaces[1].clone();
+    neighbor.workspace_id = "ws_3".into();
+    neighbor.active_tab_id = "tab_4".into();
+    projected.workspaces.push(neighbor);
+    let mut tab = projected.tabs[2].clone();
+    tab.workspace_id = "ws_3".into();
+    tab.tab_id = "tab_4".into();
+    projected.tabs.push(tab);
+    let mut pane = projected.panes[2].clone();
+    pane.workspace_id = "ws_3".into();
+    pane.tab_id = "tab_4".into();
+    pane.pane_id = "pane_4".into();
+    projected.panes.push(pane);
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_3".into());
+    projected.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    acknowledge(&mut state, &policy, Some("pane_3"));
+    assert!(tick(&mut state).actions.is_empty());
+
+    let mut closed = state.snapshot.as_deref().unwrap().clone();
+    closed
+        .workspaces
+        .retain(|workspace| workspace.workspace_id != "ws_2");
+    closed.tabs.retain(|tab| tab.tab_id != "tab_3");
+    closed.panes.retain(|pane| pane.pane_id != "pane_3");
+    closed.focused_workspace_id = Some("ws_1".into());
+    closed.focused_tab_id = Some("tab_1".into());
+    closed.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
+    acknowledge(&mut state, &policy, None);
+    let focused = tick(&mut state);
+    assert!(focused.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_3")
+    )));
+    assert!(tick(&mut state).actions.is_empty());
+}
+
+#[test]
+fn close_recovery_handles_focus_and_shell_exit_in_the_same_snapshot() {
+    let mut state = parked_with_active_shell(false, false);
+    let policy = SetPanePresentation {
+        boot_id: "boot-1".into(),
+        sequence: 2,
+        hidden_terminals: vec!["terminal-pane_1".into()],
+        read_only_terminals: vec![],
+        preview_terminal: None,
+        focus_terminal: None,
+    };
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_3".into());
+    projected.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    acknowledge(&mut state, &policy, Some("pane_3"));
+
+    let mut closed = state.snapshot.as_deref().unwrap().clone();
+    closed.focused_workspace_id = Some("ws_1".into());
+    closed.focused_tab_id = Some("tab_1".into());
+    closed.panes.retain(|pane| pane.pane_id != "pane_2");
+    closed.tabs.retain(|tab| tab.tab_id != "tab_2");
+    closed.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
+    acknowledge(&mut state, &policy, None);
+    let focused = tick(&mut state);
+    assert!(focused.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_2")
+    )));
+    assert!(tick(&mut state).actions.is_empty());
+}
+
+#[test]
+fn close_recovery_falls_back_only_to_online_machines() {
+    for remove_workspace in [false, true] {
+        for online in [false, true] {
+            let mut state = if remove_workspace {
+                state()
+            } else {
+                parked_with_active_shell(false, false)
+            };
+            let profile = crate::client::endpoint::SavedSshEndpoint {
+                id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                    .unwrap(),
+                label: "Build".into(),
+                target: "dev@build.example".into(),
+                session: "agents".into(),
+                enabled: true,
+            };
+            let remote = ClientEndpointId::Ssh(profile.id.clone());
+            state.set_endpoint_catalog(&[profile]);
+            let mut remote_endpoint = self::state().endpoints[0].clone();
+            remote_endpoint.endpoint_id = remote.clone();
+            remote_endpoint.label = "Build".into();
+            remote_endpoint.status = if online {
+                ClientEndpointStatus::Online
+            } else {
+                ClientEndpointStatus::Reconnecting
+            };
+            state.endpoints[1] = remote_endpoint;
+            let mut closed = state.snapshot.as_deref().unwrap().clone();
+            if remove_workspace {
+                closed.workspaces.clear();
+                closed.tabs.clear();
+                closed.panes.clear();
+                closed.focused_workspace_id = None;
+                closed.focused_tab_id = None;
+            } else {
+                closed
+                    .workspaces
+                    .retain(|workspace| workspace.workspace_id == "ws_1");
+                closed.tabs.retain(|tab| tab.tab_id == "tab_1");
+                closed.panes.retain(|pane| pane.pane_id == "pane_1");
+            }
+            closed.revision += 1;
+            state.set_endpoint_snapshot_for_generation(
+                &ClientEndpointId::Local,
+                7,
+                Box::new(closed),
+            );
+            let policy = SetPanePresentation {
+                boot_id: "boot-1".into(),
+                sequence: if remove_workspace { 1 } else { 2 },
+                hidden_terminals: if remove_workspace {
+                    vec![]
+                } else {
+                    vec!["terminal-pane_1".into()]
+                },
+                read_only_terminals: vec![],
+                preview_terminal: None,
+                focus_terminal: None,
+            };
+            acknowledge(&mut state, &policy, None);
+            let focused = tick(&mut state);
+            if online {
+                assert!(
+                    matches!(focused.actions.as_slice(),
+                        [ClientShellAction::ActivateEndpoint { endpoint_id, target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)) }]
+                            if endpoint_id == &remote && workspace_id == "ws_1"
+                    ),
+                    "remove_workspace={remove_workspace}: {:?}",
+                    focused.actions
+                );
+            } else {
+                assert!(focused.actions.is_empty());
+            }
+            assert!(tick(&mut state).actions.is_empty());
+        }
+    }
+}
+
+#[test]
+fn close_recovery_does_not_replay_background_departures_on_machine_selection() {
+    let mut state = parked_with_active_shell(false, false);
+    let profile = crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    let mut remote_endpoint = state.endpoints[0].clone();
+    remote_endpoint.endpoint_id = remote.clone();
+    state.endpoints[1] = remote_endpoint;
+    let mut closed = state.snapshot.as_deref().unwrap().clone();
+    closed
+        .workspaces
+        .retain(|workspace| workspace.workspace_id == "ws_1");
+    closed.tabs.retain(|tab| tab.tab_id == "tab_1");
+    closed.panes.retain(|pane| pane.pane_id == "pane_1");
+    closed.focused_pane_id = None;
+    closed.revision += 1;
+    let ids = PaneIdentities {
+        boot_id: closed.boot_id.clone(),
+        revision: closed.revision,
+        sequence: 2,
+        pane_terminals: [("pane_1".into(), "terminal-pane_1".into())]
+            .into_iter()
+            .collect(),
+    };
+    state.set_endpoint_snapshot_for_generation(&remote, 7, Box::new(closed));
+    state.set_endpoint_pane_identities(&remote, 7, ids);
+    assert!(state.activate_endpoint_projection(&remote));
+    assert!(tick(&mut state).actions.is_empty());
+    assert_eq!(state.active_endpoint_id, remote);
+}
+
+#[test]
+fn close_recovery_ignores_parked_roots_when_grouping_neighbors() {
+    let mut state = parked_with_active_shell(false, false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_3".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_2"));
+    let mut projected = state.snapshot.as_deref().unwrap().clone();
+    for number in [3, 4] {
+        let mut workspace = projected.workspaces[1].clone();
+        workspace.workspace_id = format!("ws_{number}");
+        workspace.active_tab_id = format!("tab_{}", number + 1);
+        projected.workspaces.push(workspace);
+        let mut tab = projected.tabs[2].clone();
+        tab.workspace_id = format!("ws_{number}");
+        tab.tab_id = format!("tab_{}", number + 1);
+        projected.tabs.push(tab);
+        let mut pane = projected.panes[2].clone();
+        pane.workspace_id = format!("ws_{number}");
+        pane.tab_id = format!("tab_{}", number + 1);
+        pane.pane_id = format!("pane_{}", number + 1);
+        projected.panes.push(pane);
+    }
+    for index in [1, 3] {
+        projected.workspaces[index].worktree = Some(ClientShellWorktree {
+            key: "repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: index == 3,
+        });
+    }
+    let order = ["ws_2", "ws_3", "ws_4", "ws_1"];
+    projected.workspaces.sort_by_key(|workspace| {
+        order
+            .iter()
+            .position(|id| *id == workspace.workspace_id)
+            .unwrap()
+    });
+    projected.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    acknowledge(&mut state, &policy, Some("pane_2"));
+    let mut closed = state.snapshot.as_deref().unwrap().clone();
+    closed.panes.retain(|pane| pane.pane_id != "pane_2");
+    closed.tabs.retain(|tab| tab.tab_id != "tab_2");
+    closed.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
+    acknowledge(&mut state, &policy, None);
+    let focused = tick(&mut state);
+    assert!(focused.actions.iter().any(|action| matches!(action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                if target.workspace_id == "ws_4")
+    )));
+}
+
+#[test]
+fn close_recovery_preserves_the_departure_order_and_visible_group_state() {
+    for (order, grouped_neighbor) in [
+        (
+            &["root", "before", "closing", "hidden", "after"][..],
+            "after",
+        ),
+        (&["root", "child", "closing", "hidden"][..], "root"),
+        (
+            &["root", "before", "closing", "child", "hidden"][..],
+            "before",
+        ),
+    ] {
+        for (collapsed, mobile) in [(false, false), (true, false), (false, true)] {
+            for multiple in [false, true] {
+                let template = snapshot();
+                let mut projected = template.clone();
+                projected.workspaces.clear();
+                projected.tabs.clear();
+                projected.panes.clear();
+                for (index, id) in order.iter().enumerate() {
+                    let mut workspace = template.workspaces[0].clone();
+                    workspace.workspace_id = (*id).into();
+                    workspace.active_tab_id = format!("tab-{id}");
+                    workspace.number = index + 1;
+                    workspace.focused = *id == "closing";
+                    workspace.worktree =
+                        matches!(*id, "root" | "child" | "hidden").then(|| ClientShellWorktree {
+                            key: "repo".into(),
+                            label: "repo".into(),
+                            is_linked_worktree: *id != "root",
+                        });
+                    projected.workspaces.push(workspace);
+                    let mut tab = template.tabs[0].clone();
+                    tab.tab_id = format!("tab-{id}");
+                    tab.workspace_id = (*id).into();
+                    projected.tabs.push(tab);
+                    let mut pane = template.panes[0].clone();
+                    pane.pane_id = format!("pane-{id}");
+                    pane.tab_id = format!("tab-{id}");
+                    pane.workspace_id = (*id).into();
+                    projected.panes.push(pane);
+                }
+                projected.focused_workspace_id = Some("closing".into());
+                projected.focused_tab_id = Some("tab-closing".into());
+                let mut state = state_with_snapshot(projected);
+                state.parking_action(
+                    ClientEndpointId::Local,
+                    "pane-hidden".into(),
+                    lawn::ParkingAction::Park,
+                    &mut ClientShellInput::default(),
+                );
+                let policy = request(&mut state);
+                acknowledge(&mut state, &policy, Some("pane-closing"));
+                if multiple {
+                    state.set_endpoint_catalog(&[crate::client::endpoint::SavedSshEndpoint {
+                        id: crate::client::endpoint::ProfileId::parse(
+                            "0123456789abcdef0123456789abcdef",
+                        )
+                        .unwrap(),
+                        label: "Build".into(),
+                        target: "dev@build.example".into(),
+                        session: "agents".into(),
+                        enabled: true,
+                    }]);
+                }
+                state.collapsed_groups.insert("repo".into());
+                state.sidebar_collapsed = collapsed;
+                if mobile {
+                    state.compose(44, 30).unwrap();
+                    assert!(state.mobile_layout_active());
+                }
+                let mut closed = state.snapshot.as_deref().unwrap().clone();
+                closed
+                    .workspaces
+                    .retain(|workspace| workspace.workspace_id != "closing");
+                closed.tabs.retain(|tab| tab.workspace_id != "closing");
+                closed.panes.retain(|pane| pane.workspace_id != "closing");
+                closed.focused_workspace_id = Some("hidden".into());
+                closed.focused_tab_id = Some("tab-hidden".into());
+                closed.revision += 1;
+                state.set_endpoint_snapshot_for_generation(
+                    &ClientEndpointId::Local,
+                    7,
+                    Box::new(closed),
+                );
+                acknowledge(&mut state, &policy, None);
+                // Parking synchronization cannot navigate while the runtime owns a handoff.
+                assert!(state.tick_parking(Instant::now()).actions.is_empty());
+                let focused = tick(&mut state);
+                let expected = if order.contains(&"after") {
+                    "after"
+                } else if collapsed {
+                    "child"
+                } else if mobile {
+                    if order.contains(&"before") {
+                        "before"
+                    } else {
+                        "child"
+                    }
+                } else {
+                    grouped_neighbor
+                };
+                assert!(focused.actions.iter().any(|action| matches!(action,
+                    ClientShellAction::Endpoint { request, .. }
+                        if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
+                            if target.workspace_id == expected)
+                )), "order={order:?}, collapsed={collapsed}, mobile={mobile}, multiple={multiple}, expected={expected}: {:?}", focused.actions);
+                assert!(tick(&mut state).actions.is_empty());
+            }
+        }
+    }
 }
 
 #[test]

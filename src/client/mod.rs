@@ -2375,6 +2375,12 @@ async fn run_client_loop(
                         outcome.repaint |= parking.repaint;
                         outcome.resize |= parking.resize;
                         outcome.actions.extend(parking.actions);
+                        if pending_activation.is_none()
+                            && scheduled_activation.is_none()
+                            && state.deferred_local_activation.is_none()
+                        {
+                            shell.focus_after_parked_close(&mut outcome);
+                        }
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
