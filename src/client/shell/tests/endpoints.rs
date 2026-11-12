@@ -581,6 +581,64 @@ fn sidebar_toggle_remains_clickable_with_overflowing_agents() {
 }
 
 #[test]
+fn hidden_sidebar_mode_uses_the_keybinding_without_a_toggle_button() {
+    let config: Config =
+        toml::from_str("[ui]\nsidebar_collapsed_mode = 'hidden'\n[keys]\ntoggle_sidebar = 'alt+b'")
+            .unwrap();
+    for saved_machine in [false, true] {
+        let (mut state, _) = state_with_remote();
+        if !saved_machine {
+            state.set_endpoint_catalog(&[]);
+        }
+        state.compose(100, 28).expect("compact-mode sidebar");
+        let toggle = state.hits.sidebar_toggle;
+        assert!(!toggle.is_empty());
+        assert_eq!(state.hits.global_launcher.y, 26);
+        assert_eq!(state.hits.later_toggle.y, 25);
+
+        state.config = ClientShellConfig::from_config(&config);
+        let frame = state.compose(100, 28).expect("hidden-mode sidebar");
+        assert!(state.hits.sidebar_toggle.is_empty());
+        let buffer = frame.to_ratatui_buffer().expect("sidebar buffer");
+        assert!(!buffer.content.iter().any(|cell| cell.symbol() == "«"));
+        assert_eq!(state.hits.new_workspace.y, 27);
+        assert_eq!(state.hits.global_launcher.y, 27);
+        assert_eq!(state.hits.later_toggle.y, 26);
+        assert_eq!(
+            state.hits.workspace_body.bottom(),
+            state.hits.later_toggle.y
+        );
+
+        let later = state.hits.later_toggle;
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: later.x,
+            row: later.y,
+            modifiers: KeyModifiers::NONE,
+        })]);
+        state.compose(100, 28).expect("expanded Later section");
+        assert_eq!(state.hits.later_body.bottom(), state.hits.global_launcher.y);
+        assert_eq!(
+            state.hits.workspace_body.bottom(),
+            state.hits.later_toggle.y
+        );
+        assert!(!state.sidebar_collapsed);
+
+        for collapsed in [true, false] {
+            let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+                crate::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            )]);
+            assert_eq!(state.sidebar_collapsed, collapsed);
+            assert!(outcome.repaint && outcome.resize);
+            state.set_pane_surface(surface());
+            state.compose(100, 28).expect("toggled sidebar");
+            assert!(state.hits.sidebar_toggle.is_empty());
+            assert_eq!(state.hits.sidebar_divider.is_empty(), collapsed);
+        }
+    }
+}
+
+#[test]
 fn agent_navigation_preserves_targets_without_an_agents_panel() {
     use crate::input::KeybindAction;
 

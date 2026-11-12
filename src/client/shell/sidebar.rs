@@ -27,12 +27,14 @@ pub(in crate::client::shell) fn workspace_active_background(
 
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
+    mode: SidebarCollapsedModeConfig,
 ) -> (Rect, Option<u16>, Rect) {
     let content = Rect::new(
         area.x,
         area.y,
         area.width.saturating_sub(1),
-        area.height.saturating_sub(1),
+        area.height
+            .saturating_sub(u16::from(mode == SidebarCollapsedModeConfig::Compact)),
     );
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
@@ -52,7 +54,8 @@ pub(crate) fn render_collapsed_sidebar(
     let selection_background = workspace_selection_background(palette);
     let active_background = workspace_active_background(palette, selected_workspace_id.is_some());
     render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
+    let (workspace_area, divider_y, detail_area) =
+        collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
     for (index, workspace) in snapshot
         .workspaces
         .iter()
@@ -200,7 +203,8 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, _, detail_area) = collapsed_sidebar_sections(area);
+    let (workspace_area, _, detail_area) =
+        collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
     put_text(
         buffer,
         workspace_area.x,
@@ -427,6 +431,9 @@ pub(crate) fn render_sidebar(
         hits,
     );
 
+    if config.sidebar_collapsed_mode == SidebarCollapsedModeConfig::Hidden {
+        return;
+    }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),
