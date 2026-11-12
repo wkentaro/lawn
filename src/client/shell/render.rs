@@ -233,9 +233,7 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
-    pub(super) parked: &'a mut lawn::ParkedState,
     pub(super) parked_height: u16,
-    pub(super) parked_rows: &'a [ClientNavigatorRow],
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -329,8 +327,6 @@ pub(super) fn render_shell(
         layout.sidebar,
         state.parked_height,
         state.endpoints,
-        state.parked_rows,
-        state.parked,
         config,
         &mut hits,
     );
