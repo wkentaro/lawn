@@ -260,7 +260,7 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
 }
 
 #[test]
-fn parked_launcher_and_goto_both_include_parked_terminal() {
+fn parked_launcher_includes_parked_terminal_and_goto_excludes_it() {
     let mut state = state();
     binding(&mut state, crate::input::KeybindAction::ParkPane);
     let parked = request(&mut state);
@@ -271,7 +271,7 @@ fn parked_launcher_and_goto_both_include_parked_terminal() {
     };
     let active =
         render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-    assert!(active.iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id } if pane_id == "pane_1")));
+    assert!(!active.iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_1")));
     state.open_parked();
     state.handle_input_bytes(b"client-shell");
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
@@ -301,6 +301,38 @@ fn parked_launcher_and_goto_both_include_parked_terminal() {
     assert!(rows[usize::from(launcher.y)].contains('1'));
     click(&mut state, launcher);
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref nav)) if nav.parked));
+}
+
+#[test]
+fn goto_filters_parked_panes_in_separate_and_mixed_tabs() {
+    for mixed_tab in [false, true] {
+        let mut state = parked_with_active_shell(false, mixed_tab);
+        state.open_navigator_overlay();
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+            panic!("Go to")
+        };
+        for (query, expected) in [
+            ("", vec!["pane_2", "pane_3"]),
+            ("client-shell", vec!["pane_2"]),
+            ("pane_1", vec![]),
+            ("pane_2", vec!["pane_2"]),
+        ] {
+            navigator.query = TextEditor::new(query, false);
+            let rows = render::client_navigator_rows(
+                &state.endpoints,
+                &state.active_endpoint_id,
+                navigator,
+            );
+            let panes = rows
+                .iter()
+                .filter_map(|row| match &row.target {
+                    ClientNavigatorTarget::Pane { pane_id, .. } => Some(pane_id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(panes, expected, "mixed tab: {mixed_tab}, query: {query}");
+        }
+    }
 }
 
 #[test]
@@ -1889,7 +1921,11 @@ fn parked_keyboard_browses_panes_without_changing_workspace_focus() {
 #[test]
 fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
     for parked in [false, true] {
-        let mut state = parked_with_active_shell(false, false);
+        let mut state = if parked {
+            parked_with_active_shell(false, false)
+        } else {
+            state_with_snapshot(tabbed_snapshot())
+        };
         state.parking_action(
             ClientEndpointId::Local,
             "pane_3".into(),
@@ -1906,7 +1942,7 @@ fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
         state.compose(120, 36).unwrap();
         let pane = state.hits.navigator_rows.iter().find_map(|(rect, target)| {
         matches!(target, ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id } if pane_id == "pane_1").then_some(*rect)
-    }).expect("parked row");
+    }).expect("pane row");
         assert!(click(&mut state, pane).actions.is_empty());
         assert_eq!(
             state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
@@ -1941,8 +1977,16 @@ fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
         state.compose(120, 36).unwrap();
         let open = state.hits.navigator_preview;
         assert!(!open.is_empty());
-        assert!(click(&mut state, open).actions.is_empty());
+        let opened = click(&mut state, open);
         assert!(state.overlay.is_none());
+        if !parked {
+            assert!(opened.actions.iter().any(|action| matches!(action,
+                ClientShellAction::Endpoint { request, .. }
+                if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1")
+            )));
+            continue;
+        }
+        assert!(opened.actions.is_empty());
         let restored = request(&mut state);
         assert_eq!(restored.preview_terminal, None);
         assert_eq!(restored.focus_terminal.as_deref(), Some("terminal-pane_1"));

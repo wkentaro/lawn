@@ -324,7 +324,7 @@ pub(super) fn navigator_rows(
             }
             let mut panes_by_tab = HashMap::new();
             for pane in &snapshot.panes {
-                if parked && !endpoint.parking.hides_pane(&pane.pane_id) {
+                if endpoint.parking.hides_pane(&pane.pane_id) != parked {
                     continue;
                 }
                 panes_by_tab
