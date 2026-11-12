@@ -35,6 +35,37 @@ impl HeadlessServer {
             self.send_to_client(client_id, message);
             return false;
         }
+        // Runtime observations do not acquire a presentation command lease or focus.
+        if matches!(
+            &request.method,
+            api::schema::Method::BackgroundList(_) | api::schema::Method::BackgroundReport(_)
+        ) {
+            let internal_changed = if self.shutting_down || self.host_shutdown_requested() {
+                false
+            } else {
+                self.drain_all_internal_events_with_forwarding()
+            };
+            let response = if self.shutting_down || self.host_shutdown_requested() {
+                crate::server::client_commands::error_response(
+                    request_id.clone(),
+                    "server_unavailable",
+                    "server is shutting down",
+                )
+            } else {
+                self.app
+                    .handle_api_request_after_internal_events_drained(*request)
+            };
+            self.send_to_client(
+                client_id,
+                ServerMessage::ClientShellEndpointResponseChunk {
+                    boot_id,
+                    request_id,
+                    final_chunk: true,
+                    data: response.into_bytes(),
+                },
+            );
+            return internal_changed;
+        }
         let surface_active = client.shell_surface_active;
         if let api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
             let Some((changed, projection_revision)) =

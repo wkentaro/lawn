@@ -12,6 +12,7 @@ fn parse(args: &[&str]) -> Result<Operation, ParseError> {
 
 fn params(args: &[&str]) -> serde_json::Value {
     let method = match parse(args).unwrap() {
+        Operation::BackgroundList(params) => Method::BackgroundList(params),
         Operation::Get(params) => Method::AgentGet(params),
         Operation::Focus(params) => Method::AgentFocus(params),
         Operation::Read(params) => Method::AgentRead(params),
@@ -28,6 +29,17 @@ fn params(args: &[&str]) -> serde_json::Value {
     })
     .unwrap()["params"]
         .clone()
+}
+
+#[test]
+fn background_list_uses_pane_target_and_json_output() {
+    for args in [
+        vec!["background", "list", "w1:p1"],
+        vec!["background", "list", "w1:p1", "--json"],
+    ] {
+        assert_eq!(params(&args), serde_json::json!({"pane_id":"w1:p1"}));
+    }
+    assert!(parse(&["background", "list"]).is_err());
 }
 
 #[test]

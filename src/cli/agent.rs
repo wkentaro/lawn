@@ -51,6 +51,12 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         Err(ParseError::Io(error)) => return Err(error),
     };
     match operation {
+        Operation::BackgroundList(params) => {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:background:list".into(),
+                method: Method::BackgroundList(params),
+            })?)
+        }
         Operation::List => agent_list(),
         Operation::Get(params) => agent_get(params),
         Operation::Focus(params) => agent_focus(params),

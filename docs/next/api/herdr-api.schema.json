@@ -1695,6 +1695,47 @@
           ],
           "type": "object"
         },
+        "BackgroundEvent": {
+          "enum": [
+            "subagent_started",
+            "subagent_stop_observed"
+          ],
+          "type": "string"
+        },
+        "BackgroundReportParams": {
+          "additionalProperties": false,
+          "properties": {
+            "event": {
+              "$ref": "#/schemas/request/$defs/BackgroundEvent"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "task_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "session_id",
+            "event",
+            "task_id"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -6312,6 +6353,38 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "background.report",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BackgroundReportParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "background.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6775,6 +6848,116 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "BackgroundCoverage": {
+          "enum": [
+            "observations_only"
+          ],
+          "type": "string"
+        },
+        "BackgroundCurrentState": {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "BackgroundKind": {
+          "enum": [
+            "subagent"
+          ],
+          "type": "string"
+        },
+        "BackgroundObservation": {
+          "enum": [
+            "start_observed",
+            "stop_observed"
+          ],
+          "type": "string"
+        },
+        "BackgroundRecord": {
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundKind"
+            },
+            "observation": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundObservation"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "start_observed_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stop_observed_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "task_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "task_id",
+            "kind",
+            "observation",
+            "revision"
+          ],
+          "type": "object"
+        },
+        "BackgroundSnapshot": {
+          "properties": {
+            "coverage": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundCoverage"
+            },
+            "current_state": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundCurrentState"
+            },
+            "records": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BackgroundRecord"
+              },
+              "type": "array"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "coverage",
+            "current_state",
+            "records",
+            "revision",
+            "truncated"
+          ],
+          "type": "object"
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -10413,6 +10596,26 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "background": {
+                  "$ref": "#/schemas/success_response/$defs/BackgroundSnapshot"
+                },
+                "terminal_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "background_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "terminal_id",
+                "background"
               ],
               "type": "object"
             }

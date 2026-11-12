@@ -1,3 +1,4 @@
+pub(crate) mod background;
 mod history_read;
 mod id;
 mod runtime;

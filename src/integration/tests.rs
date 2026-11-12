@@ -977,7 +977,18 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
+    for (event, action) in [
+        ("SubagentStart", "subagent-start"),
+        ("SubagentStop", "subagent-stop"),
+    ] {
+        let hooks = settings["hooks"][event].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["matcher"], "*");
+        assert!(hooks[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with(action));
+    }
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
@@ -1029,7 +1040,18 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("PermissionRequest").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
+    for (event, action) in [
+        ("SubagentStart", "subagent-start"),
+        ("SubagentStop", "subagent-stop"),
+    ] {
+        let hooks = settings["hooks"][event].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["matcher"], "*");
+        assert!(hooks[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with(action));
+    }
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
@@ -1115,7 +1137,7 @@ fn install_claude_removes_deprecated_completion_hooks_and_preserves_user_hooks()
 }
 
 #[test]
-fn claude_v9_integration_status_is_outdated_until_reinstalled() {
+fn claude_v11_integration_status_is_outdated_until_reinstalled() {
     let _lock = integration_env_lock();
     let base = unique_base();
     let home = base.join("home");
@@ -1124,7 +1146,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
     let hook_path = claude_hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
     fs::write(
         &hook_path,
-        "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=9\n",
+        "#!/bin/sh\n# HERDR_INTEGRATION_ID=claude\n# HERDR_INTEGRATION_VERSION=11\n",
     )
     .unwrap();
     std::env::set_var("HOME", &home);
@@ -1136,8 +1158,8 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         .unwrap();
 
     assert_eq!(claude.path, hook_path);
-    assert_eq!(claude.installed_version, Some(9));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.installed_version, Some(11));
+    assert_eq!(claude.expected_version, 12);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     install_claude().unwrap();
@@ -1146,7 +1168,7 @@ fn claude_v9_integration_status_is_outdated_until_reinstalled() {
         hook_path,
         CLAUDE_INTEGRATION_VERSION,
     );
-    assert_eq!(status.installed_version, Some(11));
+    assert_eq!(status.installed_version, Some(12));
     assert_eq!(status.state, IntegrationStatusKind::Current);
 
     std::env::remove_var("HOME");
@@ -1176,7 +1198,7 @@ fn claude_v2_integration_status_is_outdated() {
 
     assert_eq!(claude.path, hook_path);
     assert_eq!(claude.installed_version, Some(2));
-    assert_eq!(claude.expected_version, 11);
+    assert_eq!(claude.expected_version, 12);
     assert_eq!(claude.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
@@ -1344,9 +1366,16 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
                 "matcher": "*",
                 "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
             }],
+            "SubagentStart": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": hook_command(&hook_path, Some("subagent-start")), "timeout": 10}]
+            }],
             "SubagentStop": [{
                 "matcher": "*",
-                "hooks": [{"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10}]
+                "hooks": [
+                    {"type": "command", "command": format!("bash '{}' working", hook_path.display()), "timeout": 10},
+                    {"type": "command", "command": hook_command(&hook_path, Some("subagent-stop")), "timeout": 10}
+                ]
             }],
             "Stop": [{
                 "matcher": "*",
@@ -1388,6 +1417,7 @@ fn uninstall_claude_removes_herdr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert!(settings["hooks"].get("PostToolUse").is_none());
     assert!(settings["hooks"].get("PostToolUseFailure").is_none());
+    assert!(settings["hooks"].get("SubagentStart").is_none());
     assert!(settings["hooks"].get("SubagentStop").is_none());
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
@@ -3738,6 +3768,16 @@ fn bundled_integration_asset_versions_match_expected_versions() {
         ("pi", PI_EXTENSION_ASSET, PI_INTEGRATION_VERSION),
         ("omp", OMP_EXTENSION_ASSET, OMP_INTEGRATION_VERSION),
         ("claude", CLAUDE_HOOK_ASSET, CLAUDE_INTEGRATION_VERSION),
+        (
+            "claude unix",
+            include_str!("assets/claude/herdr-agent-state.sh"),
+            CLAUDE_INTEGRATION_VERSION,
+        ),
+        (
+            "claude windows",
+            include_str!("assets/claude/herdr-agent-state.ps1"),
+            CLAUDE_INTEGRATION_VERSION,
+        ),
         ("codex", CODEX_HOOK_ASSET, CODEX_INTEGRATION_VERSION),
         ("kimi", KIMI_HOOK_ASSET, KIMI_INTEGRATION_VERSION),
         ("copilot", COPILOT_HOOK_ASSET, COPILOT_INTEGRATION_VERSION),

@@ -245,6 +245,14 @@ mod tests {
         )))
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
+        assert_eq!(
+            actual.remove("background.list").as_deref(),
+            Some("8f7215970993996be95ba8201f8c5e3b32b3ca347baa30f9944f886fb475aae6")
+        );
+        assert_eq!(
+            actual.remove("background.report").as_deref(),
+            Some("39711a787512d3d5e0ee8af688c58169b5657e8b333c21d9f62a5beef230c228")
+        );
         // Freeze additive methods separately without rewriting the published fixture.
         assert_eq!(
             actual.remove("pane.read").as_deref(),
@@ -340,6 +348,42 @@ mod tests {
         assert!(!supports_client_shell_method(&Method::ServerStop(
             crate::api::schema::EmptyParams::default(),
         )));
+    }
+
+    #[test]
+    fn background_json_uses_existing_endpoint_response_chunks() {
+        let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+            "id":"list", "method":"background.list", "params":{"pane_id":"w1:p1"}
+        }))
+        .unwrap();
+        assert!(supports_client_shell_method(&request.method));
+        let terminal = crate::terminal::TerminalState::new(
+            crate::terminal::TerminalId::alloc(),
+            "/tmp".into(),
+        );
+        let message = success_message_with_result(
+            "boot".into(),
+            request.id,
+            crate::api::schema::ResponseResult::BackgroundList {
+                terminal_id: terminal.id.to_string(),
+                background: terminal.background_snapshot(),
+            },
+        );
+        let crate::protocol::ServerMessage::ClientShellEndpointResponseChunk {
+            data,
+            final_chunk,
+            ..
+        } = message
+        else {
+            panic!("expected existing JSON response chunk");
+        };
+        assert!(final_chunk);
+        let response: crate::api::schema::SuccessResponse = serde_json::from_slice(&data).unwrap();
+        assert_eq!(response.id, "list");
+        assert!(matches!(
+            response.result,
+            crate::api::schema::ResponseResult::BackgroundList { .. }
+        ));
     }
 
     #[test]
