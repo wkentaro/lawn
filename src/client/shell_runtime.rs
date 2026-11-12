@@ -75,8 +75,12 @@ pub(super) fn dispatch_client_shell_actions(
                     }
                     continue;
                 }
-                // PaneRead is the only action allowed to cross an inactive surface boundary.
-                if matches!(request.method, crate::api::schema::Method::PaneRead(_)) {
+                // Only passive reads may cross an inactive surface boundary.
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::PaneRead(_)
+                        | crate::api::schema::Method::PaneSnapshot(_)
+                ) {
                     if let Some(connection) = endpoints.connection(&endpoint_id) {
                         endpoint_commands.enqueue(
                             endpoint_id.clone(),

@@ -188,9 +188,14 @@ fn navigator_preview_reads_inactive_endpoint_without_draining_queued_mutations()
         }
     }
 
-    for busy in [false, true] {
+    for (busy, styled) in [(false, false), (true, false), (false, true), (true, true)] {
         let (mut state, remote) = state_with_remote();
-        state.set_endpoint_methods_for(&remote, Some(vec!["pane.read".into()]));
+        state.set_endpoint_methods_for(
+            &remote,
+            Some(vec![
+                if styled { "pane.snapshot" } else { "pane.read" }.into()
+            ]),
+        );
         state.open_navigator_overlay();
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
             panic!("navigator");
@@ -223,6 +228,7 @@ fn navigator_preview_reads_inactive_endpoint_without_draining_queued_mutations()
                 }),
             );
         }
+        state.compose(120, 36);
         let now = std::time::Instant::now();
         let outcome = state.tick_navigator_preview(now);
         assert_eq!(outcome.actions.len(), 1);
@@ -258,9 +264,14 @@ fn navigator_preview_reads_inactive_endpoint_without_draining_queued_mutations()
                 panic!("expected exactly one pane read");
             };
             let request: crate::api::schema::Request = serde_json::from_str(request).unwrap();
+            assert_eq!(
+                matches!(request.method, crate::api::schema::Method::PaneSnapshot(_)),
+                styled
+            );
             assert!(matches!(
                 request.method,
                 crate::api::schema::Method::PaneRead(_)
+                    | crate::api::schema::Method::PaneSnapshot(_)
             ));
         }
     }

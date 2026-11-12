@@ -162,10 +162,11 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 &self.config.palette,
             ) {
+                self.navigator_preview.area = rendered.navigator_content_preview;
                 render::render_navigator_preview(
                     &mut buffer,
                     rendered.navigator_content_preview,
-                    self.navigator_preview_display(),
+                    self.navigator_preview_display(rendered.navigator_content_preview),
                     &self.config.palette,
                 );
                 self.hits.navigator_popup = rendered.navigator_popup;
@@ -186,6 +187,7 @@ impl ClientShellState {
         cols: u16,
         rows: u16,
     ) -> Option<crate::client::frame_output::ComposedFrame> {
+        let mut navigator_preview_area = Rect::default();
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
@@ -205,6 +207,7 @@ impl ClientShellState {
                     && self.navigation_target_valid(&pending.target)
             });
         if self.snapshot.is_none() || self.pane_surface.is_none() || !self.parking_ready() {
+            self.navigator_preview.area = Rect::default();
             return Some(self.compose_unavailable(cols, rows).into());
         }
         let snapshot = self.snapshot.as_deref()?;
@@ -714,10 +717,11 @@ impl ClientShellState {
                     &self.config.keybinds,
                     &self.config.palette,
                 )?;
+                navigator_preview_area = rendered.navigator_content_preview;
                 render::render_navigator_preview(
                     &mut composed,
-                    rendered.navigator_content_preview,
-                    self.navigator_preview_display(),
+                    navigator_preview_area,
+                    self.navigator_preview_display(navigator_preview_area),
                     &self.config.palette,
                 );
                 occlusion.cover(rendered.area);
@@ -772,6 +776,7 @@ impl ClientShellState {
             self.hits.popup = None;
         }
         let graphics = self.compose_graphics(layout, &occlusion);
+        self.navigator_preview.area = navigator_preview_area;
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }
 }
