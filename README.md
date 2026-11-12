@@ -67,14 +67,14 @@ Parked panes disappear from active Jump results and tab indicators. A tab with
 all its panes parked disappears until a pane is unparked. Lawn keeps you in
 the workspace when its last visible pane is parked.
 
-These shortcuts have no defaults. Unpark and Open Parked keep their existing
-`restore_pane` and `open_later` configuration keys:
+These shortcuts have no defaults. Unpark keeps its existing `restore_pane`
+configuration key, and `open_later` still works as an alias for `open_parked`:
 
 ```toml
 [keys]
 park_pane = "prefix+f"
 restore_pane = "prefix+u"
-open_later = "ctrl+g"
+open_parked = "ctrl+g"
 ```
 
 The menu also opens Parked when the sidebar is hidden. Parking state is saved

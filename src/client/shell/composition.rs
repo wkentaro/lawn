@@ -55,16 +55,16 @@ impl ClientShellState {
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
-        let later_rows = lawn::later_rows(
+        let parked_rows = lawn::parked_rows(
             &self.endpoints,
             &self.active_endpoint_id,
-            &self.later,
+            &self.parked,
             !sidebar.is_empty(),
         );
         let mut render_state = render::ShellRenderState {
-            later_height: lawn::later_height(sidebar, false, &self.later, later_rows.len()),
-            later_rows: &later_rows,
-            later: &mut self.later,
+            parked_height: lawn::parked_height(sidebar, false, &self.parked, parked_rows.len()),
+            parked_rows: &parked_rows,
+            parked: &mut self.parked,
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -106,13 +106,13 @@ impl ClientShellState {
                 &mut self.hits,
             );
         }
-        lawn::render_later(
+        lawn::render_parked(
             &mut buffer,
             sidebar,
-            render_state.later_height,
+            render_state.parked_height,
             &self.endpoints,
-            &later_rows,
-            &mut self.later,
+            &parked_rows,
+            &mut self.parked,
             &self.config,
             &mut self.hits,
         );
@@ -241,10 +241,10 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-        let later_rows = lawn::later_rows(
+        let parked_rows = lawn::parked_rows(
             &self.endpoints,
             &self.active_endpoint_id,
-            &self.later,
+            &self.parked,
             !self.sidebar_collapsed && !layout.sidebar.is_empty(),
         );
         self.hits = render::render_shell(
@@ -253,14 +253,14 @@ impl ClientShellState {
             snapshot,
             &self.config,
             render::ShellRenderState {
-                later_height: lawn::later_height(
+                parked_height: lawn::parked_height(
                     layout.sidebar,
                     self.sidebar_collapsed,
-                    &self.later,
-                    later_rows.len(),
+                    &self.parked,
+                    parked_rows.len(),
                 ),
-                later_rows: &later_rows,
-                later: &mut self.later,
+                parked_rows: &parked_rows,
+                parked: &mut self.parked,
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,

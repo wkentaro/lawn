@@ -124,7 +124,7 @@ fn parking_with_another_active_pane_does_not_create_a_shell() {
 }
 
 #[test]
-fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
+fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     let mut state = state();
     state.compose(100, 24).unwrap();
     state.open_pane_context_menu("pane_1".into(), 40, 3);
@@ -160,13 +160,13 @@ fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
     assert!(state.hits.tabs.is_empty());
     assert!(state.hits.panes.is_empty());
     assert!(frame_rows(&frame).join("\n").contains("Open Parked"));
-    let open = state.hits.open_later;
+    let open = state.hits.open_parked;
     assert!(!open.is_empty());
     click(&mut state, open);
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("Parked")
     };
-    assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Later));
+    assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Parked));
     navigator.selected = Some(ClientNavigatorTarget::Pane {
         endpoint_id: ClientEndpointId::Local,
         pane_id: "pane_1".into(),
@@ -206,7 +206,7 @@ fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
 }
 
 #[test]
-fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
+fn parked_tree_folds_and_jump_does_not_include_parked_terminal() {
     let mut state = state();
     binding(&mut state, crate::input::KeybindAction::ParkPane);
     let parked = request(&mut state);
@@ -220,13 +220,13 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
     assert!(!active
         .iter()
         .any(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. })));
-    state.open_later();
+    state.open_parked();
     state.handle_input_bytes(b"/");
     state.handle_input_bytes(b"client-shell");
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
         panic!("Parked search")
     };
-    assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Later));
+    assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Parked));
     let rows =
         render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
     assert_eq!(rows.len(), 2);
@@ -241,17 +241,17 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
         "ordinary terminal has no agent status"
     );
     state.overlay = None;
-    state.later.expanded = true;
+    state.parked.expanded = true;
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 2);
-    let workspace = state.hits.later_rows[0].0;
+    assert_eq!(state.hits.parked_rows.len(), 2);
+    let workspace = state.hits.parked_rows[0].0;
     click(&mut state, workspace);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 1);
-    let workspace = state.hits.later_rows[0].0;
+    assert_eq!(state.hits.parked_rows.len(), 1);
+    let workspace = state.hits.parked_rows[0].0;
     click(&mut state, workspace);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 2);
+    assert_eq!(state.hits.parked_rows.len(), 2);
 
     state.set_endpoint_catalog(&[crate::client::endpoint::SavedSshEndpoint {
         id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
@@ -261,23 +261,23 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
         enabled: true,
     }]);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 3);
+    assert_eq!(state.hits.parked_rows.len(), 3);
     assert!(matches!(
-        state.hits.later_rows[0].1,
+        state.hits.parked_rows[0].1,
         ClientNavigatorTarget::Machine { .. }
     ));
-    let machine = state.hits.later_rows[0].0;
+    let machine = state.hits.parked_rows[0].0;
     click(&mut state, machine);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 1);
-    let machine = state.hits.later_rows[0].0;
+    assert_eq!(state.hits.parked_rows.len(), 1);
+    let machine = state.hits.parked_rows[0].0;
     click(&mut state, machine);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 3);
-    let workspace = state.hits.later_rows[1].0;
+    assert_eq!(state.hits.parked_rows.len(), 3);
+    let workspace = state.hits.parked_rows[1].0;
     click(&mut state, workspace);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.later_rows.len(), 2);
+    assert_eq!(state.hits.parked_rows.len(), 2);
 }
 
 #[test]
@@ -309,11 +309,12 @@ fn parking_shortcuts_are_unbound_until_configured() {
     let defaults = Config::default().keybinds();
     assert!(defaults.park_pane.label().is_none());
     assert!(defaults.restore_pane.label().is_none());
-    assert!(defaults.open_later.label().is_none());
+    assert!(defaults.open_parked.label().is_none());
     let config: Config = toml::from_str(
-        "[keys]\npark_pane = 'prefix+f'\nrestore_pane = 'prefix+u'\nopen_later = 'ctrl+g'\n",
+        "[keys]\npark_pane = 'prefix+f'\nrestore_pane = 'prefix+u'\nopen_parked = 'ctrl+g'\n",
     )
     .unwrap();
+    assert!(config.keybinds().open_parked.label().is_some());
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_endpoint_parking_supported(&ClientEndpointId::Local, true);
     state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(snapshot()));

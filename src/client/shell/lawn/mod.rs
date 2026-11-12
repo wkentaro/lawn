@@ -4,10 +4,10 @@ use crate::protocol::endpoint::pane_presentation::{
 };
 use std::{path::PathBuf, time::Instant};
 
-mod later;
+mod parked;
 mod parking_store;
-pub(super) use later::{
-    height as later_height, render as render_later, rows as later_rows, LaterState,
+pub(super) use parked::{
+    height as parked_height, render as render_parked, rows as parked_rows, ParkedState,
 };
 mod parking;
 pub(super) use parking::PaneParking;
@@ -113,7 +113,7 @@ impl ClientShellState {
             }
         }
         self.update_parking_size(previous_size);
-        outcome.resize = std::mem::take(&mut self.later.resize_pending);
+        outcome.resize = std::mem::take(&mut self.parked.resize_pending);
         outcome.repaint |= outcome.resize;
         if let Some(message) = notice {
             self.receive_endpoint_unavailable(message);
@@ -129,7 +129,7 @@ impl ClientShellState {
 
     fn update_parking_size(&mut self, previous: Option<ClientSurfaceSize>) {
         if previous != self.parking_size() {
-            self.later.resize_pending = true;
+            self.parked.resize_pending = true;
             self.invalidate_pane_surface();
         }
     }
@@ -229,7 +229,7 @@ impl ClientShellState {
         self.mode = ClientShellMode::Terminal;
         self.update_parking_size(previous_size);
         outcome.resize |= previous_size.is_none();
-        outcome.resize |= std::mem::take(&mut self.later.resize_pending);
+        outcome.resize |= std::mem::take(&mut self.parked.resize_pending);
         true
     }
 
@@ -258,10 +258,10 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn open_later(&mut self) {
+    pub(super) fn open_parked(&mut self) {
         self.open_navigator_overlay();
         if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-            navigator.filter = Some(ClientNavigatorFilter::Later);
+            navigator.filter = Some(ClientNavigatorFilter::Parked);
             navigator.selected = None;
         }
     }
@@ -365,7 +365,7 @@ impl ClientShellState {
                 " Open Parked ",
                 Style::default().fg(p.accent).bg(p.surface0),
             );
-            self.hits.open_later = button;
+            self.hits.open_parked = button;
         }
         empty
     }

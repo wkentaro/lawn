@@ -3,7 +3,7 @@ use super::super::sidebar::collapsed_sidebar_sections;
 use super::*;
 
 #[derive(Debug, Default)]
-pub(in crate::client::shell) struct LaterState {
+pub(in crate::client::shell) struct ParkedState {
     pub(in crate::client::shell) expanded: bool,
     pub(in crate::client::shell) collapsed: HashSet<ClientNavigatorTarget>,
     pub(in crate::client::shell) scroll: usize,
@@ -13,10 +13,10 @@ pub(in crate::client::shell) struct LaterState {
 pub(in crate::client::shell) fn rows(
     endpoints: &[ClientShellEndpoint],
     active: &ClientEndpointId,
-    later: &LaterState,
+    parked: &ParkedState,
     visible: bool,
 ) -> Vec<ClientNavigatorRow> {
-    if !visible || !later.expanded {
+    if !visible || !parked.expanded {
         return Vec::new();
     }
     let navigator = ClientNavigatorOverlay {
@@ -24,7 +24,7 @@ pub(in crate::client::shell) fn rows(
         search_focused: false,
         selected: None,
         scroll: 0,
-        filter: Some(ClientNavigatorFilter::Later),
+        filter: Some(ClientNavigatorFilter::Parked),
     };
     let mut hidden_below = None;
     super::super::aggregate_navigation::navigator_rows(endpoints, active, &navigator)
@@ -33,7 +33,7 @@ pub(in crate::client::shell) fn rows(
             if hidden_below.is_some_and(|depth| row.depth > depth) {
                 return false;
             }
-            hidden_below = later.collapsed.contains(&row.target).then_some(row.depth);
+            hidden_below = parked.collapsed.contains(&row.target).then_some(row.depth);
             true
         })
         .collect()
@@ -42,12 +42,12 @@ pub(in crate::client::shell) fn rows(
 pub(in crate::client::shell) fn height(
     area: Rect,
     collapsed: bool,
-    later: &LaterState,
+    parked: &ParkedState,
     row_count: usize,
 ) -> u16 {
     if collapsed || area.width < 6 || area.height < 6 {
         0
-    } else if later.expanded {
+    } else if parked.expanded {
         area.height.saturating_sub(4).div_ceil(2).max(2).min(
             row_count
                 .saturating_add(1)
@@ -65,7 +65,7 @@ pub(in crate::client::shell) fn render(
     height: u16,
     endpoints: &[ClientShellEndpoint],
     rows: &[ClientNavigatorRow],
-    later: &mut LaterState,
+    parked: &mut ParkedState,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
@@ -85,7 +85,7 @@ pub(in crate::client::shell) fn render(
         .iter()
         .map(|endpoint| endpoint.parking.parked_terminals().count())
         .sum();
-    let marker = if later.expanded { "▾" } else { "▸" };
+    let marker = if parked.expanded { "▾" } else { "▸" };
     put_text(
         buffer,
         area.x,
@@ -101,8 +101,8 @@ pub(in crate::client::shell) fn render(
         &format!("{count} "),
         Style::default().fg(p.overlay0),
     );
-    hits.later_toggle = Rect::new(area.x, area.y, area.width, 1);
-    if !later.expanded {
+    hits.parked_toggle = Rect::new(area.x, area.y, area.width, 1);
+    if !parked.expanded {
         return;
     }
     let body = Rect::new(
@@ -111,9 +111,9 @@ pub(in crate::client::shell) fn render(
         area.width,
         area.height.saturating_sub(1),
     );
-    hits.later_body = body;
-    hits.later_max_scroll = rows.len().saturating_sub(usize::from(body.height));
-    later.scroll = later.scroll.min(hits.later_max_scroll);
+    hits.parked_body = body;
+    hits.parked_max_scroll = rows.len().saturating_sub(usize::from(body.height));
+    parked.scroll = parked.scroll.min(hits.parked_max_scroll);
     if rows.is_empty() {
         put_text(
             buffer,
@@ -126,7 +126,7 @@ pub(in crate::client::shell) fn render(
     }
     for (index, row) in rows
         .iter()
-        .skip(later.scroll)
+        .skip(parked.scroll)
         .take(usize::from(body.height))
         .enumerate()
     {
@@ -138,7 +138,7 @@ pub(in crate::client::shell) fn render(
             buffer.set_style(rect, Style::default().bg(p.active_row_bg));
         }
         if !leaf {
-            let marker = if later.collapsed.contains(&row.target) {
+            let marker = if parked.collapsed.contains(&row.target) {
                 "▸ "
             } else {
                 "▾ "
@@ -172,12 +172,12 @@ pub(in crate::client::shell) fn render(
             &row.label,
             style,
         );
-        hits.later_rows.push((rect, row.target.clone()));
+        hits.parked_rows.push((rect, row.target.clone()));
     }
 }
 
 impl ClientShellState {
-    pub(in crate::client::shell) fn handle_later_mouse(
+    pub(in crate::client::shell) fn handle_parked_mouse(
         &mut self,
         mouse: crossterm::event::MouseEvent,
         outcome: &mut ClientShellInput,
@@ -187,15 +187,15 @@ impl ClientShellState {
         if matches!(
             mouse.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && contains(self.hits.later_body, point)
+        ) && contains(self.hits.parked_body, point)
         {
-            self.later.scroll = if mouse.kind == MouseEventKind::ScrollUp {
-                self.later.scroll.saturating_sub(3)
+            self.parked.scroll = if mouse.kind == MouseEventKind::ScrollUp {
+                self.parked.scroll.saturating_sub(3)
             } else {
-                self.later
+                self.parked
                     .scroll
                     .saturating_add(3)
-                    .min(self.hits.later_max_scroll)
+                    .min(self.hits.parked_max_scroll)
             };
             outcome.repaint = true;
             return true;
@@ -205,20 +205,20 @@ impl ClientShellState {
                 self.focused_parking_action(ParkingAction::Restore, outcome);
                 return true;
             }
-            if contains(self.hits.open_later, point) {
-                self.open_later();
+            if contains(self.hits.open_parked, point) {
+                self.open_parked();
                 outcome.repaint = true;
                 return true;
             }
-            if contains(self.hits.later_toggle, point) {
-                self.later.expanded = !self.later.expanded;
+            if contains(self.hits.parked_toggle, point) {
+                self.parked.expanded = !self.parked.expanded;
                 outcome.repaint = true;
                 return true;
             }
         }
         let target = self
             .hits
-            .later_rows
+            .parked_rows
             .iter()
             .find(|(rect, _)| contains(*rect, point))
             .map(|(_, target)| target.clone());
@@ -235,8 +235,8 @@ impl ClientShellState {
                         self.parking_action(endpoint_id, pane_id, ParkingAction::Preview, outcome);
                     }
                     target => {
-                        if !self.later.collapsed.remove(&target) {
-                            self.later.collapsed.insert(target);
+                        if !self.parked.collapsed.remove(&target) {
+                            self.parked.collapsed.insert(target);
                         }
                     }
                 }

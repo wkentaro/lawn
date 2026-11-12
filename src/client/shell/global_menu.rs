@@ -49,7 +49,7 @@ pub(super) fn global_menu_items(
     }
     items.push((
         "Parked",
-        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenLater),
+        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenParked),
     ));
     items.push((
         "detach",

@@ -1782,7 +1782,7 @@ impl ClientShellState {
             return;
         }
 
-        if self.handle_later_mouse(mouse, outcome) {
+        if self.handle_parked_mouse(mouse, outcome) {
             return;
         }
 

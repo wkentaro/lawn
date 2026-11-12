@@ -21,8 +21,8 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
-                if action == crate::input::KeybindAction::OpenLater {
-                    self.open_later();
+                if action == crate::input::KeybindAction::OpenParked {
+                    self.open_parked();
                     outcome.repaint = true;
                     return;
                 }

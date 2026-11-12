@@ -286,7 +286,7 @@ pub(super) fn render_expanded(
         workspace_area.width,
         workspace_area
             .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.later_height),
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.parked_height),
     );
     hits.workspace_body = body;
     let row_heights = rows

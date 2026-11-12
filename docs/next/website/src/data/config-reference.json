@@ -708,13 +708,13 @@
           "key": "keys.restore_pane",
           "type": "keybinding",
           "default": "unset",
-          "description": "Restore the pane currently previewed in Later and enable terminal input. Unset by default."
+          "description": "Restore the pane currently previewed in Parked and enable terminal input. Unset by default."
         },
         {
-          "key": "keys.open_later",
+          "key": "keys.open_parked",
           "type": "keybinding",
           "default": "unset",
-          "description": "Open Lawn's Later picker to find parked panes. Unset by default."
+          "description": "Open Lawn's Parked picker to find parked panes. `open_later` is accepted as an alias. Unset by default."
         },
         {
           "key": "keys.edit_scrollback",
