@@ -167,6 +167,29 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let previous_size = self.parking_size();
+        let replacement = matches!(action, ParkingAction::Park)
+            .then(|| {
+                let endpoint = self
+                    .endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.endpoint_id == endpoint_id)?;
+                let snapshot = endpoint.snapshot.as_deref()?;
+                let source = snapshot.panes.iter().find(|item| item.pane_id == pane)?;
+                (!endpoint.parking.hides_pane(&pane)
+                    && snapshot.panes.iter().all(|item| {
+                        item.workspace_id != source.workspace_id
+                            || item.pane_id == pane
+                            || endpoint.parking.hides_pane(&item.pane_id)
+                    }))
+                .then(|| crate::api::schema::TabCreateParams {
+                    workspace_id: Some(source.workspace_id.clone()),
+                    cwd: source.foreground_cwd.clone().or_else(|| source.cwd.clone()),
+                    focus: true,
+                    label: None,
+                    env: Default::default(),
+                })
+            })
+            .flatten();
         let result = self
             .endpoints
             .iter_mut()
@@ -197,6 +220,9 @@ impl ClientShellState {
         }
         if matches!(action, ParkingAction::Preview | ParkingAction::Restore) {
             self.activate_endpoint(endpoint_id, outcome);
+        }
+        if let Some(replacement) = replacement {
+            self.push_endpoint_method(crate::api::schema::Method::TabCreate(replacement), outcome);
         }
         self.selection = None;
         self.copy_mode = None;

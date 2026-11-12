@@ -72,6 +72,58 @@ fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
 }
 
 #[test]
+fn parking_last_active_pane_opens_one_shell_in_its_current_directory() {
+    for (foreground, cwd, expected) in [
+        (Some("/repo/subdir"), Some("/repo"), Some("/repo/subdir")),
+        (None, Some("/repo"), Some("/repo")),
+        (None, None, None),
+    ] {
+        let mut projected = snapshot();
+        projected.panes[0].foreground_cwd = foreground.map(str::to_owned);
+        projected.panes[0].cwd = cwd.map(str::to_owned);
+        let mut state = state_with_snapshot(projected);
+        let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
+        let creates = parked
+            .actions
+            .iter()
+            .filter_map(|action| match action {
+                ClientShellAction::Endpoint { request, .. } => match &request.method {
+                    crate::api::schema::Method::TabCreate(params) => Some(params),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0].workspace_id.as_deref(), Some("ws_1"));
+        assert_eq!(creates[0].cwd.as_deref(), expected);
+        assert!(creates[0].focus);
+        let policy = request(&mut state);
+        acknowledge(&mut state, &policy, None);
+        assert!(state.tick_parking(Instant::now()).actions.is_empty());
+        let mut repeated = ClientShellInput::default();
+        state.parking_action(
+            ClientEndpointId::Local,
+            "pane_1".into(),
+            lawn::ParkingAction::Park,
+            &mut repeated,
+        );
+        assert!(
+            repeated.actions.is_empty(),
+            "already parked panes never create another shell"
+        );
+    }
+}
+
+#[test]
+fn parking_with_another_active_pane_does_not_create_a_shell() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
+    assert!(parked.actions.is_empty());
+    assert_eq!(request(&mut state).hidden_terminals, ["terminal-pane_1"]);
+}
+
+#[test]
 fn parking_the_last_terminal_keeps_workspace_and_later_accessible() {
     let mut state = state();
     state.compose(100, 24).unwrap();
