@@ -24,10 +24,14 @@ pub(in crate::client::shell) fn rows(
         search_focused: false,
         selected: None,
         scroll: 0,
-        filter: Some(ClientNavigatorFilter::Parked),
+        filter: None,
+        parked: true,
+        machine: None,
+        machine_scroll: 0,
+        workspace: None,
     };
     let mut hidden_below = None;
-    super::super::aggregate_navigation::navigator_rows(endpoints, active, &navigator)
+    super::super::aggregate_navigation::legacy_navigator_rows(endpoints, active, &navigator)
         .into_iter()
         .filter(|row| {
             if hidden_below.is_some_and(|depth| row.depth > depth) {

@@ -1655,7 +1655,11 @@ impl ClientShellState {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
-                            navigator.selected = Some(target);
+                            if !navigator.parked
+                                || matches!(target, ClientNavigatorTarget::Pane { .. })
+                            {
+                                navigator.selected = Some(target);
+                            }
                         }
                         outcome.repaint = true;
                     }
@@ -1683,18 +1687,81 @@ impl ClientShellState {
                                 outcome.repaint = true;
                             }
                         }
+                    } else if let Some((_, page)) = self
+                        .hits
+                        .navigator_machine_pages
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .copied()
+                    {
+                        if let Some(ClientShellOverlay::Navigator(navigator)) =
+                            self.overlay.as_mut()
+                        {
+                            navigator.machine_scroll = page;
+                        }
+                        outcome.repaint = true;
+                    } else if let Some((_, filter)) = self
+                        .hits
+                        .navigator_filters
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .copied()
+                    {
+                        if let Some(ClientShellOverlay::Navigator(navigator)) =
+                            self.overlay.as_mut()
+                        {
+                            navigator.filter = filter;
+                            navigator.selected = None;
+                            navigator.scroll = 0;
+                        }
+                        outcome.repaint = true;
+                    } else if super::contains(self.hits.navigator_close, point) {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    } else if super::contains(self.hits.navigator_preview, point) {
+                        self.accept_navigator_selection(outcome);
                     } else if super::contains(self.hits.navigator_search, point) {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
                             navigator.search_focused = true;
-                            navigator.filter = None;
+                            if !navigator.parked {
+                                navigator.filter = None;
+                            }
                         }
                         outcome.repaint = true;
                     } else if let Some((_, target)) = row_hit {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
+                            if navigator.parked {
+                                match target {
+                                    ClientNavigatorTarget::Machine { endpoint_id } => {
+                                        navigator.machine = (navigator.machine.as_ref()
+                                            != Some(&endpoint_id))
+                                        .then_some(endpoint_id);
+                                        navigator.workspace = None;
+                                    }
+                                    ClientNavigatorTarget::Workspace {
+                                        endpoint_id,
+                                        workspace_id,
+                                    } => {
+                                        let scope = (endpoint_id, workspace_id);
+                                        navigator.workspace = (navigator.workspace.as_ref()
+                                            != Some(&scope))
+                                        .then_some(scope);
+                                    }
+                                    ClientNavigatorTarget::Pane { .. } => {
+                                        navigator.selected = Some(target);
+                                        self.accept_navigator_selection(outcome);
+                                        return;
+                                    }
+                                }
+                                navigator.selected = None;
+                                navigator.scroll = 0;
+                                outcome.repaint = true;
+                                return;
+                            }
                             navigator.selected = Some(target);
                         }
                         self.accept_navigator_selection(outcome);

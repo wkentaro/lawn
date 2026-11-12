@@ -278,7 +278,7 @@ impl ClientShellState {
     pub(super) fn open_parked(&mut self) {
         self.open_navigator_overlay();
         if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-            navigator.filter = Some(ClientNavigatorFilter::Parked);
+            navigator.parked = true;
             navigator.selected = None;
         }
     }

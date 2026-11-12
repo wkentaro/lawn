@@ -287,15 +287,156 @@ pub(super) fn navigator_rows(
     active_endpoint_id: &ClientEndpointId,
     navigator: &ClientNavigatorOverlay,
 ) -> Vec<ClientNavigatorRow> {
-    let query = navigator.query.trim().to_lowercase();
+    if !navigator.parked {
+        return legacy_navigator_rows(endpoints, active_endpoint_id, navigator);
+    }
+    let federated = endpoints.len() > 1;
+    let words = navigator.query.trim().to_lowercase();
+    let words = words.split_whitespace().collect::<Vec<_>>();
+    let mut metadata = HashMap::new();
+    if !words.is_empty() {
+        for endpoint in endpoints {
+            if let Some(snapshot) = endpoint.snapshot.as_deref() {
+                let tabs = snapshot
+                    .tabs
+                    .iter()
+                    .map(|tab| (tab.tab_id.as_str(), tab.label.as_str()))
+                    .collect::<HashMap<_, _>>();
+                for pane in &snapshot.panes {
+                    metadata.insert(
+                        (&endpoint.endpoint_id, pane.pane_id.as_str()),
+                        (
+                            pane.cwd.as_deref(),
+                            None,
+                            tabs.get(pane.tab_id.as_str()).copied(),
+                            None,
+                        ),
+                    );
+                }
+                for agent in &snapshot.agents {
+                    if let Some(entry) =
+                        metadata.get_mut(&(&endpoint.endpoint_id, agent.pane_id.as_str()))
+                    {
+                        entry.1 = agent
+                            .title
+                            .as_deref()
+                            .or(agent.terminal_title_stripped.as_deref());
+                        entry.3 = agent.display_agent.as_deref();
+                    }
+                }
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    let mut group: Option<ClientNavigatorRow> = None;
+    let mut group_added = false;
+    for mut row in legacy_navigator_rows(endpoints, active_endpoint_id, navigator) {
+        match &row.target {
+            ClientNavigatorTarget::Machine { .. } => continue,
+            ClientNavigatorTarget::Workspace {
+                endpoint_id,
+                workspace_id,
+            } => {
+                if federated {
+                    if let Some(endpoint) = endpoints.iter().find(|e| e.endpoint_id == *endpoint_id)
+                    {
+                        row.label = format!("{} · {}", endpoint.label, row.label);
+                    }
+                }
+                let selected_scope = navigator
+                    .workspace
+                    .as_ref()
+                    .is_some_and(|(id, workspace)| id != endpoint_id || workspace != workspace_id);
+                group = Some(row);
+                group_added = false;
+                if selected_scope {
+                    group = None;
+                } else if navigator.workspace.is_some() {
+                    // Keep the active scope removable even with no matching terminals.
+                    if let Some(header) = group.as_ref() {
+                        rows.push(header.clone());
+                        group_added = true;
+                    }
+                }
+            }
+            ClientNavigatorTarget::Pane {
+                endpoint_id,
+                pane_id,
+            } => {
+                let Some(header) = group.as_ref() else {
+                    continue;
+                };
+                if navigator
+                    .machine
+                    .as_ref()
+                    .is_some_and(|id| id != endpoint_id)
+                {
+                    continue;
+                }
+                // Status matching already happened in the shared projection;
+                // cached rows and unidentified agents are not live filter evidence.
+                if navigator.filter.is_some() && (row.stale || row.status.is_none()) {
+                    continue;
+                }
+                if !words.is_empty() {
+                    let machine = endpoints
+                        .iter()
+                        .find(|e| e.endpoint_id == *endpoint_id)
+                        .map(|e| e.label.as_str())
+                        .unwrap_or_default();
+                    let (cwd, title, tab, display_agent) = metadata
+                        .get(&(endpoint_id, pane_id.as_str()))
+                        .copied()
+                        .unwrap_or_default();
+                    let searchable = format!(
+                        "{} {} {} {} {} {} {} {} {} {} {}",
+                        row.label,
+                        header.label,
+                        header.meta,
+                        machine,
+                        row.agent.as_deref().unwrap_or_default(),
+                        display_agent.unwrap_or_default(),
+                        row.meta,
+                        row.detail,
+                        cwd.unwrap_or_default(),
+                        title.unwrap_or_default(),
+                        tab.unwrap_or_default()
+                    )
+                    .to_lowercase();
+                    if !words.iter().all(|word| searchable.contains(word)) {
+                        continue;
+                    }
+                }
+                if !group_added {
+                    rows.push(header.clone());
+                    group_added = true;
+                }
+                row.depth = 0;
+                rows.push(row);
+            }
+        }
+    }
+    rows
+}
+
+pub(super) fn legacy_navigator_rows(
+    endpoints: &[ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    navigator: &ClientNavigatorOverlay,
+) -> Vec<ClientNavigatorRow> {
+    let parked = navigator.parked;
+    let query = if parked {
+        String::new()
+    } else {
+        navigator.query.trim().to_lowercase()
+    };
     let filter = |status| match navigator.filter {
         Some(ClientNavigatorFilter::Blocked) => status == crate::api::schema::AgentStatus::Blocked,
         Some(ClientNavigatorFilter::Working) => status == crate::api::schema::AgentStatus::Working,
         Some(ClientNavigatorFilter::Idle) => status == crate::api::schema::AgentStatus::Idle,
         Some(ClientNavigatorFilter::Done) => status == crate::api::schema::AgentStatus::Done,
-        None | Some(ClientNavigatorFilter::Parked) => true,
+        None => true,
     };
-    let parked = navigator.filter == Some(ClientNavigatorFilter::Parked);
     let words = query.split_whitespace().collect::<Vec<_>>();
     let text = |value: &str| {
         if words.is_empty() {
@@ -304,7 +445,7 @@ pub(super) fn navigator_rows(
         let value = value.to_lowercase();
         words.iter().all(|word| value.contains(word))
     };
-    let filtering = navigator.filter.is_some() || !query.is_empty();
+    let filtering = parked || navigator.filter.is_some() || !query.is_empty();
     let federated = endpoints.len() > 1;
     let depth_offset = u8::from(federated);
     let mut rows = Vec::new();
@@ -436,6 +577,14 @@ pub(super) fn navigator_rows(
                 }
                 if !filtering
                     || !children.is_empty()
+                    || (parked
+                        && navigator
+                            .workspace
+                            .as_ref()
+                            .is_some_and(|(id, workspace_id)| {
+                                id == &endpoint.endpoint_id
+                                    && workspace_id == &workspace.workspace_id
+                            }))
                     || (navigator.filter.is_none() && !query.is_empty() && workspace_matches)
                 {
                     endpoint_rows.push(ClientNavigatorRow {
@@ -482,6 +631,21 @@ pub(super) fn navigator_selected_index(
     rows: &[ClientNavigatorRow],
     navigator: &ClientNavigatorOverlay,
 ) -> Option<usize> {
+    if navigator.parked {
+        return navigator
+            .selected
+            .as_ref()
+            .and_then(|target| {
+                rows.iter().position(|row| {
+                    row.target == *target
+                        && matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                })
+            })
+            .or_else(|| {
+                rows.iter()
+                    .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            });
+    }
     match navigator.selected.as_ref() {
         Some(target) => rows.iter().position(|row| row.target == *target),
         None => rows
