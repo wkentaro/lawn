@@ -153,6 +153,8 @@ impl ClientShellState {
 #[derive(Clone, Copy)]
 pub(super) enum ParkingAction {
     Park,
+    // Exercise retained full-pane presentation policy in compatibility tests.
+    #[cfg(test)]
     Preview,
     Restore,
 }
@@ -166,7 +168,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let previous_size = self.parking_size();
+        #[cfg(test)]
         let same_endpoint = endpoint_id == self.active_endpoint_id;
+        #[cfg(test)]
         let preview_return = matches!(action, ParkingAction::Preview)
             .then(|| {
                 self.active_parking()
@@ -216,6 +220,7 @@ impl ClientShellState {
                     .to_owned();
                 match action {
                     ParkingAction::Park => endpoint.parking.park(&pane),
+                    #[cfg(test)]
                     ParkingAction::Preview => {
                         let continuing = same_endpoint && endpoint.parking.preview_pane().is_some();
                         endpoint.parking.preview(&terminal)?;
@@ -232,7 +237,7 @@ impl ClientShellState {
             self.receive_endpoint_unavailable(message);
             return false;
         }
-        if matches!(action, ParkingAction::Preview | ParkingAction::Restore) {
+        if !matches!(action, ParkingAction::Park) {
             self.activate_endpoint(endpoint_id, outcome);
         }
         if let Some(replacement) = replacement {
@@ -276,7 +281,6 @@ impl ClientShellState {
         self.open_navigator_overlay();
         if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
             navigator.parked = true;
-            navigator.search_focused = false;
             navigator.selected = None;
         }
     }

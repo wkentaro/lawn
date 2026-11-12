@@ -242,39 +242,17 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
         panic!("Parked")
     };
     assert!(navigator.parked);
-    assert_eq!(navigator.filter, None);
     navigator.selected = Some(ClientNavigatorTarget::Pane {
         endpoint_id: ClientEndpointId::Local,
         pane_id: "pane_1".into(),
     });
-    state.handle_input_bytes(b"\r");
-    let preview = request(&mut state);
-    assert_eq!(preview.preview_terminal.as_deref(), Some("terminal-pane_1"));
-    acknowledge(&mut state, &preview, Some("pane_1"));
-    let frame = state.compose(100, 24).unwrap();
-    assert!(frame_rows(&frame).join("\n").contains("unpark"));
-    let restore = state.hits.restore_pane;
-    assert!(!restore.is_empty());
-    assert!(frame.cursor.is_none());
-    assert!(state.handle_input_bytes(b"unsafe").requests.is_empty());
-    assert!(state
-        .handle_raw_events(vec![RawInputEvent::Paste("unsafe".into())])
-        .requests
-        .is_empty());
-    let pane = state.hits.panes[0].inner_rect;
-    let selection = click(&mut state, pane);
-    assert!(selection.actions.is_empty());
-    assert!(state.has_parking_preview());
-    let close = binding(&mut state, crate::input::KeybindAction::ClosePane);
-    assert!(close.actions.is_empty());
-    assert!(state.has_parking_preview());
-    click(&mut state, restore);
-    assert!(state
-        .handle_input_bytes(b"still fenced")
-        .requests
-        .is_empty());
+    let opened = state.handle_input_bytes(b"\r");
+    assert!(opened.actions.is_empty());
+    assert!(state.overlay.is_none());
+    assert!(!state.has_parking_preview());
     let restored = request(&mut state);
     assert!(restored.hidden_terminals.is_empty());
+    assert_eq!(restored.preview_terminal, None);
     assert_eq!(restored.focus_terminal.as_deref(), Some("terminal-pane_1"));
     acknowledge(&mut state, &restored, Some("pane_1"));
     assert!(!state.handle_input_bytes(b"writable").requests.is_empty());
@@ -282,7 +260,7 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
 }
 
 #[test]
-fn parked_launcher_opens_picker_and_jump_does_not_include_parked_terminal() {
+fn parked_launcher_and_goto_both_include_parked_terminal() {
     let mut state = state();
     binding(&mut state, crate::input::KeybindAction::ParkPane);
     let parked = request(&mut state);
@@ -293,17 +271,14 @@ fn parked_launcher_opens_picker_and_jump_does_not_include_parked_terminal() {
     };
     let active =
         render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-    assert!(!active
-        .iter()
-        .any(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. })));
+    assert!(active.iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id } if pane_id == "pane_1")));
     state.open_parked();
-    state.handle_input_bytes(b"/");
     state.handle_input_bytes(b"client-shell");
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
         panic!("Parked search")
     };
     assert!(navigator.parked);
-    assert_eq!(navigator.filter, None);
+    assert_eq!(navigator.query.as_str(), "client-shell");
     let rows =
         render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
     assert_eq!(rows.len(), 2);
@@ -312,7 +287,7 @@ fn parked_launcher_opens_picker_and_jump_does_not_include_parked_terminal() {
         ClientNavigatorTarget::Workspace { .. }
     ));
     assert_eq!(rows[0].depth, 0);
-    assert_eq!(rows[1].depth, 0);
+    assert_eq!(rows[1].depth, 1);
     assert!(
         rows.iter().all(|row| row.status.is_none()),
         "ordinary terminal has no agent status"
@@ -976,7 +951,7 @@ fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
     let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
         panic!("Jump")
     };
-    assert!(!render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator).iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Workspace { workspace_id, .. } if workspace_id == "ws_1")));
+    assert!(render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator).iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Workspace { workspace_id, .. } if workspace_id == "ws_1")));
     assert!(state
         .navigation_workspace_entries(state.snapshot.as_deref().unwrap())
         .iter()
@@ -1759,7 +1734,7 @@ fn workspace_only_confirmation_never_closes_linked_workspaces() {
 }
 
 #[test]
-fn parked_switcher_qualifies_duplicate_workspace_scopes_and_marks_cached_rows() {
+fn parked_switcher_qualifies_duplicate_workspace_targets_and_marks_cached_rows() {
     let mut state = parked_with_active_shell(false, false);
     let profile = crate::client::endpoint::SavedSshEndpoint {
         id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
@@ -1776,29 +1751,44 @@ fn parked_switcher_qualifies_duplicate_workspace_scopes_and_marks_cached_rows() 
     remote_endpoint.status = ClientEndpointStatus::Reconnecting;
     state.endpoints[1] = remote_endpoint;
     state.open_parked();
-    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_mut() else {
+    let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
         panic!("parked switcher")
     };
-    n.workspace = Some((remote.clone(), "ws_1".into()));
     let rows = render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n);
     assert_eq!(
         rows.iter()
             .filter(|r| matches!(r.target, ClientNavigatorTarget::Pane { .. }))
             .count(),
-        1
+        2
     );
     assert!(
-        matches!(&rows[0].target, ClientNavigatorTarget::Workspace { endpoint_id, workspace_id } if endpoint_id == &remote && workspace_id == "ws_1")
+        matches!(&rows[0].target, ClientNavigatorTarget::Machine { endpoint_id } if endpoint_id == &ClientEndpointId::Local)
     );
-    assert!(rows[0].label.contains("Build"));
-    assert!(rows[1].stale);
-    let frame = state.compose(100, 24).unwrap();
-    assert!(frame_rows(&frame).join("\n").contains("cached"));
-    assert!(state.hits.navigator_preview.is_empty());
+    let remote_rows = rows
+        .iter()
+        .skip_while(|r| {
+            r.target
+                != ClientNavigatorTarget::Machine {
+                    endpoint_id: remote.clone(),
+                }
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(&remote_rows[0].target, ClientNavigatorTarget::Machine { endpoint_id } if endpoint_id == &remote)
+    );
+    assert!(
+        matches!(&remote_rows[1].target, ClientNavigatorTarget::Workspace { endpoint_id, workspace_id } if endpoint_id == &remote && workspace_id == "ws_1")
+    );
+    assert!(
+        matches!(&remote_rows[2].target, ClientNavigatorTarget::Pane { endpoint_id, pane_id } if endpoint_id == &remote && pane_id == "pane_1")
+    );
+    assert!(remote_rows[2].stale);
+    state.compose(100, 24).unwrap();
+    assert!(!state.hits.navigator_preview.is_empty());
 }
 
 #[test]
-fn parked_switcher_groups_clickable_workspace_scopes_and_fits_content() {
+fn parked_headings_do_not_change_selection_or_toggle_scopes() {
     let mut state = parked_with_active_shell(false, false);
     state.parking_action(
         ClientEndpointId::Local,
@@ -1809,35 +1799,193 @@ fn parked_switcher_groups_clickable_workspace_scopes_and_fits_content() {
     let policy = request(&mut state);
     acknowledge(&mut state, &policy, Some("pane_2"));
     state.open_parked();
-    let frame = state.compose(120, 36).unwrap();
-    assert!(state.hits.navigator_popup.height < 36);
-    assert!(frame_rows(&frame).join("\n").contains("Preview"));
-    assert!(!state.hits.navigator_preview.is_empty());
-    assert!(!state.hits.navigator_close.is_empty());
+    state.compose(120, 36).unwrap();
     let headers = state
         .hits
         .navigator_rows
         .iter()
         .filter(|(_, target)| matches!(target, ClientNavigatorTarget::Workspace { .. }))
-        .cloned()
+        .map(|(rect, _)| *rect)
         .collect::<Vec<_>>();
     assert_eq!(headers.len(), 2);
-    click(&mut state, headers[1].0);
-    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
+    let before = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        match state.overlay.as_ref().unwrap() {
+            ClientShellOverlay::Navigator(n) => n,
+            _ => unreachable!(),
+        },
+    );
+    let outcome = click(&mut state, headers[1]);
+    assert!(outcome.actions.is_empty());
+    let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
         panic!("parked switcher")
     };
-    assert!(matches!(&n.workspace, Some((ClientEndpointId::Local, id)) if id == "ws_2"));
-    let rows = render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n);
+    assert!(n.selected.is_none());
     assert_eq!(
-        rows.iter()
-            .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-            .count(),
-        1
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n).len(),
+        before.len()
     );
     state.compose(120, 36).unwrap();
     let close = state.hits.navigator_close;
     click(&mut state, close);
     assert!(state.overlay.is_none());
+}
+
+#[test]
+fn parked_keyboard_browses_panes_without_changing_workspace_focus() {
+    let mut state = parked_with_active_shell(false, false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_3".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_2"));
+    state.open_parked();
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+        Some("pane_2")
+    );
+    state.handle_input_bytes(b"jkb");
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.query.as_str() == "jkb")
+    );
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Down,
+        KeyModifiers::empty(),
+    ))]);
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n))
+        if n.selected == Some(ClientNavigatorTarget::Pane {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id: "pane_3".into(),
+        }))
+    );
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Up,
+        KeyModifiers::empty(),
+    ))]);
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n))
+        if n.selected == Some(ClientNavigatorTarget::Pane {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id: "pane_1".into(),
+        }))
+    );
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+        Some("pane_2")
+    );
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
+    for parked in [false, true] {
+        let mut state = parked_with_active_shell(false, false);
+        state.parking_action(
+            ClientEndpointId::Local,
+            "pane_3".into(),
+            lawn::ParkingAction::Park,
+            &mut ClientShellInput::default(),
+        );
+        let policy = request(&mut state);
+        acknowledge(&mut state, &policy, Some("pane_2"));
+        if parked {
+            state.open_parked();
+        } else {
+            state.open_navigator_overlay();
+        }
+        state.compose(120, 36).unwrap();
+        let pane = state.hits.navigator_rows.iter().find_map(|(rect, target)| {
+        matches!(target, ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id } if pane_id == "pane_1").then_some(*rect)
+    }).expect("parked row");
+        assert!(click(&mut state, pane).actions.is_empty());
+        assert_eq!(
+            state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+            Some("pane_2")
+        );
+        assert!(
+            matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n))
+        if n.selected == Some(ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id: "pane_1".into() }))
+        );
+        assert!(!state.has_parking_preview());
+        let crossed_rows = state
+            .hits
+            .navigator_rows
+            .iter()
+            .filter(|(rect, _)| rect.y > pane.y)
+            .map(|(rect, _)| *rect)
+            .collect::<Vec<_>>();
+        assert!(!crossed_rows.is_empty());
+        for rect in crossed_rows {
+            let moved = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: rect.x,
+                row: rect.y,
+                modifiers: KeyModifiers::empty(),
+            })]);
+            assert!(moved.actions.is_empty());
+        }
+        assert!(
+            matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n))
+        if n.selected == Some(ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id: "pane_1".into() }))
+        );
+        state.compose(120, 36).unwrap();
+        let open = state.hits.navigator_preview;
+        assert!(!open.is_empty());
+        assert!(click(&mut state, open).actions.is_empty());
+        assert!(state.overlay.is_none());
+        let restored = request(&mut state);
+        assert_eq!(restored.preview_terminal, None);
+        assert_eq!(restored.focus_terminal.as_deref(), Some("terminal-pane_1"));
+        assert!(!restored
+            .hidden_terminals
+            .contains(&"terminal-pane_1".to_owned()));
+        assert!(restored
+            .hidden_terminals
+            .contains(&"terminal-pane_3".to_owned()));
+    }
+}
+
+#[test]
+fn parked_stale_selected_pane_never_opens_another_terminal() {
+    for delta in [-1, 1] {
+        let mut state = parked_with_active_shell(false, false);
+        state.open_parked();
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+            panic!("parked switcher")
+        };
+        navigator.selected = Some(ClientNavigatorTarget::Pane {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id: "removed-pane".into(),
+        });
+        let accepted = state.handle_input_bytes(b"\r");
+        assert!(accepted.actions.is_empty());
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::Navigator(_))
+        ));
+        assert!(!state.has_parking_preview());
+        state.move_navigator_selection(delta);
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+            panic!("parked switcher")
+        };
+        assert!(
+            matches!(navigator.selected.as_ref(), Some(ClientNavigatorTarget::Pane {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id,
+        }) if pane_id == "pane_1")
+        );
+        assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    }
 }
 
 #[test]
@@ -1909,49 +2057,29 @@ fn parked_switcher_render_scale_profile() {
 }
 
 #[test]
-fn parked_switcher_keeps_every_filter_mouse_accessible_on_narrow_screens() {
-    for width in [24, 40, 120] {
+fn parked_and_goto_use_the_same_geometry_without_filter_controls() {
+    for (width, height) in [(24, 12), (40, 24), (120, 36)] {
         let mut state = parked_with_active_shell(false, false);
-        let template = state.endpoints[0].clone();
-        for index in 1..8 {
-            let mut endpoint = template.clone();
-            endpoint.endpoint_id = ClientEndpointId::Ssh(
-                crate::client::endpoint::ProfileId::parse(format!("{index:032x}")).unwrap(),
-            );
-            endpoint.label = format!("Machine {index} with a very long descriptive label");
-            state.endpoints.push(endpoint);
-        }
+        state.open_navigator_overlay();
+        state.compose(width, height).unwrap();
+        let goto = (state.hits.navigator_popup, state.hits.navigator_search);
         state.open_parked();
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..state.endpoints.len() {
-            state.compose(width, 24).unwrap();
-            assert_eq!(state.hits.navigator_filters.len(), 5);
-            for (rect, _) in &state.hits.navigator_filters {
-                assert_eq!(rect.intersection(state.hits.navigator_popup), *rect);
-                assert!(rect.bottom() < state.hits.navigator_close.y);
-            }
-            for (_, target) in &state.hits.navigator_rows {
-                if let ClientNavigatorTarget::Machine { endpoint_id } = target {
-                    seen.insert(endpoint_id.clone());
-                }
-            }
-            let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
-                panic!("parked switcher")
-            };
-            assert!(
-                navigator.machine.is_none(),
-                "paging must not change the filter"
-            );
-            let next = state
-                .hits
-                .navigator_machine_pages
-                .iter()
-                .find(|(_, page)| *page > navigator.machine_scroll)
-                .map(|(rect, _)| *rect);
-            let Some(next) = next else { break };
-            click(&mut state, next);
-        }
-        assert_eq!(seen.len(), state.endpoints.len(), "width {width}");
+        let frame = state.compose(width, height).unwrap();
+        assert_eq!(
+            (state.hits.navigator_popup, state.hits.navigator_search),
+            goto
+        );
+        assert!(frame.cursor.as_ref().is_some_and(|cursor| cursor.visible));
+        assert!(state
+            .hits
+            .navigator_rows
+            .iter()
+            .any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { .. })));
+        let text = frame_rows(&frame).join("\n");
+        assert!(
+            !text.contains("blocked   working   idle   done"),
+            "{width}x{height}: {text}"
+        );
     }
 }
 
@@ -1979,16 +2107,12 @@ fn parked_launcher_keeps_picker_usable_in_short_windows() {
                     click(&mut state, launcher);
                 }
                 state.compose(width, height).expect("visible parked picker");
-                assert_eq!(state.hits.navigator_filters.len(), 5);
                 assert!(state.hits.navigator_scroll_metrics.unwrap().viewport_rows > 0);
                 assert!(state
                     .hits
                     .navigator_rows
                     .iter()
                     .any(|(_, target)| { matches!(target, ClientNavigatorTarget::Pane { .. }) }));
-                for (rect, _) in &state.hits.navigator_filters {
-                    assert!(rect.bottom() <= state.hits.navigator_rows.last().unwrap().0.y);
-                }
                 let close = state.hits.navigator_close;
                 assert!(!close.is_empty());
                 click(&mut state, close);
@@ -2015,7 +2139,7 @@ fn parked_switcher_remains_dismissible_when_resized_too_short() {
 
 #[test]
 fn parked_switcher_reserves_results_in_short_windows() {
-    for width in [24, 40, 120] {
+    for width in [24, 40, 70, 120] {
         for height in [11, 12, 14] {
             let mut state = parked_with_active_shell(false, false);
             let mut remote = state.endpoints[0].clone();
@@ -2035,58 +2159,42 @@ fn parked_switcher_reserves_results_in_short_windows() {
                     .any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { .. })),
                 "{width}x{height}"
             );
-            for (rect, _) in &state.hits.navigator_filters {
-                assert!(rect.bottom() <= state.hits.navigator_rows.last().unwrap().0.y);
-                assert!(rect.bottom() <= state.hits.navigator_close.y);
+            if height == 11 || height == 14 {
+                let metrics = state.hits.navigator_scroll_metrics.unwrap();
+                state.scroll_navigator_to(0, metrics.viewport_rows);
+                state.compose(width, height).unwrap();
+                let metrics = state.hits.navigator_scroll_metrics.unwrap();
+                assert_eq!(
+                    metrics.offset_from_bottom, metrics.max_offset_from_bottom,
+                    "{width}x{height}: scrolling to the top must keep the machine heading visible"
+                );
+                assert!(matches!(
+                    state.hits.navigator_rows.first(),
+                    Some((_, ClientNavigatorTarget::Machine { .. }))
+                ));
+                if metrics.viewport_rows < 3 {
+                    assert!(state.handle_input_bytes(b"\r").actions.is_empty());
+                    assert!(matches!(
+                        state.overlay,
+                        Some(ClientShellOverlay::Navigator(_))
+                    ));
+                    assert!(matches!(
+                        state.navigator_preview_display(),
+                        PreviewDisplay::None
+                    ));
+                    state.handle_input_bytes(b"client-shell");
+                    assert!(matches!(
+                        state.navigator_preview_display(),
+                        PreviewDisplay::Loading
+                    ));
+                }
             }
         }
     }
 }
 
 #[test]
-fn parked_switcher_keeps_empty_workspace_scope_clickable() {
-    for filter in [None, Some(ClientNavigatorFilter::Done)] {
-        let mut state = parked_with_active_shell(false, false);
-        state.parking_action(
-            ClientEndpointId::Local,
-            "pane_3".into(),
-            lawn::ParkingAction::Park,
-            &mut ClientShellInput::default(),
-        );
-        let policy = request(&mut state);
-        acknowledge(&mut state, &policy, Some("pane_2"));
-        state.open_parked();
-        let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_mut() else {
-            panic!("parked switcher")
-        };
-        n.workspace = Some((ClientEndpointId::Local, "ws_1".into()));
-        n.query = "other".into();
-        n.filter = filter;
-        state.compose(100, 24).unwrap();
-        assert!(state.hits.navigator_preview.is_empty());
-        let header = state
-            .hits
-            .navigator_rows
-            .iter()
-            .find(|(_, target)| matches!(target, ClientNavigatorTarget::Workspace { .. }))
-            .unwrap()
-            .0;
-        click(&mut state, header);
-        let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
-            panic!("parked switcher")
-        };
-        assert!(n.workspace.is_none());
-        assert_eq!(n.query.to_string(), "other");
-        assert_eq!(n.filter, filter);
-        if filter.is_none() {
-            assert!(render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n)
-                .iter().any(|row| matches!(&row.target, ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_3")));
-        }
-    }
-}
-
-#[test]
-fn parked_switcher_keeps_scope_and_combines_search_filters() {
+fn parked_search_matches_context_across_fields_without_changing_preview_target() {
     let mut projected = tabbed_snapshot();
     projected.panes[0].label = Some("Build logs".into());
     projected.panes[0].cwd = Some("/projects/alpha".into());
@@ -2103,51 +2211,37 @@ fn parked_switcher_keeps_scope_and_combines_search_filters() {
     let policy = request(&mut state);
     acknowledge(&mut state, &policy, Some("pane_2"));
     state.open_parked();
-    state.handle_input_bytes(b"/");
     state.handle_raw_events(vec![RawInputEvent::Paste(
         "build client-shell alpha codex branch review repair operator".into(),
     )]);
-    let rows = match state.overlay.as_ref() {
-        Some(ClientShellOverlay::Navigator(n)) => {
-            assert!(n.parked);
-            assert_eq!(n.filter, None);
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n)
-        }
-        _ => panic!("parked switcher"),
+    let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
+        panic!("parked switcher")
     };
+    let rows = render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n);
     assert_eq!(
         rows.iter()
             .filter(|r| matches!(r.target, ClientNavigatorTarget::Pane { .. }))
             .count(),
         1
     );
-    state.handle_input_bytes(b"\x1b");
-    state.handle_input_bytes(b"b");
-    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
-        panic!("parked switcher")
-    };
-    assert!(n.parked);
-    assert_eq!(
-        n.query.to_string(),
-        "build client-shell alpha codex branch review repair operator"
+    assert!(
+        matches!(super::super::aggregate_navigation::selected_navigator_target(&rows, n),
+        Some(ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id }) if pane_id == "pane_1")
     );
-    assert_eq!(n.filter, Some(ClientNavigatorFilter::Blocked));
-    state.handle_input_bytes(b"a");
-    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
+    state.handle_input_bytes(b"b/");
+    let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
         panic!("parked switcher")
     };
-    assert!(n.parked);
-    assert_eq!(n.filter, None);
-    state.handle_input_bytes(b"\x7f");
-    let Some(ClientShellOverlay::Navigator(n)) = state.overlay.as_ref() else {
-        panic!("parked switcher")
-    };
-    assert!(n.parked);
     assert_eq!(
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, n)
-            .iter()
-            .filter(|r| matches!(r.target, ClientNavigatorTarget::Pane { .. }))
-            .count(),
-        1
+        n.query.as_str(),
+        "build client-shell alpha codex branch review repair operatorb/"
     );
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    ))]);
+    let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
+        panic!("parked switcher")
+    };
+    assert!(n.query.as_str().is_empty());
 }

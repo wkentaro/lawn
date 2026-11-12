@@ -63,6 +63,37 @@ pub(super) fn dispatch_client_shell_actions(
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
             }
+            shell::ClientShellAction::NavigatorPreview {
+                endpoint_id,
+                boot_id,
+                request,
+            } => {
+                // Never let a background read drain a retained mutation queue.
+                if !endpoint_commands.is_idle(&endpoint_id) {
+                    if let Some(shell) = shell.as_deref_mut() {
+                        shell.defer_navigator_preview(&request.id);
+                    }
+                    continue;
+                }
+                // PaneRead is the only action allowed to cross an inactive surface boundary.
+                if matches!(request.method, crate::api::schema::Method::PaneRead(_)) {
+                    if let Some(connection) = endpoints.connection(&endpoint_id) {
+                        endpoint_commands.enqueue(
+                            endpoint_id.clone(),
+                            connection.generation,
+                            boot_id,
+                            request,
+                        );
+                        for request_id in endpoint_commands.send_next(&endpoint_id, endpoints) {
+                            if let Some(shell) = shell.as_deref_mut() {
+                                repaint |= shell.cancel_navigator_preview(&request_id);
+                            }
+                        }
+                    } else if let Some(shell) = shell.as_deref_mut() {
+                        repaint |= shell.cancel_navigator_preview(&request.id);
+                    }
+                }
+            }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
                 if crate::selection::write_osc52_bytes(&bytes) {
                     if let Some(shell) = shell.as_deref_mut() {

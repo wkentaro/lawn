@@ -631,10 +631,7 @@ impl ClientShellState {
                         ..
                     }
                 ))
-                | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
-                    search_focused: true,
-                    ..
-                }))
+                | Some(ClientShellOverlay::Navigator(_))
                 | Some(ClientShellOverlay::Help(ClientHelpOverlay {
                     search_focused: true,
                     ..

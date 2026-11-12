@@ -162,11 +162,15 @@ impl ClientShellState {
                 &self.active_endpoint_id,
                 &self.config.palette,
             ) {
+                render::render_navigator_preview(
+                    &mut buffer,
+                    rendered.navigator_content_preview,
+                    self.navigator_preview_display(),
+                    &self.config.palette,
+                );
                 self.hits.navigator_popup = rendered.navigator_popup;
                 self.hits.navigator_search = rendered.navigator_search;
                 self.hits.navigator_rows = rendered.navigator_rows;
-                self.hits.navigator_filters = rendered.navigator_filters;
-                self.hits.navigator_machine_pages = rendered.navigator_machine_pages;
                 self.hits.navigator_preview = rendered.navigator_preview;
                 self.hits.navigator_close = rendered.navigator_close;
                 self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
@@ -710,6 +714,12 @@ impl ClientShellState {
                     &self.config.keybinds,
                     &self.config.palette,
                 )?;
+                render::render_navigator_preview(
+                    &mut composed,
+                    rendered.navigator_content_preview,
+                    self.navigator_preview_display(),
+                    &self.config.palette,
+                );
                 occlusion.cover(rendered.area);
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
@@ -717,8 +727,6 @@ impl ClientShellState {
                 self.hits.navigator_popup = rendered.navigator_popup;
                 self.hits.navigator_search = rendered.navigator_search;
                 self.hits.navigator_rows = rendered.navigator_rows;
-                self.hits.navigator_filters = rendered.navigator_filters;
-                self.hits.navigator_machine_pages = rendered.navigator_machine_pages;
                 self.hits.navigator_preview = rendered.navigator_preview;
                 self.hits.navigator_close = rendered.navigator_close;
                 self.hits.navigator_scrollbar = rendered.navigator_scrollbar;

@@ -455,6 +455,7 @@ impl PaneParking {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::client::shell) fn preview(&mut self, terminal: &str) -> Result<(), String> {
         if !self.available() || !self.terminal_panes.contains_key(terminal) {
             return Err("This pane is no longer available".into());

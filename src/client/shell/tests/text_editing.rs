@@ -162,7 +162,7 @@ fn cursor_movement_preserves_filter_selection_scroll_and_branch_error() {
                 v.error = Some("error".into());
             }
             ClientShellOverlay::Navigator(v) => {
-                v.scroll = 3;
+                v.scroll = Some(3);
                 v.selected = Some(ClientNavigatorTarget::Pane {
                     endpoint_id: ClientEndpointId::Local,
                     pane_id: "pane_1".into(),
@@ -180,7 +180,7 @@ fn cursor_movement_preserves_filter_selection_scroll_and_branch_error() {
                 assert_eq!(v.error.as_deref(), Some("error"));
             }
             ClientShellOverlay::Navigator(v) => {
-                assert_eq!(v.scroll, 3);
+                assert_eq!(v.scroll, Some(3));
                 assert!(v.selected.is_some());
             }
             ClientShellOverlay::Help(v) => assert_eq!(v.scroll, 3),

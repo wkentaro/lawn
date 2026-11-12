@@ -129,8 +129,6 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_popup: Rect,
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
-    pub(super) navigator_filters: Vec<(Rect, Option<ClientNavigatorFilter>)>,
-    pub(super) navigator_machine_pages: Vec<(Rect, usize)>,
     pub(super) navigator_preview: Rect,
     pub(super) navigator_close: Rect,
     pub(super) navigator_scrollbar: Rect,
@@ -264,6 +262,11 @@ pub(crate) enum ClientShellAction {
         boot_id: String,
         request: Box<crate::api::schema::Request>,
     },
+    NavigatorPreview {
+        endpoint_id: ClientEndpointId,
+        boot_id: String,
+        request: Box<crate::api::schema::Request>,
+    },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
     ActivateEndpoint {
@@ -342,14 +345,6 @@ pub(super) struct ClientRenameOverlay {
     pub(super) target: ClientRenameTarget,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ClientNavigatorFilter {
-    Blocked,
-    Working,
-    Idle,
-    Done,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ClientNavigatorTarget {
     Machine {
@@ -375,20 +370,17 @@ pub(super) struct ClientNavigatorRow {
     pub(super) status: Option<crate::api::schema::AgentStatus>,
     pub(super) stale: bool,
     pub(super) current: bool,
+    pub(super) parked: bool,
     pub(super) target: ClientNavigatorTarget,
 }
 
 #[derive(Debug)]
 pub(super) struct ClientNavigatorOverlay {
     pub(super) query: TextEditor,
-    pub(super) search_focused: bool,
     pub(super) selected: Option<ClientNavigatorTarget>,
-    pub(super) scroll: usize,
-    pub(super) filter: Option<ClientNavigatorFilter>,
+    // None uses the initial selection; Some preserves an explicitly scrolled viewport.
+    pub(super) scroll: Option<usize>,
     pub(super) parked: bool,
-    pub(super) machine: Option<ClientEndpointId>,
-    pub(super) machine_scroll: usize,
-    pub(super) workspace: Option<(ClientEndpointId, String)>,
 }
 
 #[derive(Debug)]
@@ -934,6 +926,7 @@ pub(crate) struct ClientShellState {
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
+    pub(super) navigator_preview: navigator_preview::NavigatorPreview,
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) link_hover: Option<super::link_hover::LinkHover>,
@@ -1116,6 +1109,7 @@ impl ClientShellState {
             pending_workspace_highlight: None,
             reveal_navigation_workspace: false,
             overlay,
+            navigator_preview: navigator_preview::NavigatorPreview::default(),
             previous_pane_id: None,
             pane_mouse_gesture: None,
             link_hover: None,
