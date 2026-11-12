@@ -490,14 +490,12 @@ pub(super) fn navigator_selected_index(
 ) -> Option<usize> {
     match navigator.selected.as_ref() {
         Some(target) => rows.iter().position(|row| {
-            row.target == *target
-                && (!navigator.parked || matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            row.target == *target && matches!(row.target, ClientNavigatorTarget::Pane { .. })
         }),
         None if navigator.scroll.is_some() => None,
         None => rows
             .iter()
-            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-            .or_else(|| (!navigator.parked && !rows.is_empty()).then_some(0)),
+            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. })),
     }
 }
 

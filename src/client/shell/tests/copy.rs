@@ -1365,13 +1365,7 @@ fn navigator_keeps_empty_workspaces_searchable() {
         assert_eq!(rows.len(), usize::from(expected), "query={query:?}");
         let target =
             super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
-        assert_eq!(
-            target,
-            expected.then(|| ClientNavigatorTarget::Workspace {
-                endpoint_id: ClientEndpointId::Local,
-                workspace_id: "ws_1".into(),
-            })
-        );
+        assert_eq!(target, None, "workspace headings are not jump targets");
     }
 }
 
