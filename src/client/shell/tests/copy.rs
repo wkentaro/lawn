@@ -964,6 +964,61 @@ fn navigator_workspace_headings_use_the_active_themes_primary_text() {
 }
 
 #[test]
+fn navigator_selection_preserves_text_and_status_colors_across_themes() {
+    let mut projected = snapshot();
+    projected.panes[0].label = Some("selected-agent".into());
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("claude".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.theme_runtime.auto_switch = false;
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+    for palette in [
+        Palette::catppuccin(),
+        Palette::catppuccin_latte(),
+        Palette::terminal(),
+    ] {
+        state.config.palette = palette;
+        let frame = state.compose(106, 30).expect("navigator");
+        let (rect, _) = state
+            .hits
+            .navigator_rows
+            .iter()
+            .find(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { .. }))
+            .expect("selected pane");
+        let label = cell_symbol_position(&frame, *rect, "selected-agent");
+        let dot = cell_symbol_position(&frame, *rect, status_dot(AgentStatus::Working));
+        let buffer = frame.to_ratatui_buffer().expect("buffer");
+        assert_eq!(buffer[label].fg, state.config.palette.text);
+        assert_eq!(buffer[label].bg, state.config.palette.panel_bg);
+        assert!(buffer[label]
+            .modifier
+            .contains(Modifier::BOLD | Modifier::UNDERLINED));
+        assert_eq!(
+            buffer[dot].fg,
+            status_color(AgentStatus::Working, &state.config.palette)
+        );
+        assert_eq!(buffer[dot].bg, state.config.palette.panel_bg);
+        assert!(!buffer[dot].modifier.contains(Modifier::UNDERLINED));
+    }
+}
+
+#[test]
 fn navigator_renders_every_terminal_in_workspace_sections() {
     let mut snapshot = snapshot();
     snapshot.focused_pane_id = None;
