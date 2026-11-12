@@ -714,7 +714,6 @@ pub(crate) fn render_navigator_overlay(
     p: &Palette,
 ) -> Option<OverlayRender> {
     let a = b.area;
-    let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
     let width = a.width.saturating_sub(4).min(116);
     let federated = n.parked && endpoints.len() > 1;
     let mut filters = Vec::new();
@@ -738,16 +737,23 @@ pub(crate) fn render_navigator_overlay(
         }
     }
     let filter_height = filters.last().map_or(0, |(rect, _, _)| rect.y + 1);
+    // Search, controls, one result, actions, and the panel borders must fit.
+    let minimum_height = 5 + filter_height + u16::from(federated);
+    let rows = if n.parked && a.height < minimum_height {
+        Vec::new()
+    } else {
+        super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n)
+    };
     let height = if n.parked {
         (rows
             .len()
             .saturating_add(8 + usize::from(filter_height) + usize::from(federated))
             .clamp(12, 32) as u16)
-            .min(a.height.saturating_sub(2))
+            .min(a.height.saturating_sub(2).max(minimum_height).min(a.height))
     } else {
         a.height.saturating_sub(2).min(42)
     };
-    if width < 4 || height < 9 {
+    if width < 4 || height < if n.parked { 3 } else { 9 } {
         return None;
     }
     let q = Rect::new(
@@ -766,6 +772,31 @@ pub(crate) fn render_navigator_overlay(
         if n.parked { " parked " } else { " Go to " },
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
+    if n.parked && height < minimum_height {
+        if i.height > 1 {
+            put_text(
+                b,
+                i.x,
+                i.y,
+                i.width,
+                " Enlarge terminal",
+                Style::default().fg(p.overlay0).bg(p.panel_bg),
+            );
+        }
+        let close = Rect::new(i.x, i.bottom() - 1, i.width, 1);
+        button(
+            b,
+            close,
+            "Close",
+            Style::default().fg(p.accent).bg(p.panel_bg),
+        );
+        return Some(OverlayRender {
+            area: q,
+            navigator_popup: q,
+            navigator_close: close,
+            ..OverlayRender::default()
+        });
+    }
     let search = if n.parked {
         format!(" / {}", n.query)
     } else if n.search_focused {

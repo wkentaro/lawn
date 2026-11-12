@@ -276,7 +276,7 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
 }
 
 #[test]
-fn parked_tree_folds_and_jump_does_not_include_parked_terminal() {
+fn parked_launcher_opens_picker_and_jump_does_not_include_parked_terminal() {
     let mut state = state();
     binding(&mut state, crate::input::KeybindAction::ParkPane);
     let parked = request(&mut state);
@@ -312,43 +312,56 @@ fn parked_tree_folds_and_jump_does_not_include_parked_terminal() {
         "ordinary terminal has no agent status"
     );
     state.overlay = None;
-    state.parked.expanded = true;
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 2);
-    let workspace = state.hits.parked_rows[0].0;
-    click(&mut state, workspace);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 1);
-    let workspace = state.hits.parked_rows[0].0;
-    click(&mut state, workspace);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 2);
+    let frame = state.compose(100, 24).unwrap();
+    let launcher = state.hits.parked_launcher;
+    assert_eq!(launcher.height, 1);
+    let rows = frame_rows(&frame);
+    assert!(rows[usize::from(launcher.y)].contains("parked"));
+    assert!(rows[usize::from(launcher.y)].contains('1'));
+    click(&mut state, launcher);
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref nav)) if nav.parked));
+}
 
-    state.set_endpoint_catalog(&[crate::client::endpoint::SavedSshEndpoint {
+#[test]
+fn parked_launcher_counts_cached_terminals_across_machines() {
+    let mut state = state();
+    let profile = crate::client::endpoint::SavedSshEndpoint {
         id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         label: "Build".into(),
         target: "dev@build.example".into(),
         session: "agents".into(),
         enabled: true,
-    }]);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 3);
-    assert!(matches!(
-        state.hits.parked_rows[0].1,
-        ClientNavigatorTarget::Machine { .. }
+    };
+    state.set_endpoint_catalog(&[profile]);
+    let frame = state.compose(100, 24).unwrap();
+    let row = usize::from(state.hits.parked_launcher.y);
+    let rows = frame_rows(&frame);
+    assert!(rows[row].contains("parked"));
+    assert!(rows[row].contains("0 "));
+
+    let root = std::env::temp_dir().join(format!(
+        "lawn-parked-launcher-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
-    let machine = state.hits.parked_rows[0].0;
-    click(&mut state, machine);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 1);
-    let machine = state.hits.parked_rows[0].0;
-    click(&mut state, machine);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 3);
-    let workspace = state.hits.parked_rows[1].0;
-    click(&mut state, workspace);
-    state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.parked_rows.len(), 2);
+    std::fs::create_dir(&root).unwrap();
+    for (index, endpoint) in state.endpoints.iter_mut().enumerate() {
+        let path = root.join(format!("{index}.json"));
+        std::fs::write(
+            &path,
+            format!(r#"{{"version":1,"terminals":["terminal-{index}"]}}"#),
+        )
+        .unwrap();
+        endpoint.parking.set_path(Some(path));
+        endpoint.parking.set_supported(true);
+        endpoint.parking.poll(Instant::now());
+    }
+    let frame = state.compose(100, 24).unwrap();
+    assert!(frame_rows(&frame)[row].contains("2 "));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -1496,6 +1509,64 @@ fn parked_switcher_keeps_every_filter_mouse_accessible_on_narrow_screens() {
         }
         assert_eq!(seen.len(), state.endpoints.len(), "width {width}");
     }
+}
+
+#[test]
+fn parked_launcher_keeps_picker_usable_in_short_windows() {
+    for width in [100, 24, 40, 120] {
+        for height in [10, 8, 9] {
+            for federated in [false, true] {
+                let mut state = parked_with_active_shell(false, false);
+                if federated {
+                    let mut remote = state.endpoints[0].clone();
+                    remote.endpoint_id = ClientEndpointId::Ssh(
+                        crate::client::endpoint::ProfileId::parse(
+                            "0123456789abcdef0123456789abcdef",
+                        )
+                        .unwrap(),
+                    );
+                    state.endpoints.push(remote);
+                }
+                state.compose(width, height).expect("sidebar frame");
+                let launcher = state.hits.parked_launcher;
+                if launcher.is_empty() {
+                    state.open_parked();
+                } else {
+                    click(&mut state, launcher);
+                }
+                state.compose(width, height).expect("visible parked picker");
+                assert_eq!(state.hits.navigator_filters.len(), 5);
+                assert!(state.hits.navigator_scroll_metrics.unwrap().viewport_rows > 0);
+                assert!(state
+                    .hits
+                    .navigator_rows
+                    .iter()
+                    .any(|(_, target)| { matches!(target, ClientNavigatorTarget::Pane { .. }) }));
+                for (rect, _) in &state.hits.navigator_filters {
+                    assert!(rect.bottom() <= state.hits.navigator_rows.last().unwrap().0.y);
+                }
+                let close = state.hits.navigator_close;
+                assert!(!close.is_empty());
+                click(&mut state, close);
+                assert!(state.overlay.is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn parked_switcher_remains_dismissible_when_resized_too_short() {
+    let mut state = parked_with_active_shell(false, false);
+    state.open_parked();
+    state.compose(100, 24).unwrap();
+    let frame = state.compose(24, 6).expect("visible resize notice");
+    assert!(frame_rows(&frame).join("\n").contains("Enlarge terminal"));
+    assert!(state.hits.navigator_rows.is_empty());
+    assert!(state.hits.navigator_preview.is_empty());
+    let close = state.hits.navigator_close;
+    assert!(!close.is_empty());
+    click(&mut state, close);
+    assert!(state.overlay.is_none());
 }
 
 #[test]

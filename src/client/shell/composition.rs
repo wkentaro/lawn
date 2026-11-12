@@ -55,16 +55,8 @@ impl ClientShellState {
                 && self.endpoint_status(&self.active_endpoint_id)
                     == Some(ClientEndpointStatus::Online)
         });
-        let parked_rows = lawn::parked_rows(
-            &self.endpoints,
-            &self.active_endpoint_id,
-            &self.parked,
-            !sidebar.is_empty(),
-        );
         let mut render_state = render::ShellRenderState {
-            parked_height: lawn::parked_height(sidebar, false, &self.parked, parked_rows.len()),
-            parked_rows: &parked_rows,
-            parked: &mut self.parked,
+            parked_height: lawn::parked_height(sidebar, false),
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -111,8 +103,6 @@ impl ClientShellState {
             sidebar,
             render_state.parked_height,
             &self.endpoints,
-            &parked_rows,
-            &mut self.parked,
             &self.config,
             &mut self.hits,
         );
@@ -245,26 +235,13 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
-        let parked_rows = lawn::parked_rows(
-            &self.endpoints,
-            &self.active_endpoint_id,
-            &self.parked,
-            !self.sidebar_collapsed && !layout.sidebar.is_empty(),
-        );
         self.hits = render::render_shell(
             &mut buffer,
             layout,
             snapshot,
             &self.config,
             render::ShellRenderState {
-                parked_height: lawn::parked_height(
-                    layout.sidebar,
-                    self.sidebar_collapsed,
-                    &self.parked,
-                    parked_rows.len(),
-                ),
-                parked_rows: &parked_rows,
-                parked: &mut self.parked,
+                parked_height: lawn::parked_height(layout.sidebar, self.sidebar_collapsed),
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
