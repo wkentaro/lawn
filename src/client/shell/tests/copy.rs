@@ -1108,7 +1108,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
-    navigator.scroll = 2;
+    navigator.scroll = Some(2);
     navigator.selected = Some(ClientNavigatorTarget::Pane {
         endpoint_id: state.active_endpoint_id.clone(),
         pane_id: "pane_shell".into(),
@@ -1124,7 +1124,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
         panic!("expected navigator");
     };
     navigator.query = "pane_shell".into();
-    navigator.scroll = 0;
+    navigator.scroll = None;
     let visible = visible_rows(&mut state, 30);
     assert_eq!(visible.len(), 2);
     assert!(visible[1].starts_with(" └─ "));
@@ -1206,27 +1206,20 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
-    for (query, filter, expected) in [
-        ("", None, vec!["pane_1", "pane_2"]),
-        ("review", None, vec!["pane_1", "pane_2"]),
-        ("client-shell", None, vec!["pane_1", "pane_2"]),
-        ("main", None, vec!["pane_1", "pane_2"]),
-        ("claude", None, vec!["pane_2"]),
-        ("checking navigation", None, vec!["pane_2"]),
-        ("/repo/subproject", None, vec!["pane_2"]),
-        (
-            "review",
-            Some(ClientNavigatorFilter::Blocked),
-            vec!["pane_2"],
-        ),
-        ("", Some(ClientNavigatorFilter::Working), vec!["pane_1"]),
-        ("no such agent", None, vec![]),
+    for (query, expected) in [
+        ("", vec!["pane_1", "pane_2"]),
+        ("review", vec!["pane_1", "pane_2"]),
+        ("client-shell", vec!["pane_1", "pane_2"]),
+        ("main", vec!["pane_1", "pane_2"]),
+        ("claude", vec!["pane_2"]),
+        ("checking navigation", vec!["pane_2"]),
+        ("/repo/subproject", vec!["pane_2"]),
+        ("no such agent", vec![]),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
             panic!("navigator");
         };
         navigator.query = query.into();
-        navigator.filter = filter;
         navigator.selected = None;
         let rows =
             render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
@@ -1237,7 +1230,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(pane_ids, expected, "query={query:?} filter={filter:?}");
+        assert_eq!(pane_ids, expected, "query={query:?}");
         assert_eq!(
             rows.len(),
             if expected.is_empty() {
@@ -1270,12 +1263,16 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         .collect::<Vec<_>>();
     assert_eq!(pane_rows.len(), 2);
     for ((rect, _), (name, kind, status)) in pane_rows.iter().zip([
-        ("writer", "pi", "working"),
-        ("reviewer", "claude", "blocked"),
+        ("writer", "pi", AgentStatus::Working),
+        ("reviewer", "claude", AgentStatus::Blocked),
     ]) {
         cell_symbol_position(&frame, *rect, name);
         cell_symbol_position(&frame, *rect, kind);
-        cell_symbol_position(&frame, *rect, status);
+        let dot = cell_symbol_position(&frame, *rect, status_dot(status));
+        assert_eq!(
+            frame.to_ratatui_buffer().unwrap()[dot].fg,
+            status_color(status, &state.config.palette)
+        );
     }
     let rect = pane_rows[1].0;
     let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -1285,9 +1282,31 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(
-        matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
+        outcome.actions.is_empty(),
+        "selecting a row does not focus a pane"
+    );
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::Navigator(n))
+        if n.selected == Some(ClientNavigatorTarget::Pane { endpoint_id: ClientEndpointId::Local, pane_id: "pane_2".into() }))
+    );
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+        Some("pane_1")
+    );
+    state.compose(160, 48).expect("selected navigator");
+    let action = state.hits.navigator_preview;
+    assert!(!action.is_empty());
+    let accepted = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: action.x,
+        row: action.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(
+        matches!(accepted.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
         if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"))
     );
+    assert!(state.overlay.is_none());
 }
 
 #[test]
@@ -1324,33 +1343,26 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
 }
 
 #[test]
-fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
+fn navigator_keeps_empty_workspaces_searchable() {
     let mut projected = snapshot();
     projected.tabs.clear();
     projected.panes.clear();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.open_navigator_overlay();
-    for (query, filter, expected) in [
-        ("", None, true),
-        ("client-shell", None, true),
-        ("main", None, true),
-        ("missing", None, false),
-        ("main", Some(ClientNavigatorFilter::Idle), false),
-        ("", Some(ClientNavigatorFilter::Working), false),
+    for (query, expected) in [
+        ("", true),
+        ("client-shell", true),
+        ("main", true),
+        ("missing", false),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
             panic!("navigator");
         };
         navigator.query = query.into();
-        navigator.filter = filter;
         let rows =
             render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-        assert_eq!(
-            rows.len(),
-            usize::from(expected),
-            "query={query:?}, filter={filter:?}"
-        );
+        assert_eq!(rows.len(), usize::from(expected), "query={query:?}");
         let target =
             super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
         assert_eq!(
@@ -1364,98 +1376,66 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
 }
 
 #[test]
-fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
+fn navigator_search_keeps_own_cursor_while_arrows_browse_results() {
     let mut projected = snapshot();
     projected.panes[0].label = Some("needle-first".into());
     let mut sibling = projected.panes[0].clone();
-    sibling.pane_id = "pane_sibling".into();
-    sibling.label = Some("other".into());
+    sibling.pane_id = "pane_2".into();
+    sibling.label = Some("needle-second".into());
     sibling.focused = false;
     projected.panes.push(sibling);
-    let mut empty = projected.workspaces[0].clone();
-    empty.workspace_id = "ws_empty".into();
-    empty.label = "empty".into();
-    empty.focused = false;
-    projected.workspaces.push(empty);
-    let mut last = projected.workspaces[0].clone();
-    last.workspace_id = "ws_last".into();
-    last.label = "last".into();
-    last.active_tab_id = "tab_last".into();
-    last.focused = false;
-    let mut tab = projected.tabs[0].clone();
-    tab.workspace_id = last.workspace_id.clone();
-    tab.tab_id = last.active_tab_id.clone();
-    tab.focused = false;
-    for (id, label) in [
-        ("pane_last", "needle-last"),
-        ("pane_last_sibling", "other-last"),
-    ] {
-        let mut pane = projected.panes[0].clone();
-        pane.pane_id = id.into();
-        pane.label = Some(label.into());
-        pane.workspace_id = last.workspace_id.clone();
-        pane.tab_id = tab.tab_id.clone();
-        pane.focused = false;
-        projected.panes.push(pane);
-    }
-    projected.workspaces.push(last);
-    projected.tabs.push(tab);
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
-    let press = |state: &mut ClientShellState, code| {
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            crate::input::TerminalKey::new(code, KeyModifiers::empty()),
+    assert!(state.handle_input_bytes(b"needle").actions.is_empty());
+    let query = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Navigator(n)) => n.query.as_str().to_owned(),
+        _ => panic!("navigator closed"),
+    };
+    for key in [
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::PageDown,
+        KeyCode::PageUp,
+    ] {
+        let result = state.handle_raw_events(vec![RawInputEvent::Key(
+            crate::input::TerminalKey::new(key, KeyModifiers::empty()),
         )]);
-        assert!(outcome.actions.is_empty());
-    };
-    let selected = |state: &ClientShellState| {
-        let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-            panic!("navigator");
-        };
-        navigator.selected.clone()
-    };
-    let target = |id: &str| {
-        Some(ClientNavigatorTarget::Pane {
-            endpoint_id: ClientEndpointId::Local,
-            pane_id: id.into(),
-        })
-    };
-    press(&mut state, KeyCode::Esc);
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("pane_1"));
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("pane_last"));
-    press(&mut state, KeyCode::Down);
-    assert_eq!(selected(&state), target("pane_last_sibling"));
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("pane_last_sibling"));
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("pane_1"));
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    navigator.query = "needle".into();
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("pane_last"));
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("pane_1"));
-    press(&mut state, KeyCode::Char('/'));
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("pane_1"));
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Char('X'));
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    assert_eq!(navigator.query.as_str(), "needlXe");
-    navigator.search_focused = false;
-    navigator.selected = None;
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), None);
+        assert!(result.actions.is_empty());
+        assert_eq!(query(&state), "needle");
+        assert_eq!(
+            state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+            Some("pane_1")
+        );
+    }
+    let result = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL,
+    ))]);
+    assert!(result.actions.is_empty());
+    assert_eq!(query(&state), "needle");
+    for key in [
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Left,
+    ] {
+        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+            key,
+            KeyModifiers::empty(),
+        ))]);
+    }
+    state.handle_input_bytes(b"X");
+    assert_eq!(query(&state), "needlXe");
+    state.handle_input_bytes(b"/jkb");
+    assert_eq!(query(&state), "needlX/jkbe");
+    state.handle_input_bytes(b"\x1b");
+    assert!(
+        state.overlay.is_none(),
+        "Escape closes the picker on first press"
+    );
 }
 
 #[test]
@@ -1612,7 +1592,6 @@ fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
             panic!("navigator");
         };
-        navigator.search_focused = true;
         navigator.query = "界".repeat(100).as_str().into();
         let frame = state.compose(width, height).expect("navigator frame");
         let popup = state.hits.navigator_popup;
@@ -1793,7 +1772,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     assert!(matches!(
         state.overlay.as_ref(),
         Some(ClientShellOverlay::Navigator(navigator))
-            if navigator.search_focused && navigator.query.as_str() == "cl"
+            if navigator.query.as_str() == "cl"
     ));
 
     let search = state.hits.navigator_search;
@@ -1807,10 +1786,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     assert!(focus_search.repaint);
     assert!(matches!(
         state.overlay,
-        Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
-            search_focused: true,
-            ..
-        }))
+        Some(ClientShellOverlay::Navigator(_))
     ));
     assert!(state.handle_input_bytes(b"ient").actions.is_empty());
     let filtered = state.compose(106, 30).expect("filtered navigator");
@@ -1819,8 +1795,10 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         .as_ref()
         .is_some_and(|cursor| cursor.visible));
 
-    state.handle_input_bytes(b"\x1b");
-    state.handle_input_bytes(b"a");
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    ))]);
     state.compose(106, 30).expect("navigator rows");
     let pane_target = {
         let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")
@@ -1847,7 +1825,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
             row: pane_rect.y,
             modifiers: KeyModifiers::empty(),
         })]);
-    assert!(select.repaint);
+    assert!(!select.repaint, "pointer motion does not select a target");
     let accept =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -1855,13 +1833,23 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
             row: pane_rect.y,
             modifiers: KeyModifiers::empty(),
         })]);
-    let [ClientShellAction::Endpoint { request, .. }] = &accept.actions[..] else {
-        panic!("navigator pane click should use endpoint API");
-    };
-    assert!(matches!(
-        &request.method,
-        crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
-    ));
+    assert!(accept.actions.is_empty(), "click selects without opening");
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::Navigator(n)) if n.selected == Some(pane_target))
+    );
+    state.compose(106, 30).expect("selected navigator");
+    let button = state.hits.navigator_preview;
+    assert!(!button.is_empty());
+    let opened = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: button.x,
+        row: button.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(
+        matches!(&opened.actions[..], [ClientShellAction::Endpoint { request, .. }]
+        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"))
+    );
     assert!(state.overlay.is_none());
 }
 

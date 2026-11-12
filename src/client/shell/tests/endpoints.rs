@@ -175,6 +175,97 @@ fn workspace_navigation_waits_for_the_target_presentation_fence() {
     }
 }
 
+#[test]
+fn navigator_preview_reads_inactive_endpoint_without_draining_queued_mutations() {
+    use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry};
+    use crate::client::endpoint_commands::EndpointCommands;
+
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>);
+    impl crate::client::endpoint::EndpointTransport for Capture {
+        fn send(&mut self, message: &ClientMessage) -> std::io::Result<()> {
+            self.0.lock().unwrap().push(message.clone());
+            Ok(())
+        }
+    }
+
+    for busy in [false, true] {
+        let (mut state, remote) = state_with_remote();
+        state.set_endpoint_methods_for(&remote, Some(vec!["pane.read".into()]));
+        state.open_navigator_overlay();
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+            panic!("navigator");
+        };
+        navigator.selected = Some(ClientNavigatorTarget::Pane {
+            endpoint_id: remote.clone(),
+            pane_id: "pane_1".into(),
+        });
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut endpoints = EndpointRegistry::empty();
+        endpoints.insert(
+            remote.clone(),
+            Capture(sent.clone()),
+            7,
+            EndpointNegotiation::default(),
+            true,
+        );
+        endpoints.set_surface_active(&remote, false);
+        let mut commands = EndpointCommands::default();
+        if busy {
+            commands.enqueue(
+                remote.clone(),
+                7,
+                "remote-boot".into(),
+                Box::new(crate::api::schema::Request {
+                    id: "queued-focus".into(),
+                    method: crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                        pane_id: "pane_1".into(),
+                    }),
+                }),
+            );
+        }
+        let now = std::time::Instant::now();
+        let outcome = state.tick_navigator_preview(now);
+        assert_eq!(outcome.actions.len(), 1);
+        let mut scheduled = None;
+        crate::client::shell_runtime::dispatch_client_shell_actions(
+            outcome.actions,
+            &mut commands,
+            &mut endpoints,
+            Some(&mut state),
+            &mut Vec::new(),
+            &mut scheduled,
+        )
+        .unwrap();
+        assert!(scheduled.is_none());
+        assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+        assert!(state.visible_endpoint_notice.is_none());
+        assert!(!endpoints.connection(&remote).unwrap().surface_active);
+        let messages = sent.lock().unwrap();
+        if busy {
+            assert!(messages.is_empty());
+            assert_eq!(commands.disconnect(&remote), vec!["queued-focus"]);
+            assert_eq!(
+                state
+                    .tick_navigator_preview(now + std::time::Duration::from_secs(1))
+                    .actions
+                    .len(),
+                1,
+                "a busy lane must defer rather than disable the preview"
+            );
+        } else {
+            let [ClientMessage::ClientShellEndpointRequest { request, .. }] = messages.as_slice()
+            else {
+                panic!("expected exactly one pane read");
+            };
+            let request: crate::api::schema::Request = serde_json::from_str(request).unwrap();
+            assert!(matches!(
+                request.method,
+                crate::api::schema::Method::PaneRead(_)
+            ));
+        }
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn system_notification_clicks_keep_endpoint_and_boot_identity() {
@@ -2759,32 +2850,43 @@ fn collapsed_workspace_omits_agent_status() {
 }
 
 #[test]
-fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
+fn navigator_keeps_search_focused_while_browsing_across_machines() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::empty(),
-    ))]);
-    for (key, expected_endpoint) in [
-        (KeyCode::Right, endpoint_id),
-        (KeyCode::Left, ClientEndpointId::Local),
-    ] {
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            crate::input::TerminalKey::new(key, KeyModifiers::empty()),
-        )]);
-        assert!(outcome.actions.is_empty());
-        let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-            panic!("navigator");
-        };
-        assert_eq!(
-            navigator.selected,
-            Some(ClientNavigatorTarget::Pane {
-                endpoint_id: expected_endpoint,
-                pane_id: "pane_1".into(),
-            })
-        );
+    let original_focus = state.snapshot.as_ref().unwrap().focused_pane_id.clone();
+    state.handle_input_bytes(b"main");
+    let selected = match &state.overlay {
+        Some(ClientShellOverlay::Navigator(navigator)) => navigator.selected.clone(),
+        _ => panic!("navigator"),
+    };
+    let outcome = state.handle_input_bytes(b"\x1b[D");
+    assert!(outcome.actions.is_empty());
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::Navigator(navigator))
+        if navigator.query.as_str() == "main" && navigator.selected == selected)
+    );
+    state.handle_input_bytes(b"\x7f");
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::Navigator(navigator))
+        if navigator.query.as_str() == "man")
+    );
+    state.handle_input_bytes(b"i");
+    let mut outcome = ClientShellInput::default();
+    for _ in 0..8 {
+        let next = state.handle_input_bytes(b"\x1b[B");
+        outcome.actions.extend(next.actions);
     }
+    assert!(outcome.actions.is_empty());
+    assert!(
+        matches!(&state.overlay, Some(ClientShellOverlay::Navigator(navigator))
+        if navigator.selected == Some(ClientNavigatorTarget::Pane { endpoint_id, pane_id: "pane_1".into() }))
+    );
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id,
+        original_focus
+    );
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.overlay.is_none());
 }
 
 #[test]

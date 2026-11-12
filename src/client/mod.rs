@@ -1957,14 +1957,30 @@ async fn run_client_loop(
                         let (repaint, actions) = state.shell.as_mut().map_or_else(
                             || (false, Vec::new()),
                             |shell| {
-                                if completed.generation == generation
-                                    && shell.endpoint_is_active(&completed.endpoint_id)
-                                {
-                                    shell.handle_endpoint_result(
-                                        &completed.boot_id,
-                                        &completed.request_id,
-                                        completed.result,
-                                    )
+                                if completed.generation == generation {
+                                    if completed.request_id.starts_with("client-shell-preview:") {
+                                        (
+                                            shell.handle_navigator_preview_result(
+                                                &completed.endpoint_id,
+                                                completed.generation,
+                                                &completed.boot_id,
+                                                &completed.request_id,
+                                                completed.result,
+                                            ),
+                                            Vec::new(),
+                                        )
+                                    } else if shell.endpoint_is_active(&completed.endpoint_id) {
+                                        shell.handle_endpoint_result(
+                                            &completed.boot_id,
+                                            &completed.request_id,
+                                            completed.result,
+                                        )
+                                    } else {
+                                        (
+                                            shell.cancel_endpoint_request(&completed.request_id),
+                                            Vec::new(),
+                                        )
+                                    }
                                 } else {
                                     (
                                         shell.cancel_endpoint_request(&completed.request_id),
@@ -2371,6 +2387,9 @@ async fn run_client_loop(
                     let (effects, outcome, frame) = {
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
+                        let preview = shell.tick_navigator_preview(now);
+                        outcome.repaint |= preview.repaint;
+                        outcome.actions.extend(preview.actions);
                         let parking = shell.tick_parking(now);
                         outcome.repaint |= parking.repaint;
                         outcome.resize |= parking.resize;
@@ -2382,6 +2401,16 @@ async fn run_client_loop(
                             shell.focus_after_parked_close(&mut outcome);
                         }
                         for expired in expired_endpoints {
+                            if expired.request_id.starts_with("client-shell-preview:") {
+                                outcome.repaint |= shell.handle_navigator_preview_result(
+                                    &expired.endpoint_id,
+                                    expired.generation,
+                                    &expired.boot_id,
+                                    &expired.request_id,
+                                    expired.result,
+                                );
+                                continue;
+                            }
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
                             }

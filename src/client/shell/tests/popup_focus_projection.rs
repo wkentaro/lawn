@@ -80,19 +80,10 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
 
     state.overlay = Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
         query: TextEditor::default(),
-        search_focused: false,
         selected: None,
-        scroll: 0,
-        filter: None,
+        scroll: None,
         parked: false,
-        machine: None,
-        machine_scroll: 0,
-        workspace: None,
     }));
-    assert!(!state.modal_paste_target_active());
-    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
-        navigator.search_focused = true;
-    }
     assert!(state.modal_paste_target_active());
 
     state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {

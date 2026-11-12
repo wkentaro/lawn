@@ -538,6 +538,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        if request_id.starts_with("client-shell-preview:") {
+            return self.cancel_navigator_preview(request_id);
+        }
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };

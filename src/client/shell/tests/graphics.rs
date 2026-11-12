@@ -270,14 +270,9 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
         }),
         ClientShellOverlay::Navigator(ClientNavigatorOverlay {
             query: TextEditor::default(),
-            search_focused: false,
             selected: None,
-            scroll: 0,
-            filter: None,
+            scroll: None,
             parked: false,
-            machine: None,
-            machine_scroll: 0,
-            workspace: None,
         }),
         ClientShellOverlay::WorktreeCreate(ClientWorktreeCreateOverlay {
             source_workspace_id: "ws_1".into(),

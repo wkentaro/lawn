@@ -69,6 +69,12 @@ pub(super) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    pub(super) fn is_idle(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.lanes
+            .get(endpoint_id)
+            .is_none_or(|lane| lane.in_flight.is_none() && lane.queued.is_empty())
+    }
+
     pub(super) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -300,6 +306,25 @@ pub(super) fn parse_response(
 mod tests {
     use super::*;
     use crate::api::schema::{ResponseResult, SuccessResponse};
+
+    #[test]
+    fn preview_cannot_drain_a_busy_mutation_lane() {
+        let mut commands = EndpointCommands::default();
+        assert!(commands.is_idle(&endpoint()));
+        commands.enqueue(
+            endpoint(),
+            1,
+            "boot-a".into(),
+            Box::new(Request {
+                id: "focus".into(),
+                method: crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                    pane_id: "pane_1".into(),
+                }),
+            }),
+        );
+        assert!(!commands.is_idle(&endpoint()));
+        assert!(!commands_with_in_flight().is_idle(&endpoint()));
+    }
 
     fn endpoint() -> ClientEndpointId {
         ClientEndpointId::Local

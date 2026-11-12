@@ -1643,28 +1643,14 @@ impl ClientShellState {
             return;
         }
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
-            let row_hit = self
-                .hits
-                .navigator_rows
-                .iter()
-                .find(|(rect, _)| super::contains(*rect, point))
-                .cloned();
             match mouse.kind {
-                MouseEventKind::Moved => {
-                    if let Some((_, target)) = row_hit {
-                        if let Some(ClientShellOverlay::Navigator(navigator)) =
-                            self.overlay.as_mut()
-                        {
-                            if !navigator.parked
-                                || matches!(target, ClientNavigatorTarget::Pane { .. })
-                            {
-                                navigator.selected = Some(target);
-                            }
-                        }
-                        outcome.repaint = true;
-                    }
-                }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    let row_hit = self
+                        .hits
+                        .navigator_rows
+                        .iter()
+                        .find(|(rect, _)| super::contains(*rect, point))
+                        .cloned();
                     if super::contains(self.hits.navigator_scrollbar, point) {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
                             if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
@@ -1687,84 +1673,24 @@ impl ClientShellState {
                                 outcome.repaint = true;
                             }
                         }
-                    } else if let Some((_, page)) = self
-                        .hits
-                        .navigator_machine_pages
-                        .iter()
-                        .find(|(rect, _)| super::contains(*rect, point))
-                        .copied()
-                    {
-                        if let Some(ClientShellOverlay::Navigator(navigator)) =
-                            self.overlay.as_mut()
-                        {
-                            navigator.machine_scroll = page;
-                        }
-                        outcome.repaint = true;
-                    } else if let Some((_, filter)) = self
-                        .hits
-                        .navigator_filters
-                        .iter()
-                        .find(|(rect, _)| super::contains(*rect, point))
-                        .copied()
-                    {
-                        if let Some(ClientShellOverlay::Navigator(navigator)) =
-                            self.overlay.as_mut()
-                        {
-                            navigator.filter = filter;
-                            navigator.selected = None;
-                            navigator.scroll = 0;
-                        }
-                        outcome.repaint = true;
                     } else if super::contains(self.hits.navigator_close, point) {
                         self.overlay = None;
                         outcome.repaint = true;
                     } else if super::contains(self.hits.navigator_preview, point) {
                         self.accept_navigator_selection(outcome);
                     } else if super::contains(self.hits.navigator_search, point) {
-                        if let Some(ClientShellOverlay::Navigator(navigator)) =
-                            self.overlay.as_mut()
-                        {
-                            navigator.search_focused = true;
-                            if !navigator.parked {
-                                navigator.filter = None;
-                            }
-                        }
                         outcome.repaint = true;
                     } else if let Some((_, target)) = row_hit {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
-                            if navigator.parked {
-                                match target {
-                                    ClientNavigatorTarget::Machine { endpoint_id } => {
-                                        navigator.machine = (navigator.machine.as_ref()
-                                            != Some(&endpoint_id))
-                                        .then_some(endpoint_id);
-                                        navigator.workspace = None;
-                                    }
-                                    ClientNavigatorTarget::Workspace {
-                                        endpoint_id,
-                                        workspace_id,
-                                    } => {
-                                        let scope = (endpoint_id, workspace_id);
-                                        navigator.workspace = (navigator.workspace.as_ref()
-                                            != Some(&scope))
-                                        .then_some(scope);
-                                    }
-                                    ClientNavigatorTarget::Pane { .. } => {
-                                        navigator.selected = Some(target);
-                                        self.accept_navigator_selection(outcome);
-                                        return;
-                                    }
-                                }
-                                navigator.selected = None;
-                                navigator.scroll = 0;
+                            if !navigator.parked
+                                || matches!(target, ClientNavigatorTarget::Pane { .. })
+                            {
+                                navigator.selected = Some(target);
                                 outcome.repaint = true;
-                                return;
                             }
-                            navigator.selected = Some(target);
                         }
-                        self.accept_navigator_selection(outcome);
                     } else if !super::contains(self.hits.navigator_popup, point) {
                         self.overlay = None;
                         outcome.repaint = true;

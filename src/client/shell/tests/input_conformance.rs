@@ -1693,58 +1693,47 @@ async fn overlapping_layout_and_us_keys_release_exactly() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn goto_search_opens_on_shifted_slash_from_a_report_all_pane() {
-    // #4963, recorded from Ghostty 1.3.1 with a Portuguese layout, where `/` is
-    // Shift+7. With a plain pane Herdr keeps the host at flags 7 and the press
-    // arrives as text; when the focused pane asks for all keys Herdr pushes 31
-    // and the press arrives as a report carrying the shifted key and its text.
+async fn goto_search_accepts_shifted_slash_from_a_report_all_pane() {
+    // #4963: Portuguese layout types `/` with Shift+7; the host can
+    // report a shifted alternate or committed text instead of plain bytes.
     for (pane_mode, press, release) in [
         (&b""[..], &b"/"[..], &b"\x1b[55:47;2:3u"[..]),
         (b"\x1b[>31u", b"\x1b[55:47;2;47u", b"\x1b[55:47;2:3u"),
     ] {
         let mut herdr = HerdrPath::new(HostProfile::Kitty, pane_mode);
         herdr.state.open_navigator_overlay();
-        herdr.feed(b"\x1b");
         assert_eq!(herdr.feed(press), None, "{}", show(pane_mode));
         assert_eq!(herdr.feed(release), None, "{}", show(pane_mode));
+        assert!(matches!(&herdr.state.overlay,
+            Some(ClientShellOverlay::Navigator(navigator)) if navigator.query.as_str() == "/"));
+        herdr.feed(b"\x1b");
         assert!(
-            matches!(
-                &herdr.state.overlay,
-                Some(ClientShellOverlay::Navigator(navigator)) if navigator.search_focused
-            ),
-            "goto search did not activate for pane {}",
-            show(pane_mode)
+            herdr.state.overlay.is_none(),
+            "Escape closes Go to immediately"
         );
     }
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn goto_search_opens_only_for_a_typed_slash() {
-    // (pane mode, host bytes, whether goto search opens)
-    for (pane_mode, press, opens) in [
-        // Unshifted `/` reported as a kitty key.
-        (&b"\x1b[>31u"[..], &b"\x1b[47u"[..], true),
-        // Shift+/ typing `?` without a shifted alternate is not `/`.
-        (b"\x1b[>31u", b"\x1b[47;2;63u", false),
-        // Shift+/ without text or alternate says nothing about `/`.
-        (b"\x1b[>31u", b"\x1b[47;2u", false),
-        // Shift+7 with a `/` alternate and no text is `/`.
-        (b"\x1b[>31u", b"\x1b[55:47;2u", true),
-        // Ctrl+/ and Alt+/ are not text.
-        (b"\x1b[>31u", b"\x1b[47;5u", false),
-        (b"\x1b[>31u", b"\x1b[47;3u", false),
-        (b"", b"\x1b/", false),
+async fn goto_search_treats_slash_as_text_without_changing_focus() {
+    for (press, expected) in [
+        (&b"\x1b[47u"[..], "/"),
+        (b"\x1b[47;2;63u", "?"),
+        (b"\x1b[47;2u", "/"),
+        (b"\x1b[55:47;2u", "/"),
+        (b"\x1b[47;5u", ""),
+        (b"\x1b[47;3u", ""),
     ] {
-        let mut herdr = HerdrPath::new(HostProfile::Kitty, pane_mode);
+        let mut herdr = HerdrPath::new(HostProfile::Kitty, b"\x1b[>31u");
         herdr.state.open_navigator_overlay();
-        herdr.feed(b"\x1b");
         let _ = herdr.feed(press);
-        let focused = matches!(
-            &herdr.state.overlay,
-            Some(ClientShellOverlay::Navigator(navigator)) if navigator.search_focused
+        assert!(
+            matches!(&herdr.state.overlay,
+            Some(ClientShellOverlay::Navigator(navigator)) if navigator.query.as_str() == expected),
+            "{}",
+            show(press)
         );
-        assert_eq!(focused, opens, "{}", show(press));
     }
 }
 
