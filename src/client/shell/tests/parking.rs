@@ -344,6 +344,69 @@ fn agent(pane: &str, status: AgentStatus) -> ClientShellAgent {
 }
 
 #[test]
+fn focused_tab_keeps_status_colors_on_the_theme_background() {
+    for name in crate::config::THEME_NAMES {
+        for indicator_style in [
+            crate::config::StatusIndicatorStyle::Dots,
+            crate::config::StatusIndicatorStyle::Symbols,
+        ] {
+            for status in [
+                AgentStatus::Idle,
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+            ] {
+                for custom_label in [false, true] {
+                    let mut config = ClientShellConfig::from_config(&Config::default());
+                    config.palette = Palette::from_name(name).expect("built-in theme");
+                    config.status_indicators = indicator_style;
+                    // A custom terminal palette can make the accent equal a status color.
+                    config.palette.accent = status_color(status, &config.palette);
+                    let mut projected = snapshot();
+                    projected.tabs[0].label = "selected".into();
+                    projected.tabs[0].custom_label = custom_label;
+                    projected.tabs.push(ClientShellTab {
+                        tab_id: "tab_2".into(),
+                        label: "other".into(),
+                        focused: false,
+                        ..projected.tabs[0].clone()
+                    });
+                    projected.agents = vec![agent("pane_1", status)];
+                    let mut state = ClientShellState::new(config);
+                    state.set_snapshot(Box::new(projected));
+                    state.set_pane_surface(surface());
+                    let frame = state.compose(100, 24).expect("focused tab");
+                    let rendered = frame.to_ratatui_buffer().expect("rendered buffer");
+                    let tab = state.hits.tabs[0].0;
+                    let cells = (tab.x..tab.right())
+                        .map(|x| &rendered[(x, tab.y)])
+                        .collect::<Vec<_>>();
+                    assert!(cells
+                        .iter()
+                        .all(|cell| cell.bg == state.config.palette.panel_bg));
+                    let label = cells.iter().find(|cell| cell.symbol() == "s").unwrap();
+                    assert_eq!(label.fg, state.config.palette.text, "{name}");
+                    assert!(label
+                        .modifier
+                        .contains(Modifier::BOLD | Modifier::UNDERLINED));
+                    let icon = cells
+                        .iter()
+                        .find(|cell| cell.symbol() == status_icon(status, indicator_style))
+                        .expect("status glyph is preserved");
+                    assert_eq!(icon.fg, status_color(status, &state.config.palette));
+                    assert!(!icon.modifier.contains(Modifier::UNDERLINED));
+                    let other = state.hits.tabs[1].0;
+                    assert!((other.x..other.right()).all(|x| {
+                        let cell = &rendered[(x, other.y)];
+                        cell.bg == state.config.palette.surface0
+                            && !cell.modifier.contains(Modifier::UNDERLINED)
+                    }));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn tab_status_prefers_blocked_then_working_then_idle_and_excludes_parked_agents() {
     for (first, second, icon, color, count) in [
         (AgentStatus::Blocked, AgentStatus::Blocked, "●", "red", true),
