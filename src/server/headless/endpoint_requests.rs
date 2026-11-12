@@ -65,7 +65,8 @@ impl HeadlessServer {
             self.send_to_client(client_id, message);
             return false;
         }
-        if !surface_active {
+        let read_only = matches!(&request.method, api::schema::Method::PaneRead(_));
+        if !surface_active && !read_only {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
@@ -118,6 +119,44 @@ impl HeadlessServer {
             client.shell_deferred_navigation_request_id =
                 deferred_worktree.then(|| api_request_id.clone());
             client.shell_deferred_navigation_response = deferred_navigation.then(Vec::new);
+        }
+        let read_conflict = self.alt_screen_read_conflict(&request);
+        if let api::schema::Method::PaneRead(mut params) = request.method {
+            // Endpoint reads must not enter the client-local presentation lane or
+            // trigger interactive alternate-screen scrolling.
+            params.intent = api::schema::ReadIntent::Passive;
+            let response = if self.shutting_down || self.host_shutdown_requested() {
+                crate::server::client_commands::error_response(
+                    api_request_id,
+                    "server_unavailable",
+                    "server is shutting down",
+                )
+            } else if matches!(read_conflict, AltScreenReadConflict::Defer) {
+                crate::server::client_commands::error_response(
+                    api_request_id,
+                    "endpoint_busy",
+                    "a terminal read is already in progress; retry when it completes",
+                )
+            } else {
+                let mut response = self.app.handle_pane_read(api_request_id, params);
+                if let AltScreenReadConflict::Frozen(snapshot) = read_conflict {
+                    if let Ok(mut success) =
+                        serde_json::from_str::<api::schema::SuccessResponse>(&response)
+                    {
+                        if let api::schema::ResponseResult::PaneRead { read } = &mut success.result
+                        {
+                            read.text = snapshot.text;
+                            read.truncated = snapshot.truncated;
+                            if let Ok(serialized) = serde_json::to_string(&success) {
+                                response = serialized;
+                            }
+                        }
+                    }
+                }
+                response
+            };
+            let _ = respond_to.send(response);
+            return false;
         }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         foreground_changed

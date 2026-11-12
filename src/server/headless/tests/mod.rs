@@ -902,6 +902,135 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[tokio::test]
+async fn endpoint_pane_read_keeps_active_and_inactive_surfaces_unchanged() {
+    for surface_active in [true, false] {
+        let mut server = test_headless_server();
+        let mut workspace = crate::workspace::Workspace::test_new("endpoint");
+        let pane = workspace.tabs[0].root_pane;
+        workspace.insert_test_runtime(
+            pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"endpoint-read"),
+        );
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.ensure_test_terminals();
+        server.app.state.active = Some(0);
+        let pane_id = server.app.public_pane_id(0, pane).expect("pane id");
+        let (other_writer, _other_control, _other_render) = test_client_writer();
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            client_id: 42,
+            surface_cols: 100,
+            surface_rows: 30,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            direct_graphics: false,
+            endpoint_keybindings: false,
+            mouse_capture: false,
+            surface_active: true,
+            surface_reuse: false,
+            surface_delta: false,
+            surface_scroll: false,
+            writer: other_writer,
+        });
+        let (writer, control_rx, _render_rx) = test_client_writer();
+        let client_id = 41;
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            client_id,
+            surface_cols: 80,
+            surface_rows: 23,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            direct_graphics: false,
+            endpoint_keybindings: false,
+            mouse_capture: false,
+            surface_active,
+            surface_reuse: false,
+            surface_delta: false,
+            surface_scroll: false,
+            writer,
+        });
+        let _initial = client_shell_snapshot(&control_rx);
+        server.promote_client_to_foreground(42);
+        let boot_id = server.client_shell_boot_id.clone();
+        let foreground = server.foreground_client_id;
+        let size = server.effective_size;
+        let terminal_area = server.app.state.view.terminal_area;
+        let controllers = server.tab_geometry_controllers.clone();
+        let location = server.clients[&client_id].shell_location.clone();
+        let focus = server.shell_focus_targets();
+        let focused_panes = server.focused_shell_panes();
+
+        let request = || {
+            Box::new(
+                serde_json::from_value(serde_json::json!({
+                    "id": "read-1", "method": "pane.read",
+                    "params": {"pane_id": pane_id, "source": "recent", "format": "text"}
+                }))
+                .expect("pane read request"),
+            )
+        };
+        assert!(
+            !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id: "old-boot".into(),
+                request: request(),
+            })
+        );
+        let ServerMessage::ClientShellEndpointResponseChunk { data, .. } =
+            read_server_message(control_rx.recv().expect("stale boot response"))
+        else {
+            panic!("expected stale boot response");
+        };
+        let error: api::schema::ErrorResponse = serde_json::from_slice(&data).expect("error");
+        assert_eq!(error.error.code, "stale_boot");
+        assert!(!server.clients[&client_id].shell_endpoint_command_in_flight);
+
+        assert!(
+            !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+                client_id,
+                boot_id: boot_id.clone(),
+                request: request(),
+            })
+        );
+        let event = server
+            .server_event_rx
+            .recv()
+            .await
+            .expect("read response ready");
+        assert!(!server.handle_server_event(event));
+        let ServerMessage::ClientShellEndpointResponseChunk {
+            boot_id: response_boot,
+            request_id,
+            final_chunk,
+            data,
+        } = read_server_message(control_rx.recv().expect("pane read response"))
+        else {
+            panic!("expected pane read response");
+        };
+        assert_eq!(response_boot, boot_id);
+        assert_eq!(request_id, "read-1");
+        assert!(final_chunk);
+        let response: api::schema::SuccessResponse =
+            serde_json::from_slice(&data).expect("read result");
+        assert_eq!(response.id, "read-1");
+        let api::schema::ResponseResult::PaneRead { read } = response.result else {
+            panic!("expected pane read response");
+        };
+        assert!(read.text.contains("endpoint-read"));
+        assert_eq!(server.foreground_client_id, foreground);
+        assert_eq!(server.effective_size, size);
+        assert_eq!(server.app.state.view.terminal_area, terminal_area);
+        assert_eq!(server.tab_geometry_controllers, controllers);
+        assert_eq!(server.clients[&client_id].shell_location, location);
+        assert_eq!(server.shell_focus_targets(), focus);
+        assert_eq!(server.focused_shell_panes(), focused_panes);
+        assert!(!server.clients[&client_id].shell_endpoint_command_in_flight);
+        shutdown_test_runtimes(&mut server);
+    }
+}
+
 #[test]
 fn terminal_client_endpoint_request_error_removes_client() {
     let mut server = test_headless_server();
