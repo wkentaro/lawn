@@ -2513,6 +2513,42 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
 }
 
 #[test]
+fn navigator_machine_headings_only_show_unavailable_statuses() {
+    for width in [40, 106] {
+        for (status, signal) in [
+            (ClientEndpointStatus::Online, ""),
+            (ClientEndpointStatus::Connecting, "◐ connecting"),
+            (ClientEndpointStatus::Reconnecting, "◐ reconnecting"),
+            (ClientEndpointStatus::Attention, "! attention"),
+            (ClientEndpointStatus::Disabled, "· disabled"),
+        ] {
+            let (mut state, remote) = state_with_remote();
+            state.set_endpoint_status(&remote, status);
+            state.open_navigator_overlay();
+            let frame = state.compose(width, 30).expect("federated navigator");
+            let (rect, _) = state
+                .hits
+                .navigator_rows
+                .iter()
+                .find(|(_, target)| {
+                    matches!(target, ClientNavigatorTarget::Machine { endpoint_id } if endpoint_id == &remote)
+                })
+                .expect("remote machine heading");
+            let start = usize::from(rect.y) * usize::from(frame.width) + usize::from(rect.x);
+            let text = frame.cells[start..start + usize::from(rect.width)]
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>();
+            assert_eq!(
+                text.split_whitespace().collect::<Vec<_>>().join(" "),
+                format!("Build {signal}").trim(),
+                "{status:?}, width={width}"
+            );
+        }
+    }
+}
+
+#[test]
 fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
     let (mut state, endpoint_id) = state_with_remote();
     let endpoint = state

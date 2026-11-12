@@ -1077,16 +1077,13 @@ pub(crate) fn render_navigator_overlay(
             ClientNavigatorTarget::Machine { endpoint_id } if !endpoint_id.is_local() => endpoints
                 .iter()
                 .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+                .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
                 .map(|endpoint| endpoint.status),
             _ => None,
         };
         if let Some(status) = machine_status {
             let (glyph, state, color) = endpoint_status_presentation(status, p);
-            let signal = if status == ClientEndpointStatus::Online {
-                glyph.to_owned()
-            } else {
-                format!("{glyph} {state}")
-            };
+            let signal = format!("{glyph} {state}");
             let signal_style = if selected_index == Some(ix) {
                 st
             } else {
