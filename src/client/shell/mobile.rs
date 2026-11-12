@@ -769,7 +769,11 @@ fn mobile_items(
         palette,
     ));
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
-        for entry in super::render::workspace_entries(endpoint.snapshot, &HashSet::new()) {
+        for entry in super::render::workspace_entries(
+            endpoint.snapshot,
+            &HashSet::new(),
+            Some(endpoint.parking),
+        ) {
             let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
                 continue;
             };

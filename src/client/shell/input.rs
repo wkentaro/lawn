@@ -690,6 +690,14 @@ impl ClientShellState {
             self.route_overlay_key(key, outcome);
             return None;
         }
+        if self.mode == ClientShellMode::Terminal
+            && self.has_parking_preview()
+            && key.code == KeyCode::Esc
+            && key.modifiers.is_empty()
+        {
+            self.dismiss_parking_preview(outcome);
+            return None;
+        }
         if matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }

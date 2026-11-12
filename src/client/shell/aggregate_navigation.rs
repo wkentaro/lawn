@@ -340,6 +340,9 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
+                if !parked && !endpoint.parking.shows_workspace(&workspace.workspace_id) {
+                    continue;
+                }
                 let workspace_matches = endpoint_query_matches
                     || text(&workspace.label)
                     || workspace.branch.as_deref().is_some_and(text);

@@ -1224,7 +1224,23 @@ impl ClientShellState {
                     .count()
             })
             .sum::<usize>();
-        let panes = if pane_count == 1 {
+        let parked_count = group
+            .iter()
+            .flat_map(|member| {
+                snapshot
+                    .panes
+                    .iter()
+                    .filter(move |pane| pane.workspace_id == member.workspace_id)
+            })
+            .filter(|pane| {
+                self.active_parking()
+                    .is_some_and(|parking| parking.hides_pane(&pane.pane_id))
+            })
+            .count();
+        let active_count = pane_count.saturating_sub(parked_count);
+        let panes = if parked_count > 0 {
+            format!("{active_count} active; {parked_count} parked kept")
+        } else if pane_count == 1 {
             "1 pane".to_owned()
         } else {
             format!("{pane_count} panes")
