@@ -65,7 +65,7 @@ case "$last" in
         script=$(cat)
         printf 'login banner\n'
         case "$script" in
-            *'uname -s'*) printf 'herdr-remote-output-ready:1\n'; uname -s; uname -m ;;
+            *'uname -s'*) printf 'lawn-remote-output-ready:1\n'; uname -s; uname -m ;;
             *) PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" exec /bin/sh -c "$script" ;;
         esac ;;
     *) echo "unexpected command: $last" >&2; exit 2 ;;
@@ -100,9 +100,9 @@ impl Harness {
         fs::create_dir_all(root.join("bin")).unwrap();
         fs::write(root.join("bin/ssh"), SSH).unwrap();
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
-        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lawn"), root.join("remote herdr")).unwrap();
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lawn"), root.join("remote lawn")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
-        let remote_wrapper = root.join("remote bin/herdr");
+        let remote_wrapper = root.join("remote bin/lawn");
         fs::write(
             &remote_wrapper,
             r#"#!/bin/sh
@@ -114,7 +114,7 @@ case "$*" in
             exit 2
         fi ;;
 esac
-exec "$TEST_REMOTE_HERDR" "$@"
+exec "$TEST_REMOTE_LAWN" "$@"
 "#,
         )
         .unwrap();
@@ -154,7 +154,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
             .env("XDG_STATE_HOME", self.root.join("state"))
             .env("XDG_RUNTIME_DIR", &self.root)
             .env("TEST_ROOT", &self.root)
-            .env("TEST_REMOTE_HERDR", self.root.join("remote herdr"))
+            .env("TEST_REMOTE_LAWN", self.root.join("remote lawn"))
             .env("HERDR_SOCKET_PATH", self.root.join("local.sock"))
             .env(
                 "HERDR_CLIENT_SOCKET_PATH",
@@ -163,7 +163,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
             .env("HERDR_SESSION", "wrong-inherited-session")
             .env("HERDR_PANE_ID", "wrong-local-pane")
             .env_remove("LAWN_CONFIG_PATH")
-            .env_remove("HERDR_REMOTE_BINARY");
+            .env_remove("LAWN_REMOTE_BINARY");
         command
     }
 
@@ -245,7 +245,7 @@ exec "$TEST_REMOTE_HERDR" "$@"
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with("herdr-api-")));
+            .starts_with("lawn-api-")));
     }
 }
 
@@ -341,7 +341,7 @@ fn machine_api_bootstrap_falls_back_from_an_old_path_binary() {
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
         env!("CARGO_BIN_EXE_lawn"),
-        harness.root.join(".local/bin/herdr"),
+        harness.root.join(".local/bin/lawn"),
     )
     .unwrap();
     let server = harness.serve(
@@ -409,11 +409,11 @@ fn machine_api_reuses_discovery_across_commands_without_rewriting_profiles() {
 fn machine_api_recovers_a_stale_path_before_sending_a_mutation() {
     let harness = Harness::new();
     harness.warm_metadata();
-    fs::remove_file(harness.root.join("remote bin/herdr")).unwrap();
+    fs::remove_file(harness.root.join("remote bin/lawn")).unwrap();
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
         env!("CARGO_BIN_EXE_lawn"),
-        harness.root.join(".local/bin/herdr"),
+        harness.root.join(".local/bin/lawn"),
     )
     .unwrap();
     let before = harness.ssh_calls();
@@ -724,7 +724,7 @@ fn machine_api_usage_errors_do_not_connect() {
 #[test]
 fn machine_api_rejects_old_bridges_and_disconnected_machines() {
     for (mode, message) in [
-        ("old", "update Herdr"),
+        ("old", "update Lawn"),
         ("offline", "test remote connection failed"),
     ] {
         let harness = Harness::new();

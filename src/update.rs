@@ -770,7 +770,7 @@ fn download_windows_update(release: &ReleaseInfo) -> Result<DownloadedWindowsUpd
         .sha256
         .as_deref()
         .ok_or("Windows update asset is missing a SHA-256 checksum")?;
-    let stem = format!("herdr-update-{}", std::process::id());
+    let stem = format!("lawn-update-{}", std::process::id());
     let update = DownloadedWindowsUpdate {
         package_path: env::temp_dir().join(format!("{stem}.{}", release.package_format)),
         installer_path: env::temp_dir().join(format!("{stem}.ps1")),
@@ -817,7 +817,7 @@ fn install_windows_update_with_installer(
             "-LocalPackageSha256",
             expected_sha256,
         ])
-        // Drop any inherited PSModulePath. When herdr is launched from
+        // Drop any inherited PSModulePath. When Lawn is launched from
         // PowerShell 7, its Core module paths come first and Windows
         // PowerShell 5.1 (this `powershell`) fails to autoload cmdlets like
         // Get-FileHash. Removing it lets 5.1 compute its own default path.
@@ -835,18 +835,18 @@ fn install_windows_update_with_installer(
 }
 
 #[cfg(windows)]
-fn windows_installed_herdr_exe_path() -> Result<PathBuf, String> {
-    if let Some(install_dir) = env::var_os("HERDR_INSTALL_DIR").filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(install_dir).join("herdr.exe"));
+fn windows_installed_lawn_exe_path() -> Result<PathBuf, String> {
+    if let Some(install_dir) = env::var_os("LAWN_INSTALL_DIR").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(install_dir).join("lawn.exe"));
     }
 
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .ok_or("LOCALAPPDATA is not set; cannot locate Herdr install")?;
+    let local_app_data =
+        env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set; cannot locate Lawn install")?;
     Ok(PathBuf::from(local_app_data)
         .join("Programs")
-        .join("Herdr")
+        .join("Lawn")
         .join("bin")
-        .join("herdr.exe"))
+        .join("lawn.exe"))
 }
 
 // ---------------------------------------------------------------------------
@@ -2250,11 +2250,11 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
             release.channel,
         )?;
         install_windows_update_with_installer(&release, &downloaded_update)?;
-        let updated_exe = windows_installed_herdr_exe_path()?;
+        let updated_exe = windows_installed_lawn_exe_path()?;
         eprintln!("installed {}", release.label());
         print_outdated_integration_notice_with_updated_binary(&updated_exe);
         eprintln!(
-            "Open a new terminal, or reconnect SSH, then start Herdr again to use the updated client. Running servers remain active; restart them later only if you need server-side changes from {}.",
+            "Open a new terminal, or reconnect SSH, then start Lawn again to use the updated client. Running servers remain active; restart them later only if you need server-side changes from {}.",
             release.label()
         );
         print_saved_machine_update_notice();
@@ -2327,11 +2327,11 @@ fn saved_machine_update_notice_lines(
     }
     let mut lines = vec![
         String::new(),
-        "your SSH machines run their own herdr and may be older:".to_string(),
+        "your SSH machines run their own Lawn and may be older:".to_string(),
     ];
     lines.extend(labels.into_iter().map(|label| format!("  {label}")));
     lines.push(
-        "run `herdr update` on each one. it will tell you what to restart there.".to_string(),
+        "run `lawn update` on each machine. it will tell you what to restart there.".to_string(),
     );
     lines
 }
@@ -2817,10 +2817,10 @@ mod tests {
             saved_machine_update_notice_lines(&profiles),
             [
                 "",
-                "your SSH machines run their own herdr and may be older:",
+                "your SSH machines run their own Lawn and may be older:",
                 "  rohan",
                 "  workbox",
-                "run `herdr update` on each one. it will tell you what to restart there.",
+                "run `lawn update` on each machine. it will tell you what to restart there.",
             ]
         );
     }

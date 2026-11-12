@@ -28,26 +28,29 @@ fi
 case "$*" in
     *powershell.exe*)
         if [ "$FAKE_WINDOWS_TRANSPORT_FAILURE" = yes ]; then echo 'ssh: connect to host fake-host port 22: Connection refused' >&2; exit 255; fi
-        if [ "$FAKE_WINDOWS" = yes ]; then printf '\n%s\n%s\n' 'herdr-remote-output-ready:1' 'herdr-windows:AMD64'; exit 0; fi
+        if [ "$FAKE_WINDOWS" = yes ]; then printf '\n%s\n%s\n' 'lawn-remote-output-ready:1' 'lawn-windows:AMD64'; exit 0; fi
         exit 1 ;;
 esac
-if [ "$last" = 'command -v herdr' ]; then
-    if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi
+if [ "$last" = 'command -v lawn' ]; then
+    if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/lawn; fi
     exit 0
 fi
 case "$last" in
     'tee '*) cat >/dev/null; exit 0 ;;
 esac
 case "$last" in
-    *'herdr-remote-output-ready:1'*) script=$last ;;
+    *'lawn-remote-output-ready:1'*) script=$last ;;
     *) script=$(cat) ;;
 esac
-printf '\n%s\n' 'herdr-remote-output-ready:1'
+printf '\n%s\n' 'lawn-remote-output-ready:1'
 case "$script" in
     *'uname -s'*) echo platform >>"$FAKE_ROOT/probes"; uname -s; uname -m ;;
+    *'chmod 755'*) echo install >>"$FAKE_ROOT/actions"; touch "$FAKE_ROOT/installed" ;;
     *'version='*)
         echo candidates >>"$FAKE_ROOT/probes"
-        if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi ;;
+        if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/lawn; fi ;;
+    *'--version'*)
+        if [ "$FAKE_INSTALLED" = upstream ]; then printf 'herdr 0.9.5\n'; else printf 'lawn 0.1.0\n'; fi ;;
     *'status client --json'*)
         if [ "$FAKE_INSTALLED" = new ] || [ -f "$FAKE_ROOT/installed" ]; then
             printf '%s\n' "$FAKE_CLIENT_STATUS"
@@ -71,9 +74,8 @@ case "$script" in
     *'remote-client-bridge'*)
         printf '%s\n' "$script" >"$FAKE_ROOT/start-command"
         echo start >>"$FAKE_ROOT/actions"; echo 'test startup failure' >&2; exit 1 ;;
-    *'mkdir -p'*) printf '/fake/tmp\000/fake/herdr\000' ;;
-    *'chmod 755'*) echo install >>"$FAKE_ROOT/actions"; touch "$FAKE_ROOT/installed" ;;
-    *'command -v herdr'*) if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi ;;
+    *'mkdir -p'*) printf '/fake/tmp\000/fake/lawn\000' ;;
+    *'command -v lawn'*) if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/lawn; fi ;;
     *'test -x '*) exit 1 ;;
     *) echo "unexpected fake SSH script: $script" >&2; exit 1 ;;
 esac
@@ -205,10 +207,13 @@ fn setup_options(
         "HERDR_SESSION",
         "HERDR_SOCKET_PATH",
         "HERDR_CLIENT_SOCKET_PATH",
-        "HERDR_REMOTE_BINARY",
+        "LAWN_REMOTE_BINARY",
         "LAWN_CONFIG_PATH",
     ] {
         command.env_remove(name);
+    }
+    if installed == "old" {
+        command.env("LAWN_REMOTE_BINARY", env!("CARGO_BIN_EXE_lawn"));
     }
     if options.noninteractive {
         // A redirected stdin makes machine add non-interactive while retaining
@@ -335,7 +340,7 @@ fn machine_add_accepts_help_argument_order() {
         "HERDR_SESSION",
         "HERDR_SOCKET_PATH",
         "HERDR_CLIENT_SOCKET_PATH",
-        "HERDR_REMOTE_BINARY",
+        "LAWN_REMOTE_BINARY",
         "LAWN_CONFIG_PATH",
     ] {
         command.env_remove(name);
@@ -351,6 +356,14 @@ fn machine_add_accepts_help_argument_order() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("machine was not saved"), "{stderr}");
     assert!(!saved, "failed preparation must not save a machine");
+}
+
+#[test]
+fn machine_add_never_discovers_upstream_sessions() {
+    let result = setup("upstream", "n\n", false);
+    assert_eq!(result.probes, "platform\ncandidates\n", "{}", result.output);
+    assert_eq!(result.prompts, 1, "{}", result.output);
+    assert!(result.actions.is_empty(), "{}", result.output);
 }
 
 #[test]

@@ -36,7 +36,8 @@ describe("official publishing workflow boundaries", () => {
     expect(lawn.jobs.publish.if).toContain("github.repository == 'wkentaro/lawn'");
     expect(lawn.jobs.publish.if).toContain("github.event_name == 'push'");
     expect(lawn.jobs.publish.if).toContain("startsWith(github.ref, 'refs/tags/lawn-v')");
-    expect(lawn.jobs.publish.needs).toBe("build");
+    expect(lawn.jobs.publish.needs).toBe("assemble");
+    expect(lawn.jobs.assemble.needs).toEqual(["build", "windows-arm64"]);
     expect(lawn.jobs.publish.permissions.contents).toBe("write");
     const verify = lawn.jobs.publish.steps.find((step: any) => step.name?.startsWith("Verify tag"));
     expect(verify.run).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
@@ -44,6 +45,35 @@ describe("official publishing workflow boundaries", () => {
     const checkout = lawn.jobs.publish.steps.find((step: any) => step.uses?.startsWith("actions/checkout@"));
     expect(checkout.with.ref).toBe("${{ github.sha }}");
     expect(checkout.with["persist-credentials"]).toBe(false);
+  });
+
+  test("Lawn builds all remote assets on native runners and assembles before publishing", () => {
+    expect(lawn.jobs.build.strategy.matrix.include).toEqual([
+      { platform: "macos-aarch64", target: "aarch64-apple-darwin", os: "macos-15" },
+      { platform: "macos-x86_64", target: "x86_64-apple-darwin", os: "macos-15-intel" },
+      { platform: "linux-aarch64", target: "aarch64-unknown-linux-musl", os: "ubuntu-24.04-arm" },
+      { platform: "linux-x86_64", target: "x86_64-unknown-linux-musl", os: "ubuntu-24.04" },
+      { platform: "windows-x86_64", target: "x86_64-pc-windows-msvc", os: "windows-2022" },
+    ]);
+    const packageStep = lawn.jobs.build.steps.find((step: any) => step.name === "Package and smoke");
+    expect(packageStep.run).toContain('scripts/lawn_release.py --binary "$binary"');
+    expect(packageStep.run).toContain('"$binary" --help');
+    const installSmoke = lawn.jobs.build.steps.find((step: any) => step.name === "Test Windows installation and update");
+    expect(installSmoke.if).toBe("runner.os == 'Windows'");
+    expect(installSmoke.shell).toBe("powershell");
+    expect(installSmoke.run).toContain("powershell.exe -NoProfile -ExecutionPolicy Bypass -File");
+    expect(installSmoke.run).toContain("windows_install_conpty_package_test.ps1 -ArchivePath");
+    expect(lawn.jobs["windows-arm64"].needs).toBe("build");
+    expect(lawn.jobs["windows-arm64"]["runs-on"]).toBe("windows-11-arm");
+    const armDownload = lawn.jobs["windows-arm64"].steps.find((step: any) => step.uses?.startsWith("actions/download-artifact@"));
+    expect(armDownload.with.name).toBe("lawn-windows-x86_64");
+    expect(lawn.jobs["windows-arm64"].steps.find((step: any) => step.name === "Test x86_64 fallback installation")?.run)
+      .toContain("windows_arm64_installer_test.ps1 -ArchivePath");
+    expect(lawn.jobs.assemble.steps.find((step: any) => step.name === "Assemble complete release")?.run)
+      .toContain("scripts/lawn_release.py --inputs inputs");
+    expect(lawn.jobs.assemble.if).toContain("github.repository == 'wkentaro/lawn'");
+    expect(lawn.jobs.assemble.steps.find((step: any) => step.name === "Assemble complete release")?.run)
+      .toContain('if [ "$IS_RELEASE" != true ]');
   });
 
   test("each publishing job rechecks both actors before using credentials", () => {

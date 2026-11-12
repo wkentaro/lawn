@@ -338,7 +338,7 @@ pub(in crate::remote) mod tests {
                 thread::sleep(POLL_INTERVAL);
             }
             if mode.starts_with("bridge-") && mode != "bridge-preamble" {
-                println!("herdr-remote-output-ready:1");
+                println!("lawn-remote-output-ready:1");
             }
             if mode == "bridge-output" {
                 io::stdout()

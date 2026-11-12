@@ -104,17 +104,30 @@ when updating the upstream version, and keep Lawn release tags under `lawn-v*`.
 
 ## Release preparation
 
-Build a local candidate and package it into a new directory:
+Build a local candidate and package its platform asset into a new directory:
 
 ```sh
 just lawn-check
 just build
 python3 scripts/lawn_release.py --binary target/release/lawn \
-  --output artifacts --tag lawn-v0.1.0
+  --platform macos-aarch64 --output artifacts/macos-aarch64 --tag lawn-v0.1.0
 ```
 
-The packager checks the binary's version and Apple Silicon architecture and
-includes checksums, an archive, and the updater manifest. Keep release notes in
+The packager verifies Lawn's version and the selected executable architecture.
+This command produces the Apple Silicon binary and archive, not a release
+manifest. Package each other native binary with its matching `--platform`.
+Windows also requires `--windows-bundle <zip>` with the app-local ConPTY runtime.
+
+Collect all platform outputs in one `inputs` directory, then assemble the release:
+
+```sh
+python3 scripts/lawn_release.py --inputs inputs \
+  --output artifacts/release --tag lawn-v0.1.0
+```
+
+Assembly requires macOS and Linux binaries for aarch64 and x86_64, the Windows
+x86_64 ZIP, and the Apple Silicon archive. Missing assets fail assembly. The
+output includes `latest.json`, `SHA256SUMS`, and release notes. Keep the notes in
 `docs/lawn/releases/<version>.md` aligned with the candidate.
 
 The Lawn release workflow builds artifacts on manual dispatch and packaging PRs.

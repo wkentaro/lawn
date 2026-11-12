@@ -8,6 +8,14 @@ on:
       - '.github/workflows/lawn-release.yml'
       - 'scripts/lawn_release.py'
       - 'scripts/test_lawn_release.py'
+      - 'scripts/package_windows_conpty.py'
+      - 'scripts/package_windows_conpty.ps1'
+      - 'scripts/test_package_windows_conpty.py'
+      - 'scripts/windows_install_conpty_package_test.ps1'
+      - 'scripts/windows_arm64_installer_test.ps1'
+      - 'distribution/install.ps1'
+      - 'distribution/install.cmd'
+      - 'src/update.rs'
       - 'docs/lawn/releases/**'
   workflow_dispatch:
 
@@ -21,8 +29,17 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'wkentaro/lawn'
-    runs-on: macos-15
-    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-aarch64, target: aarch64-apple-darwin, os: macos-15 }
+          - { platform: macos-x86_64, target: x86_64-apple-darwin, os: macos-15-intel }
+          - { platform: linux-aarch64, target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { platform: linux-x86_64, target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { platform: windows-x86_64, target: x86_64-pc-windows-msvc, os: windows-2022 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -30,6 +47,7 @@ jobs:
           persist-credentials: false
       - name: Verify release source
         if: github.event_name == 'push'
+        shell: bash
         run: |
           set -euo pipefail
           git fetch origin main
@@ -39,28 +57,122 @@ jobs:
         with:
           toolchain: 1.96.1
           components: rustfmt,clippy
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        if: runner.os == 'macOS'
         with:
           tool: just,cargo-nextest
       - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
         with:
           version: 0.16.0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: runner.os == 'macOS'
         with:
           bun-version: 1.3.14
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools
+      - name: Use native musl linker
+        if: runner.os == 'Linux'
+        run: echo "CARGO_TARGET_${{ matrix.platform == 'linux-aarch64' && 'AARCH64' || 'X86_64' }}_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          key: lawn-release-macos-aarch64
+          key: lawn-release-${{ matrix.target }}
           save-if: ${{ github.event_name != 'pull_request' }}
       - name: Check and build
+        if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          test "$(uname -m)" = arm64
           just ci 'not binary(live_handoff)'
           just docs-contract-test
-          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build
+        if: runner.os != 'macOS'
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package Windows ConPTY
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\lawn.exe `
+            -PackagePath (Join-Path $env:RUNNER_TEMP 'Microsoft.Windows.Console.ConPTY.nupkg') `
+            -StageDir (Join-Path $env:RUNNER_TEMP 'lawn-windows-stage') `
+            -OutputPath (Join-Path $env:RUNNER_TEMP 'lawn-windows-x86_64.zip')
       - name: Package and smoke
+        shell: bash
+        env:
+          IS_RELEASE: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          python=python3
+          if [ '${{ runner.os }}' = Windows ]; then python=python; fi
+          release_tag="$GITHUB_REF_NAME"
+          if [ "$IS_RELEASE" != true ]; then
+            release_tag="lawn-v$($python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
+          fi
+          binary="target/${{ matrix.target }}/release/lawn"
+          extras=()
+          if [ '${{ runner.os }}' = Windows ]; then
+            binary="$binary.exe"
+            extras=(--windows-bundle "$RUNNER_TEMP/lawn-windows-x86_64.zip")
+          fi
+          "$python" scripts/lawn_release.py --binary "$binary" --platform '${{ matrix.platform }}' --output artifacts --tag "$release_tag" "${extras[@]}"
+          "$binary" --help >/dev/null
+          "$binary" completion zsh >/dev/null
+      - name: Test Windows installation and update
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'lawn-windows-x86_64.zip'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows_install_conpty_package_test.ps1 -ArchivePath $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows installer smoke failed: $LASTEXITCODE" }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lawn-${{ matrix.platform }}
+          path: artifacts/
+          if-no-files-found: error
+
+  windows-arm64:
+    if: github.repository == 'wkentaro/lawn'
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: lawn-windows-x86_64
+          path: inputs
+      - name: Test x86_64 fallback installation
+        shell: powershell
+        run: |
+          $archive = Join-Path $PWD 'inputs\lawn-windows-x86_64.zip'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\windows_arm64_installer_test.ps1 -ArchivePath $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows ARM64 installer smoke failed: $LASTEXITCODE" }
+
+  assemble:
+    if: github.repository == 'wkentaro/lawn'
+    needs: [build, windows-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: lawn-*
+          path: inputs
+          merge-multiple: true
+      - name: Assemble complete release
         env:
           IS_RELEASE: ${{ github.event_name == 'push' }}
         run: |
@@ -69,19 +181,17 @@ jobs:
           if [ "$IS_RELEASE" != true ]; then
             release_tag="lawn-v$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')"
           fi
-          python3 scripts/lawn_release.py --binary target/aarch64-apple-darwin/release/lawn --output artifacts --tag "$release_tag"
-          ./artifacts/lawn-macos-aarch64 --help >/dev/null
-          ./artifacts/lawn-macos-aarch64 completion zsh >/dev/null
-          (cd artifacts && shasum -a 256 -c SHA256SUMS)
+          python3 scripts/lawn_release.py --inputs inputs --output artifacts --tag "$release_tag"
+          (cd artifacts && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: lawn-macos-aarch64
+          name: lawn-release
           path: artifacts/
           if-no-files-found: error
 
   publish:
     if: github.repository == 'wkentaro/lawn' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/lawn-v')
-    needs: build
+    needs: assemble
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -108,7 +218,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: lawn-macos-aarch64
+          name: lawn-release
           path: artifacts
       - name: Publish complete release
         env:
@@ -116,6 +226,9 @@ jobs:
         run: |
           set -euo pipefail
           (cd artifacts && sha256sum -c SHA256SUMS)
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Lawn $GITHUB_REF_NAME" \
+          gh release create "$GITHUB_REF_NAME" --verify-tag --latest --title "Lawn $GITHUB_REF_NAME" \
             --notes-file artifacts/release-notes.md \
-            artifacts/lawn-macos-aarch64 artifacts/lawn-*-macos-aarch64.tar.gz artifacts/SHA256SUMS artifacts/latest.json
+            artifacts/lawn-macos-aarch64 artifacts/lawn-macos-x86_64 \
+            artifacts/lawn-linux-aarch64 artifacts/lawn-linux-x86_64 \
+            artifacts/lawn-windows-x86_64.zip artifacts/lawn-*-macos-aarch64.tar.gz \
+            artifacts/SHA256SUMS artifacts/latest.json
