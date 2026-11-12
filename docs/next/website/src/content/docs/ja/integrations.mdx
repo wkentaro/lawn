@@ -111,9 +111,22 @@ Claude Code フックをインストールします:
 herdr integration install claude
 ```
 
-フックは `SessionStart` で Claude Code のルートセッション識別を、`SubagentStart` と `SubagentStop` でサブエージェントの過去の観測情報をローカルの Herdr ソケットに報告します。停止の観測は終了や作業の成功を保証しません。`herdr agent background list w1:p1 --json` で観測情報を読み取れます。Claude Code の状態は引き続き Herdr のスクリーンマニフェスト検出から得られます。
+フックは `SessionStart` で Claude Code のルートセッション識別を、`SubagentStart` と `SubagentStop` でサブエージェントの過去の観測情報をローカルの Herdr ソケットに報告します。停止の観測は終了や作業の成功を保証しません。
 
-`SessionStart` のマッチャーは、文書化された source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に Claude 統合を再インストールして、マッチャーを更新しサブエージェントのフックを登録してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
+`Stop` と `SubagentStop` では、ネイティブの `background_tasks` フィールドがあればシェルのスナップショットも報告します。ネイティブの `type` が `shell` と完全に一致する項目だけを残します。フィールドがなければスナップショットを送らず、空の配列なら空のスナップショットを記録します。Bash の `PostToolUse` では、構造化された `tool_response.backgroundTaskId` をバックグラウンドタスクの観測根拠にします。`run_in_background` の指定だけでは根拠になりません。コマンドはネイティブの構造化されたフック入力から取得し、Claude がすでに切り詰めている場合があります。Herdr はコマンド出力を読み取らず、ライブ出力も購読しません。
+
+既存の `herdr agent background list w1:p1 --json` コマンドで観測情報を読み取れます。シェルのスナップショットはフックイベント時点の観測情報です。受信順から、送信元で最後に生成されたスナップショットは特定できません。報告された状態から現在の状態は確認できず、タスクが一覧から消えても完了したとは判断できません。結果は不明のままです。報告元のサブエージェント ID はタスクの所有者を示しません。Claude Code の状態は引き続き Herdr のスクリーンマニフェスト検出から得られ、待機と通知の動作も変わりません。報告の形式と保持上限は [Socket API](/ja/docs/socket-api/#エージェント状態の報告) を参照してください。
+
+権限のあるローカルの呼び出し元は、観測済みのタスクに対する待機を明示的に宣言できます。呼び出し元の Claude ルートセッション ID とタスクの kind を指定してください。Herdr はフック、タスクの kind、コマンド、出力、スナップショットに含まれるかどうかから待機を推測しません。
+
+```bash
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent agent-review
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent --clear agent-review
+```
+
+`declare-wait` はローカルの呼び出し元による宣言を記録または解除し、`matched` と `unmatched` を含む JSON を返します。どちらも `kind` と `task_id` を持つ参照の配列です。このコマンドは待機しません。シェルタスクには `--kind shell` を使います。`background.list` は省略可能な `background.wait_declarations` に宣言を返します。各記録には `kind`、`task_id`、`declared_at_ms` が含まれ、フィールドがない場合や空の配列の場合は宣言がありません。宣言は親エージェントの意図、現在の実行、完了、成功、正しさを証明しません。停止の観測、スナップショットの欠落や空配列、一覧からのタスクの消失、完了したように見える状態では解除しません。明示的な解除、ルートセッションの識別情報の置換、ターミナルの再生成でのみ解除します。同じセッション ID で resume すると過去の宣言を保持しますが、現在の状態は確認できません。既存の `agent wait`、`agent prompt --wait`、スクリーン検出、通知の動作は変わりません。
+
+`SessionStart` のマッチャーは、文書化された source 値 `startup`、`resume`、`clear`、`compact`、`fork` のみに一致します。これにより、ほかの Claude 互換フックを無効にせずに、Grok の `new` と `load` イベントがインポートされた Herdr の Claude フックを起動するのを防ぎます。アップグレード後に `herdr integration install claude` で再インストールして、マッチャーを更新し、サブエージェント、`Stop`、Bash の `PostToolUse` フックを登録してください。Claude に新しい source 値が追加された場合は、統合の更新が必要です。
 
 Herdr はデフォルトで `~/.claude` を使い、`CLAUDE_CONFIG_DIR` が設定されていればそちらを使います。Claude の設定ディレクトリはあらかじめ存在している必要があります。インストールは `hooks/herdr-agent-state.sh` を書き込み、`settings.json` に Herdr のフックエントリを追加します。アンインストールは一致するフックエントリを削除し、フックスクリプトを削除します。
 

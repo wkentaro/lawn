@@ -320,6 +320,7 @@ herdr pane report-metadata <pane_id> \
 herdr agent list
 herdr agent get <target>
 herdr agent background list <pane> [--json]
+herdr agent background declare-wait <pane> --session-id <root-id> --kind <subagent|shell> [--clear] <task-id>...
 herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send-keys <target> <key> [key ...]
 herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]
@@ -334,7 +335,13 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 エージェントターゲットは、一意なライブエージェント名、または現在そのエージェントをホストしているペイン ID です。ターミナル ID とエージェント kind のラベルだけでは指定できません。`agent start` で起動するエージェントには名前が必須で、手動で起動したエージェントは名前なしのままペイン ID で指定します。
 
-`agent background list` はペイン ID を受け取り、Claude Code のサブエージェントの過去の観測情報を JSON で出力します。`current_state` は常に `unknown` で、`truncated: true` は記録しなかったタスク ID があることを示します。フィールドと上限は [Socket API](/ja/docs/socket-api/#エージェント状態の報告) を参照してください。
+`agent background list` はペイン ID を受け取り、Claude Code のサブエージェントの過去の観測情報と、省略可能な `shell_observations` を JSON で出力します。コマンドと引数は変わりません。シェルのデータには、最後に受信したスナップショットと件数に上限のある Bash の報告が含まれます。受信順から送信元での生成順は分からず、`reported_status` から現在の状態は確認できません。`current_state` とシェルの `outcome` は `unknown` のままです。スナップショットが空でも、タスクが一覧から消えても完了したとは判断できません。各 `truncated` は、それぞれの記録で省略があったことを示します。フィールドと上限は [Socket API](/ja/docs/socket-api/#エージェント状態の報告) を参照してください。
+
+`agent background declare-wait` は権限のあるローカルの呼び出し元による明示的な宣言を記録して返ります。このコマンドは待機しません。`--session-id` と `--kind` はどちらも必須です。呼び出し元の Claude ルートセッション ID を指定してください。コマンドがペインを現在使用しているセッションを自動で選ぶことはありません。source のデフォルトは、唯一対応している `herdr:claude` です。各タスク ID は指定した `kind` と `task_id` の組み合わせで参照します。`--clear` を付けると `background.wait.set` に `waiting: false` を送り、省略すると `waiting: true` を送ります。
+
+JSON の結果には `type: "background_wait_set"`、`terminal_id`、ルートの `session_id`、`waiting`、`matched`、`unmatched` が含まれます。後者の 2 つは `kind` と `task_id` を持つ参照の配列です。保持中のサブエージェントの観測情報、最後に受信したシェルのスナップショット、保持中の Bash の観測情報、既存の宣言を照合します。未知の参照は `unmatched` に残り、宣言を作成しません。シェルタスクがスナップショットから消えても既存の宣言は解除できます。重複する参照を除き、入力で最初に現れた順序を保ちます。1 回のリクエストで指定できる参照は重複を除いて最大 128 件で、ターミナルごとに最大 128 件の宣言を保持します。宣言の保持上限を超える場合は変更全体を拒否します。
+
+`agent background list` は省略可能な `background.wait_declarations` も返します。これは `kind`、`task_id`、`declared_at_ms` を持つ記録の配列です。フィールドがない場合や空の配列の場合は宣言がありません。宣言は親エージェントの意図、現在の実行、完了、成功、正しさを証明しません。停止、スナップショットの欠落や空配列、一覧からのタスクの消失、完了したように見える状態では解除しません。明示的な解除、ルートセッションの識別情報の置換、ターミナルの再生成で解除します。同じ ID で resume すると過去の宣言を保持し、現在の状態は不明のままです。既存の `agent wait`、`agent prompt --wait`、スクリーン検出、通知の動作は変わりません。`background.wait.set` メソッドに対応していなければ、この機能は利用できません。
 
 `agent start` は既存の利用可能なシェルペインを起動対象にします。対話シェル自身がフォアグラウンドを所有し、フォアグラウンドのコマンド、エディタ、エージェントが動いていない必要があります。トポロジーは別に作成します。名前はライブエージェント間で一意で、`[a-z][a-z0-9_-]{0,31}` に一致する必要があります。対応する kind は `pi`、`claude`、`codex`、`gemini`、`cursor`、`devin`、`agy`、`cline`、`omp`、`mastracode`、`opencode`、`copilot`、`kimi`、`kiro`、`droid`、`amp`、`grok`、`hermes`、`kilo`、`qodercli`、`qwen`、`letta`、`maki`、`muse` です。名前は現在のペイン占有者に属し、そのエージェントの終了、release、置換で消えます。一時的に検出できないだけでは消えません。
 

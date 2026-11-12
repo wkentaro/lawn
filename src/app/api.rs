@@ -1123,6 +1123,12 @@ impl App {
             Method::BackgroundList(params) => {
                 return self.handle_background_list(request.id, params)
             }
+            Method::BackgroundShellReport(params) => {
+                return self.handle_background_shell_report(request.id, params)
+            }
+            Method::BackgroundWaitSet(params) => {
+                return self.handle_background_wait_set(request.id, params)
+            }
             Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),

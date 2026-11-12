@@ -90,6 +90,18 @@ fn correlate_response_id(response: String, request_id: &str) -> String {
     serde_json::to_string(&value).unwrap_or(response)
 }
 
+pub(crate) fn endpoint_response_chunks(response: &[u8]) -> impl Iterator<Item = (bool, &[u8])> {
+    let chunk_count = response
+        .len()
+        .div_ceil(ENDPOINT_RESPONSE_CHUNK_BYTES)
+        .max(1);
+    (0..chunk_count).map(move |index| {
+        let start = index * ENDPOINT_RESPONSE_CHUNK_BYTES;
+        let end = (start + ENDPOINT_RESPONSE_CHUNK_BYTES).min(response.len());
+        (index + 1 == chunk_count, &response[start..end])
+    })
+}
+
 pub(crate) fn spawn_response_waiter(
     client_id: u64,
     boot_id: String,
@@ -108,26 +120,13 @@ pub(crate) fn spawn_response_waiter(
                 )
             });
             let response = correlate_response_id(response, &request_id).into_bytes();
-            if response.is_empty() {
-                let _ = server_event_tx.blocking_send(
-                    ServerEvent::ClientShellEndpointResponseChunkReady {
-                        client_id,
-                        boot_id,
-                        request_id,
-                        final_chunk: true,
-                        data: Vec::new(),
-                    },
-                );
-                return;
-            }
-            let chunk_count = response.len().div_ceil(ENDPOINT_RESPONSE_CHUNK_BYTES);
-            for (index, chunk) in response.chunks(ENDPOINT_RESPONSE_CHUNK_BYTES).enumerate() {
+            for (final_chunk, chunk) in endpoint_response_chunks(&response) {
                 if server_event_tx
                     .blocking_send(ServerEvent::ClientShellEndpointResponseChunkReady {
                         client_id,
                         boot_id: boot_id.clone(),
                         request_id: request_id.clone(),
-                        final_chunk: index + 1 == chunk_count,
+                        final_chunk,
                         data: chunk.to_vec(),
                     })
                     .is_err()
@@ -246,12 +245,20 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         assert_eq!(
+            actual.remove("background.wait.set").as_deref(),
+            Some("9a426d2e079dd2892bbd2cb3411b3da38abdc0679d065cb92bcbdd141483abe0")
+        );
+        assert_eq!(
             actual.remove("background.list").as_deref(),
             Some("8f7215970993996be95ba8201f8c5e3b32b3ca347baa30f9944f886fb475aae6")
         );
         assert_eq!(
             actual.remove("background.report").as_deref(),
             Some("39711a787512d3d5e0ee8af688c58169b5657e8b333c21d9f62a5beef230c228")
+        );
+        assert_eq!(
+            actual.remove("background.shell.report").as_deref(),
+            Some("0bd77ae67bc3f17f84ba8828ba0a9b231be2d34f73678efbe595244cf309b8c7")
         );
         // Freeze additive methods separately without rewriting the published fixture.
         assert_eq!(
@@ -356,6 +363,47 @@ mod tests {
     }
 
     #[test]
+    fn background_wait_maximum_refs_fit_bounded_response_chunks() {
+        let refs: Vec<_> = (0..128)
+            .map(|index| crate::api::schema::BackgroundTaskRef {
+                kind: crate::api::schema::BackgroundTaskKind::Shell,
+                task_id: format!("{index:03}{}", "\"".repeat(253)),
+            })
+            .collect();
+        let response = serde_json::to_vec(&crate::api::schema::SuccessResponse {
+            id: "wait".into(),
+            result: crate::api::schema::ResponseResult::BackgroundWaitSet {
+                terminal_id: "terminal".into(),
+                session_id: "root".into(),
+                waiting: true,
+                matched: vec![],
+                unmatched: refs.clone(),
+            },
+        })
+        .unwrap();
+        let mut received = Vec::new();
+        let mut finals = 0;
+        for (final_chunk, chunk) in endpoint_response_chunks(&response) {
+            assert_eq!(finals, 0);
+            assert!(chunk.len() <= ENDPOINT_RESPONSE_CHUNK_BYTES);
+            finals += usize::from(final_chunk);
+            received.extend_from_slice(chunk);
+        }
+        assert_eq!(finals, 1);
+        assert_eq!(received, response);
+        let decoded: crate::api::schema::SuccessResponse =
+            serde_json::from_slice(&received).unwrap();
+        let crate::api::schema::ResponseResult::BackgroundWaitSet {
+            unmatched, matched, ..
+        } = decoded.result
+        else {
+            panic!("expected background wait result");
+        };
+        assert_eq!(unmatched, refs);
+        assert!(matched.is_empty());
+    }
+
+    #[test]
     fn background_json_uses_existing_endpoint_response_chunks() {
         let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
             "id":"list", "method":"background.list", "params":{"pane_id":"w1:p1"}
@@ -407,40 +455,47 @@ mod tests {
 
     #[test]
     fn endpoint_responses_are_chunked_without_truncation() {
-        let (response_tx, response_rx) = mpsc::channel();
-        let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
-        spawn_response_waiter(
-            7,
-            "boot-a".into(),
-            "request-a".into(),
-            response_rx,
-            event_tx,
-        )
-        .unwrap();
-        let response = "x".repeat(ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
-        response_tx.send(response.clone()).unwrap();
+        for size in [
+            0,
+            ENDPOINT_RESPONSE_CHUNK_BYTES,
+            ENDPOINT_RESPONSE_CHUNK_BYTES + 17,
+        ] {
+            let (response_tx, response_rx) = mpsc::channel();
+            let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
+            spawn_response_waiter(
+                7,
+                "boot-a".into(),
+                "request-a".into(),
+                response_rx,
+                event_tx,
+            )
+            .unwrap();
+            let response = "x".repeat(size);
+            response_tx.send(response.clone()).unwrap();
 
-        let mut received = Vec::new();
-        loop {
-            let ServerEvent::ClientShellEndpointResponseChunkReady {
-                client_id,
-                boot_id,
-                request_id,
-                final_chunk,
-                data,
-            } = event_rx.blocking_recv().expect("response chunk")
-            else {
-                panic!("expected response chunk");
-            };
-            assert_eq!(client_id, 7);
-            assert_eq!(boot_id, "boot-a");
-            assert_eq!(request_id, "request-a");
-            received.extend(data);
-            if final_chunk {
-                break;
+            let mut received = Vec::new();
+            loop {
+                let ServerEvent::ClientShellEndpointResponseChunkReady {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    final_chunk,
+                    data,
+                } = event_rx.blocking_recv().expect("response chunk")
+                else {
+                    panic!("expected response chunk");
+                };
+                assert_eq!(client_id, 7);
+                assert_eq!(boot_id, "boot-a");
+                assert_eq!(request_id, "request-a");
+                received.extend(data);
+                if final_chunk {
+                    break;
+                }
             }
-        }
 
-        assert_eq!(received, response.as_bytes());
+            assert_eq!(received, response.as_bytes());
+            assert!(event_rx.blocking_recv().is_none());
+        }
     }
 }

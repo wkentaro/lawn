@@ -51,6 +51,12 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         Err(ParseError::Io(error)) => return Err(error),
     };
     match operation {
+        Operation::BackgroundWaitSet(params) => {
+            super::print_response(&super::send_request(&Request {
+                id: "cli:agent:background:declare-wait".into(),
+                method: Method::BackgroundWaitSet(params),
+            })?)
+        }
         Operation::BackgroundList(params) => {
             super::print_response(&super::send_request(&Request {
                 id: "cli:agent:background:list".into(),

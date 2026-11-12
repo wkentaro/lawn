@@ -104,7 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | 事件 | `events.subscribe`、`events.wait` |
-| 后台 | `background.report`、`background.list` |
+| 后台 | `background.report`、`background.shell.report`、`background.list`、`background.wait.set` |
 | 集成 | `integration.install`、`integration.uninstall` |
 | 插件 | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -564,11 +564,137 @@ Herdr 在本地 socket 上使用换行分隔的 JSON。在 Unix 上,那个 socke
 
 Claude Code 钩子通过 `background.report` 发送 `pane_id`、`source: "herdr:claude"` 和当前根会话的 `session_id`。`event` 为 `subagent_started` 或 `subagent_stop_observed`。`task_id` 使用原生 `agent_id`，有 `agent_type` 时通过 `task_type` 发送。这些历史观测记录不影响智能体状态、等待或通知。
 
+`background.shell.report` 接受严格的外层参数结构，只包含 `pane_id`、`source: "herdr:claude"`、当前根会话的 `session_id` 和嵌套的 `observation`。`event` 标签放在 `observation` 内。shell 快照上报示例:
+
+```json
+{
+  "id": "req_shell_snapshot",
+  "method": "background.shell.report",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "observation": {
+      "event": "snapshot_observed",
+      "hook_event": "SubagentStop",
+      "hook_agent_id": "agent-review",
+      "tasks": [{"task_id":"shell-1","reported_status":"running","command":"npm test"}],
+      "truncated": false
+    }
+  }
+}
+```
+
+`snapshot_observed` 上报 `Stop` 或 `SubagentStop` 中原生的 `background_tasks` 快照，只包含原生 `type` 严格等于 `shell` 的条目。`background_tasks` 字段缺失时不上报快照，已保留的快照也不变。空数组则上报 `tasks: []` 的快照。`reported_status` 保留原生状态文本，包括未知值，但不能确认当前状态。`SubagentStop` 必须提供 `hook_agent_id`；`Stop` 和 Bash 上报可在原生载荷包含该字段时提供。它标识上报者，不能确定会话快照中各任务的归属。
+
+Bash 的 `PostToolUse` 上报使用结构化的 `tool_response.backgroundTaskId` 作为 `task_id`，并保留另一个独立的原生字段 `tool_use_id`。仅设置 `run_in_background` 不会产生观测记录:
+
+```json
+{
+  "id": "req_shell_bash",
+  "method": "background.shell.report",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "observation": {
+      "event": "bash_background_observed",
+      "task_id": "shell-1",
+      "tool_use_id": "tool-1",
+      "command": "npm test"
+    }
+  }
+}
+```
+
+可选的 `command` 来自原生的结构化钩子输入，Claude 可能已将其截断。Herdr 不记录任务描述、助手消息、转录内容、输出路径或命令输出。这些钩子不提供连续的完成事件流或实时输出订阅。
+
+各标识符字段最多为 256 个 UTF-8 字节，`reported_status` 最多 128 字节，命令最多 4096 字节。命令可以包含换行；其他显示文本包含控制字符时会被拒绝。钩子在解析 JSON 前将原始输入限制为最多 1 MiB。每份快照最多包含 128 个 shell 条目，有省略时通过自身的 `truncated` 标记说明。不要将截断的快照视为完整观测记录。
+
 ```json
 {"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}
 ```
 
 `background.list` 返回 `result.type: "background_list"`、`terminal_id` 和 `background`。`background` 包含 `session_id`、`coverage: "observations_only"`、`current_state: "unknown"` 和 `records`，记录的 `observation` 为 `start_observed` 或 `stop_observed`。`start_observed_at_ms` 和 `stop_observed_at_ms` 是服务器首次收到相应观测的 Unix 毫秒时间戳，未观测时为 `null`。停止观测不能证明任务已经终止或成功。Herdr 为每个终端在内存中最多保留 128 个任务 ID，遗漏更多 ID 时设置 `truncated: true`。根会话身份改变时会清除记录；以同一 ID 恢复会话时保留历史观测，当前状态仍为未知。
+
+`background` 对象还可以包含可选的 `shell_observations` 字段:
+
+```json
+{
+  "shell_observations": {
+    "current_state": "unknown",
+    "outcome": "unknown",
+    "last_received_snapshot": null,
+    "bash_reports": [],
+    "truncated": false
+  }
+}
+```
+
+收到快照前，`last_received_snapshot` 为 `null`。收到后，它包含快照观测记录和 `received_at_ms`，后者是服务器接收时的 Unix 毫秒时间戳。Herdr 只保留最后接收的快照。接收顺序不能证明哪份快照在源端最后生成。收到 `tasks: []` 的快照与从未收到快照不同。空快照或任务从快照中消失，都不会将历史 Bash 观测记录标记为结束，也不能证明任务已经完成。
+
+`bash_reports` 最多保留 128 条不同的历史观测记录，各条记录的 `received_at_ms` 为首次接收时间。Herdr 按 `task_id`、`tool_use_id` 和上报者 ID 的组合去重。`shell_observations.truncated` 表示有 Bash 观测记录未保留；已保留的快照有独立的 `truncated` 标记。恢复同一会话时保留 shell 历史，替换根会话或重新创建终端时清除。
+
+shell 的 `current_state` 和 `outcome` 仍为 `unknown`。原生 `reported_status` 只记录钩子事件发生时观测到的状态。这些记录不能确定当前有哪些任务、正在运行的数量或任务是否成功。shell 观测记录不影响智能体状态、等待或完成通知。使用现有的 `herdr agent background list <pane> --json` 命令读取。
+
+服务器通过能力列表公布的 `background.wait.set` 方法用于记录有权限的本地调用方的显式等待声明。它接受严格的参数结构：`pane_id`、`source: "herdr:claude"`、调用方的根 `session_id`、`tasks` 和布尔值 `waiting`。每个任务引用都必须包含 `kind: "subagent"` 或 `kind: "shell"` 以及 `task_id`。ID 相同而 kind 不同的引用互不相同。与观测上报一样，source 和根会话必须与终端当前的 Claude 身份一致。过期的根会话会被拒绝。Herdr 只解析一次窗格关联的终端，窗格移动时声明仍保留在该终端上。
+
+以下示例假定已保留 `agent-review` 和 `shell-1` 的观测记录，而 `missing-shell` 既没有观测记录，也没有已有声明：
+
+```json
+{
+  "id": "req_background_wait",
+  "method": "background.wait.set",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "tasks": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"},
+      {"kind":"shell","task_id":"missing-shell"}
+    ],
+    "waiting": true
+  }
+}
+```
+
+结果包含终端身份、根会话身份、请求中的 `waiting` 值，以及匹配和未匹配的引用：
+
+```json
+{
+  "id": "req_background_wait",
+  "result": {
+    "type": "background_wait_set",
+    "terminal_id": "terminal-id",
+    "session_id": "claude-session",
+    "waiting": true,
+    "matched": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"}
+    ],
+    "unmatched": [{"kind":"shell","task_id":"missing-shell"}]
+  }
+}
+```
+
+`waiting: true` 匹配保留的子智能体观测记录、最后接收的 shell 快照中的任务、保留的 Bash 观测记录或已有声明。未知引用保留在 `unmatched` 中，不会创建记录。`waiting: false` 清除匹配引用的声明，包括 shell 任务已从最后接收的快照中消失的已有声明。重复相同的设置或清除操作是幂等的。引用按首次出现的输入顺序去重。ID 必须非空，不含控制字符，且不超过 256 个 UTF-8 字节。每个请求最多接受 128 个不同的引用。Herdr 为每个终端最多存储 128 条声明；如果请求会超出容量，则返回明确错误，不应用该请求中的任何修改。
+
+`background.list` 通过可选的 `background.wait_declarations` 返回声明记录，并使用共享的 `background.revision`：
+
+```json
+{
+  "wait_declarations": [
+    {"kind":"subagent","task_id":"agent-review","declared_at_ms":1700000000000},
+    {"kind":"shell","task_id":"shell-1","declared_at_ms":1700000000000}
+  ],
+  "revision": 7
+}
+```
+
+`wait_declarations` 字段缺失或数组为空表示没有声明。`declared_at_ms` 是服务器首次收到该声明时的 Unix 毫秒时间戳，重复相同声明时保持不变。声明由服务器在内存中管理，无需 TUI 即可通过 JSON API 访问。若不支持 `background.wait.set` 方法，则此功能不可用。现有的 `background.report`、`background.shell.report` 和 `background.list` 参数结构不变。
+
+声明不能证明父智能体的意图、当前执行情况、完成、成功或正确性。Herdr 不会根据任务 kind、命令、输出、快照中的任务列表或状态推断声明。停止观测、快照缺失或为空、任务从快照中消失以及看似完成的状态都不会清除声明。只有显式清除、替换根会话身份或重新创建终端才会清除声明。恢复同一会话 ID 时保留历史声明，但不能确认当前状态。现有的屏幕检测、`agent.wait`、`agent.prompt --wait` 和通知行为不变。CLI 命令 `herdr agent background declare-wait <pane> --session-id <root-id> --kind <subagent|shell> [--clear] <task-id>...` 记录或清除声明后返回结构化 JSON，不会阻塞等待。
 
 Herdr 存有原生会话引用时,`pane.get`、`pane.list`、`agent.get` 和 `agent.list` 暴露一个只读的 `agent_session` 对象:
 

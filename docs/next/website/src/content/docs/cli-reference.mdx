@@ -341,6 +341,7 @@ For the pane-versus-agent model and complete orchestration examples, see [Agent 
 herdr agent list
 herdr agent get <target>
 herdr agent background list <pane> [--json]
+herdr agent background declare-wait <pane> --session-id <root-id> --kind <subagent|shell> [--clear] <task-id>...
 herdr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]
 herdr agent send-keys <target> <key> [key ...]
 herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]
@@ -355,7 +356,13 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 Agent targets are either a unique live agent name or the pane ID that currently hosts the agent. Terminal IDs and bare agent-kind labels are not agent targets. Agents started through `agent start` require a name; manually launched agents remain unnamed and use their pane ID.
 
-`agent background list` takes a pane ID and prints historical Claude Code subagent observations as JSON. `current_state` is always `unknown`; `truncated: true` indicates omitted task IDs. See [Socket API](/docs/socket-api/#agent-state-reporting) for the fields and limits.
+`agent background list` takes a pane ID and prints historical Claude Code subagent observations and optional `shell_observations` as JSON. The command and its arguments are unchanged. Shell data contains the last received snapshot and bounded Bash reports. Receipt order does not establish source chronology, and `reported_status` does not confirm current state. `current_state` and shell `outcome` remain `unknown`; an empty snapshot or a disappearing task does not prove completion. Each `truncated` flag describes omissions in its own collection. See [Socket API](/docs/socket-api/#agent-state-reporting) for the fields and limits.
+
+`agent background declare-wait` records an authorized local caller's explicit declaration and returns without blocking. Both `--session-id` and `--kind` are required. Supply the caller's root Claude session ID; the command does not silently select the session currently occupying the pane. The source defaults to `herdr:claude`, the only supported source. Each task ID becomes a reference with the supplied `kind` and `task_id`. `--clear` sends `waiting: false`; otherwise the command sends `waiting: true` to `background.wait.set`.
+
+The JSON result has `type: "background_wait_set"`, `terminal_id`, root `session_id`, `waiting`, and `matched` and `unmatched` arrays of `kind`/`task_id` references. Matching uses retained subagent observations, the last received shell snapshot, retained Bash observations, or existing declarations. Unknown references stay unmatched and create no declarations. An existing declaration can still be cleared after its shell task disappears from the snapshot. The server deduplicates references while preserving first input order. Requests allow at most 128 unique references, and Herdr retains at most 128 declarations per terminal. Exceeding declaration capacity rejects the whole mutation.
+
+`agent background list` also returns optional `background.wait_declarations`, an array of `kind`, `task_id`, and `declared_at_ms` records. An absent field or empty array means no declarations. These declarations do not prove parent-agent intent, live execution, completion, success, or correctness. Stops, absent or empty snapshots, disappearing tasks, and apparent completion do not clear them. Explicit clearing, root identity replacement, or terminal respawn clears them; resuming the same ID preserves historical declarations with current state unknown. Existing `agent wait`, `agent prompt --wait`, screen detection, and notifications are unchanged. An unsupported `background.wait.set` method means this capability is unavailable.
 
 `agent start` activates an existing available shell pane: the pane's interactive shell must own the foreground, with no foreground command, editor, or agent running. Topology must be created separately. Names are unique among live agents and must match `[a-z][a-z0-9_-]{0,31}`. The kind selects Herdr's canonical interactive executable, while arguments after `--` are passed to that executable. Supported kinds are `pi`, `claude`, `codex`, `gemini`, `cursor`, `devin`, `agy`, `cline`, `omp`, `mastracode`, `opencode`, `copilot`, `kimi`, `kiro`, `droid`, `amp`, `grok`, `hermes`, `kilo`, `qodercli`, `qwen`, `letta`, `maki`, and `muse`. A name follows the current pane occupant and is cleared when that agent exits, is released, or is replaced. Temporary detection uncertainty does not clear it.
 

@@ -104,7 +104,7 @@ function captureConnectionEndpoint() {
   return () => connectedEndpoint;
 }
 
-async function startRecordingServer(name: string): Promise<unknown[]> {
+async function startRecordingServer(name: string, wireSizes?: number[]): Promise<unknown[]> {
   const recordingSocketPath = join(tmpdir(), `herdr-${name}-${process.pid}.sock`);
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
@@ -119,6 +119,7 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
       if (newline === -1) {
         return;
       }
+      wireSizes?.push(Buffer.byteLength(input.slice(0, newline + 1), "utf8"));
       requests.push(JSON.parse(input.slice(0, newline)));
       socket.end("{}\n");
     });
@@ -683,6 +684,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function claudeHookCommand(action: string) {
+  return originalPlatform === "win32"
+    ? ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        join(import.meta.dir, "claude/herdr-agent-state.ps1"), action]
+    : ["sh", join(import.meta.dir, "claude/herdr-agent-state.sh"), action];
+}
+
 async function runClaudeHook(
   action: string,
   payload: unknown,
@@ -690,13 +698,9 @@ async function runClaudeHook(
 ) {
   const env = { ...process.env, ...environment };
   if (!("CURSOR_VERSION" in environment)) delete env.CURSOR_VERSION;
-  const command = originalPlatform === "win32"
-    ? ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-        join(import.meta.dir, "claude/herdr-agent-state.ps1"), action]
-    : ["sh", join(import.meta.dir, "claude/herdr-agent-state.sh"), action];
-  const child = Bun.spawn(command, {
+  const child = Bun.spawn(claudeHookCommand(action), {
     env,
-    stdin: new Blob([typeof payload === "string" ? payload : JSON.stringify(payload)]),
+    stdin: new Blob([typeof payload === "string" || payload instanceof Uint8Array ? payload : JSON.stringify(payload)]),
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -816,3 +820,333 @@ test.skipIf(originalPlatform === "win32")("Claude SessionStart preserves root id
   }
   expect(requests).toHaveLength(5);
 });
+
+for (const [action, hook_event_name] of [
+  ["stop", "Stop"],
+  ["subagent-stop", "SubagentStop"],
+] as const) {
+  test(`Claude ${hook_event_name} maps only native shell snapshot fields`, async () => {
+    const requests = await startRecordingServer(`claude-${action}-shell`);
+    const payload = {
+      hook_event_name,
+      session_id: "root-session",
+      agent_id: "reporter-λ",
+      background_tasks: [
+        { id: "shell-1", type: "shell", status: "native-future-status", command: "echo 한국어\nprintf λ", description: "private description", output_file: "/unread/output" },
+        { id: "shell-2", type: "shell", status: "pending" },
+        { id: "replacement", type: "shell", status: "running", command: "printf \ufffd" },
+        { id: "surrogate-pair", type: "shell", status: "running", command: "printf 😀" },
+        { id: "literal-escapes", type: "shell", status: "running", command: "printf \\ud800 \\udc00" },
+        { id: "not-shell", type: "local_bash", status: "running" },
+        { id: "wrong-case", type: "Shell", status: "running" },
+        { id: "agent", type: "agent", status: "running" },
+      ],
+      last_assistant_message: "private message",
+      agent_transcript_path: "/unread/transcript",
+    };
+    // Exercise the pair as original JSON escapes rather than a literal emoji.
+    await runClaudeHook(action, JSON.stringify(payload).replace("😀", "\\ud83d\\ude00"));
+    expect((requests as any[]).filter(request => request.method === "background.shell.report")).toEqual([{
+      id: expect.any(String),
+      method: "background.shell.report",
+      params: {
+        pane_id: "test:p1",
+        source: "herdr:claude",
+        session_id: "root-session",
+        observation: {
+          event: "snapshot_observed",
+          hook_event: hook_event_name,
+          hook_agent_id: "reporter-λ",
+          tasks: [
+            { task_id: "shell-1", reported_status: "native-future-status", command: "echo 한국어\nprintf λ" },
+            { task_id: "shell-2", reported_status: "pending" },
+            { task_id: "replacement", reported_status: "running", command: "printf \ufffd" },
+            { task_id: "surrogate-pair", reported_status: "running", command: "printf 😀" },
+            { task_id: "literal-escapes", reported_status: "running", command: "printf \\ud800 \\udc00" },
+          ],
+          truncated: false,
+        },
+      },
+    }]);
+    expect(requests).toHaveLength(action === "subagent-stop" ? 2 : 1);
+    if (action === "subagent-stop") expect((requests[0] as any).method).toBe("background.report");
+  });
+
+  test(`Claude ${hook_event_name} preserves lifecycle when optional snapshots are absent or malformed`, async () => {
+    const requests = await startRecordingServer(`claude-${action}-malformed`);
+    const valid = { id: "shell-1", type: "shell", status: "running" };
+    const retained = Array.from({ length: 128 }, (_, id) => ({ ...valid, id: `shell-${id}` }));
+    const snapshots = [
+      undefined, null, {}, "[]", [null], [{}],
+      [{ ...valid, id: "" }], [{ ...valid, id: "x\u001b" }],
+      [{ ...valid, id: "λ".repeat(129) }],
+      [{ ...valid, status: 42 }], [{ ...valid, status: "native\nstatus" }],
+      [{ ...valid, status: "λ".repeat(65) }],
+      [{ ...valid, command: {} }], [valid, {}],
+      [...retained, { ...valid, type: null }],
+      [...retained, { ...valid, id: "" }],
+      [...retained, { ...valid, status: "bad\nstatus" }],
+      [...retained, { ...valid, command: {} }],
+      [...retained, { ...valid, command: "\ud800" }],
+      [{ ...valid, command: "\ud800" }],
+      [{ ...valid, command: "\udc00" }],
+      [...retained, { ...valid, command: "\udc00" }],
+    ];
+    for (const [index, background_tasks] of snapshots.entries()) {
+      const before = requests.length;
+      await runClaudeHook(action, {
+        hook_event_name, session_id: "root-session", agent_id: "reporter",
+        background_tasks,
+      });
+      expect({
+        fixture: index + 1,
+        methods: requests.slice(before).map((request: any) => request.method),
+      }).toEqual({
+        fixture: index + 1,
+        methods: action === "subagent-stop" ? ["background.report"] : [],
+      });
+    }
+    expect(requests).toHaveLength(action === "subagent-stop" ? snapshots.length : 0);
+    for (const request of requests as any[]) expect(request.method).toBe("background.report");
+  }, 30_000);
+
+  test(`Claude ${hook_event_name} preserves real empty snapshots and discloses bounded rows and commands`, async () => {
+    const requests = await startRecordingServer(`claude-${action}-bounds`);
+    const base = { hook_event_name, session_id: "root-session", agent_id: "reporter" };
+    await runClaudeHook(action, { ...base, background_tasks: [] });
+    await runClaudeHook(action, {
+      ...base,
+      background_tasks: [{ id: "shell-long", type: "shell", status: "running", command: "λ😀\n".repeat(800) }],
+    });
+    await runClaudeHook(action, {
+      ...base,
+      background_tasks: Array.from({ length: 129 }, (_, id) => ({
+        id: `shell-${id}`, type: "shell", status: "running",
+        command: "x".repeat(4096),
+      })),
+    });
+    const observations = (requests as any[])
+      .filter(request => request.method === "background.shell.report")
+      .map(request => request.params.observation);
+    expect(observations).toHaveLength(3);
+    expect(observations[0]).toMatchObject({ tasks: [], truncated: false });
+    expect(observations[1].tasks).toHaveLength(1);
+    expect(observations[1].truncated).toBe(true);
+    const command = observations[1].tasks[0].command;
+    expect(Buffer.byteLength(command, "utf8")).toBeLessThanOrEqual(4096);
+    expect(command.endsWith("\n[truncated]")).toBe(true);
+    expect(command).not.toContain("�");
+    expect(observations[2].tasks).toHaveLength(128);
+    expect(observations[2].truncated).toBe(true);
+    expect(observations[2].tasks[0].command).toBe("x".repeat(4096));
+  });
+
+  test(`Claude ${hook_event_name} retains 100 Unicode commands within the UTF-8 wire cap`, async () => {
+    const wireSizes: number[] = [];
+    const requests = await startRecordingServer(`claude-${action}-unicode-wire`, wireSizes);
+    const command = "λ".repeat(2048);
+    const background_tasks = Array.from({ length: 100 }, (_, id) => ({
+      id: `shell-${id}`, type: "shell", status: "running", command,
+    }));
+    await runClaudeHook(action, {
+      hook_event_name, session_id: "root-session", agent_id: "reporter", background_tasks,
+    });
+    expect(requests).toHaveLength(action === "subagent-stop" ? 2 : 1);
+    const report = (requests as any[]).find(request => request.method === "background.shell.report");
+    expect(report.params.observation.tasks).toHaveLength(100);
+    expect(report.params.observation).toMatchObject({
+      tasks: background_tasks.map(task => ({ task_id: task.id, reported_status: task.status, command })),
+      truncated: false,
+    });
+    expect(wireSizes).toHaveLength(requests.length);
+    for (const size of wireSizes) expect(size).toBeLessThanOrEqual(1048576);
+  });
+
+  test(`Claude ${hook_event_name} trims tail rows when report overhead crosses the wire cap`, async () => {
+    const wireSizes: number[] = [];
+    const requests = await startRecordingServer(`claude-${action}-wire-limit`, wireSizes);
+    const background_tasks = Array.from({ length: 128 }, (_, id) => ({
+      id: `shell-${id}`, type: "shell", status: "running", command: '"'.repeat(4000),
+    }));
+    const payload = { hook_event_name, session_id: "root-session", agent_id: "reporter", background_tasks };
+    // Leave less room than the report envelope needs, without clipping any command.
+    let remaining = 1048576 - 16 - Buffer.byteLength(JSON.stringify(payload), "utf8");
+    for (const task of background_tasks) {
+      const extra = Math.min(4096 - task.command.length, Math.floor(remaining / 2));
+      task.command += '"'.repeat(extra);
+      remaining -= extra * 2;
+    }
+    const input = JSON.stringify(payload);
+    expect(Buffer.byteLength(input, "utf8")).toBeGreaterThanOrEqual(1048576 - 17);
+    expect(Buffer.byteLength(input, "utf8")).toBeLessThanOrEqual(1048576);
+    await runClaudeHook(action, input);
+    expect(requests).toHaveLength(action === "subagent-stop" ? 2 : 1);
+    if (action === "subagent-stop") expect((requests[0] as any).method).toBe("background.report");
+    const report = (requests as any[]).find(request => request.method === "background.shell.report");
+    const observation = report.params.observation;
+    const tasks = background_tasks.map(task => ({
+      task_id: task.id, reported_status: task.status, command: task.command,
+    }));
+    const untrimmedReport = {
+      ...report,
+      params: { ...report.params, observation: { ...observation, tasks, truncated: false } },
+    };
+    expect(Buffer.byteLength(JSON.stringify(untrimmedReport) + "\n", "utf8")).toBeGreaterThan(1048576);
+    expect(observation.truncated).toBe(true);
+    expect(observation.tasks.length).toBeGreaterThan(0);
+    expect(observation.tasks.length).toBeLessThan(128);
+    expect(observation.tasks).toEqual(tasks.slice(0, observation.tasks.length));
+    expect(wireSizes).toHaveLength(requests.length);
+    for (const size of wireSizes) expect(size).toBeLessThanOrEqual(1048576);
+  });
+}
+
+test("Claude snapshot bounds 10000 validated native rows to the first 128", async () => {
+  const requests = await startRecordingServer("claude-many-native-rows");
+  const background_tasks = Array.from({ length: 10000 }, (_, id) => ({
+    id: `shell-${id}`, type: "shell", status: "running", command: "λ",
+  }));
+  const payload = { hook_event_name: "Stop", session_id: "root-session", background_tasks };
+  expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThanOrEqual(1048576);
+  await runClaudeHook("stop", payload);
+  expect(requests).toHaveLength(1);
+  expect((requests[0] as any).params.observation.tasks).toHaveLength(128);
+  expect((requests[0] as any).params.observation).toMatchObject({
+    tasks: background_tasks.slice(0, 128).map(task => ({
+      task_id: task.id, reported_status: task.status, command: task.command,
+    })),
+    truncated: true,
+  });
+}, 30_000);
+
+test("Claude Stop permits absent reporter provenance and requires exact native event data", async () => {
+  const requests = await startRecordingServer("claude-stop-provenance");
+  const valid = { hook_event_name: "Stop", session_id: "root-session", background_tasks: [] };
+  for (const payload of [
+    [valid],
+    { ...valid, hook_event_name: "SubagentStop" },
+    { ...valid, hook_event_name: "stop" },
+    { ...valid, agent_id: null }, { ...valid, agent_id: "" },
+    { ...valid, agent_id: "reporter\u0085" },
+    { ...valid, session_id: "session\u0000" },
+    { ...valid, session_id: "λ".repeat(129) },
+  ]) await runClaudeHook("stop", payload);
+  await runClaudeHook("subagent-stop", { ...valid, hook_event_name: "SubagentStop" });
+  expect(requests).toEqual([]);
+  await runClaudeHook("stop", valid);
+  expect(requests).toHaveLength(1);
+  expect((requests[0] as any).params.observation).toEqual({
+    event: "snapshot_observed", hook_event: "Stop", tasks: [], truncated: false,
+  });
+}, 30_000);
+
+const bashObservationPayload = {
+  hook_event_name: "PostToolUse",
+  session_id: "root-session",
+  tool_name: "Bash",
+  tool_use_id: "tool-λ",
+  tool_response: { backgroundTaskId: "shell-λ", stdout: "private output", stderr: "private error" },
+  tool_input: { command: "echo λ\nprintf 한국어", description: "private description" },
+};
+
+test("Claude Bash observes structured automatic backgrounding without intent flags", async () => {
+  const requests = await startRecordingServer("claude-bash-native");
+  await runClaudeHook("bash-background", bashObservationPayload);
+  await runClaudeHook("bash-background", {
+    ...bashObservationPayload, agent_id: "reporter",
+    tool_input: { run_in_background: false },
+  });
+  expect(requests).toEqual([
+    {
+      id: expect.any(String), method: "background.shell.report",
+      params: {
+        pane_id: "test:p1", source: "herdr:claude", session_id: "root-session",
+        observation: {
+          event: "bash_background_observed", task_id: "shell-λ", tool_use_id: "tool-λ",
+          command: "echo λ\nprintf 한국어",
+        },
+      },
+    },
+    {
+      id: expect.any(String), method: "background.shell.report",
+      params: {
+        pane_id: "test:p1", source: "herdr:claude", session_id: "root-session",
+        observation: {
+          event: "bash_background_observed", task_id: "shell-λ", tool_use_id: "tool-λ",
+          hook_agent_id: "reporter",
+        },
+      },
+    },
+  ]);
+});
+
+test("Claude Bash requires exact event, tool, response key and bounded native identities", async () => {
+  const requests = await startRecordingServer("claude-bash-invalid");
+  for (const payload of [
+    { ...bashObservationPayload, hook_event_name: "PostToolUseFailure" },
+    { ...bashObservationPayload, tool_name: "bash" },
+    { ...bashObservationPayload, tool_name: "BashOther" },
+    { ...bashObservationPayload, tool_name: "Shell" },
+    { ...bashObservationPayload, tool_name: ["Bash"] },
+    { ...bashObservationPayload, tool_response: { backgroundtaskid: "wrong-case" } },
+    { ...bashObservationPayload, tool_response: "backgroundTaskId: shell-λ" },
+    { ...bashObservationPayload, tool_response: { backgroundTaskId: 1 } },
+    { ...bashObservationPayload, tool_response: { backgroundTaskId: "" } },
+    { ...bashObservationPayload, tool_response: { backgroundTaskId: "id\n" } },
+    { ...bashObservationPayload, tool_response: { backgroundTaskId: "λ".repeat(129) } },
+    { ...bashObservationPayload, tool_response: {}, tool_input: { run_in_background: true } },
+    { ...bashObservationPayload, tool_use_id: undefined },
+    { ...bashObservationPayload, tool_use_id: "id\u007f" },
+    { ...bashObservationPayload, tool_use_id: "x".repeat(257) },
+    { ...bashObservationPayload, agent_id: "reporter\t" },
+    { ...bashObservationPayload, tool_input: { command: {} } },
+  ]) await runClaudeHook("bash-background", payload);
+  expect(requests).toEqual([]);
+}, 30_000);
+
+test("Claude Bash clips UTF-8 commands with an explicit truncation marker", async () => {
+  const requests = await startRecordingServer("claude-bash-truncate");
+  await runClaudeHook("bash-background", {
+    ...bashObservationPayload, tool_input: { command: "λ😀\n".repeat(800) },
+  });
+  expect(requests).toHaveLength(1);
+  const observation = (requests[0] as any).params.observation;
+  expect(Buffer.byteLength(observation.command, "utf8")).toBeLessThanOrEqual(4096);
+  expect(observation.command.endsWith("\n[truncated]")).toBe(true);
+  expect(observation.command).not.toContain("�");
+  expect(observation).not.toHaveProperty("truncated");
+});
+
+test("Claude hook rejects oversized raw bytes before JSON parsing and accepts the exact cap", async () => {
+  const requests = await startRecordingServer("claude-input-limit");
+  const payload = { hook_event_name: "Stop", session_id: "root-session", background_tasks: [] };
+  const valid = JSON.stringify(payload);
+  await runClaudeHook("stop", valid.padEnd(1048577));
+  await runClaudeHook("stop", { ...payload, ignored: "λ".repeat(550_000) });
+  await runClaudeHook("stop", new Uint8Array([0xff, 0xfe]));
+  expect(requests).toEqual([]);
+  await runClaudeHook("stop", valid.padEnd(1048576));
+  expect(requests).toHaveLength(1);
+});
+
+test("Claude hook returns after cap+1 bytes without waiting for stdin EOF", async () => {
+  const requests = await startRecordingServer("claude-input-open");
+  const env = { ...process.env };
+  delete env.CURSOR_VERSION;
+  const child = Bun.spawn(claudeHookCommand("stop"), {
+    env, stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  try {
+    child.stdin.write(new Uint8Array(1048577).fill(32));
+    expect(await Promise.race([
+      child.exited,
+      Bun.sleep(8_000).then(() => { throw new Error("hook waited for EOF beyond raw input cap"); }),
+    ])).toBe(0);
+    expect(await new Response(child.stdout).text()).toBe("");
+    expect(await new Response(child.stderr).text()).toBe("");
+    expect(requests).toEqual([]);
+  } finally {
+    child.stdin.end();
+    child.kill();
+  }
+}, 15_000);
