@@ -1422,6 +1422,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
             pane_id: id.into(),
         })
     };
+    press(&mut state, KeyCode::Esc);
     press(&mut state, KeyCode::Left);
     assert_eq!(selected(&state), target("pane_1"));
     press(&mut state, KeyCode::Right);
@@ -1784,6 +1785,16 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     assert!(navigator_text.contains("client-shell"));
     assert!(navigator_text.contains("terminal"));
     assert!(!navigator_text.contains("pane 1"));
+    assert!(navigator
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.visible));
+    assert!(state.handle_input_bytes(b"cl").actions.is_empty());
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::Navigator(navigator))
+            if navigator.search_focused && navigator.query.as_str() == "cl"
+    ));
 
     let search = state.hits.navigator_search;
     let focus_search =
@@ -1801,7 +1812,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
             ..
         }))
     ));
-    assert!(state.handle_input_bytes(b"client").actions.is_empty());
+    assert!(state.handle_input_bytes(b"ient").actions.is_empty());
     let filtered = state.compose(106, 30).expect("filtered navigator");
     assert!(filtered
         .cursor

@@ -2762,6 +2762,10 @@ fn collapsed_workspace_omits_agent_status() {
 fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     for (key, expected_endpoint) in [
         (KeyCode::Right, endpoint_id),
         (KeyCode::Left, ClientEndpointId::Local),

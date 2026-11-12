@@ -276,6 +276,7 @@ impl ClientShellState {
         self.open_navigator_overlay();
         if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
             navigator.parked = true;
+            navigator.search_focused = false;
             navigator.selected = None;
         }
     }

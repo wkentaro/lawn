@@ -200,7 +200,7 @@ impl ClientShellState {
     pub(super) fn open_navigator_overlay(&mut self) {
         let mut navigator = ClientNavigatorOverlay {
             query: TextEditor::default(),
-            search_focused: false,
+            search_focused: true,
             selected: None,
             scroll: 0,
             filter: None,
