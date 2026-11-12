@@ -574,7 +574,7 @@ impl ClientShellState {
                         Some(ClientShellOverlay::GlobalMenu(menu)) => menu.highlighted,
                         _ => return,
                     };
-                    self.activate_global_menu_item(highlighted, outcome);
+                    self.activate_global_menu_item(highlighted, false, outcome);
                 }
                 _ => {}
             }

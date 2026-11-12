@@ -22,6 +22,7 @@ pub(super) fn global_menu_item_has_badge(
 
 pub(super) fn global_menu_items(
     snapshot: &ClientShellSnapshot,
+    mobile: bool,
 ) -> Vec<(&'static str, ClientGlobalMenuAction)> {
     let mut items = vec![
         (
@@ -47,10 +48,12 @@ pub(super) fn global_menu_items(
             ClientGlobalMenuAction::WhatsNew,
         ));
     }
-    items.push((
-        "parked",
-        ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenParked),
-    ));
+    if mobile {
+        items.push((
+            "parked",
+            ClientGlobalMenuAction::Binding(crate::input::KeybindAction::OpenParked),
+        ));
+    }
     items.push((
         "detach",
         ClientGlobalMenuAction::Binding(crate::input::KeybindAction::Detach),
@@ -73,7 +76,7 @@ impl ClientShellState {
         let item_count = self
             .snapshot
             .as_deref()
-            .map(global_menu_items)
+            .map(|snapshot| global_menu_items(snapshot, false))
             .map_or(0, |items| items.len());
         let Some(ClientShellOverlay::GlobalMenu(menu)) = self.overlay.as_mut() else {
             return;
@@ -85,10 +88,11 @@ impl ClientShellState {
     pub(super) fn activate_global_menu_item(
         &mut self,
         index: usize,
+        mobile: bool,
         outcome: &mut ClientShellInput,
     ) {
         let Some(action) = self.snapshot.as_deref().and_then(|snapshot| {
-            global_menu_items(snapshot)
+            global_menu_items(snapshot, mobile)
                 .get(index)
                 .map(|(_, action)| *action)
         }) else {
