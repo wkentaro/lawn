@@ -22,7 +22,8 @@ pub(super) fn render_collapsed(
 ) {
     let palette = &config.palette;
     super::render::render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
+    let (workspace_area, divider_y, detail_area) =
+        super::sidebar::collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
     let mut total_rows = 0usize;
     let mut selected_row = None;
     let reveal = std::mem::take(state.reveal_navigation_workspace);
@@ -236,7 +237,8 @@ pub(super) fn render_expanded(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
-    let (workspace_area, _, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
+    let (workspace_area, _, detail_area) =
+        super::sidebar::collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
     put_text(
         buffer,
         workspace_area.x,
@@ -549,6 +551,9 @@ pub(super) fn render_expanded(
         state.agent_scroll,
         hits,
     );
+    if config.sidebar_collapsed_mode == SidebarCollapsedModeConfig::Hidden {
+        return;
+    }
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
         area.bottom().saturating_sub(1),

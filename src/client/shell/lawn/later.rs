@@ -1,4 +1,5 @@
 use super::super::render::{display_width, put_right_text, put_text};
+use super::super::sidebar::collapsed_sidebar_sections;
 use super::*;
 
 #[derive(Debug, Default)]
@@ -71,10 +72,11 @@ pub(in crate::client::shell) fn render(
     if height == 0 {
         return;
     }
+    let (content, _, _) = collapsed_sidebar_sections(sidebar, config.sidebar_collapsed_mode);
     let area = Rect::new(
-        sidebar.x,
-        sidebar.bottom().saturating_sub(2 + height),
-        sidebar.width.saturating_sub(1),
+        content.x,
+        content.bottom().saturating_sub(1 + height),
+        content.width,
         height,
     );
     let p = &config.palette;
