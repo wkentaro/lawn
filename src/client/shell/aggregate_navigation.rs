@@ -305,7 +305,7 @@ pub(super) fn navigator_rows(
         words.iter().all(|word| value.contains(word))
     };
     let filtering = navigator.filter.is_some() || !query.is_empty();
-    let federated = later || endpoints.len() > 1;
+    let federated = endpoints.len() > 1;
     let depth_offset = u8::from(federated);
     let mut rows = Vec::new();
 

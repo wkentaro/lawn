@@ -177,7 +177,13 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
     assert_eq!(navigator.filter, Some(ClientNavigatorFilter::Later));
     let rows =
         render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.len(), 2);
+    assert!(matches!(
+        rows[0].target,
+        ClientNavigatorTarget::Workspace { .. }
+    ));
+    assert_eq!(rows[0].depth, 0);
+    assert_eq!(rows[1].depth, 1);
     assert!(
         rows.iter().all(|row| row.status.is_none()),
         "ordinary terminal has no agent status"
@@ -185,7 +191,29 @@ fn later_tree_folds_and_jump_does_not_include_parked_terminal() {
     state.overlay = None;
     state.later.expanded = true;
     state.compose(100, 24).unwrap();
+    assert_eq!(state.hits.later_rows.len(), 2);
+    let workspace = state.hits.later_rows[0].0;
+    click(&mut state, workspace);
+    state.compose(100, 24).unwrap();
+    assert_eq!(state.hits.later_rows.len(), 1);
+    let workspace = state.hits.later_rows[0].0;
+    click(&mut state, workspace);
+    state.compose(100, 24).unwrap();
+    assert_eq!(state.hits.later_rows.len(), 2);
+
+    state.set_endpoint_catalog(&[crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    }]);
+    state.compose(100, 24).unwrap();
     assert_eq!(state.hits.later_rows.len(), 3);
+    assert!(matches!(
+        state.hits.later_rows[0].1,
+        ClientNavigatorTarget::Machine { .. }
+    ));
     let machine = state.hits.later_rows[0].0;
     click(&mut state, machine);
     state.compose(100, 24).unwrap();
