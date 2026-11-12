@@ -149,7 +149,11 @@ async fn background_endpoint_observations_preserve_presentation_and_pending_comm
             assert_eq!(reported["result"]["type"], "ok", "{reported}");
             assert_eq!(presentation(&server), before);
             assert!(matches!(
-                read_server_message(foreground_control.try_recv().unwrap()),
+                read_server_message(
+                    foreground_control
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap(),
+                ),
                 ServerMessage::TerminalBell { count: 2 }
             ));
 
@@ -174,7 +178,11 @@ async fn background_endpoint_observations_preserve_presentation_and_pending_comm
             );
             assert_eq!(presentation(&server), before);
             assert!(matches!(
-                read_server_message(foreground_control.try_recv().unwrap()),
+                read_server_message(
+                    foreground_control
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap(),
+                ),
                 ServerMessage::TerminalBell { count: 3 }
             ));
             assert!(server.app.event_rx.is_empty());
@@ -238,7 +246,11 @@ fn assert_background_endpoint_drains_pane_death(report: bool) {
     assert!(server.app.event_rx.is_empty());
     for _ in 0..=crate::app::APP_EVENT_DRAIN_LIMIT {
         assert!(matches!(
-            read_server_message(foreground_control.try_recv().unwrap()),
+            read_server_message(
+                foreground_control
+                    .recv_timeout(Duration::from_secs(1))
+                    .unwrap(),
+            ),
             ServerMessage::TerminalBell { count: 2 }
         ));
     }
