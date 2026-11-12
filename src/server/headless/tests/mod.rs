@@ -4764,6 +4764,93 @@ fn terminal_control_resolves_public_pane_id_and_takes_ownership() {
 }
 
 #[test]
+fn moved_pane_alias_reads_use_frozen_history_during_harvest() {
+    with_terminal_session_test_server(|server, terminal_id, _, old_pane_id| {
+        server.app.state.active = Some(0);
+        let runtime = server.app.terminal_runtimes.get(&terminal_id).unwrap();
+        runtime.test_process_pty_bytes(b"\x1b[?1049hfrozen-bottom");
+        let (_, initial) = runtime.screen_text_snapshot().unwrap();
+        let moved = server.app.handle_api_request(api::schema::Request {
+            id: "move".into(),
+            method: api::schema::Method::PaneMove(api::schema::PaneMoveParams {
+                pane_id: old_pane_id.clone(),
+                destination: api::schema::PaneMoveDestination::NewWorkspace {
+                    label: Some("moved".into()),
+                    tab_label: None,
+                },
+                focus: false,
+            }),
+        });
+        let moved: api::schema::SuccessResponse = serde_json::from_str(&moved).unwrap();
+        let api::schema::ResponseResult::PaneMove { move_result } = moved.result else {
+            panic!("expected moved pane");
+        };
+        assert!(move_result.changed);
+        let pane = move_result.pane;
+        assert_ne!(pane.pane_id, old_pane_id);
+        assert_eq!(pane.terminal_id, terminal_id.to_string());
+        assert!(server.app.parse_pane_id(&old_pane_id).is_some());
+        assert!(server.app.resolve_terminal_target(&old_pane_id).is_err());
+        server
+            .app
+            .terminal_runtimes
+            .get(&terminal_id)
+            .unwrap()
+            .test_process_pty_bytes(b"\x1b[2J\x1b[Htransient-history");
+        let (respond_to, _harvest_response) = std::sync::mpsc::channel();
+        server.pending_alt_screen_reads.push(
+            crate::server::alt_screen_read::PendingAltScreenRead::start(
+                terminal_id,
+                "harvest".into(),
+                respond_to,
+                "fallback".into(),
+                api::schema::PaneReadResult {
+                    pane_id: pane.pane_id.clone(),
+                    workspace_id: pane.workspace_id,
+                    tab_id: pane.tab_id,
+                    source: api::schema::ReadSource::Recent,
+                    format: api::schema::ReadFormat::Text,
+                    text: String::new(),
+                    revision: 0,
+                    truncated: false,
+                },
+                120,
+                false,
+                initial,
+                0,
+                Instant::now(),
+            ),
+        );
+        for pane_id in [old_pane_id, pane.pane_id] {
+            let (respond_to, response_rx) = std::sync::mpsc::channel();
+            server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+                request: api::schema::Request {
+                    id: "read".into(),
+                    method: api::schema::Method::PaneRead(api::schema::PaneReadParams {
+                        pane_id,
+                        source: api::schema::ReadSource::Detection,
+                        lines: None,
+                        format: api::schema::ReadFormat::Text,
+                        strip_ansi: true,
+                        intent: api::schema::ReadIntent::Passive,
+                    }),
+                },
+                respond_to,
+                response_write_complete: None,
+            });
+            let response: api::schema::SuccessResponse =
+                serde_json::from_str(&response_rx.try_recv().expect("immediate frozen response"))
+                    .unwrap();
+            let api::schema::ResponseResult::PaneRead { read } = response.result else {
+                panic!("expected pane read");
+            };
+            assert!(read.text.contains("frozen-bottom"), "{}", read.text);
+            assert!(!read.text.contains("transient-history"), "{}", read.text);
+        }
+    });
+}
+
+#[test]
 fn terminal_control_rejects_attach_during_alt_screen_read() {
     with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();

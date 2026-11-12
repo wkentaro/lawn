@@ -30,6 +30,11 @@ pub(crate) enum TerminalTargetError {
 }
 
 impl App {
+    pub(crate) fn resolve_pane_target(&self, target: &str) -> Option<TerminalTarget> {
+        let (ws_idx, pane_id) = self.parse_pane_id(target)?;
+        self.terminal_target_for_pane(ws_idx, pane_id)
+    }
+
     pub(crate) fn resolve_terminal_target(
         &self,
         target: &str,
