@@ -41,6 +41,7 @@ impl HeadlessServer {
             api::schema::Method::BackgroundList(_)
                 | api::schema::Method::BackgroundReport(_)
                 | api::schema::Method::BackgroundShellReport(_)
+                | api::schema::Method::BackgroundWaitSet(_)
         ) {
             let internal_changed = if self.shutting_down || self.host_shutdown_requested() {
                 false

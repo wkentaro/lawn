@@ -1,6 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-pub use crate::terminal::background::{BackgroundEvent, BackgroundSnapshot, ShellObservation};
+pub use crate::terminal::background::{
+    BackgroundEvent, BackgroundSnapshot, BackgroundTaskKind, BackgroundTaskRef, ShellObservation,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundWaitSetParams {
+    pub pane_id: String,
+    pub source: String,
+    pub session_id: String,
+    pub tasks: Vec<BackgroundTaskRef>,
+    pub waiting: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -119,6 +131,69 @@ mod tests {
         let value = serde_json::json!({"session_id":null, "coverage":"observations_only", "current_state":"unknown", "records":[], "revision":0, "truncated":false});
         let snapshot: super::BackgroundSnapshot = serde_json::from_value(value.clone()).unwrap();
         assert!(snapshot.shell_observations.is_none());
+        assert!(snapshot.wait_declarations.is_empty());
         assert_eq!(serde_json::to_value(snapshot).unwrap(), value);
+    }
+
+    #[test]
+    fn background_wait_set_pins_its_new_json_contract_separately() {
+        let value = serde_json::json!({"id":"wait", "method":"background.wait.set", "params":{
+            "pane_id":"w1:p1", "source":"herdr:claude", "session_id":"root", "waiting":true,
+            "tasks":[{"kind":"subagent","task_id":"same"},{"kind":"shell","task_id":"same"}]
+        }});
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(request.method, Method::BackgroundWaitSet(_)));
+        assert!(!crate::api::request_changes_ui(&request));
+        assert!(crate::server::client_commands::supports_client_shell_method(&request.method));
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        for (path, invalid) in [
+            ("/params/waiting", serde_json::Value::Null),
+            ("/params/waiting", "true".into()),
+            ("/params/tasks", serde_json::json!({})),
+            ("/params/tasks/0/kind", "unknown".into()),
+            ("/params/tasks/0/task_id", 1.into()),
+        ] {
+            let mut malformed = value.clone();
+            *malformed.pointer_mut(path).unwrap() = invalid;
+            assert!(
+                serde_json::from_value::<Request>(malformed).is_err(),
+                "{path}"
+            );
+        }
+        for field in ["pane_id", "source", "session_id", "tasks", "waiting"] {
+            let mut malformed = value.clone();
+            malformed["params"].as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<Request>(malformed).is_err(),
+                "{field}"
+            );
+        }
+        for path in ["/params", "/params/tasks/0"] {
+            let mut malformed = value.clone();
+            malformed.pointer_mut(path).unwrap()["extra"] = true.into();
+            assert!(
+                serde_json::from_value::<Request>(malformed).is_err(),
+                "{path}"
+            );
+        }
+        for field in ["kind", "task_id"] {
+            let mut malformed = value.clone();
+            malformed["params"]["tasks"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                serde_json::from_value::<Request>(malformed).is_err(),
+                "{field}"
+            );
+        }
+        let mut snapshot = serde_json::json!({"session_id":null, "coverage":"observations_only", "current_state":"unknown", "records":[], "revision":0, "truncated":false});
+        snapshot["wait_declarations"] = serde_json::json!([]);
+        assert!(
+            serde_json::from_value::<super::BackgroundSnapshot>(snapshot)
+                .unwrap()
+                .wait_declarations
+                .is_empty()
+        );
     }
 }

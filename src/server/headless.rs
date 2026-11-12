@@ -3058,6 +3058,7 @@ impl HeadlessServer {
             api::schema::Method::BackgroundReport(_)
                 | api::schema::Method::BackgroundList(_)
                 | api::schema::Method::BackgroundShellReport(_)
+                | api::schema::Method::BackgroundWaitSet(_)
         ) {
             let response = self
                 .app

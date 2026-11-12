@@ -6,6 +6,8 @@ use super::TerminalState;
 
 mod shell;
 pub use shell::{ShellObservation, ShellObservations};
+mod wait;
+pub use wait::{BackgroundTaskKind, BackgroundTaskRef, BackgroundWaitDeclaration};
 
 const MAX_TASKS: usize = 128;
 const MAX_ID_BYTES: usize = 256;
@@ -65,6 +67,8 @@ pub struct BackgroundSnapshot {
     pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_observations: Option<ShellObservations>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wait_declarations: Vec<BackgroundWaitDeclaration>,
 }
 
 #[derive(Default)]
@@ -74,6 +78,7 @@ pub(super) struct BackgroundObservations {
     revision: u64,
     truncated: bool,
     shell: Option<ShellObservations>,
+    wait_declarations: Vec<BackgroundWaitDeclaration>,
 }
 
 fn bounded_text(value: &str, max_bytes: usize) -> bool {
@@ -226,6 +231,11 @@ impl TerminalState {
             shell_observations: current_owner
                 .then(|| self.background.shell.clone())
                 .flatten(),
+            wait_declarations: if current_owner {
+                self.background.wait_declarations.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }

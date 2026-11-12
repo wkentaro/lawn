@@ -115,6 +115,15 @@ On `Stop` and `SubagentStop`, the hooks also report shell snapshots when the nat
 
 Read these observations with the existing `herdr agent background list w1:p1 --json` command. Shell snapshots are observations as of a hook event, and receipt order does not establish which snapshot the source produced last. Reported status does not confirm current state, and a task's disappearance does not prove completion. Outcomes remain unknown. A reporting subagent's ID does not establish task ownership. Claude Code state still comes from Herdr's screen manifest detection; waits and notifications are unchanged. See [Socket API](/docs/socket-api/#agent-state-reporting) for report shapes and retention limits.
 
+An authorized local caller can explicitly declare a wait for observed work. Supply the caller's root Claude session ID and the task kind; Herdr does not infer a wait from hooks, task kinds, commands, output, or snapshot membership:
+
+```bash
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent agent-review
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent --clear agent-review
+```
+
+`declare-wait` records or clears a local caller declaration and returns JSON with `matched` and `unmatched` references, each containing `kind` and `task_id`. It does not block. Use `--kind shell` for shell tasks. `background.list` exposes declarations through optional `background.wait_declarations` records with `kind`, `task_id`, and `declared_at_ms`; an absent field or empty array means no declarations. A declaration does not prove parent-agent intent, live execution, completion, success, or correctness. Stop observations, absent or empty snapshots, disappearing tasks, and apparent completion do not clear it. Only explicit clearing, root identity replacement, or terminal respawn clears declarations. Resuming the same session ID retains historical declarations without confirming current state. Existing `agent wait`, `agent prompt --wait`, screen detection, and notifications are unchanged.
+
 The `SessionStart` matcher accepts only the documented sources: `startup`, `resume`, `clear`, `compact`, and `fork`. This prevents Grok's `new` and `load` events from launching the imported Herdr Claude hook, without disabling unrelated Claude-compatible hooks. Reinstall with `herdr integration install claude` after upgrading to update the matcher and register the subagent, `Stop`, and Bash `PostToolUse` hooks. New Claude source values require an integration update.
 
 Herdr uses `~/.claude` by default, or `CLAUDE_CONFIG_DIR` when set. The Claude config directory must already exist. Install writes `hooks/herdr-agent-state.sh` and updates `settings.json` with Herdr hook entries. Uninstall removes the matching hook entries and deletes the hook script.

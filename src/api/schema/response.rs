@@ -285,6 +285,13 @@ pub enum ResponseResult {
         terminal_id: String,
         background: super::background::BackgroundSnapshot,
     },
+    BackgroundWaitSet {
+        terminal_id: String,
+        session_id: String,
+        waiting: bool,
+        matched: Vec<super::background::BackgroundTaskRef>,
+        unmatched: Vec<super::background::BackgroundTaskRef>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -1,8 +1,8 @@
 use super::*;
 
 use api::schema::{
-    BackgroundReportParams, BackgroundShellReportParams, Method, PaneTarget, Request,
-    WorkspaceTarget,
+    BackgroundReportParams, BackgroundShellReportParams, BackgroundTaskKind, BackgroundTaskRef,
+    BackgroundWaitSetParams, Method, PaneTarget, Request, WorkspaceTarget,
 };
 
 fn background_endpoint_server() -> (HeadlessServer, String) {
@@ -69,9 +69,23 @@ fn background_shell_snapshot(pane_id: &str) -> Method {
     })).unwrap().method
 }
 
+fn background_wait_set(pane_id: &str) -> Method {
+    Method::BackgroundWaitSet(BackgroundWaitSetParams {
+        pane_id: pane_id.into(),
+        source: "herdr:claude".into(),
+        session_id: "root".into(),
+        tasks: vec![BackgroundTaskRef {
+            kind: BackgroundTaskKind::Subagent,
+            task_id: "child".into(),
+        }],
+        waiting: true,
+    })
+}
+
 fn background_method(pane_id: &str, method: &str) -> Method {
     match method {
         "background.report" => background_report(pane_id),
+        "background.wait.set" => background_wait_set(pane_id),
         "background.shell.report" => background_shell_report(pane_id),
         "background.list" => Method::BackgroundList(PaneTarget {
             pane_id: pane_id.into(),
@@ -195,6 +209,21 @@ async fn background_endpoint_observations_preserve_presentation_and_pending_comm
                     ServerMessage::TerminalBell { count: 2 }
                 ));
             }
+
+            assert!(!endpoint_request(
+                &mut server,
+                "wait",
+                background_wait_set(&pane_id)
+            ));
+            let declared = endpoint_response(&control, "wait");
+            assert_eq!(declared["result"]["type"], "background_wait_set");
+            assert_eq!(declared["result"]["session_id"], "root");
+            assert_eq!(
+                declared["result"]["matched"],
+                serde_json::json!([{"kind":"subagent","task_id":"child"}])
+            );
+            assert_eq!(declared["result"]["unmatched"], serde_json::json!([]));
+            assert_eq!(presentation(&server), before);
 
             server
                 .app
@@ -468,6 +497,7 @@ async fn background_endpoint_requests_preserve_shutdown_and_queued_events() {
         "background.list",
         "background.report",
         "background.shell.report",
+        "background.wait.set",
     ] {
         for shutdown in ["server", "host", "before-first-event", "after-first-event"] {
             let (mut server, pane_id) = background_endpoint_server();
@@ -554,6 +584,7 @@ async fn background_endpoint_requests_preserve_boot_and_connection_mode_checks()
         "background.list",
         "background.report",
         "background.shell.report",
+        "background.wait.set",
     ] {
         let (mut server, pane_id) = background_endpoint_server();
         let (control, _) = connect_matching_test_shell(&mut server, 8);
@@ -737,6 +768,7 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
         (background_report(&pane_id), "ok"),
         (background_shell_report(&pane_id), "ok"),
         (background_shell_snapshot(&pane_id), "ok"),
+        (background_wait_set(&pane_id), "background_wait_set"),
         (
             Method::BackgroundList(PaneTarget { pane_id }),
             "background_list",
@@ -785,6 +817,7 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
     for method in [
         background_report("missing"),
         background_shell_report("missing"),
+        background_wait_set("missing"),
         Method::BackgroundList(PaneTarget {
             pane_id: "missing".into(),
         }),
@@ -803,6 +836,7 @@ async fn background_socket_requests_preserve_expiry_title_sync_and_event_forward
         "background.list",
         "background.report",
         "background.shell.report",
+        "background.wait.set",
     ] {
         let (mut server, pane_id) = background_endpoint_server();
         let (control, _) = connect_matching_test_shell(&mut server, 8);
@@ -933,6 +967,7 @@ fn background_socket_requests_preserve_shutdown_checks_and_queued_events() {
         "background.list",
         "background.report",
         "background.shell.report",
+        "background.wait.set",
     ] {
         for shutdown in ["server", "host", "during-drain"] {
             let (mut server, pane_id) = background_endpoint_server();
@@ -975,5 +1010,12 @@ fn background_socket_requests_preserve_shutdown_checks_and_queued_events() {
 async fn background_shell_both_transports_drain_pane_death_beyond_batch_limit() {
     for endpoint in [false, true] {
         assert_background_drains_pane_death("background.shell.report", endpoint);
+    }
+}
+
+#[tokio::test]
+async fn background_wait_both_transports_drain_pane_death_beyond_batch_limit() {
+    for endpoint in [false, true] {
+        assert_background_drains_pane_death("background.wait.set", endpoint);
     }
 }

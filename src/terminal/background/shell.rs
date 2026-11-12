@@ -56,6 +56,18 @@ pub struct ShellObservations {
     pub truncated: bool,
 }
 
+impl ShellObservations {
+    pub(super) fn contains_task(&self, task_id: &str) -> bool {
+        self.last_received_snapshot.as_ref().is_some_and(|record| {
+            matches!(&record.observation, ShellObservation::SnapshotObserved { tasks, .. }
+                if tasks.iter().any(|task| task.task_id == task_id))
+        }) || self.bash_reports.iter().any(|record| {
+            matches!(&record.observation, ShellObservation::BashBackgroundObserved { task_id: id, .. }
+                if id == task_id)
+        })
+    }
+}
+
 fn valid_command(command: &Option<String>) -> bool {
     command.as_ref().is_none_or(|value| {
         value.len() <= MAX_COMMAND_BYTES

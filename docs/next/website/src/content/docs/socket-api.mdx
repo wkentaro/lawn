@@ -108,7 +108,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
 | Events | `events.subscribe`, `events.wait` |
-| Background | `background.report`, `background.shell.report`, `background.list` |
+| Background | `background.report`, `background.shell.report`, `background.list`, `background.wait.set` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
 
@@ -780,6 +780,65 @@ The `background` object can also include the optional `shell_observations` field
 `bash_reports` holds at most 128 distinct historical observations, each with its first `received_at_ms`. Herdr deduplicates them by `task_id`, `tool_use_id`, and reporter ID. `shell_observations.truncated` reports dropped Bash observations; the retained snapshot has its own `truncated` flag. Same-session resume retains shell history. Root session replacement or terminal respawn clears it.
 
 Shell `current_state` and `outcome` remain `unknown`. Native `reported_status` is an observation at the hook event. These records cannot establish current task membership, a running count, or success. Shell observations leave agent state, waits, and completion notifications unchanged. Read them through the existing `herdr agent background list <pane> --json` command.
+
+The advertised `background.wait.set` method records an authorized local caller's explicit wait declaration. Its strict parameters are `pane_id`, `source: "herdr:claude"`, the caller's root `session_id`, `tasks`, and boolean `waiting`. Each task reference requires `kind: "subagent"` or `kind: "shell"` and `task_id`. The same ID in different kinds identifies different references. The source and root session must match the terminal's current Claude identity, as with observation reports. A stale root session is rejected. Herdr resolves the pane's terminal attachment once, and declarations follow the terminal when a pane moves.
+
+This example assumes `agent-review` and `shell-1` have retained observations, while `missing-shell` has neither an observation nor an existing declaration:
+
+```json
+{
+  "id": "req_background_wait",
+  "method": "background.wait.set",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "tasks": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"},
+      {"kind":"shell","task_id":"missing-shell"}
+    ],
+    "waiting": true
+  }
+}
+```
+
+The result includes terminal identity, root session identity, the requested `waiting` value, and matched and unmatched references:
+
+```json
+{
+  "id": "req_background_wait",
+  "result": {
+    "type": "background_wait_set",
+    "terminal_id": "terminal-id",
+    "session_id": "claude-session",
+    "waiting": true,
+    "matched": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"}
+    ],
+    "unmatched": [{"kind":"shell","task_id":"missing-shell"}]
+  }
+}
+```
+
+`waiting: true` matches retained subagent observations, tasks in the last received shell snapshot, retained Bash observations, or existing declarations. Unknown references remain unmatched and create no entries. `waiting: false` clears declarations for matched references, including an existing declaration whose shell task has disappeared from the last received snapshot. Repeating an unchanged set or clear is idempotent. Duplicate references are removed while preserving first input order. IDs must be nonempty, contain no control characters, and fit within 256 UTF-8 bytes. Requests allow at most 128 unique references. Herdr stores at most 128 declarations per terminal; a request that would exceed capacity returns an explicit error without applying any of its mutations.
+
+`background.list` exposes the declarations in optional `background.wait_declarations` records, alongside the shared `background.revision`:
+
+```json
+{
+  "wait_declarations": [
+    {"kind":"subagent","task_id":"agent-review","declared_at_ms":1700000000000},
+    {"kind":"shell","task_id":"shell-1","declared_at_ms":1700000000000}
+  ],
+  "revision": 7
+}
+```
+
+An absent `wait_declarations` field or an empty array means no declarations. `declared_at_ms` is the first server receipt time of the declaration in Unix milliseconds; repeating the same declaration preserves it. Declarations are server-owned in-memory facts available through the JSON API without a TUI. An unsupported `background.wait.set` method means this capability is unavailable. The existing `background.report`, `background.shell.report`, and `background.list` parameter shapes are unchanged.
+
+A declaration is not proof of parent-agent intent, live execution, completion, success, or correctness. Herdr never infers one from task kinds, commands, output, snapshot membership, or status. Stop observations, absent or empty snapshots, disappearing tasks, and apparent completion never clear declarations. Only explicit clearing, root session identity replacement, or terminal respawn clears them. Resuming the same session ID preserves historical declarations without confirming current state. Existing screen detection, `agent.wait`, `agent.prompt --wait`, and notifications remain unchanged. The CLI `herdr agent background declare-wait <pane> --session-id <root-id> --kind <subagent|shell> [--clear] <task-id>...` records or clears the declaration and returns structured JSON; it does not block.
 
 `pane.get`, `pane.list`, `agent.get`, and `agent.list` expose a read-only `agent_session` object when Herdr has a stored native session reference:
 

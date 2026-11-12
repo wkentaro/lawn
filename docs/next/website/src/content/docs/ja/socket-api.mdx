@@ -104,7 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | イベント | `events.subscribe`、`events.wait` |
-| バックグラウンド | `background.report`、`background.shell.report`、`background.list` |
+| バックグラウンド | `background.report`、`background.shell.report`、`background.list`、`background.wait.set` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -640,6 +640,65 @@ Bash の `PostToolUse` 報告は、構造化された `tool_response.backgroundT
 `bash_reports` は重複を除いて最大 128 件の過去の観測情報を保持します。各項目の `received_at_ms` は最初の受信時刻です。Herdr は `task_id`、`tool_use_id`、報告元の ID の組み合わせで重複を判定します。`shell_observations.truncated` は保持できなかった Bash の観測情報があることを示します。保持中のスナップショットには独自の `truncated` があります。同じセッションの resume ではシェルの履歴を保持します。ルートセッションの置換やターミナルの再生成では消去します。
 
 シェルの `current_state` と `outcome` は `unknown` のままです。ネイティブの `reported_status` はフックイベント時点の観測情報です。これらの記録から、現在どのタスクが存在するか、実行中の件数、成功したかどうかは判断できません。シェルの観測情報はエージェントの状態、待機、完了通知に影響しません。既存の `herdr agent background list <pane> --json` コマンドで読み取れます。
+
+サーバーが対応メソッドとして通知する `background.wait.set` は、権限のあるローカルの呼び出し元による明示的な待機の宣言を記録します。パラメーターは厳密な形式で、`pane_id`、`source: "herdr:claude"`、呼び出し元のルート `session_id`、`tasks`、真偽値の `waiting` です。各タスク参照には `kind: "subagent"` または `kind: "shell"` と `task_id` が必須です。同じ ID でも kind が異なれば別の参照です。観測情報の報告と同様に、source とルートセッションはターミナルの現在の Claude の識別情報と一致する必要があります。古いルートセッションは拒否します。Herdr はペインに接続されたターミナルを一度だけ解決し、ペインが移動しても宣言はそのターミナルに保持します。
+
+次の例では `agent-review` と `shell-1` の観測情報を保持しているとします。`missing-shell` には観測情報も既存の宣言もありません。
+
+```json
+{
+  "id": "req_background_wait",
+  "method": "background.wait.set",
+  "params": {
+    "pane_id": "w1:p1",
+    "source": "herdr:claude",
+    "session_id": "claude-session",
+    "tasks": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"},
+      {"kind":"shell","task_id":"missing-shell"}
+    ],
+    "waiting": true
+  }
+}
+```
+
+結果にはターミナルの識別情報、ルートセッションの識別情報、指定した `waiting` の値、一致した参照と一致しなかった参照が含まれます。
+
+```json
+{
+  "id": "req_background_wait",
+  "result": {
+    "type": "background_wait_set",
+    "terminal_id": "terminal-id",
+    "session_id": "claude-session",
+    "waiting": true,
+    "matched": [
+      {"kind":"subagent","task_id":"agent-review"},
+      {"kind":"shell","task_id":"shell-1"}
+    ],
+    "unmatched": [{"kind":"shell","task_id":"missing-shell"}]
+  }
+}
+```
+
+`waiting: true` は保持中のサブエージェントの観測情報、最後に受信したシェルのスナップショット内のタスク、保持中の Bash の観測情報、既存の宣言を照合します。未知の参照は `unmatched` に残り、記録を作成しません。`waiting: false` は一致した参照の宣言を解除します。シェルタスクが最後に受信したスナップショットから消えていても、既存の宣言を解除できます。同じ設定や解除を繰り返しても状態は変わりません。重複する参照を除き、入力で最初に現れた順序を保ちます。ID は空でなく、制御文字を含まず、UTF-8 で 256 バイト以内でなければなりません。1 回のリクエストで指定できる参照は重複を除いて最大 128 件です。Herdr はターミナルごとに最大 128 件の宣言を保存します。保持上限を超えるリクエストには明示的なエラーを返し、そのリクエストの変更を一切適用しません。
+
+`background.list` は省略可能な `background.wait_declarations` に宣言の記録を返し、共通の `background.revision` も返します。
+
+```json
+{
+  "wait_declarations": [
+    {"kind":"subagent","task_id":"agent-review","declared_at_ms":1700000000000},
+    {"kind":"shell","task_id":"shell-1","declared_at_ms":1700000000000}
+  ],
+  "revision": 7
+}
+```
+
+`wait_declarations` フィールドがない場合や空の配列の場合は宣言がありません。`declared_at_ms` はサーバーが宣言を最初に受信した Unix 時刻のミリ秒値です。同じ宣言を繰り返しても変わりません。宣言はサーバーがメモリ内で管理し、TUI を使わずに JSON API から参照できます。`background.wait.set` メソッドに対応していなければ、この機能は利用できません。既存の `background.report`、`background.shell.report`、`background.list` のパラメーター形式は変わりません。
+
+宣言は親エージェントの意図、現在の実行、完了、成功、正しさを証明しません。Herdr はタスクの kind、コマンド、出力、スナップショットに含まれるかどうか、状態から宣言を推測しません。停止の観測、スナップショットの欠落や空配列、一覧からのタスクの消失、完了したように見える状態では解除しません。明示的な解除、ルートセッションの識別情報の置換、ターミナルの再生成でのみ解除します。同じセッション ID で resume すると過去の宣言を保持しますが、現在の状態は確認できません。既存のスクリーン検出、`agent.wait`、`agent.prompt --wait`、通知の動作は変わりません。CLI の `herdr agent background declare-wait <pane> --session-id <root-id> --kind <subagent|shell> [--clear] <task-id>...` は宣言を記録または解除して構造化された JSON を返します。このコマンドは待機しません。
 
 Herdr に保存されたネイティブセッション参照があるとき、`pane.get`、`pane.list`、`agent.get`、`agent.list` は読み取り専用の `agent_session` オブジェクトを公開します:
 

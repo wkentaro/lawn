@@ -7,9 +7,10 @@ use crate::api::schema::agents::{
 };
 use crate::api::schema::{
     AgentPromptParams, AgentReadParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams,
-    AgentStatus, AgentTarget, AgentWaitParams, PaneTarget, ReadFormat, ReadSource, READ_FORMATS,
-    READ_SOURCES,
+    AgentStatus, AgentTarget, AgentWaitParams, BackgroundTaskKind, BackgroundTaskRef,
+    BackgroundWaitSetParams, PaneTarget, ReadFormat, ReadSource, READ_FORMATS, READ_SOURCES,
 };
+use crate::cli::pane::bindings::text;
 pub(crate) use crate::cli::projection::optional_text;
 use crate::cli::projection::{
     choices, cli_projection, parse_choice, Choice, Field, Input, ParseError,
@@ -226,8 +227,36 @@ cli_projection! {
     }
 }
 
+const BACKGROUND_KINDS: &[Choice<BackgroundTaskKind>] = &[
+    Choice::new("subagent", BackgroundTaskKind::Subagent),
+    Choice::new("shell", BackgroundTaskKind::Shell),
+];
+
+struct DeclareWait {
+    pane_id: String,
+    session_id: String,
+    kind: BackgroundTaskKind,
+    task_ids: Vec<String>,
+    waiting: bool,
+}
+
+cli_projection! {
+    DeclareWaitProjection for DeclareWait {
+        pane_id => Field::new(String::new()).input(text_position("pane_id", "PANE", 0)),
+        session_id => Field::new(String::new()).input(text("session-id", "ROOT_ID").required()),
+        kind => Field::new(BackgroundTaskKind::Subagent).input(Input::value("kind", "KIND", |slot, value| {
+            *slot = parse_choice(BACKGROUND_KINDS, "background task kind", value)?; Ok(())
+        }).required().configure(|arg| choices(arg, BACKGROUND_KINDS))),
+        task_ids => Field::new(Vec::new()).input(Input::<Vec<String>>::positional("task_ids", 1, |slot, value| {
+            slot.push(value.to_owned()); Ok(())
+        }).value_name("TASK_ID").configure(|arg| arg.num_args(1..).allow_hyphen_values(false))),
+        waiting => Field::new(true).input(Input::flag("clear", |slot, _| { *slot = false; Ok(()) })),
+    }
+}
+
 pub(crate) enum Operation {
     BackgroundList(PaneTarget),
+    BackgroundWaitSet(BackgroundWaitSetParams),
     List,
     Get(AgentTarget),
     Focus(AgentTarget),
@@ -250,10 +279,12 @@ pub(crate) fn command() -> Command {
         .about("Control and inspect agent panes")
         .subcommand_required(true)
         .subcommand(Command::new("background")
-            .about("Inspect historical background task observations")
+            .about("Inspect background observations and declare waits")
             .subcommand_required(true)
             .subcommand(leaf("list", crate::cli::pane::bindings::PaneTargetProjection::arguments(), "List background observations as JSON")
-                .arg(clap::Arg::new("json").long("json").action(clap::ArgAction::SetTrue))))
+                .arg(clap::Arg::new("json").long("json").action(clap::ArgAction::SetTrue)))
+            .subcommand(leaf("declare-wait", DeclareWaitProjection::arguments(), "Record an explicit wait declaration and return immediately as JSON")
+                .after_help("Requires the caller's root session ID and task kind. --clear removes declarations. This command does not wait for completion.")))
         .subcommand(leaf("list", Vec::new(), "List agents"))
         .subcommand(leaf("get", TargetProjection::arguments(), "Show an agent"))
         .subcommand(leaf("focus", TargetProjection::arguments(), "Focus an agent"))
@@ -286,12 +317,36 @@ pub(crate) fn from_matches(matches: &ArgMatches) -> Result<Operation, ParseError
     };
     Ok(match name {
         "background" => {
-            let Some(("list", matches)) = matches.subcommand() else {
-                return Err(ParseError::Usage("missing background list command".into()));
+            let Some((name, matches)) = matches.subcommand() else {
+                return Err(ParseError::Usage("missing background command".into()));
             };
-            Operation::BackgroundList(
-                crate::cli::pane::bindings::PaneTargetProjection::from_matches(matches)?,
-            )
+            match name {
+                "list" => Operation::BackgroundList(
+                    crate::cli::pane::bindings::PaneTargetProjection::from_matches(matches)?,
+                ),
+                "declare-wait" => {
+                    let params = DeclareWaitProjection::from_matches(matches)?;
+                    Operation::BackgroundWaitSet(BackgroundWaitSetParams {
+                        pane_id: params.pane_id,
+                        source: "herdr:claude".into(),
+                        session_id: params.session_id,
+                        tasks: params
+                            .task_ids
+                            .into_iter()
+                            .map(|task_id| BackgroundTaskRef {
+                                kind: params.kind,
+                                task_id,
+                            })
+                            .collect(),
+                        waiting: params.waiting,
+                    })
+                }
+                _ => {
+                    return Err(ParseError::Usage(format!(
+                        "unknown background command: {name}"
+                    )))
+                }
+            }
         }
         "list" => Operation::List,
         "get" => Operation::Get(TargetProjection::from_matches(matches)?),

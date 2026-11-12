@@ -1760,6 +1760,60 @@
           ],
           "type": "object"
         },
+        "BackgroundTaskKind": {
+          "enum": [
+            "subagent",
+            "shell"
+          ],
+          "type": "string"
+        },
+        "BackgroundTaskRef": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/request/$defs/BackgroundTaskKind"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "BackgroundWaitSetParams": {
+          "additionalProperties": false,
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "tasks": {
+              "items": {
+                "$ref": "#/schemas/request/$defs/BackgroundTaskRef"
+              },
+              "type": "array"
+            },
+            "waiting": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "source",
+            "session_id",
+            "tasks",
+            "waiting"
+          ],
+          "type": "object"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -6566,6 +6620,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "background.wait.set",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/BackgroundWaitSetParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7139,6 +7209,12 @@
             },
             "truncated": {
               "type": "boolean"
+            },
+            "wait_declarations": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/BackgroundWaitDeclaration"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -7147,6 +7223,50 @@
             "records",
             "revision",
             "truncated"
+          ],
+          "type": "object"
+        },
+        "BackgroundTaskKind": {
+          "enum": [
+            "subagent",
+            "shell"
+          ],
+          "type": "string"
+        },
+        "BackgroundTaskRef": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundTaskKind"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id"
+          ],
+          "type": "object"
+        },
+        "BackgroundWaitDeclaration": {
+          "properties": {
+            "declared_at_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/BackgroundTaskKind"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "declared_at_ms"
           ],
           "type": "object"
         },
@@ -10937,6 +11057,44 @@
                 "type",
                 "terminal_id",
                 "background"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "matched": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BackgroundTaskRef"
+                  },
+                  "type": "array"
+                },
+                "session_id": {
+                  "type": "string"
+                },
+                "terminal_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "background_wait_set",
+                  "type": "string"
+                },
+                "unmatched": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BackgroundTaskRef"
+                  },
+                  "type": "array"
+                },
+                "waiting": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "type",
+                "terminal_id",
+                "session_id",
+                "waiting",
+                "matched",
+                "unmatched"
               ],
               "type": "object"
             }

@@ -245,6 +245,10 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         assert_eq!(
+            actual.remove("background.wait.set").as_deref(),
+            Some("9a426d2e079dd2892bbd2cb3411b3da38abdc0679d065cb92bcbdd141483abe0")
+        );
+        assert_eq!(
             actual.remove("background.list").as_deref(),
             Some("8f7215970993996be95ba8201f8c5e3b32b3ca347baa30f9944f886fb475aae6")
         );
@@ -356,6 +360,47 @@ mod tests {
         assert!(!supports_client_shell_method(&Method::ServerStop(
             crate::api::schema::EmptyParams::default(),
         )));
+    }
+
+    #[test]
+    fn background_wait_maximum_refs_fit_bounded_response_chunks() {
+        let refs: Vec<_> = (0..128)
+            .map(|index| crate::api::schema::BackgroundTaskRef {
+                kind: crate::api::schema::BackgroundTaskKind::Shell,
+                task_id: format!("{index:03}{}", "\"".repeat(253)),
+            })
+            .collect();
+        let response = serde_json::to_vec(&crate::api::schema::SuccessResponse {
+            id: "wait".into(),
+            result: crate::api::schema::ResponseResult::BackgroundWaitSet {
+                terminal_id: "terminal".into(),
+                session_id: "root".into(),
+                waiting: true,
+                matched: vec![],
+                unmatched: refs.clone(),
+            },
+        })
+        .unwrap();
+        let mut received = Vec::new();
+        let mut finals = 0;
+        for (final_chunk, chunk) in endpoint_response_chunks(&response) {
+            assert_eq!(finals, 0);
+            assert!(chunk.len() <= ENDPOINT_RESPONSE_CHUNK_BYTES);
+            finals += usize::from(final_chunk);
+            received.extend_from_slice(chunk);
+        }
+        assert_eq!(finals, 1);
+        assert_eq!(received, response);
+        let decoded: crate::api::schema::SuccessResponse =
+            serde_json::from_slice(&received).unwrap();
+        let crate::api::schema::ResponseResult::BackgroundWaitSet {
+            unmatched, matched, ..
+        } = decoded.result
+        else {
+            panic!("expected background wait result");
+        };
+        assert_eq!(unmatched, refs);
+        assert!(matched.is_empty());
     }
 
     #[test]

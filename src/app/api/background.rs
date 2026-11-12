@@ -1,5 +1,6 @@
 use crate::api::schema::{
-    BackgroundReportParams, BackgroundShellReportParams, PaneTarget, ResponseResult,
+    BackgroundReportParams, BackgroundShellReportParams, BackgroundWaitSetParams, PaneTarget,
+    ResponseResult,
 };
 use crate::app::App;
 use crate::terminal::TerminalId;
@@ -15,6 +16,25 @@ fn received_at_ms() -> u64 {
 }
 
 impl App {
+    pub(super) fn handle_background_wait_set(
+        &mut self,
+        id: String,
+        params: BackgroundWaitSetParams,
+    ) -> String {
+        let Some(terminal_id) = self.background_terminal_id(&params.pane_id) else {
+            return encode_error(id, "pane_not_found", "background wait pane not found");
+        };
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return encode_error(id, "pane_not_found", "background wait terminal not found");
+        };
+        match terminal.set_background_wait(&params.source, &params.session_id, params.tasks, params.waiting, received_at_ms()) {
+            Ok((matched, unmatched)) => encode_success(id, ResponseResult::BackgroundWaitSet {
+                terminal_id: terminal_id.to_string(), session_id: params.session_id, waiting: params.waiting, matched, unmatched,
+            }),
+            Err(code) => encode_error(id, code, "background wait requires bounded refs, available declaration capacity and the current Claude root session"),
+        }
+    }
+
     fn background_terminal_id(&self, target: &str) -> Option<TerminalId> {
         let (ws_idx, pane_id) = self.parse_pane_id(target)?;
         self.state.terminal_id_for_pane(ws_idx, pane_id)
@@ -163,6 +183,97 @@ mod tests {
         })
     }
 
+    fn wait(pane_id: String, session_id: &str, waiting: bool) -> Method {
+        Method::BackgroundWaitSet(BackgroundWaitSetParams {
+            pane_id,
+            source: "herdr:claude".into(),
+            session_id: session_id.into(),
+            waiting,
+            tasks: vec![
+                crate::api::schema::BackgroundTaskRef {
+                    kind: crate::api::schema::BackgroundTaskKind::Subagent,
+                    task_id: "child".into(),
+                },
+                crate::api::schema::BackgroundTaskRef {
+                    kind: crate::api::schema::BackgroundTaskKind::Shell,
+                    task_id: "child".into(),
+                },
+            ],
+        })
+    }
+
+    #[test]
+    fn background_wait_json_reports_matches_and_preserves_session_presentation() {
+        let (mut app, pane_id, terminal_id) = app();
+        request(
+            &mut app,
+            report(
+                pane_id.clone(),
+                "root",
+                crate::api::schema::BackgroundEvent::SubagentStarted,
+            ),
+        );
+        let before = app.session_snapshot();
+        let history = app.state.terminals[&terminal_id].background_snapshot();
+        assert_eq!(
+            request(&mut app, wait(pane_id.clone(), "foreign", true))["error"]["code"],
+            "background_owner_mismatch"
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].background_snapshot(),
+            history
+        );
+        let response = request(&mut app, wait(pane_id.clone(), "root", true));
+        assert_eq!(response["result"]["type"], "background_wait_set");
+        assert_eq!(response["result"]["terminal_id"], terminal_id.to_string());
+        assert_eq!(response["result"]["session_id"], "root");
+        assert_eq!(response["result"]["waiting"], true);
+        assert_eq!(
+            response["result"]["matched"],
+            serde_json::json!([{"kind":"subagent","task_id":"child"}])
+        );
+        assert_eq!(
+            response["result"]["unmatched"],
+            serde_json::json!([{"kind":"shell","task_id":"child"}])
+        );
+        let declared = app.state.terminals[&terminal_id].background_snapshot();
+        assert_eq!(declared.revision, history.revision + 1);
+        request(&mut app, wait(pane_id.clone(), "root", true));
+        assert_eq!(
+            app.state.terminals[&terminal_id].background_snapshot(),
+            declared
+        );
+        let listed = request(
+            &mut app,
+            Method::BackgroundList(PaneTarget {
+                pane_id: pane_id.clone(),
+            }),
+        );
+        assert_eq!(
+            listed["result"]["background"]["wait_declarations"][0]["kind"],
+            "subagent"
+        );
+        assert!(
+            listed["result"]["background"]["wait_declarations"][0]["declared_at_ms"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        let cleared = request(&mut app, wait(pane_id, "root", false));
+        assert_eq!(cleared["result"]["waiting"], false);
+        assert!(app.state.terminals[&terminal_id]
+            .background_snapshot()
+            .wait_declarations
+            .is_empty());
+        assert_eq!(app.session_snapshot(), before);
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(terminal.last_agent_completion_seq, None);
+        assert!(terminal.hook_authority.is_none());
+        assert!(terminal.hook_report_is_newer("herdr:claude", Some(1)));
+        app.state.assert_invariants_for_test();
+    }
+
     #[test]
     fn background_shell_json_dispatch_is_observational_and_owner_scoped() {
         let (mut app, pane_id, terminal_id) = app();
@@ -260,6 +371,13 @@ mod tests {
                 crate::terminal::background::BackgroundEvent::SubagentStarted,
             ),
         );
+        assert_eq!(
+            request(&mut app, wait(pane_id.clone(), "root", true))["result"]["matched"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         let moved: serde_json::Value = serde_json::from_str(&app.handle_api_request(Request {
             id: "move".into(),
             method: Method::PaneMove(PaneMoveParams {
@@ -283,6 +401,17 @@ mod tests {
             }),
         );
         assert_eq!(listed["result"]["terminal_id"], terminal_id.to_string());
+        assert_eq!(
+            listed["result"]["background"]["wait_declarations"][0]["task_id"],
+            "child"
+        );
+        assert_eq!(
+            request(&mut app, wait(new_pane_id.into(), "root", false))["result"]["matched"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(
             listed["result"]["background"]["records"][0]["task_id"],
             "child"

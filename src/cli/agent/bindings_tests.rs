@@ -13,6 +13,7 @@ fn parse(args: &[&str]) -> Result<Operation, ParseError> {
 fn params(args: &[&str]) -> serde_json::Value {
     let method = match parse(args).unwrap() {
         Operation::BackgroundList(params) => Method::BackgroundList(params),
+        Operation::BackgroundWaitSet(params) => Method::BackgroundWaitSet(params),
         Operation::Get(params) => Method::AgentGet(params),
         Operation::Focus(params) => Method::AgentFocus(params),
         Operation::Read(params) => Method::AgentRead(params),
@@ -29,6 +30,94 @@ fn params(args: &[&str]) -> serde_json::Value {
     })
     .unwrap()["params"]
         .clone()
+}
+
+#[test]
+fn background_declare_wait_requires_explicit_owner_and_kind_and_projects_json() {
+    for (kind, clear) in [("subagent", false), ("shell", true)] {
+        let mut args = vec![
+            "background",
+            "declare-wait",
+            "w1:p1",
+            "--session-id",
+            "root",
+            "--kind",
+            kind,
+            "one",
+            "two",
+            "one",
+        ];
+        if clear {
+            args.push("--clear");
+        }
+        assert_eq!(
+            params(&args),
+            serde_json::json!({
+                "pane_id":"w1:p1", "source":"herdr:claude", "session_id":"root", "waiting":!clear,
+                "tasks":[{"kind":kind,"task_id":"one"},{"kind":kind,"task_id":"two"},{"kind":kind,"task_id":"one"}]
+            })
+        );
+    }
+    for args in [
+        vec![
+            "background",
+            "declare-wait",
+            "w1:p1",
+            "--kind",
+            "shell",
+            "one",
+        ],
+        vec![
+            "background",
+            "declare-wait",
+            "w1:p1",
+            "--session-id",
+            "root",
+            "one",
+        ],
+        vec![
+            "background",
+            "declare-wait",
+            "w1:p1",
+            "--session-id",
+            "root",
+            "--kind",
+            "future",
+            "one",
+        ],
+        vec![
+            "background",
+            "declare-wait",
+            "w1:p1",
+            "--session-id",
+            "root",
+            "--kind",
+            "shell",
+        ],
+    ] {
+        assert!(parse(&args).is_err(), "{args:?}");
+    }
+}
+
+#[test]
+fn background_declare_wait_accepts_more_than_128_raw_duplicate_refs() {
+    let mut args = vec![
+        "background",
+        "declare-wait",
+        "w1:p1",
+        "--session-id",
+        "root",
+        "--kind",
+        "shell",
+    ];
+    args.extend(vec!["same"; 129]);
+    assert_eq!(
+        params(&args)["tasks"],
+        serde_json::json!(vec![
+            serde_json::json!({"kind":"shell", "task_id":"same"});
+            129
+        ])
+    );
 }
 
 #[test]

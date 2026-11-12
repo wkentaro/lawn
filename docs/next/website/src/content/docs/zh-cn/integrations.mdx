@@ -117,6 +117,15 @@ herdr integration install claude
 
 使用现有的 `herdr agent background list w1:p1 --json` 命令读取这些记录。shell 快照只记录钩子事件发生时的观测结果，接收顺序不能确定哪份快照在源端最后生成。上报的状态不能确认当前状态，任务从快照中消失也不能证明已经完成。任务结果仍为未知。上报子智能体的 ID 不能确定任务归属。Claude Code 的状态仍来自 Herdr 的屏幕清单检测，等待和通知行为不变。上报结构和保留上限见 [Socket API](/zh-cn/docs/socket-api/#智能体状态上报)。
 
+有权限的本地调用方可以明确声明等待已观测的任务。请提供调用方的 Claude 根会话 ID 和任务 kind。Herdr 不会根据钩子、任务 kind、命令、输出或快照中的任务列表推断等待声明。
+
+```bash
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent agent-review
+herdr agent background declare-wait w1:p1 --session-id claude-session --kind subagent --clear agent-review
+```
+
+`declare-wait` 记录或清除本地调用方的声明，返回包含 `matched` 和 `unmatched` 引用的 JSON，各引用均包含 `kind` 和 `task_id`。此命令不会阻塞等待。shell 任务使用 `--kind shell`。`background.list` 通过可选的 `background.wait_declarations` 返回声明记录，各记录包含 `kind`、`task_id` 和 `declared_at_ms`；字段缺失或数组为空表示没有声明。声明不能证明父智能体的意图、当前执行情况、完成、成功或正确性。停止观测、快照缺失或为空、任务从快照中消失以及看似完成的状态都不会清除声明。只有显式清除、替换根会话身份或重新创建终端才会清除声明。恢复同一会话 ID 时保留历史声明，但不能确认当前状态。现有的 `agent wait`、`agent prompt --wait`、屏幕检测和通知行为不变。
+
 `SessionStart` 匹配规则仅接受文档列出的来源: `startup`、`resume`、`clear`、`compact` 和 `fork`。这会阻止 Grok 的 `new` 和 `load` 事件启动导入的 Herdr Claude 钩子,而不会禁用其他 Claude 兼容钩子。升级后请运行 `herdr integration install claude` 重新安装，以更新匹配规则并注册子智能体、`Stop` 和 Bash `PostToolUse` 钩子。Claude 新增来源值时需要更新集成。
 
 Herdr 默认使用 `~/.claude`,设置了 `CLAUDE_CONFIG_DIR` 时使用后者。Claude 配置目录必须已经存在。安装会写入 `hooks/herdr-agent-state.sh`,并向 `settings.json` 添加 Herdr 钩子条目。卸载会移除匹配的钩子条目并删除钩子脚本。
