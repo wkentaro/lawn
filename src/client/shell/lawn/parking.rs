@@ -8,6 +8,7 @@ pub(in crate::client::shell) struct PaneParking {
     store: ParkingStore,
     protected: BTreeSet<String>,
     preview: Option<String>,
+    pub(super) preview_return: Option<WorkspaceNavigationTarget>,
     focus: Option<String>,
     generation: Option<u64>,
     boot_id: Option<String>,
@@ -18,9 +19,13 @@ pub(in crate::client::shell) struct PaneParking {
     pending_identities: Option<(Option<u64>, PaneIdentities)>,
     prune_candidates: BTreeSet<String>,
     pane_tabs: HashMap<String, String>,
+    pane_workspaces: HashMap<String, String>,
     all_tabs: HashSet<String>,
+    all_workspaces: HashSet<String>,
     pub(super) hidden_panes: HashSet<String>,
     visible_tabs: HashSet<String>,
+    visible_workspaces: HashSet<String>,
+    pub(super) departed_workspace: Option<String>,
     terminal_panes: HashMap<String, String>,
     dirty: bool,
     failed: bool,
@@ -56,10 +61,12 @@ impl PaneParking {
             self.repaint = true;
             if !supported {
                 self.preview = None;
+                self.preview_return = None;
                 self.focus = None;
                 self.protected.clear();
                 self.hidden_panes.clear();
                 self.visible_tabs.clear();
+                self.visible_workspaces.clear();
                 self.terminal_panes.clear();
             }
         }
@@ -88,6 +95,12 @@ impl PaneParking {
 
     pub(in crate::client::shell) fn shows_tab(&self, tab: &str) -> bool {
         !self.supported || self.visible_tabs.contains(tab)
+    }
+
+    pub(in crate::client::shell) fn shows_workspace(&self, workspace: &str) -> bool {
+        !self.supported
+            || !self.all_workspaces.contains(workspace)
+            || self.visible_workspaces.contains(workspace)
     }
 
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
@@ -177,18 +190,42 @@ impl PaneParking {
             self.terminal_panes.clear();
             self.hidden_panes.clear();
             self.visible_tabs.clear();
+            self.visible_workspaces.clear();
+            self.pane_workspaces.clear();
+            self.departed_workspace = None;
+            self.preview_return = None;
             self.last_poll = None;
             self.prune_candidates.clear();
             self.failed = false;
             self.dirty = true;
         }
         self.revision = snapshot.revision;
+        let pane_workspaces: HashMap<_, _> = snapshot
+            .panes
+            .iter()
+            .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
+            .collect();
+        if let Some(workspace) = snapshot.focused_workspace_id.as_ref().filter(|workspace| {
+            self.pane_workspaces.iter().any(|(pane, owner)| {
+                owner == *workspace && !self.hides_pane(pane) && !pane_workspaces.contains_key(pane)
+            })
+        }) {
+            // A park changes visibility; only a vanished active pane triggers departure.
+            self.departed_workspace = Some(workspace.clone());
+        }
+        self.pane_workspaces = pane_workspaces;
+        self.all_workspaces = snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.workspace_id.clone())
+            .collect();
         self.pane_tabs = snapshot
             .panes
             .iter()
             .map(|pane| (pane.pane_id.clone(), pane.tab_id.clone()))
             .collect();
         self.all_tabs = snapshot.tabs.iter().map(|tab| tab.tab_id.clone()).collect();
+        self.recompute_visibility();
         let matches = self
             .pending_identities
             .as_ref()
@@ -253,6 +290,9 @@ impl PaneParking {
             }
         }
         self.identities = Some((generation, ids));
+        if self.preview.is_none() {
+            self.preview_return = None;
+        }
         self.recompute_visibility();
     }
 
@@ -274,6 +314,14 @@ impl PaneParking {
                 .iter()
                 .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
                 .map(|(_, tab)| tab.clone()),
+        );
+        let occupied: HashSet<_> = self.pane_workspaces.values().cloned().collect();
+        self.visible_workspaces = self.all_workspaces.difference(&occupied).cloned().collect();
+        self.visible_workspaces.extend(
+            self.pane_workspaces
+                .iter()
+                .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
+                .map(|(_, workspace)| workspace.clone()),
         );
     }
 
@@ -342,10 +390,12 @@ impl PaneParking {
         match error.code.as_str() {
             "pane_not_found" => {
                 self.preview = None;
+                self.preview_return = None;
                 self.focus = None;
                 self.dirty = true;
             }
             "wrong_boot" => {
+                self.preview_return = None;
                 self.boot_id = Some(error.boot_id);
                 self.sequence = 0;
                 self.identities = None;
@@ -368,6 +418,7 @@ impl PaneParking {
             .to_owned();
         self.store.park(&terminal)?;
         self.preview = None;
+        self.preview_return = None;
         self.focus = None;
         self.dirty = true;
         self.recompute_visibility();
@@ -393,6 +444,7 @@ impl PaneParking {
         self.store.restore(terminal)?;
         self.protected.remove(terminal);
         self.preview = None;
+        self.preview_return = None;
         self.focus = Some(terminal.into());
         self.dirty = true;
         self.recompute_visibility();
@@ -400,6 +452,7 @@ impl PaneParking {
     }
 
     pub(in crate::client::shell) fn leave_preview(&mut self) {
+        self.preview_return = None;
         if self.preview.take().is_some() {
             self.dirty = true;
         }

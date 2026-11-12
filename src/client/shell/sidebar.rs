@@ -48,6 +48,7 @@ pub(crate) fn render_collapsed_sidebar(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
+    parking: Option<&lawn::PaneParking>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -59,6 +60,9 @@ pub(crate) fn render_collapsed_sidebar(
     for (index, workspace) in snapshot
         .workspaces
         .iter()
+        .filter(|workspace| {
+            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
+        })
         .take(workspace_area.height as usize)
         .enumerate()
     {
@@ -218,7 +222,15 @@ pub(crate) fn render_sidebar(
 
     render_jump_launcher(buffer, workspace_area, config, hits);
 
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let entries = workspace_entries(
+        snapshot,
+        state.collapsed_groups,
+        state
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == *state.active_endpoint_id)
+            .map(|endpoint| &endpoint.parking),
+    );
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -453,9 +465,17 @@ pub(crate) fn render_sidebar(
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
+    parking: Option<&lawn::PaneParking>,
 ) -> Vec<WorkspaceEntry> {
     let mut members = HashMap::<&str, Vec<usize>>::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+    for (index, workspace) in snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, workspace)| {
+            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
+        })
+    {
         if let Some(worktree) = &workspace.worktree {
             members.entry(&worktree.key).or_default().push(index);
         }
@@ -479,7 +499,14 @@ pub(crate) fn workspace_entries(
         .collect::<HashSet<_>>();
     let mut emitted = HashSet::<&str>::new();
     let mut entries = Vec::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+    for (index, workspace) in snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, workspace)| {
+            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
+        })
+    {
         let Some(worktree) = workspace
             .worktree
             .as_ref()

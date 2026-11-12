@@ -201,6 +201,17 @@ impl ClientShellState {
             return true;
         }
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if contains(self.hits.dismiss_parking_preview, point) {
+                self.dismiss_parking_preview(outcome);
+                return true;
+            }
+            if contains(self.hits.new_workspace_empty, point) {
+                self.record_binding(
+                    crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
+                    outcome,
+                );
+                return true;
+            }
             if contains(self.hits.restore_pane, point) {
                 self.focused_parking_action(ParkingAction::Restore, outcome);
                 return true;

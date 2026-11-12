@@ -113,6 +113,9 @@ impl ClientShellState {
                     .workspaces
                     .iter()
                     .enumerate()
+                    .filter(|(_, workspace)| {
+                        endpoint.parking.shows_workspace(&workspace.workspace_id)
+                    })
                     .map(|(index, _)| WorkspaceEntry {
                         index,
                         indented: false,
@@ -126,7 +129,7 @@ impl ClientShellState {
                     self.collapsed_groups_for_endpoint(&endpoint.endpoint_id)
                         .unwrap_or(&empty_collapsed_groups)
                 };
-                render::workspace_entries(snapshot, collapsed_groups)
+                render::workspace_entries(snapshot, collapsed_groups, Some(&endpoint.parking))
             };
             for entry in entries {
                 targets.push(WorkspaceNavigationTarget {

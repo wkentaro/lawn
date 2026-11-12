@@ -405,6 +405,9 @@ impl ClientShellState {
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
+        if let Some(accepted) = self.preserve_parked_close(&method, outcome) {
+            return accepted;
+        }
         let changes_focus = match &method {
             crate::api::schema::Method::WorkspaceFocus(_)
             | crate::api::schema::Method::TabFocus(_)
@@ -1003,29 +1006,6 @@ impl ClientShellState {
                 let workspace_id = snapshot
                     .workspaces
                     .get(entries.get(index)?.index)?
-                    .workspace_id
-                    .clone();
-                self.reveal_workspace(&workspace_id);
-                Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
-            }
-            KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
-                let entries = self.navigation_workspace_entries(snapshot);
-                if entries.is_empty() {
-                    return None;
-                }
-                let current = entries
-                    .iter()
-                    .position(|entry| {
-                        snapshot.workspaces[entry.index].workspace_id == focused_workspace
-                    })
-                    .unwrap_or(0);
-                let delta = if action == KeybindAction::PreviousWorkspace {
-                    -1
-                } else {
-                    1
-                };
-                let next = (current as isize + delta).rem_euclid(entries.len() as isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next].index]
                     .workspace_id
                     .clone();
                 self.reveal_workspace(&workspace_id);

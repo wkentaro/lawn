@@ -120,6 +120,8 @@ pub(super) struct ShellHitMap {
     pub(super) parked_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) parked_max_scroll: usize,
     pub(super) restore_pane: Rect,
+    pub(super) dismiss_parking_preview: Rect,
+    pub(super) new_workspace_empty: Rect,
     pub(super) open_parked: Rect,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
@@ -1221,12 +1223,13 @@ impl ClientShellState {
     ) -> Vec<WorkspaceEntry> {
         let empty_collapsed_groups = HashSet::new();
         if self.mobile_layout_active() {
-            render::workspace_entries(snapshot, &empty_collapsed_groups)
+            render::workspace_entries(snapshot, &empty_collapsed_groups, self.active_parking())
         } else {
             render::workspace_entries(
                 snapshot,
                 self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
                     .unwrap_or(&empty_collapsed_groups),
+                self.active_parking(),
             )
         }
     }

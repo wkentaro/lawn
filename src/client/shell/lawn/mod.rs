@@ -11,6 +11,7 @@ pub(super) use parked::{
 };
 mod parking;
 pub(super) use parking::PaneParking;
+mod workspaces;
 
 impl ClientShellState {
     pub(crate) fn set_endpoint_parking_supported(
@@ -119,6 +120,7 @@ impl ClientShellState {
             self.receive_endpoint_unavailable(message);
             outcome.repaint = true;
         }
+        self.focus_after_parked_close(&mut outcome);
         outcome
     }
 
@@ -167,6 +169,14 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let previous_size = self.parking_size();
+        let same_endpoint = endpoint_id == self.active_endpoint_id;
+        let preview_return = matches!(action, ParkingAction::Preview)
+            .then(|| {
+                self.active_parking()
+                    .and_then(|parking| parking.preview_return.clone())
+                    .or_else(|| self.focused_navigation_target())
+            })
+            .flatten();
         let replacement = matches!(action, ParkingAction::Park)
             .then(|| {
                 let endpoint = self
@@ -209,7 +219,14 @@ impl ClientShellState {
                     .to_owned();
                 match action {
                     ParkingAction::Park => endpoint.parking.park(&pane),
-                    ParkingAction::Preview => endpoint.parking.preview(&terminal),
+                    ParkingAction::Preview => {
+                        let continuing = same_endpoint && endpoint.parking.preview_pane().is_some();
+                        endpoint.parking.preview(&terminal)?;
+                        if !continuing {
+                            endpoint.parking.preview_return = preview_return.clone();
+                        }
+                        Ok(())
+                    }
                     ParkingAction::Restore => endpoint.parking.restore(&terminal),
                 }
             });
@@ -278,6 +295,24 @@ impl ClientShellState {
         self.update_parking_size(previous_size);
     }
 
+    pub(super) fn dismiss_parking_preview(&mut self, outcome: &mut ClientShellInput) {
+        let target = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| endpoint.parking.preview_return.take());
+        self.leave_parking_preview();
+        if let Some(target) = target.filter(|target| self.navigation_target_valid(target)) {
+            self.focus_or_activate(
+                target.endpoint_id,
+                ClientEndpointFocusTarget::Workspace(target.workspace_id),
+                outcome,
+            );
+        }
+        outcome.repaint = true;
+        outcome.resize = true;
+    }
+
     pub(super) fn has_parking_preview(&self) -> bool {
         self.active_parking()
             .is_some_and(|parking| parking.preview_pane().is_some())
@@ -313,7 +348,7 @@ impl ClientShellState {
                 return false;
             }
             buffer.set_style(area, Style::default().bg(p.panel_bg));
-            let button_width = 11.min(area.width);
+            let button_width = 20.min(area.width);
             render::put_text(
                 buffer,
                 area.x,
@@ -333,27 +368,46 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " unpark ",
+                " unpark    dismiss ",
                 Style::default().fg(p.accent),
             );
-            self.hits.restore_pane = button;
+            self.hits.restore_pane = Rect::new(button.x, button.y, button.width.min(10), 1);
+            self.hits.dismiss_parking_preview = Rect::new(
+                button.x.saturating_add(10),
+                button.y,
+                button.width.saturating_sub(10),
+                1,
+            );
             return false;
         }
         let empty = snapshot
-            .panes
-            .iter()
-            .filter(|pane| {
-                Some(pane.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
-            })
-            .all(|pane| parking.hides_pane(&pane.pane_id))
-            && snapshot.panes.iter().any(|pane| {
-                Some(pane.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
-            });
+            .focused_workspace_id
+            .as_deref()
+            .is_some_and(|workspace| !parking.shows_workspace(workspace));
         if empty && !layout.pane_surface.is_empty() {
             let area = layout.pane_surface;
+            if area.height >= 3 {
+                let new_workspace = Rect::new(
+                    area.x + area.width.saturating_sub(17) / 2,
+                    (area.y + area.height / 2).saturating_sub(1).max(area.y),
+                    area.width.min(17),
+                    1,
+                );
+                render::put_text(
+                    buffer,
+                    new_workspace.x,
+                    new_workspace.y,
+                    new_workspace.width,
+                    " New workspace ",
+                    Style::default().fg(p.accent).bg(p.surface0),
+                );
+                self.hits.new_workspace_empty = new_workspace;
+            }
             let button = Rect::new(
                 area.x + area.width.saturating_sub(14) / 2,
-                area.y + area.height / 2,
+                (area.y + area.height / 2)
+                    .saturating_add(1)
+                    .min(area.bottom().saturating_sub(1)),
                 area.width.min(14),
                 1,
             );

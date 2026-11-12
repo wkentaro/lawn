@@ -41,11 +41,18 @@ pub(super) fn render_collapsed(
                     selected_row = snapshot
                         .workspaces
                         .iter()
+                        .filter(|workspace| {
+                            endpoint.parking.shows_workspace(&workspace.workspace_id)
+                        })
                         .position(|workspace| workspace.workspace_id == target.workspace_id)
                         .map(|index| total_rows + index);
                 }
             }
-            total_rows += snapshot.workspaces.len();
+            total_rows += snapshot
+                .workspaces
+                .iter()
+                .filter(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
+                .count();
         }
     }
     let height = usize::from(workspace_area.height);
@@ -123,7 +130,12 @@ pub(super) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        for workspace in &snapshot.workspaces {
+        for (visible_index, workspace) in snapshot
+            .workspaces
+            .iter()
+            .filter(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
+            .enumerate()
+        {
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -153,7 +165,7 @@ pub(super) fn render_collapsed(
                 );
             }
             let stale = endpoint.status != ClientEndpointStatus::Online;
-            let number = format!(" {}", workspace.number);
+            let number = format!(" {}", visible_index + 1);
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
                 Modifier::DIM
@@ -271,12 +283,16 @@ pub(super) fn render_expanded(
             let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
                 .unwrap_or(&empty_collapsed_groups);
             rows.extend(
-                super::sidebar::workspace_entries(snapshot, collapsed_groups)
-                    .into_iter()
-                    .map(|entry| Row::Workspace {
-                        endpoint: endpoint_index,
-                        entry,
-                    }),
+                super::sidebar::workspace_entries(
+                    snapshot,
+                    collapsed_groups,
+                    Some(&endpoint.parking),
+                )
+                .into_iter()
+                .map(|entry| Row::Workspace {
+                    endpoint: endpoint_index,
+                    entry,
+                }),
             );
         }
     }
