@@ -104,7 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | イベント | `events.subscribe`、`events.wait` |
-| バックグラウンド | `background.report`、`background.shell.report`、`background.list`、`background.wait.set` |
+| バックグラウンド | `background.report`、`background.shell.report`、`background.list`、`background.summary`、`background.wait.set` |
 | インテグレーション | `integration.install`、`integration.uninstall` |
 | プラグイン | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -614,6 +614,8 @@ Bash の `PostToolUse` 報告は、構造化された `tool_response.backgroundT
 省略可能な `command` はネイティブの構造化されたフック入力から取得し、Claude がすでに切り詰めている場合があります。Herdr はタスクの説明、アシスタントのメッセージ、トランスクリプト、出力先のパス、コマンド出力を記録しません。これらのフックから完了イベントを継続的に受け取ったり、ライブ出力を購読したりすることはできません。
 
 識別子の各フィールドは UTF-8 で 256 バイト、`reported_status` は 128 バイト、コマンドは 4096 バイトまでです。コマンドには改行を含められます。その他の表示テキストに制御文字がある場合は拒否します。フックは JSON の解析前に生の入力を最大 1 MiB に制限します。スナップショットには最大 128 件のシェル項目を含められ、省略があれば `truncated` で示します。`truncated` が true のスナップショットを完全な観測情報として扱わないでください。
+
+`background.summary` は空の `params` を受け取り、`result.type: "background_summary"` と `{pane_id, terminal_id, records}` の配列 `panes` を返します。記録がないペインは含みません。`records` は保持しているサブエージェントの記録数と、最後に受信したスナップショットおよび Bash レポートに含まれるシェルタスク ID の重複を除いた数の合計です。同じ ID が両方の種別にある場合は 2 件と数えます。これは過去のフック観測の件数であり、実行中のタスク数や完了・成功を示すものではありません。
 
 ```json
 {"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}

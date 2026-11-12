@@ -39,6 +39,7 @@ impl HeadlessServer {
         if matches!(
             &request.method,
             api::schema::Method::BackgroundList(_)
+                | api::schema::Method::BackgroundSummary(_)
                 | api::schema::Method::BackgroundReport(_)
                 | api::schema::Method::BackgroundShellReport(_)
                 | api::schema::Method::BackgroundWaitSet(_)

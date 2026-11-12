@@ -104,7 +104,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
 | 事件 | `events.subscribe`、`events.wait` |
-| 后台 | `background.report`、`background.shell.report`、`background.list`、`background.wait.set` |
+| 后台 | `background.report`、`background.shell.report`、`background.list`、`background.summary`、`background.wait.set` |
 | 集成 | `integration.install`、`integration.uninstall` |
 | 插件 | `plugin.link`、`plugin.list`、`plugin.unlink`、`plugin.enable`、`plugin.disable`、`plugin.action.list`、`plugin.action.invoke`、`plugin.log.list`、`plugin.pane.open`、`plugin.pane.focus`、`plugin.pane.close` |
 
@@ -610,6 +610,8 @@ Bash 的 `PostToolUse` 上报使用结构化的 `tool_response.backgroundTaskId`
 可选的 `command` 来自原生的结构化钩子输入，Claude 可能已将其截断。Herdr 不记录任务描述、助手消息、转录内容、输出路径或命令输出。这些钩子不提供连续的完成事件流或实时输出订阅。
 
 各标识符字段最多为 256 个 UTF-8 字节，`reported_status` 最多 128 字节，命令最多 4096 字节。命令可以包含换行；其他显示文本包含控制字符时会被拒绝。钩子在解析 JSON 前将原始输入限制为最多 1 MiB。每份快照最多包含 128 个 shell 条目，有省略时通过自身的 `truncated` 标记说明。不要将截断的快照视为完整观测记录。
+
+`background.summary` 接受空的 `params`，返回 `result.type: "background_summary"` 和由 `{pane_id, terminal_id, records}` 组成的 `panes` 数组，不包含记录数为零的窗格。`records` 为保留的子智能体记录数，加上最后收到的快照和 Bash 报告中去重后的 shell 任务 ID 数。同一 ID 同时出现在两种类型中时计为两条。这些是历史钩子观测记录，不能表示正在运行的任务数，也不能证明完成或成功。
 
 ```json
 {"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}

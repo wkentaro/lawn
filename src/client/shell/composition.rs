@@ -160,6 +160,7 @@ impl ClientShellState {
                 navigator,
                 &self.endpoints,
                 &self.active_endpoint_id,
+                &self.navigator_preview,
                 &self.config.palette,
             ) {
                 self.navigator_preview.area = rendered.navigator_content_preview;
@@ -715,6 +716,7 @@ impl ClientShellState {
                     &self.endpoints,
                     &self.active_endpoint_id,
                     &self.config.keybinds,
+                    &self.navigator_preview,
                     &self.config.palette,
                 )?;
                 navigator_preview_area = rendered.navigator_content_preview;

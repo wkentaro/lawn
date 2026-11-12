@@ -57,7 +57,7 @@ pub struct ShellObservations {
 }
 
 impl ShellObservations {
-    pub(super) fn contains_task(&self, task_id: &str) -> bool {
+    pub(crate) fn contains_task(&self, task_id: &str) -> bool {
         self.last_received_snapshot.as_ref().is_some_and(|record| {
             matches!(&record.observation, ShellObservation::SnapshotObserved { tasks, .. }
                 if tasks.iter().any(|task| task.task_id == task_id))
@@ -216,6 +216,56 @@ mod tests {
         terminal
             .report_background_shell("herdr:claude", "root", observation, at)
             .unwrap();
+    }
+
+    #[test]
+    fn background_record_count_deduplicates_shell_ids_and_keeps_kinds_separate() {
+        let mut terminal = terminal();
+        assert_eq!(terminal.background_record_count(), 0);
+        for event in [
+            super::super::BackgroundEvent::SubagentStarted,
+            super::super::BackgroundEvent::SubagentStopObserved,
+        ] {
+            terminal
+                .report_background("herdr:claude", "root", event, "same", None, 1)
+                .unwrap();
+        }
+        assert_eq!(terminal.background_record_count(), 1);
+        let tasks = ["same", "same", "snapshot-only"]
+            .into_iter()
+            .map(|task_id| ShellTask {
+                task_id: task_id.into(),
+                reported_status: "unknown-native-status".into(),
+                command: None,
+            })
+            .collect();
+        report(&mut terminal, snapshot(tasks, false), 2);
+        assert_eq!(terminal.background_record_count(), 3);
+        for observation in [
+            bash("same", "tool", None),
+            bash("same", "other-tool", Some("reporter")),
+            bash("bash-only", "tool", None),
+        ] {
+            report(&mut terminal, observation, 3);
+        }
+        assert_eq!(terminal.background_record_count(), 4);
+        terminal
+            .set_background_wait(
+                "herdr:claude",
+                "root",
+                vec![super::super::BackgroundTaskRef {
+                    kind: super::super::BackgroundTaskKind::Shell,
+                    task_id: "snapshot-only".into(),
+                }],
+                true,
+                4,
+            )
+            .unwrap();
+        report(&mut terminal, snapshot(Vec::new(), false), 5);
+        assert_eq!(terminal.background_record_count(), 3);
+        assert_eq!(terminal.background_snapshot().wait_declarations.len(), 1);
+        terminal.background.session_id = Some("stale-owner".into());
+        assert_eq!(terminal.background_record_count(), 0);
     }
 
     #[test]

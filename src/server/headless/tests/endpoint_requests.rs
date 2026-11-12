@@ -87,6 +87,7 @@ fn background_method(pane_id: &str, method: &str) -> Method {
         "background.report" => background_report(pane_id),
         "background.wait.set" => background_wait_set(pane_id),
         "background.shell.report" => background_shell_report(pane_id),
+        "background.summary" => Method::BackgroundSummary(Default::default()),
         "background.list" => Method::BackgroundList(PaneTarget {
             pane_id: pane_id.into(),
         }),
@@ -262,6 +263,38 @@ async fn background_endpoint_observations_preserve_presentation_and_pending_comm
                 ),
                 ServerMessage::TerminalBell { count: 3 }
             ));
+            server
+                .app
+                .event_tx
+                .try_send(AppEvent::TerminalBell {
+                    pane_id: pane,
+                    count: 4,
+                })
+                .unwrap();
+            assert!(!endpoint_request(
+                &mut server,
+                "summary",
+                Method::BackgroundSummary(Default::default()),
+            ));
+            let summary = endpoint_response(&control, "summary");
+            assert_eq!(
+                summary["result"],
+                serde_json::json!({
+                    "type":"background_summary", "panes":[{
+                        "pane_id":server.app.public_pane_id(1, pane).unwrap(),
+                        "terminal_id":listed["result"]["terminal_id"], "records":2
+                    }]
+                })
+            );
+            assert_eq!(presentation(&server), before);
+            assert!(matches!(
+                read_server_message(
+                    foreground_control
+                        .recv_timeout(Duration::from_secs(1))
+                        .unwrap()
+                ),
+                ServerMessage::TerminalBell { count: 4 }
+            ));
             assert!(server.app.event_rx.is_empty());
             assert!(server.server_event_rx.try_recv().is_err());
             assert!(foreground_control.try_recv().is_err());
@@ -317,7 +350,16 @@ fn assert_background_drains_pane_death(method_name: &str, endpoint: bool) {
     } else {
         socket_request(&mut server, method)
     };
-    assert_eq!(response["error"]["code"], "pane_not_found", "{response}");
+    if method_name == "background.summary" {
+        assert_eq!(
+            response["result"],
+            serde_json::json!({
+                "type":"background_summary", "panes":[]
+            })
+        );
+    } else {
+        assert_eq!(response["error"]["code"], "pane_not_found", "{response}");
+    }
     assert!(changed, "the endpoint must propagate the lifecycle change");
     assert!(server.app.find_pane(pane).is_none());
     assert!(server.app.event_rx.is_empty());
@@ -338,6 +380,13 @@ fn assert_background_drains_pane_death(method_name: &str, endpoint: bool) {
 #[tokio::test]
 async fn background_endpoint_list_drains_pane_death_beyond_batch_limit() {
     assert_background_drains_pane_death("background.list", true);
+}
+
+#[tokio::test]
+async fn background_summary_drains_pane_death_beyond_batch_limit() {
+    for endpoint in [false, true] {
+        assert_background_drains_pane_death("background.summary", endpoint);
+    }
 }
 
 #[tokio::test]
@@ -495,6 +544,7 @@ async fn background_endpoint_requests_preserve_shutdown_and_queued_events() {
     }
     for method_name in [
         "background.list",
+        "background.summary",
         "background.report",
         "background.shell.report",
         "background.wait.set",
@@ -582,6 +632,7 @@ async fn background_endpoint_requests_preserve_shutdown_and_queued_events() {
 async fn background_endpoint_requests_preserve_boot_and_connection_mode_checks() {
     for method_name in [
         "background.list",
+        "background.summary",
         "background.report",
         "background.shell.report",
         "background.wait.set",
@@ -773,6 +824,10 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
             Method::BackgroundList(PaneTarget { pane_id }),
             "background_list",
         ),
+        (
+            Method::BackgroundSummary(Default::default()),
+            "background_summary",
+        ),
     ] {
         let (changed, response) = socket_request(&mut server, method);
         assert!(!changed);
@@ -814,6 +869,16 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
 
     server.app.state.workspaces.clear();
     server.app.state.active = None;
+    let (changed, summary) =
+        socket_request(&mut server, Method::BackgroundSummary(Default::default()));
+    assert!(!changed);
+    assert_eq!(
+        summary["result"],
+        serde_json::json!({
+            "type":"background_summary", "panes":[]
+        })
+    );
+    assert!(server.app.state.workspaces.is_empty());
     for method in [
         background_report("missing"),
         background_shell_report("missing"),
@@ -834,6 +899,7 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
 async fn background_socket_requests_preserve_expiry_title_sync_and_event_forwarding() {
     for method_name in [
         "background.list",
+        "background.summary",
         "background.report",
         "background.shell.report",
         "background.wait.set",
@@ -965,6 +1031,7 @@ fn background_socket_requests_preserve_shutdown_checks_and_queued_events() {
     }
     for method_name in [
         "background.list",
+        "background.summary",
         "background.report",
         "background.shell.report",
         "background.wait.set",

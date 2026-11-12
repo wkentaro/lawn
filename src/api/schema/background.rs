@@ -6,6 +6,14 @@ pub use crate::terminal::background::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct BackgroundPaneSummary {
+    pub pane_id: String,
+    pub terminal_id: String,
+    pub records: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BackgroundWaitSetParams {
     pub pane_id: String,
     pub source: String,
@@ -38,6 +46,25 @@ pub struct BackgroundShellReportParams {
 #[cfg(test)]
 mod tests {
     use crate::api::schema::{Method, Request};
+
+    #[test]
+    fn background_summary_is_an_advertised_passive_json_read() {
+        let value = serde_json::json!({"id":"summary", "method":"background.summary", "params":{}});
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(request.method, Method::BackgroundSummary(_)));
+        assert!(!crate::api::request_changes_ui(&request));
+        assert!(crate::server::client_commands::supports_client_shell_method(&request.method));
+        assert_eq!(serde_json::to_value(request).unwrap(), value);
+        let value = serde_json::json!({"type":"background_summary", "panes":[{
+            "pane_id":"w1:p1", "terminal_id":"term-1", "records":3
+        }]});
+        let result: crate::api::schema::ResponseResult =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(result).unwrap(), value);
+        let mut pane = value["panes"][0].clone();
+        pane["running"] = true.into();
+        assert!(serde_json::from_value::<super::BackgroundPaneSummary>(pane).is_err());
+    }
 
     #[test]
     fn background_report_accepts_only_the_observation_contract() {

@@ -13,11 +13,18 @@ struct PreviewTarget {
     max_rows: u16,
 }
 
+#[derive(Clone, Copy)]
+enum PreviewRequestKind {
+    Screen { styled: bool },
+    Background,
+    Summary,
+}
+
 struct PendingPreview {
     target: PreviewTarget,
     request_id: String,
     epoch: u64,
-    styled: bool,
+    kind: PreviewRequestKind,
 }
 
 enum PreviewContent {
@@ -25,15 +32,26 @@ enum PreviewContent {
     Cells(crate::terminal::TerminalCellSnapshot),
 }
 
+struct BackgroundSummaryCache {
+    target: PreviewTarget,
+    panes: HashMap<String, u32>,
+    last_requested: Option<Instant>,
+}
+
 #[derive(Default)]
-pub(super) struct NavigatorPreview {
+pub(crate) struct NavigatorPreview {
     pub(super) area: Rect,
     selected: Option<PreviewTarget>,
-    pending: Option<PendingPreview>,
+    pending: Vec<PendingPreview>,
     content: Option<PreviewContent>,
     error: Option<String>,
     last_requested: Option<Instant>,
+    background: Option<crate::api::schema::background::BackgroundSnapshot>,
+    background_last_requested: Option<Instant>,
+    summaries: Vec<BackgroundSummaryCache>,
+    next_lane: usize,
     epoch: u64,
+    lifecycle_epoch: u64,
 }
 
 pub(crate) enum PreviewDisplay<'a> {
@@ -42,16 +60,65 @@ pub(crate) enum PreviewDisplay<'a> {
     Text(&'a str),
     Cells(&'a crate::terminal::TerminalCellSnapshot),
     Message(&'a str),
+    Background {
+        screen: Box<PreviewDisplay<'a>>,
+        background: &'a crate::api::schema::background::BackgroundSnapshot,
+    },
+}
+
+impl NavigatorPreview {
+    fn request_epoch(&self, kind: PreviewRequestKind) -> u64 {
+        match kind {
+            PreviewRequestKind::Summary => self.lifecycle_epoch,
+            PreviewRequestKind::Screen { .. } | PreviewRequestKind::Background => self.epoch,
+        }
+    }
+
+    pub(super) fn background_count(&self, endpoint: &ClientShellEndpoint, pane_id: &str) -> u32 {
+        if !endpoint_supports(endpoint, "background.summary") {
+            return 0;
+        }
+        self.summaries
+            .iter()
+            .find(|cache| target_matches_endpoint(&cache.target, endpoint))
+            .and_then(|cache| cache.panes.get(pane_id))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn endpoint_supports(endpoint: &ClientShellEndpoint, method: &str) -> bool {
+    endpoint.status == ClientEndpointStatus::Online
+        && endpoint
+            .methods
+            .as_ref()
+            .is_some_and(|methods| methods.contains(method))
+}
+
+fn target_matches_endpoint(target: &PreviewTarget, endpoint: &ClientShellEndpoint) -> bool {
+    endpoint.status == ClientEndpointStatus::Online
+        && target.endpoint_id == endpoint.endpoint_id
+        && target.generation == endpoint.snapshot_generation
+        && endpoint
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.boot_id == target.boot_id)
 }
 
 impl ClientShellState {
     pub(super) fn clear_navigator_preview(&mut self) {
-        self.navigator_preview.epoch = self.navigator_preview.epoch.wrapping_add(1);
-        self.navigator_preview.selected = None;
-        self.navigator_preview.area = Rect::default();
-        self.navigator_preview.content = None;
-        self.navigator_preview.error = None;
-        self.navigator_preview.last_requested = None;
+        let preview = &mut self.navigator_preview;
+        preview.epoch = preview.epoch.wrapping_add(1);
+        preview.lifecycle_epoch = preview.lifecycle_epoch.wrapping_add(1);
+        preview.selected = None;
+        preview.area = Rect::default();
+        preview.content = None;
+        preview.error = None;
+        preview.last_requested = None;
+        preview.background = None;
+        preview.background_last_requested = None;
+        preview.summaries.clear();
+        preview.next_lane = 0;
     }
 
     fn selected_preview_target(&self, area: Rect) -> Option<PreviewTarget> {
@@ -94,7 +161,7 @@ impl ClientShellState {
         if self.navigator_preview.selected.as_ref() != Some(&target) {
             return PreviewDisplay::Loading;
         }
-        if let Some(message) = self.navigator_preview.error.as_deref() {
+        let screen = if let Some(message) = self.navigator_preview.error.as_deref() {
             PreviewDisplay::Message(message)
         } else if let Some(content) = self.navigator_preview.content.as_ref() {
             match content {
@@ -103,94 +170,206 @@ impl ClientShellState {
             }
         } else {
             PreviewDisplay::Loading
+        };
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| target_matches_endpoint(&target, endpoint));
+        if endpoint.is_some_and(|endpoint| endpoint_supports(endpoint, "background.list")) {
+            if let Some(background) = self.navigator_preview.background.as_ref() {
+                if NavigatorPreview::background_has_rows(background) {
+                    return PreviewDisplay::Background {
+                        screen: Box::new(screen),
+                        background,
+                    };
+                }
+            }
         }
+        screen
     }
 
     pub(crate) fn tick_navigator_preview(&mut self, now: Instant) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        if !matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
+            if self.navigator_preview.selected.is_some()
+                || !self.navigator_preview.summaries.is_empty()
+            {
+                self.clear_navigator_preview();
+            }
+            return outcome;
+        }
         let target = self.selected_preview_target(self.navigator_preview.area);
         let preview = &mut self.navigator_preview;
-        let changed = preview.selected != target;
-        let mut outcome = ClientShellInput::default();
-        if changed {
+        if preview.selected != target {
             preview.epoch = preview.epoch.wrapping_add(1);
             preview.selected = target.clone();
             preview.content = None;
             preview.error = None;
             preview.last_requested = None;
+            preview.background = None;
+            preview.background_last_requested = None;
             outcome.repaint = true;
         }
-        let Some(target) = target else {
-            return outcome;
-        };
-        // Keep the wire request in its endpoint lane until completion/timeout. Movement only
-        // replaces the desired target, so even fast navigation has one global preview request.
-        if preview.pending.is_some()
-            || preview.error.is_some()
-            || preview
-                .last_requested
-                .is_some_and(|last| now.saturating_duration_since(last) < REFRESH_INTERVAL)
-        {
-            return outcome;
-        }
-        let endpoint = self
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == target.endpoint_id);
-        let message = match endpoint {
-            None => Some("Server unavailable"),
-            Some(endpoint) if endpoint.status != ClientEndpointStatus::Online => {
-                Some("Server offline")
-            }
-            Some(endpoint)
-                if endpoint.methods.as_ref().is_none_or(|methods| {
-                    !methods.contains("pane.snapshot") && !methods.contains("pane.read")
-                }) =>
+        let old_len = preview.summaries.len();
+        preview.summaries.retain(|cache| {
+            self.endpoints.iter().any(|endpoint| {
+                target_matches_endpoint(&cache.target, endpoint)
+                    && endpoint_supports(endpoint, "background.summary")
+            })
+        });
+        outcome.repaint |= old_len != preview.summaries.len();
+        for endpoint in &self.endpoints {
+            if !endpoint_supports(endpoint, "background.summary")
+                || preview
+                    .summaries
+                    .iter()
+                    .any(|cache| cache.target.endpoint_id == endpoint.endpoint_id)
             {
-                Some("Preview unavailable on this server")
+                continue;
             }
-            _ => None,
-        };
-        if let Some(message) = message {
-            preview.error = Some(message.into());
-            outcome.repaint = true;
-            return outcome;
+            let Some(snapshot) = endpoint.snapshot.as_ref() else {
+                continue;
+            };
+            preview.summaries.push(BackgroundSummaryCache {
+                target: PreviewTarget {
+                    endpoint_id: endpoint.endpoint_id.clone(),
+                    pane_id: String::new(),
+                    boot_id: snapshot.boot_id.clone(),
+                    generation: endpoint.snapshot_generation,
+                    max_cols: 0,
+                    max_rows: 0,
+                },
+                panes: HashMap::new(),
+                last_requested: None,
+            });
         }
-        let method = if endpoint
-            .and_then(|endpoint| endpoint.methods.as_ref())
-            .is_some_and(|methods| methods.contains("pane.snapshot"))
-        {
-            crate::api::schema::Method::PaneSnapshot(crate::api::schema::PaneSnapshotParams {
-                pane_id: target.pane_id.clone(),
-                max_cols: target.max_cols,
-                max_rows: target.max_rows,
-            })
-        } else {
-            crate::api::schema::Method::PaneRead(crate::api::schema::PaneReadParams {
-                pane_id: target.pane_id.clone(),
-                source: crate::api::schema::ReadSource::Detection,
-                lines: Some(40),
-                format: crate::api::schema::ReadFormat::Text,
-                strip_ansi: true,
-                intent: crate::api::schema::ReadIntent::Passive,
-            })
-        };
-        let request_id = format!("client-shell-preview:{}", self.next_request_id);
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        preview.pending = Some(PendingPreview {
-            target: target.clone(),
-            request_id: request_id.clone(),
-            epoch: preview.epoch,
-            styled: matches!(method, crate::api::schema::Method::PaneSnapshot(_)),
+        let endpoint = target.as_ref().and_then(|target| {
+            self.endpoints
+                .iter()
+                .find(|endpoint| target_matches_endpoint(target, endpoint))
         });
-        preview.last_requested = Some(now);
-        outcome.actions.push(ClientShellAction::NavigatorPreview {
-            endpoint_id: target.endpoint_id,
-            boot_id: target.boot_id,
-            request: Box::new(crate::api::schema::Request {
-                id: request_id,
-                method,
-            }),
-        });
+        if endpoint.is_none() && preview.background.take().is_some() {
+            outcome.repaint = true;
+        }
+        // Rotate refresh clocks without letting one endpoint block another.
+        let lanes = 2 + preview.summaries.len();
+        for offset in 0..lanes {
+            let lane = (preview.next_lane + offset) % lanes;
+            let endpoint_id = if lane < 2 {
+                let Some(target) = target.as_ref() else {
+                    continue;
+                };
+                &target.endpoint_id
+            } else {
+                &preview.summaries[lane - 2].target.endpoint_id
+            };
+            if preview
+                .pending
+                .iter()
+                .any(|pending| pending.target.endpoint_id == *endpoint_id)
+            {
+                continue;
+            }
+            let (request_target, method, kind) = if lane < 2 {
+                let Some(target) = target.as_ref() else {
+                    continue;
+                };
+                if lane == 0 {
+                    if preview.error.is_some() || !refresh_due(preview.last_requested, now) {
+                        continue;
+                    }
+                    let message = match endpoint {
+                        None => Some("Server offline"),
+                        Some(endpoint)
+                            if !endpoint_supports(endpoint, "pane.snapshot")
+                                && !endpoint_supports(endpoint, "pane.read") =>
+                        {
+                            Some("Preview unavailable on this server")
+                        }
+                        _ => None,
+                    };
+                    if let Some(message) = message {
+                        preview.error = Some(message.into());
+                        outcome.repaint = true;
+                        continue;
+                    }
+                    let styled = endpoint
+                        .is_some_and(|endpoint| endpoint_supports(endpoint, "pane.snapshot"));
+                    let method = if styled {
+                        crate::api::schema::Method::PaneSnapshot(
+                            crate::api::schema::PaneSnapshotParams {
+                                pane_id: target.pane_id.clone(),
+                                max_cols: target.max_cols,
+                                max_rows: target.max_rows,
+                            },
+                        )
+                    } else {
+                        crate::api::schema::Method::PaneRead(crate::api::schema::PaneReadParams {
+                            pane_id: target.pane_id.clone(),
+                            source: crate::api::schema::ReadSource::Detection,
+                            lines: Some(40),
+                            format: crate::api::schema::ReadFormat::Text,
+                            strip_ansi: true,
+                            intent: crate::api::schema::ReadIntent::Passive,
+                        })
+                    };
+                    preview.last_requested = Some(now);
+                    (
+                        target.clone(),
+                        method,
+                        PreviewRequestKind::Screen { styled },
+                    )
+                } else {
+                    if !endpoint
+                        .is_some_and(|endpoint| endpoint_supports(endpoint, "background.list"))
+                        || !refresh_due(preview.background_last_requested, now)
+                    {
+                        continue;
+                    }
+                    preview.background_last_requested = Some(now);
+                    (
+                        target.clone(),
+                        crate::api::schema::Method::BackgroundList(
+                            crate::api::schema::PaneTarget {
+                                pane_id: target.pane_id.clone(),
+                            },
+                        ),
+                        PreviewRequestKind::Background,
+                    )
+                }
+            } else {
+                let cache = &mut preview.summaries[lane - 2];
+                if !refresh_due(cache.last_requested, now) {
+                    continue;
+                }
+                cache.last_requested = Some(now);
+                (
+                    cache.target.clone(),
+                    crate::api::schema::Method::BackgroundSummary(
+                        crate::api::schema::EmptyParams {},
+                    ),
+                    PreviewRequestKind::Summary,
+                )
+            };
+            preview.next_lane = (lane + 1) % lanes;
+            let request_id = format!("client-shell-preview:{}", self.next_request_id);
+            self.next_request_id = self.next_request_id.saturating_add(1);
+            preview.pending.push(PendingPreview {
+                target: request_target.clone(),
+                request_id: request_id.clone(),
+                epoch: preview.request_epoch(kind),
+                kind,
+            });
+            outcome.actions.push(ClientShellAction::NavigatorPreview {
+                endpoint_id: request_target.endpoint_id,
+                boot_id: request_target.boot_id,
+                request: Box::new(crate::api::schema::Request {
+                    id: request_id,
+                    method,
+                }),
+            });
+            break;
+        }
         outcome
     }
 
@@ -202,81 +381,146 @@ impl ClientShellState {
         request_id: &str,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> bool {
-        let Some(pending) = self.navigator_preview.pending.as_ref() else {
+        let Some(index) = self.navigator_preview.pending.iter().position(|pending| {
+            pending.request_id == request_id && pending.target.endpoint_id == *endpoint_id
+        }) else {
             return false;
         };
-        if pending.request_id != request_id || pending.target.endpoint_id != *endpoint_id {
-            return false;
-        }
-        let pending = self
-            .navigator_preview
-            .pending
-            .take()
-            .expect("checked preview request");
-        if pending.target.boot_id != boot_id
-            || pending
+        let pending = self.navigator_preview.pending.remove(index);
+        let current = pending.epoch == self.navigator_preview.request_epoch(pending.kind)
+            && pending.target.boot_id == boot_id
+            && pending
                 .target
                 .generation
-                .is_some_and(|expected| expected != generation)
-            || pending.epoch != self.navigator_preview.epoch
-            || self
-                .selected_preview_target(self.navigator_preview.area)
-                .as_ref()
-                != Some(&pending.target)
+                .is_none_or(|expected| expected == generation)
+            && matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
+            && self
+                .endpoints
+                .iter()
+                .any(|endpoint| target_matches_endpoint(&pending.target, endpoint))
+            && (matches!(pending.kind, PreviewRequestKind::Summary)
+                || self
+                    .selected_preview_target(self.navigator_preview.area)
+                    .as_ref()
+                    == Some(&pending.target));
+        if !current {
+            return false;
+        }
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code.as_deref() == Some("endpoint_busy"))
         {
             return false;
         }
-        match result {
-            Ok(crate::api::schema::ResponseResult::PaneRead { read })
-                if !pending.styled && read.pane_id == pending.target.pane_id =>
-            {
+        match (pending.kind, result) {
+            (
+                PreviewRequestKind::Background,
+                Ok(crate::api::schema::ResponseResult::BackgroundList { background, .. }),
+            ) => self.navigator_preview.background = Some(background),
+            (
+                PreviewRequestKind::Summary,
+                Ok(crate::api::schema::ResponseResult::BackgroundSummary { panes }),
+            ) => {
+                if let Some(cache) = self
+                    .navigator_preview
+                    .summaries
+                    .iter_mut()
+                    .find(|cache| cache.target == pending.target)
+                {
+                    cache.panes = panes
+                        .into_iter()
+                        .map(|pane| (pane.pane_id, pane.records))
+                        .collect();
+                }
+            }
+            (
+                PreviewRequestKind::Screen { styled: false },
+                Ok(crate::api::schema::ResponseResult::PaneRead { read }),
+            ) if read.pane_id == pending.target.pane_id => {
                 self.navigator_preview.content = Some(PreviewContent::Text(read.text));
                 self.navigator_preview.error = None;
             }
-            Ok(crate::api::schema::ResponseResult::PaneSnapshot { snapshot })
-                if pending.styled
-                    && snapshot.pane_id == pending.target.pane_id
-                    && valid_snapshot(&snapshot.snapshot, &pending.target) =>
+            (
+                PreviewRequestKind::Screen { styled: true },
+                Ok(crate::api::schema::ResponseResult::PaneSnapshot { snapshot }),
+            ) if snapshot.pane_id == pending.target.pane_id
+                && valid_snapshot(&snapshot.snapshot, &pending.target) =>
             {
                 self.navigator_preview.content = Some(PreviewContent::Cells(snapshot.snapshot));
                 self.navigator_preview.error = None;
             }
-            Err(error) if error.code.as_deref() == Some("endpoint_busy") => return false,
-            Ok(_) => self.navigator_preview.error = Some("Preview response unavailable".into()),
-            Err(error) => self.navigator_preview.error = Some(error.message),
+            (PreviewRequestKind::Screen { .. }, Err(error)) => {
+                self.navigator_preview.error = Some(error.message)
+            }
+            (PreviewRequestKind::Screen { .. }, Ok(_)) => {
+                self.navigator_preview.error = Some("Preview response unavailable".into())
+            }
+            (PreviewRequestKind::Background, _) => self.navigator_preview.background = None,
+            (PreviewRequestKind::Summary, _) => {
+                if let Some(cache) = self
+                    .navigator_preview
+                    .summaries
+                    .iter_mut()
+                    .find(|cache| cache.target == pending.target)
+                {
+                    cache.panes.clear();
+                }
+            }
         }
         true
     }
 
     pub(crate) fn defer_navigator_preview(&mut self, request_id: &str) {
-        if self
-            .navigator_preview
+        self.navigator_preview
             .pending
-            .as_ref()
-            .is_some_and(|pending| pending.request_id == request_id)
-        {
-            self.navigator_preview.pending = None;
-        }
+            .retain(|pending| pending.request_id != request_id);
     }
 
     pub(crate) fn cancel_navigator_preview(&mut self, request_id: &str) -> bool {
-        let Some(pending) = self.navigator_preview.pending.as_ref() else {
+        let Some(index) = self
+            .navigator_preview
+            .pending
+            .iter()
+            .position(|pending| pending.request_id == request_id)
+        else {
             return false;
         };
-        if pending.request_id != request_id {
-            return false;
-        }
-        let current = pending.epoch == self.navigator_preview.epoch
+        let pending = self.navigator_preview.pending.remove(index);
+        let current = pending.epoch == self.navigator_preview.request_epoch(pending.kind)
             && self
-                .selected_preview_target(self.navigator_preview.area)
-                .as_ref()
-                == Some(&pending.target);
-        self.navigator_preview.pending = None;
+                .endpoints
+                .iter()
+                .any(|endpoint| target_matches_endpoint(&pending.target, endpoint))
+            && (matches!(pending.kind, PreviewRequestKind::Summary)
+                || self
+                    .selected_preview_target(self.navigator_preview.area)
+                    .as_ref()
+                    == Some(&pending.target));
         if current {
-            self.navigator_preview.error = Some("Preview unavailable on this server".into());
+            match pending.kind {
+                PreviewRequestKind::Screen { .. } => {
+                    self.navigator_preview.error = Some("Preview unavailable on this server".into())
+                }
+                PreviewRequestKind::Background => self.navigator_preview.background = None,
+                PreviewRequestKind::Summary => {
+                    if let Some(cache) = self
+                        .navigator_preview
+                        .summaries
+                        .iter_mut()
+                        .find(|cache| cache.target == pending.target)
+                    {
+                        cache.panes.clear();
+                    }
+                }
+            }
         }
         current
     }
+}
+
+fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= REFRESH_INTERVAL)
 }
 
 fn valid_snapshot(
@@ -340,6 +584,469 @@ mod tests {
                 truncated: false,
             },
         }
+    }
+
+    fn observed_background() -> crate::api::schema::background::BackgroundSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "session_id":"s", "coverage":"observations_only", "current_state":"unknown",
+            "records":[{"task_id":"child", "kind":"subagent", "task_type":"Explore", "observation":"stop_observed", "start_observed_at_ms":1000, "stop_observed_at_ms":2000, "revision":1}],
+            "revision":1, "truncated":false,
+            "shell_observations":{"current_state":"unknown", "outcome":"unknown", "truncated":false,
+                "last_received_snapshot":{"event":"snapshot_observed", "hook_event":"Stop", "tasks":[{"task_id":"sh", "reported_status":"reported", "command":"cargo check\nsecond line"}], "truncated":false, "received_at_ms":1000}, "bash_reports":[]},
+            "wait_declarations":[{"kind":"shell", "task_id":"sh", "declared_at_ms":1000}]
+        })).unwrap()
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        (buffer.area.y..buffer.area.bottom())
+            .map(|y| {
+                (buffer.area.x..buffer.area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn background_rotation_and_cache_lifecycle() {
+        let mut state = state();
+        state.set_endpoint_methods(Some(vec![
+            "pane.read".into(),
+            "background.list".into(),
+            "background.summary".into(),
+        ]));
+        let now = Instant::now();
+        let (endpoint, boot, id) = request(state.tick_navigator_preview(now));
+        assert!(state.tick_navigator_preview(now).actions.is_empty());
+        state.handle_navigator_preview_result(
+            &endpoint,
+            0,
+            &boot,
+            &id,
+            Ok(read("pane_1", "prompt")),
+        );
+        let (_, _, id) = request(state.tick_navigator_preview(now));
+        assert!(matches!(
+            state.navigator_preview.pending.first().unwrap().kind,
+            PreviewRequestKind::Background
+        ));
+        state.handle_navigator_preview_result(
+            &endpoint,
+            0,
+            &boot,
+            &id,
+            Ok(crate::api::schema::ResponseResult::BackgroundList {
+                terminal_id: "term".into(),
+                background: observed_background(),
+            }),
+        );
+        let (_, _, id) = request(state.tick_navigator_preview(now));
+        assert!(matches!(
+            state.navigator_preview.pending.first().unwrap().kind,
+            PreviewRequestKind::Summary
+        ));
+        state.handle_navigator_preview_result(
+            &endpoint,
+            0,
+            &boot,
+            &id,
+            Ok(crate::api::schema::ResponseResult::BackgroundSummary {
+                panes: vec![crate::api::schema::background::BackgroundPaneSummary {
+                    pane_id: "pane_1".into(),
+                    terminal_id: "term".into(),
+                    records: 2,
+                }],
+            }),
+        );
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            2
+        );
+        assert!(state.tick_navigator_preview(now).actions.is_empty());
+        request(state.tick_navigator_preview(now + REFRESH_INTERVAL));
+        assert!(matches!(
+            state.navigator_preview.pending.first().unwrap().kind,
+            PreviewRequestKind::Screen { .. }
+        ));
+        let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().unwrap() else {
+            panic!("navigator");
+        };
+        let mut wide = Buffer::empty(Rect::new(0, 0, 120, 36));
+        render::render_navigator_overlay(
+            &mut wide,
+            navigator,
+            &state.endpoints,
+            &state.active_endpoint_id,
+            &state.navigator_preview,
+            &state.config.palette,
+        );
+        assert!(buffer_text(&wide).contains("bg 2"));
+        let mut narrow = Buffer::empty(Rect::new(0, 0, 35, 24));
+        render::render_navigator_overlay(
+            &mut narrow,
+            navigator,
+            &state.endpoints,
+            &state.active_endpoint_id,
+            &state.navigator_preview,
+            &state.config.palette,
+        );
+        assert!(!buffer_text(&narrow).contains("bg 2"));
+        state.navigator_preview.summaries[0]
+            .panes
+            .insert("pane_1".into(), 0);
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            0
+        );
+        state.clear_navigator_preview();
+        assert!(state.navigator_preview.background.is_none());
+        assert!(state.navigator_preview.summaries.is_empty());
+    }
+
+    #[test]
+    fn background_summary_survives_selection_change_but_not_close_and_reopen() {
+        let mut state = state();
+        let mut snapshot = super::super::tests::snapshot();
+        let mut second = snapshot.panes[0].clone();
+        second.pane_id = "pane_2".into();
+        snapshot.panes.push(second);
+        state.set_snapshot(Box::new(snapshot));
+        state.set_endpoint_methods(Some(vec!["background.summary".into()]));
+        let now = Instant::now();
+        let (endpoint, boot, id) = request(state.tick_navigator_preview(now));
+        let ClientShellOverlay::Navigator(navigator) = state.overlay.as_mut().unwrap() else {
+            panic!("navigator");
+        };
+        navigator.selected = Some(ClientNavigatorTarget::Pane {
+            endpoint_id: endpoint.clone(),
+            pane_id: "pane_2".into(),
+        });
+        assert!(state.tick_navigator_preview(now).actions.is_empty());
+        let summary = || crate::api::schema::ResponseResult::BackgroundSummary {
+            panes: vec![crate::api::schema::background::BackgroundPaneSummary {
+                pane_id: "pane_1".into(),
+                terminal_id: "term".into(),
+                records: 2,
+            }],
+        };
+        assert!(state.handle_navigator_preview_result(&endpoint, 0, &boot, &id, Ok(summary())));
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            2
+        );
+
+        let (_, _, old) = request(state.tick_navigator_preview(now + REFRESH_INTERVAL));
+        state.overlay = None;
+        assert!(state.tick_navigator_preview(now).actions.is_empty());
+        state.open_navigator_overlay();
+        state.compose(120, 36);
+        assert!(state.tick_navigator_preview(now).actions.is_empty());
+        assert!(!state.handle_navigator_preview_result(&endpoint, 0, &boot, &old, Ok(summary())));
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            0
+        );
+        let (_, _, current) = request(state.tick_navigator_preview(now));
+        assert!(state.handle_navigator_preview_result(
+            &endpoint,
+            0,
+            &boot,
+            &current,
+            Ok(summary())
+        ));
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            2
+        );
+    }
+
+    #[test]
+    fn pending_background_summary_does_not_block_another_endpoint_preview() {
+        let mut state = state();
+        state.set_endpoint_methods(Some(vec!["pane.read".into(), "background.list".into()]));
+        let remote = ClientEndpointId::Ssh(
+            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        );
+        let mut endpoint = state.endpoints[0].clone();
+        endpoint.endpoint_id = remote.clone();
+        state.endpoints.push(endpoint);
+        state.set_endpoint_methods_for(&remote, Some(vec!["background.summary".into()]));
+        let now = Instant::now();
+        let (local, boot, screen_id) = request(state.tick_navigator_preview(now));
+        assert!(state.handle_navigator_preview_result(
+            &local,
+            0,
+            &boot,
+            &screen_id,
+            Ok(read("pane_1", "prompt")),
+        ));
+        let (_, _, background_id) = request(state.tick_navigator_preview(now));
+        assert!(state.handle_navigator_preview_result(
+            &local,
+            0,
+            &boot,
+            &background_id,
+            Ok(crate::api::schema::ResponseResult::BackgroundList {
+                terminal_id: "term".into(),
+                background: observed_background(),
+            }),
+        ));
+        let (summary_endpoint, summary_boot, summary_id) =
+            request(state.tick_navigator_preview(now));
+        assert_eq!(summary_endpoint, remote);
+
+        let screen = state.tick_navigator_preview(now + REFRESH_INTERVAL);
+        assert!(matches!(screen.actions.as_slice(),
+            [ClientShellAction::NavigatorPreview { endpoint_id, request, .. }]
+                if *endpoint_id == local
+                    && matches!(request.method, crate::api::schema::Method::PaneRead(_))
+        ));
+        let (_, _, screen_id) = request(screen);
+        assert!(state
+            .tick_navigator_preview(now + REFRESH_INTERVAL)
+            .actions
+            .is_empty());
+        assert!(state.handle_navigator_preview_result(
+            &local,
+            0,
+            &boot,
+            &screen_id,
+            Ok(read("pane_1", "fresh")),
+        ));
+        let background = state.tick_navigator_preview(now + REFRESH_INTERVAL);
+        assert!(matches!(background.actions.as_slice(),
+            [ClientShellAction::NavigatorPreview { endpoint_id, request, .. }]
+                if *endpoint_id == local
+                    && matches!(request.method, crate::api::schema::Method::BackgroundList(_))
+        ));
+        let (_, _, background_id) = request(background);
+        state.defer_navigator_preview(&background_id);
+        assert!(state.handle_navigator_preview_result(
+            &summary_endpoint,
+            0,
+            &summary_boot,
+            &summary_id,
+            Ok(crate::api::schema::ResponseResult::BackgroundSummary {
+                panes: vec![crate::api::schema::background::BackgroundPaneSummary {
+                    pane_id: "pane_1".into(),
+                    terminal_id: "term".into(),
+                    records: 2,
+                }],
+            }),
+        ));
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[1], "pane_1"),
+            2
+        );
+    }
+
+    #[test]
+    fn background_render_deduplicates_shell_ids_and_counts_hidden_rows() {
+        let mut value = serde_json::to_value(observed_background()).unwrap();
+        let shell = &mut value["shell_observations"];
+        shell["last_received_snapshot"]["tasks"].as_array_mut().unwrap().push(
+            serde_json::json!({"task_id":"sh", "reported_status":"duplicate status", "command":"duplicate snapshot"}),
+        );
+        shell["bash_reports"] = serde_json::json!([
+            {"event":"bash_background_observed", "task_id":"sh", "tool_use_id":"t1", "hook_agent_id":"a", "command":"duplicate report", "received_at_ms":1000},
+            {"event":"bash_background_observed", "task_id":"bash", "tool_use_id":"t2", "hook_agent_id":"a", "command":"first command", "received_at_ms":1000},
+            {"event":"bash_background_observed", "task_id":"bash", "tool_use_id":"t2", "hook_agent_id":"b", "command":"duplicate bash", "received_at_ms":2000}
+        ]);
+        let background = serde_json::from_value(value).unwrap();
+        let palette = state().config.palette;
+        for (height, expected_more) in [(16, None), (10, Some("+2 more"))] {
+            let area = Rect::new(0, 0, 90, height);
+            let mut buffer = Buffer::empty(area);
+            render::render_navigator_preview(
+                &mut buffer,
+                area,
+                PreviewDisplay::Background {
+                    screen: Box::new(PreviewDisplay::Text("prompt")),
+                    background: &background,
+                },
+                &palette,
+            );
+            let text = buffer_text(&buffer);
+            assert_eq!(text.matches("shell  sh ").count(), 1, "{text}");
+            assert!(text.contains("\"reported\""), "{text}");
+            assert!(!text.contains("duplicate"), "{text}");
+            if let Some(more) = expected_more {
+                assert!(text.contains(more), "{text}");
+            } else {
+                assert_eq!(text.matches("shell  bash ").count(), 1, "{text}");
+                assert_eq!(text.matches("agent  child").count(), 1, "{text}");
+                assert!(text.contains("first command"), "{text}");
+                assert!(!text.contains("more"), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn background_render_keeps_content_visible_at_80_by_24() {
+        let state = state();
+        let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().unwrap() else {
+            panic!("navigator");
+        };
+        for single_task in [false, true] {
+            let mut background = observed_background();
+            if single_task {
+                background.records.clear();
+            }
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 24));
+            let rendered = render::render_navigator_overlay(
+                &mut buffer,
+                navigator,
+                &state.endpoints,
+                &state.active_endpoint_id,
+                &state.navigator_preview,
+                &state.config.palette,
+            )
+            .unwrap();
+            render::render_navigator_preview(
+                &mut buffer,
+                rendered.navigator_content_preview,
+                PreviewDisplay::Background {
+                    screen: Box::new(PreviewDisplay::Text("prompt")),
+                    background: &background,
+                },
+                &state.config.palette,
+            );
+            let text = buffer_text(&buffer);
+            assert!(text.contains("Background"), "{text}");
+            let content = if single_task { "shell  sh" } else { "+2 more" };
+            assert!(text.contains(content), "{text}");
+            assert!(!text.contains("last shell report"), "{text}");
+            assert!(text.contains("prompt"), "{text}");
+        }
+    }
+
+    #[test]
+    fn background_render_clips_rows_and_preserves_prompt() {
+        let background = observed_background();
+        let palette = state().config.palette;
+        let content = "top\nprompt";
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 90, 14));
+        render::render_navigator_preview(
+            &mut buffer,
+            Rect::new(0, 0, 90, 14),
+            PreviewDisplay::Background {
+                screen: Box::new(PreviewDisplay::Text(content)),
+                background: &background,
+            },
+            &palette,
+        );
+        let text = buffer_text(&buffer);
+        for expected in [
+            "Background",
+            "current state unknown",
+            "\"reported\"",
+            "waiting",
+            "agent  child",
+            "stop seen",
+            "last shell report",
+            "Stop",
+            "prompt",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert!(!text.contains("second line"));
+        let mut small = Buffer::empty(Rect::new(0, 0, 90, 8));
+        render::render_navigator_preview(
+            &mut small,
+            Rect::new(0, 0, 90, 8),
+            PreviewDisplay::Background {
+                screen: Box::new(PreviewDisplay::Text(content)),
+                background: &background,
+            },
+            &palette,
+        );
+        assert!(buffer_text(&small).contains("+2 more"));
+        let mut snapshot = cells(2, 10);
+        snapshot.cells.last_mut().unwrap().symbol = "Z".into();
+        render::render_navigator_preview(
+            &mut small,
+            Rect::new(0, 0, 90, 8),
+            PreviewDisplay::Background {
+                screen: Box::new(PreviewDisplay::Cells(&snapshot)),
+                background: &background,
+            },
+            &palette,
+        );
+        assert_eq!(small[(1, 3)].symbol(), "Z");
+        for width in 0..4 {
+            for height in 0..6 {
+                let mut tiny = Buffer::empty(Rect::new(0, 0, width, height));
+                render::render_navigator_preview(
+                    &mut tiny,
+                    Rect::new(0, 0, width, height),
+                    PreviewDisplay::Background {
+                        screen: Box::new(PreviewDisplay::Loading),
+                        background: &background,
+                    },
+                    &palette,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn background_cache_is_gated_by_identity_and_methods() {
+        let mut state = state();
+        state.set_endpoint_methods(Some(vec!["background.summary".into()]));
+        let now = Instant::now();
+        let (_, _, id) = request(state.tick_navigator_preview(now));
+        assert!(matches!(
+            state.navigator_preview.pending.first().unwrap().kind,
+            PreviewRequestKind::Summary
+        ));
+        state.defer_navigator_preview(&id);
+        state.navigator_preview.summaries[0]
+            .panes
+            .insert("pane_1".into(), 2);
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            2
+        );
+        state.set_endpoint_methods(Some(vec!["pane.read".into()]));
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            0
+        );
+        state.set_endpoint_methods(Some(vec!["background.summary".into()]));
+        state.endpoints[0].snapshot_generation = Some(7);
+        assert_eq!(
+            state
+                .navigator_preview
+                .background_count(&state.endpoints[0], "pane_1"),
+            0
+        );
+        state.clear_navigator_preview();
+        let (endpoint, boot, id) = request(state.tick_navigator_preview(now));
+        assert!(!state.handle_navigator_preview_result(
+            &endpoint,
+            8,
+            &boot,
+            &id,
+            Ok(crate::api::schema::ResponseResult::BackgroundSummary { panes: vec![] })
+        ));
+        assert!(state.navigator_preview.summaries[0].panes.is_empty());
     }
 
     #[test]
@@ -552,6 +1259,7 @@ mod tests {
                 navigator,
                 &state.endpoints,
                 &state.active_endpoint_id,
+                &state.navigator_preview,
                 &state.config.palette,
             )
             .unwrap();
@@ -861,6 +1569,7 @@ mod tests {
                 navigator,
                 &state.endpoints,
                 &state.active_endpoint_id,
+                &state.navigator_preview,
                 &state.config.palette,
             )
             .unwrap();
@@ -984,6 +1693,7 @@ mod tests {
             navigator,
             &state.endpoints,
             &state.active_endpoint_id,
+            &state.navigator_preview,
             &state.config.palette,
         )
         .unwrap();

@@ -210,6 +210,28 @@ impl TerminalState {
         Ok(())
     }
 
+    pub(crate) fn background_record_count(&self) -> usize {
+        if self.background_session_id() != self.background.session_id.as_deref() {
+            return 0;
+        }
+        let mut shell_ids = std::collections::BTreeSet::new();
+        if let Some(shell) = &self.background.shell {
+            if let Some(record) = &shell.last_received_snapshot {
+                if let ShellObservation::SnapshotObserved { tasks, .. } = &record.observation {
+                    shell_ids.extend(tasks.iter().map(|task| task.task_id.as_str()));
+                }
+            }
+            for record in &shell.bash_reports {
+                if let ShellObservation::BashBackgroundObserved { task_id, .. } =
+                    &record.observation
+                {
+                    shell_ids.insert(task_id.as_str());
+                }
+            }
+        }
+        self.background.records.len() + shell_ids.len()
+    }
+
     pub(crate) fn background_snapshot(&self) -> BackgroundSnapshot {
         let current_session = self.background_session_id();
         let current_owner = current_session == self.background.session_id.as_deref();
