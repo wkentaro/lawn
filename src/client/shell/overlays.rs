@@ -44,6 +44,7 @@ pub(crate) fn render_client_overlay(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
+    preview: &navigator_preview::NavigatorPreview,
     p: &Palette,
 ) -> Option<OverlayRender> {
     if !matches!(
@@ -69,7 +70,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
-            render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
+            render_navigator_overlay(b, v, endpoints, active_endpoint_id, preview, p)
         }
         ClientShellOverlay::Settings(v) => {
             settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
@@ -710,6 +711,7 @@ pub(crate) fn render_navigator_overlay(
     n: &ClientNavigatorOverlay,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    preview: &navigator_preview::NavigatorPreview,
     p: &Palette,
 ) -> Option<OverlayRender> {
     let a = b.area;
@@ -987,11 +989,38 @@ pub(crate) fn render_navigator_overlay(
         } else {
             0
         };
+        let marker = if columns > 0 {
+            if let ClientNavigatorTarget::Pane {
+                endpoint_id,
+                pane_id,
+            } = &r.target
+            {
+                endpoints
+                    .iter()
+                    .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+                    .map(|endpoint| preview.background_count(endpoint, pane_id))
+                    .filter(|count| *count > 0)
+                    .map(|count| format!("bg {count}"))
+                    .filter(|marker| {
+                        display_width(&label)
+                            .saturating_add(display_width(marker))
+                            .saturating_add(2)
+                            <= rect.width.saturating_sub(columns)
+                    })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let marker_width = marker
+            .as_ref()
+            .map_or(0, |marker| display_width(marker) + 1);
         put_text(
             b,
             rect.x,
             rect.y,
-            rect.width.saturating_sub(columns),
+            rect.width.saturating_sub(columns + marker_width),
             &label,
             if selected_index == Some(ix) {
                 st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
@@ -1031,6 +1060,16 @@ pub(crate) fn render_navigator_overlay(
                     status_style.remove_modifier(Modifier::UNDERLINED),
                 );
             }
+        }
+        if let Some(marker) = marker {
+            put_text(
+                b,
+                rect.right() - columns - display_width(&marker),
+                rect.y,
+                display_width(&marker),
+                &marker,
+                st.fg(p.yellow).remove_modifier(Modifier::UNDERLINED),
+            );
         }
         if is_pane {
             let meta_style = if r.stale || selected_index == Some(ix) {
@@ -1217,6 +1256,25 @@ pub(in crate::client::shell) fn render_navigator_preview(
     if area.is_empty() {
         return;
     }
+    if let PreviewDisplay::Background { screen, background } = preview {
+        let count = background_rows(background).count();
+        let section_height = background_section_height(background, count, area.height);
+        let screen_area = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height.saturating_sub(section_height),
+        );
+        render_navigator_preview(buffer, screen_area, *screen, palette);
+        render_background_section(
+            buffer,
+            Rect::new(area.x, screen_area.bottom(), area.width, section_height),
+            background,
+            count,
+            palette,
+        );
+        return;
+    }
     if let PreviewDisplay::Cells(snapshot) = preview {
         let rows = snapshot.height.min(area.height);
         let cols = snapshot.width.min(area.width);
@@ -1232,7 +1290,9 @@ pub(in crate::client::shell) fn render_navigator_preview(
                     continue;
                 }
                 let source =
-                    &snapshot.cells[usize::from(y) * usize::from(snapshot.width) + usize::from(x)];
+                    &snapshot.cells[usize::from(y + snapshot.height.saturating_sub(area.height))
+                        * usize::from(snapshot.width)
+                        + usize::from(x)];
                 let clipped = unicode_width::UnicodeWidthStr::width(source.symbol.as_str())
                     > usize::from(cols - x);
                 cell.set_symbol(if clipped { " " } else { &source.symbol });
@@ -1250,7 +1310,9 @@ pub(in crate::client::shell) fn render_navigator_preview(
         PreviewDisplay::None => ("Select a terminal", palette.overlay0),
         PreviewDisplay::Text("") => ("No output", palette.overlay0),
         PreviewDisplay::Text(text) => (text, palette.text),
-        PreviewDisplay::Cells(_) => unreachable!("cell preview rendered above"),
+        PreviewDisplay::Cells(_) | PreviewDisplay::Background { .. } => {
+            unreachable!("structured preview rendered above")
+        }
     };
     let skip = text
         .lines()
@@ -1270,6 +1332,231 @@ pub(in crate::client::shell) fn render_navigator_preview(
             line,
             Style::default().fg(color).bg(palette.panel_bg),
         );
+    }
+}
+
+struct BackgroundRow<'a> {
+    kind: crate::terminal::background::BackgroundTaskKind,
+    id: &'a str,
+    status: Option<&'a str>,
+    detail: &'a str,
+    receipt: Option<(&'static str, u64)>,
+}
+
+fn background_rows(
+    background: &crate::api::schema::background::BackgroundSnapshot,
+) -> impl Iterator<Item = BackgroundRow<'_>> {
+    use crate::terminal::background::{BackgroundTaskKind as Kind, ShellObservation};
+    let shell = background.shell_observations.as_ref();
+    let snapshot_tasks = shell
+        .and_then(|shell| shell.last_received_snapshot.as_ref())
+        .and_then(|record| match &record.observation {
+            ShellObservation::SnapshotObserved { tasks, .. } => Some(tasks.as_slice()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let tasks = snapshot_tasks.iter().map(|task| BackgroundRow {
+        kind: Kind::Shell,
+        id: &task.task_id,
+        status: Some(&task.reported_status),
+        detail: task.command.as_deref().unwrap_or_default(),
+        receipt: None,
+    });
+    let bash = shell
+        .into_iter()
+        .flat_map(|shell| &shell.bash_reports)
+        .filter_map(move |record| {
+            let ShellObservation::BashBackgroundObserved {
+                task_id, command, ..
+            } = &record.observation
+            else {
+                return None;
+            };
+            Some(BackgroundRow {
+                kind: Kind::Shell,
+                id: task_id,
+                status: None,
+                detail: command.as_deref().unwrap_or_default(),
+                receipt: None,
+            })
+        });
+    let agents = background.records.iter().map(|record| BackgroundRow {
+        kind: Kind::Subagent,
+        id: &record.task_id,
+        status: None,
+        detail: record.task_type.as_deref().unwrap_or_default(),
+        receipt: record
+            .stop_observed_at_ms
+            .map(|at| ("stop seen", at))
+            .or_else(|| record.start_observed_at_ms.map(|at| ("start seen", at))),
+    });
+    let waits = background
+        .wait_declarations
+        .iter()
+        .filter(move |wait| match wait.kind {
+            Kind::Subagent => !background
+                .records
+                .iter()
+                .any(|record| record.task_id == wait.task_id),
+            Kind::Shell => !shell.is_some_and(|shell| shell.contains_task(&wait.task_id)),
+        })
+        .map(|wait| BackgroundRow {
+            kind: wait.kind,
+            id: &wait.task_id,
+            status: None,
+            detail: "",
+            receipt: None,
+        });
+    let mut shell_ids = std::collections::BTreeSet::new();
+    tasks
+        .chain(bash)
+        .filter(move |row| shell_ids.insert(row.id))
+        .chain(agents)
+        .chain(waits)
+}
+
+impl navigator_preview::NavigatorPreview {
+    pub(in crate::client::shell) fn background_has_rows(
+        background: &crate::api::schema::background::BackgroundSnapshot,
+    ) -> bool {
+        background_rows(background).next().is_some()
+    }
+}
+
+fn background_section_height(
+    background: &crate::api::schema::background::BackgroundSnapshot,
+    count: usize,
+    height: u16,
+) -> u16 {
+    let footer = usize::from(
+        background
+            .shell_observations
+            .as_ref()
+            .is_some_and(|shell| shell.last_received_snapshot.is_some()),
+    );
+    if height / 2 < 3 {
+        return 0;
+    }
+    u16::try_from(count + 2 + footer)
+        .unwrap_or(u16::MAX)
+        .min(height / 2)
+}
+
+fn background_age(now_ms: u64, received_at_ms: u64) -> String {
+    let seconds = now_ms.saturating_sub(received_at_ms) / 1000;
+    if seconds < 60 {
+        format!("{seconds}s ago")
+    } else if seconds < 3600 {
+        format!("{}m ago", seconds / 60)
+    } else {
+        format!("{}h ago", seconds / 3600)
+    }
+}
+
+fn render_background_section(
+    buffer: &mut Buffer,
+    area: Rect,
+    background: &crate::api::schema::background::BackgroundSnapshot,
+    count: usize,
+    palette: &Palette,
+) {
+    use crate::terminal::background::{BackgroundTaskKind as Kind, ShellObservation};
+    if area.is_empty() || area.height < 3 {
+        return;
+    }
+    let base = Style::default().fg(palette.subtext0).bg(palette.panel_bg);
+    buffer.set_style(area, base);
+    put_text(
+        buffer,
+        area.x,
+        area.y,
+        area.width,
+        &"─".repeat(usize::from(area.width)),
+        base.fg(palette.surface1),
+    );
+    put_text(buffer, area.x, area.y + 1, area.width, "Background", base);
+    put_text(
+        buffer,
+        area.x + 11.min(area.width),
+        area.y + 1,
+        area.width.saturating_sub(11),
+        "current state unknown",
+        base.add_modifier(Modifier::DIM),
+    );
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    let footer = background
+        .shell_observations
+        .as_ref()
+        .and_then(|shell| shell.last_received_snapshot.as_ref())
+        .filter(|_| area.height > 3);
+    let available = usize::from(area.height.saturating_sub(2 + u16::from(footer.is_some())));
+    let shown = if count > available {
+        available.saturating_sub(1)
+    } else {
+        count
+    };
+    for (index, row) in background_rows(background).take(shown).enumerate() {
+        let kind = match row.kind {
+            Kind::Shell => "shell",
+            Kind::Subagent => "agent",
+        };
+        let status = row
+            .status
+            .map(|status| format!("  \"{status}\""))
+            .unwrap_or_default();
+        let detail = row.detail.lines().next().unwrap_or_default();
+        let receipt = row
+            .receipt
+            .map(|(event, at)| format!("  {event} {}", background_age(now_ms, at)))
+            .unwrap_or_default();
+        let text = format!("{kind}  {}{status}  {detail}{receipt}", row.id);
+        let waiting = background
+            .wait_declarations
+            .iter()
+            .any(|wait| wait.kind == row.kind && wait.task_id == row.id);
+        let y = area.y + 2 + index as u16;
+        let wait_width = if waiting { 8.min(area.width) } else { 0 };
+        put_text(
+            buffer,
+            area.x,
+            y,
+            area.width.saturating_sub(wait_width),
+            &text,
+            base,
+        );
+        if waiting {
+            put_right_text(buffer, area, y, "waiting", base.fg(palette.yellow));
+        }
+    }
+    if shown < count && available > 0 {
+        put_text(
+            buffer,
+            area.x,
+            area.y + 2 + shown as u16,
+            area.width,
+            &format!("+{} more", count - shown),
+            base.add_modifier(Modifier::DIM),
+        );
+    }
+    if let Some(record) = footer {
+        if let ShellObservation::SnapshotObserved { hook_event, .. } = &record.observation {
+            let hook = format!("{hook_event:?}");
+            put_text(
+                buffer,
+                area.x,
+                area.bottom() - 1,
+                area.width,
+                &format!(
+                    "last shell report {} · {hook}",
+                    background_age(now_ms, record.received_at_ms)
+                ),
+                base.add_modifier(Modifier::DIM),
+            );
+        }
     }
 }
 

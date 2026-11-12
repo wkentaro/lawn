@@ -1123,6 +1123,7 @@ impl App {
             Method::BackgroundList(params) => {
                 return self.handle_background_list(request.id, params)
             }
+            Method::BackgroundSummary(_) => return self.handle_background_summary(request.id),
             Method::BackgroundShellReport(params) => {
                 return self.handle_background_shell_report(request.id, params)
             }

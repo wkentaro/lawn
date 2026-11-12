@@ -6636,6 +6636,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "background.summary",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7124,6 +7140,28 @@
             "stop_observed"
           ],
           "type": "string"
+        },
+        "BackgroundPaneSummary": {
+          "additionalProperties": false,
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "records": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "terminal_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "terminal_id",
+            "records"
+          ],
+          "type": "object"
         },
         "BackgroundRecord": {
           "properties": {
@@ -11095,6 +11133,25 @@
                 "waiting",
                 "matched",
                 "unmatched"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "panes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/BackgroundPaneSummary"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "background_summary",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "panes"
               ],
               "type": "object"
             }

@@ -292,6 +292,9 @@ pub enum ResponseResult {
         matched: Vec<super::background::BackgroundTaskRef>,
         unmatched: Vec<super::background::BackgroundTaskRef>,
     },
+    BackgroundSummary {
+        panes: Vec<super::background::BackgroundPaneSummary>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

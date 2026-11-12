@@ -152,6 +152,7 @@ operations::define_operations! {
     BackgroundList(PaneTarget) => "background.list", false, true;
     BackgroundShellReport(BackgroundShellReportParams) => "background.shell.report", false, true;
     BackgroundWaitSet(BackgroundWaitSetParams) => "background.wait.set", false, true;
+    BackgroundSummary(EmptyParams) => "background.summary", false, true;
 }
 
 #[cfg(test)]

@@ -80,6 +80,8 @@ pub(super) fn dispatch_client_shell_actions(
                     request.method,
                     crate::api::schema::Method::PaneRead(_)
                         | crate::api::schema::Method::PaneSnapshot(_)
+                        | crate::api::schema::Method::BackgroundList(_)
+                        | crate::api::schema::Method::BackgroundSummary(_)
                 ) {
                     if let Some(connection) = endpoints.connection(&endpoint_id) {
                         endpoint_commands.enqueue(

@@ -108,7 +108,7 @@ Raw socket method names use dot notation:
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
 | Events | `events.subscribe`, `events.wait` |
-| Background | `background.report`, `background.shell.report`, `background.list`, `background.wait.set` |
+| Background | `background.report`, `background.shell.report`, `background.list`, `background.summary`, `background.wait.set` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
 
@@ -754,6 +754,8 @@ Bash `PostToolUse` reports use structured `tool_response.backgroundTaskId` as `t
 The optional `command` comes from native structured hook input and may already be clipped by Claude. Herdr does not capture task descriptions, assistant messages, transcripts, output paths, or command output. These hooks provide no continuous completion feed or live output subscription.
 
 Identity fields are limited to 256 UTF-8 bytes each, `reported_status` to 128 bytes, and commands to 4096 bytes. Commands may contain newlines; other displayed text rejects control characters. Hooks accept at most 1 MiB of raw input before JSON parsing. A snapshot holds at most 128 shell entries; its `truncated` flag discloses omissions. Do not treat a truncated snapshot as a complete observation.
+
+`background.summary` takes empty `params` and returns `result.type: "background_summary"` with a `panes` array of `{pane_id, terminal_id, records}`. It omits panes with zero records. `records` counts retained subagent records plus distinct shell task IDs across the last received snapshot and Bash reports. The same ID in both kinds counts twice. These are historical hook observations, not running tasks or evidence of completion or success.
 
 ```json
 {"id":"req_background","method":"background.list","params":{"pane_id":"w1:p1"}}

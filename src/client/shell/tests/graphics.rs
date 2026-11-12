@@ -345,6 +345,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
                 &state.endpoints,
                 &state.active_endpoint_id,
                 &state.config.keybinds,
+                &state.navigator_preview,
                 &state.config.palette,
             ),
         }

@@ -1,6 +1,6 @@
 use crate::api::schema::{
-    BackgroundReportParams, BackgroundShellReportParams, BackgroundWaitSetParams, PaneTarget,
-    ResponseResult,
+    BackgroundPaneSummary, BackgroundReportParams, BackgroundShellReportParams,
+    BackgroundWaitSetParams, PaneTarget, ResponseResult,
 };
 use crate::app::App;
 use crate::terminal::TerminalId;
@@ -92,6 +92,35 @@ impl App {
                 "background report requires bounded fields and the current Claude root session",
             ),
         }
+    }
+
+    pub(super) fn handle_background_summary(&self, id: String) -> String {
+        let mut panes = Vec::new();
+        for (ws_idx, workspace) in self.state.workspaces.iter().enumerate() {
+            for tab in &workspace.tabs {
+                for (pane_id, pane) in &tab.panes {
+                    let terminal_id = &pane.attached_terminal_id;
+                    let Some(terminal) = self.state.terminals.get(terminal_id) else {
+                        continue;
+                    };
+                    let records = terminal.background_record_count();
+                    if records == 0 {
+                        continue;
+                    }
+                    let Some(pane_id) = self.public_pane_id(ws_idx, *pane_id) else {
+                        continue;
+                    };
+                    panes.push(BackgroundPaneSummary {
+                        pane_id,
+                        terminal_id: terminal_id.to_string(),
+                        // Each retained source holds at most 128 entries.
+                        records: records as u32,
+                    });
+                }
+            }
+        }
+        panes.sort_unstable_by(|a, b| a.pane_id.cmp(&b.pane_id));
+        encode_success(id, ResponseResult::BackgroundSummary { panes })
     }
 
     pub(super) fn handle_background_list(&self, id: String, params: PaneTarget) -> String {
@@ -200,6 +229,39 @@ mod tests {
                 },
             ],
         })
+    }
+
+    #[test]
+    fn background_summary_omits_empty_panes_and_reports_terminal_identity() {
+        let (mut app, pane_id, terminal_id) = app();
+        let summary = request(&mut app, Method::BackgroundSummary(Default::default()));
+        assert_eq!(
+            summary["result"],
+            serde_json::json!({
+                "type":"background_summary", "panes":[]
+            })
+        );
+        request(&mut app, shell_report(pane_id.clone(), "root"));
+        request(
+            &mut app,
+            report(
+                pane_id.clone(),
+                "root",
+                crate::terminal::background::BackgroundEvent::SubagentStopObserved,
+            ),
+        );
+        let before = app.session_snapshot();
+        let summary = request(&mut app, Method::BackgroundSummary(Default::default()));
+        assert_eq!(
+            summary["result"],
+            serde_json::json!({
+                "type":"background_summary", "panes":[{
+                    "pane_id":pane_id, "terminal_id":terminal_id.to_string(), "records":2
+                }]
+            })
+        );
+        assert_eq!(app.session_snapshot(), before);
+        app.state.assert_invariants_for_test();
     }
 
     #[test]
@@ -394,6 +456,13 @@ mod tests {
         let new_pane_id = moved["result"]["move_result"]["pane"]["pane_id"]
             .as_str()
             .unwrap();
+        let summary = request(&mut app, Method::BackgroundSummary(Default::default()));
+        assert_eq!(
+            summary["result"]["panes"],
+            serde_json::json!([{
+                "pane_id":new_pane_id, "terminal_id":terminal_id.to_string(), "records":2
+            }])
+        );
         let listed = request(
             &mut app,
             Method::BackgroundList(PaneTarget {

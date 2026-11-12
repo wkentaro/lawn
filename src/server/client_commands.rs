@@ -245,6 +245,10 @@ mod tests {
         .expect("endpoint method shape fixture");
         let mut actual = endpoint_method_shape_digests();
         assert_eq!(
+            actual.remove("background.summary").as_deref(),
+            Some("564887cc99d39cae0474ff2122e34b66d9336a5729d81fba93637653d3d123c8")
+        );
+        assert_eq!(
             actual.remove("background.wait.set").as_deref(),
             Some("9a426d2e079dd2892bbd2cb3411b3da38abdc0679d065cb92bcbdd141483abe0")
         );
