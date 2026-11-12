@@ -115,6 +115,22 @@ class LawnReleaseTests(unittest.TestCase):
             self.package(platform="windows-x86_64", windows_bundle=bundle)
         self.assertFalse(self.output.exists())
 
+    def test_windows_installer_and_updater_use_only_lawn_paths(self):
+        installer = (lawn_release.ROOT / "distribution/install.ps1").read_text()
+        updater = (lawn_release.ROOT / "src/update.rs").read_text()
+        self.assertIn('$env:LAWN_HOME', installer)
+        self.assertIn('$env:LAWN_INSTALL_DIR', installer)
+        self.assertIn('"Programs\\Lawn\\bin"', installer)
+        self.assertIn('"https://github.com/wkentaro/lawn/releases/latest/download/latest.json"', installer)
+        self.assertIn('"lawn.exe"', installer)
+        self.assertIn('"conpty/herdr-conpty.json"', installer)
+        self.assertIn('$stagedVersion -cne "lawn $expectedVersion"', installer)
+        self.assertNotIn('herdr.exe', installer.lower())
+        self.assertNotIn('$env:HERDR_', installer)
+        self.assertIn('env::var_os("LAWN_INSTALL_DIR")', updater)
+        self.assertIn('windows_installed_lawn_exe_path()', updater)
+        self.assertIn('.join("Lawn")\n        .join("bin")\n        .join("lawn.exe")', updater)
+
     @patch.object(lawn_release.subprocess, "check_output", return_value="herdr 0.9.5\n")
     def test_wrong_binary_version_creates_no_artifacts(self, _version):
         with self.assertRaisesRegex(ValueError, "binary version mismatch"):

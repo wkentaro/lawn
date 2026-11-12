@@ -90,7 +90,7 @@ if [ ! -e "$FAKE_SSH_FIRST_DONE" ]; then
     : > "$FAKE_SSH_FIRST_DONE"
     if [ "$FAKE_SSH_FRAMED" = 0 ]; then authenticate; fi
     /bin/cat >/dev/null
-    printf 'login banner\nherdr-remote-output-ready:1\nLinux\nx86_64\n'
+    printf 'login banner\nlawn-remote-output-ready:1\nLinux\nx86_64\n'
     exit 0
 fi
 if [ "$FAKE_SSH_FRAMED" = 1 ] && [ ! -e "$FAKE_SSH_STARTED" ]; then
@@ -122,7 +122,7 @@ exit 255
         .env_remove("HERDR_SESSION")
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
-        .env_remove("HERDR_REMOTE_BINARY")
+        .env_remove("LAWN_REMOTE_BINARY")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

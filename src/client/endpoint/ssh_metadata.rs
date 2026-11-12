@@ -20,7 +20,11 @@ impl SshMachineMetadata {
             return false;
         }
         match self.os.as_str() {
-            "linux" | "macos" => path.starts_with('/') && !path.ends_with("/mise/shims/herdr"),
+            "linux" | "macos" => {
+                path.starts_with('/')
+                    && !path.ends_with("/mise/shims/lawn")
+                    && !path.ends_with("/mise/shims/herdr")
+            }
             "windows" => {
                 let bytes = path.as_bytes();
                 path.starts_with(r"\\")
@@ -70,7 +74,7 @@ impl SshMetadataCache {
             return;
         }
         let stored = StoredMetadata {
-            version: 1,
+            version: 2,
             target: self.target.clone(),
             session: self.session.clone(),
             metadata: metadata.clone(),
@@ -109,7 +113,7 @@ fn load_metadata(path: &Path, target: &str, session: &str) -> Option<SshMachineM
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    (stored.version == 1
+    (stored.version == 2
         && stored.target == target
         && stored.session == session
         && stored.metadata.is_valid())
@@ -181,7 +185,10 @@ mod tests {
         stored["future_field"] = true.into();
         std::fs::write(&first.path, serde_json::to_vec(&stored).unwrap()).unwrap();
         assert_eq!(first.load(), Some(metadata.clone()));
-        stored["version"] = 2.into();
+        stored["version"] = 1.into();
+        std::fs::write(&first.path, serde_json::to_vec(&stored).unwrap()).unwrap();
+        assert!(first.load().is_none());
+        stored["version"] = 3.into();
         std::fs::write(&first.path, serde_json::to_vec(&stored).unwrap()).unwrap();
         assert!(first.load().is_none());
         for bytes in [

@@ -44,13 +44,11 @@ const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
 const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CURRENT_PROTOCOL: u32 = crate::protocol::PROTOCOL_VERSION;
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
-const REMOTE_BINARY_ENV_VAR: &str = "HERDR_REMOTE_BINARY";
-const REMOTE_OUTPUT_READY_MARKER: &str = "herdr-remote-output-ready:1";
-const WINDOWS_REMOTE_PATH_MARKER: &str = "herdr-remote-path:1:";
-const WINDOWS_REMOTE_INSTALL_DIR_MARKER: &str = "herdr-remote-install-dir:1:";
-const WINDOWS_REMOTE_INSTALL_RESULT_MARKER: &str = "herdr-remote-install-result:1:";
+const REMOTE_BINARY_ENV_VAR: &str = "LAWN_REMOTE_BINARY";
+const REMOTE_OUTPUT_READY_MARKER: &str = "lawn-remote-output-ready:1";
+const WINDOWS_REMOTE_PATH_MARKER: &str = "lawn-remote-path:1:";
+const WINDOWS_REMOTE_INSTALL_DIR_MARKER: &str = "lawn-remote-install-dir:1:";
+const WINDOWS_REMOTE_INSTALL_RESULT_MARKER: &str = "lawn-remote-install-result:1:";
 const SSH_CONTROL_SOCKET_NAME: &str = "ctl";
 pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let session_name = crate::session::active_name()
@@ -58,7 +56,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
     let program = std::env::args()
         .next()
-        .unwrap_or_else(|| "herdr".to_string());
+        .unwrap_or_else(|| "lawn".to_string());
     let reattach_command = reattach_command(
         &program,
         &remote.target,
@@ -135,7 +133,7 @@ pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
                 Ok(())
             }
             _ => Err(io::Error::other(format!(
-                "remote Herdr server is stopped or incompatible; run `{}`",
+                "remote Lawn server is stopped or incompatible; run `{}`",
                 super::saved_ssh_bootstrap_command(target, session),
             ))),
         }
@@ -182,6 +180,9 @@ impl SavedSshSetup {
         }
         let mut failure = String::new();
         for candidate in &self.candidates {
+            if remote_client_status(&self.ssh, candidate)?.is_none() {
+                continue;
+            }
             let output = self.ssh.shell_output(
                 &candidate.platform,
                 &candidate.executable.command(&["session", "list", "--json"]),
@@ -207,8 +208,12 @@ impl SavedSshSetup {
                 Err(error) => failure = format!("invalid remote session list: {error}"),
             }
         }
+        if failure.is_empty() {
+            // Candidates existed, but none identified as Lawn. Continue to installation approval.
+            return Ok(Vec::new());
+        }
         Err(io::Error::other(format!(
-            "could not discover remote Herdr sessions: {failure}; specify --remote-session to continue"
+            "could not discover remote Lawn sessions: {failure}; specify --remote-session to continue"
         )))
     }
 
@@ -347,7 +352,9 @@ impl RemoteExecutable {
     fn command(&self, args: &[&str]) -> String {
         match self {
             Self::PosixShellPath(path) => {
-                let mut command = path.clone();
+                let mut command = format!(
+                    "env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION {path}"
+                );
                 for arg in args {
                     command.push(' ');
                     command.push_str(&shell_quote(arg));
@@ -373,6 +380,7 @@ impl RemoteExecutable {
         session_args
     }
 
+    #[cfg(test)]
     fn exists_command(&self) -> String {
         match self {
             Self::PosixShellPath(path) => format!("test -x {path}"),
@@ -473,10 +481,10 @@ impl RemoteHerdr {
         let (install_suffix, executable) = if platform.is_windows() {
             (
                 String::new(),
-                RemoteExecutable::WindowsPath("herdr.exe".to_string()),
+                RemoteExecutable::WindowsPath("lawn.exe".to_string()),
             )
         } else {
-            let install_suffix = ".local/bin/herdr".to_string();
+            let install_suffix = ".local/bin/lawn".to_string();
             let shell_path = format!("\"$HOME/{install_suffix}\"");
             (install_suffix, RemoteExecutable::PosixShellPath(shell_path))
         };
@@ -503,7 +511,10 @@ impl RemoteHerdr {
 }
 
 fn windows_powershell_application_script(path: &str, args: &[&str]) -> String {
-    let mut script = format!("& {}", crate::platform::quote_powershell_arg(path));
+    let mut script = format!(
+        "$env:HERDR_SOCKET_PATH = $null; $env:HERDR_CLIENT_SOCKET_PATH = $null; $env:HERDR_SESSION = $null; & {}",
+        crate::platform::quote_powershell_arg(path)
+    );
     for arg in args {
         script.push(' ');
         script.push_str(&crate::platform::quote_powershell_arg(arg));
@@ -525,7 +536,7 @@ fn windows_powershell_streaming_application_script(path: &str, args: &[&str]) ->
     // Start-Process -Wait waits for descendants, including a cold-started server.
     // Retain the handle so Windows PowerShell 5.1 keeps the application's exit code.
     format!(
-        "$process = Start-Process -FilePath {} -ArgumentList {} -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+        "$env:HERDR_SOCKET_PATH = $null; $env:HERDR_CLIENT_SOCKET_PATH = $null; $env:HERDR_SESSION = $null; $process = Start-Process -FilePath {} -ArgumentList {} -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
         crate::platform::quote_powershell_arg(path),
         crate::platform::quote_powershell_arg(&command_line),
     )
@@ -615,21 +626,6 @@ struct RemoteReleaseMetadata {
     sha256: BTreeMap<String, String>,
 }
 
-#[derive(Deserialize)]
-struct RemotePreviewManifest {
-    build_id: String,
-    protocol: u32,
-    assets: BTreeMap<String, RemoteAssetRef>,
-    #[serde(default)]
-    builds: BTreeMap<String, RemotePreviewBuildMetadata>,
-}
-
-#[derive(Deserialize)]
-struct RemotePreviewBuildMetadata {
-    protocol: u32,
-    assets: BTreeMap<String, RemoteAssetRef>,
-}
-
 fn deserialize_remote_manifest_releases<'de, D>(
     deserializer: D,
 ) -> Result<BTreeMap<String, RemoteReleaseMetadata>, D::Error>
@@ -678,7 +674,7 @@ struct RemoteManifestReleaseRef<'a> {
 }
 
 fn current_version() -> String {
-    crate::build_info::HERDR_COMPAT_VERSION.to_owned()
+    crate::build_info::version()
 }
 
 fn current_channel() -> &'static str {
@@ -1162,7 +1158,7 @@ impl RemoteSsh {
                 )?;
                 self.copy_windows_file(
                     source_path,
-                    &format!(r"{remote_dir}\herdr-windows-x86_64.zip"),
+                    &format!(r"{remote_dir}\lawn-windows-x86_64.zip"),
                 )?;
 
                 let output = self.framed_user_shell_output(&windows_remote_install_command(
@@ -1307,7 +1303,7 @@ fn remote_install_stream_command(tmp_path: &str) -> String {
 
 fn remote_install_commit_script(tmp_path: &str, dest_path: &str) -> String {
     format!(
-        "set -eu\nchmod 755 {tmp_path}\nmv {tmp_path} {dest_path}\n",
+        "set -eu\nchmod 755 {tmp_path}\nversion=$(env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION {tmp_path} --version)\ncase \"$version\" in\n    'lawn '*) ;;\n    *) printf '%s\\n' 'remote package is not Lawn; keeping the installed binary' >&2; exit 1 ;;\nesac\nmv {tmp_path} {dest_path}\n",
         tmp_path = shell_quote(tmp_path),
         dest_path = shell_quote(dest_path)
     )
@@ -1315,7 +1311,7 @@ fn remote_install_commit_script(tmp_path: &str, dest_path: &str) -> String {
 
 fn windows_remote_install_prepare_command() -> String {
     windows_powershell_script_command(&format!(
-        "$remoteInstallDir = Join-Path ([System.IO.Path]::GetTempPath()) ('herdr-remote-' + [System.Guid]::NewGuid().ToString('N')); [System.IO.Directory]::CreateDirectory($remoteInstallDir) | Out-Null; $encodedInstallDir = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($remoteInstallDir)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_INSTALL_DIR_MARKER}' + $encodedInstallDir); exit 0"
+        "$remoteInstallDir = Join-Path ([System.IO.Path]::GetTempPath()) ('lawn-remote-' + [System.Guid]::NewGuid().ToString('N')); [System.IO.Directory]::CreateDirectory($remoteInstallDir) | Out-Null; $encodedInstallDir = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($remoteInstallDir)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_INSTALL_DIR_MARKER}' + $encodedInstallDir); exit 0"
     ))
 }
 
@@ -1340,9 +1336,9 @@ fn windows_scp_target(target: &str, remote_path: &str) -> String {
 fn windows_remote_install_command(remote_dir: &str, identity: &str, sha256: &str) -> String {
     let installer = crate::platform::quote_powershell_arg(&format!(r"{remote_dir}\install.ps1"));
     let package =
-        crate::platform::quote_powershell_arg(&format!(r"{remote_dir}\herdr-windows-x86_64.zip"));
+        crate::platform::quote_powershell_arg(&format!(r"{remote_dir}\lawn-windows-x86_64.zip"));
     windows_powershell_script_command(&format!(
-        r#"$herdrInstaller = {installer}; $herdrPackage = {package}; & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $herdrInstaller -Channel {channel} -LocalPackagePath $herdrPackage -LocalPackageFormat zip -LocalPackageIdentity {identity} -LocalPackageSha256 {sha256}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Join-Path $herdrHome 'packages\standalone\current'; $activeTarget = [string](Get-Item -LiteralPath $activeJunction -Force -ErrorAction Stop).Target; if ([string]::IsNullOrWhiteSpace($activeTarget)) {{ throw 'Herdr installer did not activate a concrete release.' }}; $installedHerdr = Join-Path $activeTarget 'herdr.exe'; if (-not (Test-Path -LiteralPath $installedHerdr -PathType Leaf)) {{ throw 'Herdr installer result does not contain herdr.exe.' }}; $encodedResult = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($installedHerdr))); [Console]::Out.WriteLine('{WINDOWS_REMOTE_INSTALL_RESULT_MARKER}' + $encodedResult); exit 0"#,
+        r#"$lawnInstaller = {installer}; $lawnPackage = {package}; & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $lawnInstaller -Channel {channel} -LocalPackagePath $lawnPackage -LocalPackageFormat zip -LocalPackageIdentity {identity} -LocalPackageSha256 {sha256}; if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}; $lawnHome = if ([string]::IsNullOrWhiteSpace($env:LAWN_HOME)) {{ Join-Path $env:USERPROFILE '.lawn' }} else {{ $env:LAWN_HOME }}; $activeJunction = Join-Path $lawnHome 'packages\standalone\current'; $activeTarget = [string](Get-Item -LiteralPath $activeJunction -Force -ErrorAction Stop).Target; if ([string]::IsNullOrWhiteSpace($activeTarget)) {{ throw 'Lawn installer did not activate a concrete release.' }}; $installedLawn = Join-Path $activeTarget 'lawn.exe'; if (-not (Test-Path -LiteralPath $installedLawn -PathType Leaf)) {{ throw 'Lawn installer result does not contain lawn.exe.' }}; $encodedResult = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes([System.IO.Path]::GetFullPath($installedLawn))); [Console]::Out.WriteLine('{WINDOWS_REMOTE_INSTALL_RESULT_MARKER}' + $encodedResult); exit 0"#,
         channel = crate::platform::quote_powershell_arg(current_channel()),
         identity = crate::platform::quote_powershell_arg(identity),
         sha256 = crate::platform::quote_powershell_arg(sha256),
@@ -1521,11 +1517,13 @@ fn prepare_discovered_remote_herdr(
     }
 
     let mut stop_after_install_approved = false;
-    if let Some(status_probe_herdr) = candidates.first().or_else(|| {
-        remote_binary_exists(ssh, &remote_herdr)
+    let existing_lawn = candidates.iter().find(|candidate| {
+        remote_client_status(ssh, candidate)
             .ok()
-            .and_then(|exists| exists.then_some(&remote_herdr))
-    }) {
+            .flatten()
+            .is_some()
+    });
+    if let Some(status_probe_herdr) = existing_lawn {
         stop_after_install_approved = confirm_remote_install_with_running_server(
             ssh,
             status_probe_herdr,
@@ -1547,7 +1545,7 @@ fn prepare_discovered_remote_herdr(
 
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support saved SSH endpoint federation",
+            "installed remote Lawn at {}, but it does not support saved SSH endpoint federation",
             remote_herdr.executable.display()
         )));
     }
@@ -1574,7 +1572,7 @@ pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteH
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "matching Herdr is not ready on {}; run `herdr --remote {}` interactively to install or update it",
+            "matching Lawn is not ready on {}; run `lawn --remote {}` interactively to install it without changing Herdr",
             ssh.target(),
             ssh.target()
         ),
@@ -1605,7 +1603,13 @@ fn prepare_windows_remote_herdr(
         }
     }
 
-    let stop_after_install_approved = if let Some(candidate) = candidates.first() {
+    let existing_lawn = candidates.iter().find(|candidate| {
+        remote_client_status(ssh, candidate)
+            .ok()
+            .flatten()
+            .is_some()
+    });
+    let stop_after_install_approved = if let Some(candidate) = existing_lawn {
         confirm_remote_install_with_running_server(
             ssh,
             candidate,
@@ -1640,7 +1644,7 @@ fn prepare_windows_remote_herdr(
     let remote_herdr = install_result?;
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support the required remote hosting capabilities",
+            "installed remote Lawn at {}, but it does not support the required remote hosting capabilities",
             remote_herdr.executable.display()
         )));
     }
@@ -1672,7 +1676,7 @@ pub(super) fn discover_remote_api_metadata(
         if !metadata.is_valid() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid remote Herdr executable path",
+                "invalid remote Lawn executable path",
             ));
         }
         return Ok(metadata);
@@ -1680,6 +1684,9 @@ pub(super) fn discover_remote_api_metadata(
     let remote_herdr = RemoteHerdr::for_platform(platform);
     let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
     for candidate in candidates {
+        if !remote_binary_is_lawn(ssh, &candidate)? {
+            continue;
+        }
         let probe =
             ssh.framed_user_shell_output(&remote_api_bridge_command(&candidate, session, true))?;
         if probe.status.code() == Some(255) {
@@ -1696,7 +1703,7 @@ pub(super) fn discover_remote_api_metadata(
     }
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "remote Herdr does not support machine API forwarding; update Herdr on this machine",
+        "remote Lawn does not support machine API forwarding; update Lawn on this machine",
     ))
 }
 
@@ -1790,7 +1797,7 @@ fn looks_like_windows_uname(os: &str) -> bool {
 }
 
 fn windows_platform_probe_command(native_shell_only: bool) -> String {
-    let script = "$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }; [Console]::Out.WriteLine('herdr-windows:' + $arch); exit 0";
+    let script = "$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }; [Console]::Out.WriteLine('lawn-windows:' + $arch); exit 0";
     if !native_shell_only {
         return windows_powershell_script_command(script);
     }
@@ -1806,7 +1813,7 @@ fn windows_platform_probe_command(native_shell_only: bool) -> String {
 fn parse_windows_platform_probe(stdout: &str) -> Result<Option<DetectedRemotePlatform>, String> {
     let Some(arch) = stdout
         .lines()
-        .find_map(|line| line.trim().strip_prefix("herdr-windows:"))
+        .find_map(|line| line.trim().strip_prefix("lawn-windows:"))
     else {
         return Ok(None);
     };
@@ -1863,7 +1870,7 @@ fn remote_binary_candidates(
 
 fn windows_remote_binary_candidate_command() -> String {
     windows_powershell_script_command(&format!(
-        r#"function Emit-HerdrPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommand = Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-HerdrPath $pathCommand.Source }}; $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process -Filter "Name = 'herdr.exe' OR Name = 'herdr-dev.exe'" -ErrorAction SilentlyContinue | ForEach-Object {{ $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue; if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $userSid) {{ Emit-HerdrPath $_.ExecutablePath }} }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $herdrHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'herdr.exe') }}; exit 0"#
+        r#"function Emit-LawnPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommand = Get-Command lawn.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-LawnPath $pathCommand.Source }}; $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process -Filter "Name = 'lawn.exe'" -ErrorAction SilentlyContinue | ForEach-Object {{ $owner = Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue; if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $userSid) {{ Emit-LawnPath $_.ExecutablePath }} }}; $lawnHome = if ([string]::IsNullOrWhiteSpace($env:LAWN_HOME)) {{ Join-Path $env:USERPROFILE '.lawn' }} else {{ $env:LAWN_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $lawnHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-LawnPath (Join-Path ([string]$activeJunction.Target) 'lawn.exe') }}; exit 0"#
     ))
 }
 
@@ -1907,34 +1914,34 @@ emit() {
     fi
 }
 if [ -n "$home" ]; then
-    emit "$home/.local/bin/herdr"
+    emit "$home/.local/bin/lawn"
 fi
 "#,
     );
     if platform.os == "macos" {
         script.push_str(
-            r#"    emit "/opt/homebrew/bin/herdr"
-    emit "/usr/local/bin/herdr"
+            r#"    emit "/opt/homebrew/bin/lawn"
+    emit "/usr/local/bin/lawn"
 "#,
         );
     } else if platform.os == "linux" {
         script.push_str(
-            r#"    emit "/home/linuxbrew/.linuxbrew/bin/herdr"
+            r#"    emit "/home/linuxbrew/.linuxbrew/bin/lawn"
 "#,
         );
     }
     script.push_str(
         r#"if [ -n "$home" ]; then
-    emit "$home/.local/share/mise/installs/herdr/$version/bin/herdr"
-    emit "$home/.local/share/mise/installs/herdr/$version/herdr"
-    emit "$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr"
-    emit "$home/.nix-profile/bin/herdr"
+    emit "$home/.local/share/mise/installs/lawn/$version/bin/lawn"
+    emit "$home/.local/share/mise/installs/lawn/$version/lawn"
+    emit "$home/.local/share/mise/installs/github-wkentaro-lawn/$version/lawn"
+    emit "$home/.nix-profile/bin/lawn"
 fi
 if [ -n "$user" ]; then
-    emit "/etc/profiles/per-user/$user/bin/herdr"
+    emit "/etc/profiles/per-user/$user/bin/lawn"
 fi
-emit "/nix/var/nix/profiles/default/bin/herdr"
-emit "/run/current-system/sw/bin/herdr"
+emit "/nix/var/nix/profiles/default/bin/lawn"
+emit "/run/current-system/sw/bin/lawn"
 "#,
     );
 
@@ -1945,7 +1952,7 @@ fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v lawn")?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1955,7 +1962,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v herdr\n")?;
+    let output = ssh.sh_output("command -v lawn\n")?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -1992,13 +1999,33 @@ fn remote_herdr_from_path(remote_herdr: &RemoteHerdr, path: &str) -> Option<Remo
 }
 
 fn is_mise_shim_path(path: &str) -> bool {
-    path.ends_with("/mise/shims/herdr")
+    path.ends_with("/mise/shims/lawn")
+}
+
+fn is_lawn_version_output(output: &[u8]) -> bool {
+    String::from_utf8_lossy(output)
+        .lines()
+        .any(|line| line.trim().starts_with("lawn "))
+}
+
+fn remote_binary_is_lawn(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<bool> {
+    let version = ssh.shell_output(
+        &remote_herdr.platform,
+        &remote_herdr.executable.command(&["--version"]),
+    )?;
+    if version.status.code() == Some(255) {
+        return Err(command_failed("remote SSH connection failed", &version));
+    }
+    Ok(version.status.success() && is_lawn_version_output(&version.stdout))
 }
 
 fn remote_client_status(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteClientStatusJson>> {
+    if !remote_binary_is_lawn(ssh, remote_herdr)? {
+        return Ok(None);
+    }
     let command = remote_herdr.executable.status_client_command();
     let output = ssh.shell_output(&remote_herdr.platform, &command)?;
     if !output.status.success() {
@@ -2022,14 +2049,6 @@ fn remote_binary_supports_endpoint_requirement(
             status.supports_endpoint_requirement(&remote_herdr.platform, require_surface_interest)
         }),
     )
-}
-
-fn remote_binary_exists(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<bool> {
-    let command = remote_herdr.executable.exists_command();
-    Ok(ssh
-        .shell_output(&remote_herdr.platform, &command)?
-        .status
-        .success())
 }
 
 fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
@@ -2087,7 +2106,7 @@ fn resolve_install_source(
         return Ok(InstallSource::persistent(path));
     }
 
-    // Lawn's executable must not be installed under the remote herdr identity.
+    // A remote Lawn install must never overwrite the upstream Herdr executable.
     download_release_asset(platform)
 }
 
@@ -2193,13 +2212,13 @@ fn confirm_remote_install_with_running_server(
         Err(err) => {
             if !io::stdin().is_terminal() {
                 return Err(io::Error::other(format!(
-                    "could not inspect the running remote herdr server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
+                    "could not inspect the running remote Lawn server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
                 )));
             }
             eprintln!(
-                "could not inspect the running remote herdr server on {target} before installing: {err}"
+                "could not inspect the running remote Lawn server on {target} before installing: {err}"
             );
-            eprint!("continue installing the remote herdr binary? [y/N] ");
+            eprint!("continue installing the remote Lawn binary? [y/N] ");
             io::stderr().flush()?;
 
             let mut answer = String::new();
@@ -2208,7 +2227,7 @@ fn confirm_remote_install_with_running_server(
             if answer != "y" && answer != "yes" {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
-                    "remote herdr install cancelled",
+                    "remote Lawn install cancelled",
                 ));
             }
             return Ok(false);
@@ -2237,10 +2256,10 @@ fn confirm_remote_install_with_running_server(
 
     if plan == RemoteInstallRunningServerPlan::KeepRunning {
         if io::stdin().is_terminal() {
-            eprintln!("remote herdr server on {target} is already compatible:");
+            eprintln!("remote Lawn server on {target} is already compatible:");
             eprintln!("  server: v{}", version_label(version.as_deref()));
             eprintln!(
-                "Herdr will install {} without stopping the running remote server.",
+                "Lawn will install {} without stopping the running remote server.",
                 current_version()
             );
         }
@@ -2252,7 +2271,7 @@ fn confirm_remote_install_with_running_server(
             RemoteInstallRunningServerPlan::LiveHandoff => return Ok(false),
             RemoteInstallRunningServerPlan::StopRequired(_) => {
                 return Err(io::Error::other(format!(
-                    "remote herdr server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
+                    "remote Lawn server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
                     version_label(version.as_deref())
                 )));
             }
@@ -2261,19 +2280,19 @@ fn confirm_remote_install_with_running_server(
     }
 
     if plan == RemoteInstallRunningServerPlan::LiveHandoff {
-        eprintln!("remote herdr server on {target} is currently running:");
+        eprintln!("remote Lawn server on {target} is currently running:");
         eprintln!("  server: v{}", version_label(version.as_deref()));
         eprintln!(
-            "Herdr will install {} and hand off live pane processes to the prepared server.",
+            "Lawn will install {} and hand off live pane processes to the prepared server.",
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote Lawn server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version.as_deref()));
     eprintln!(
-        "To complete the remote update, Herdr must stop the running remote server after installing."
+        "To complete the remote update, Lawn must stop the running remote server after installing."
     );
     eprintln!("This stops active remote pane processes, including shells, agents, dev servers, and tests.");
     eprintln!();
@@ -2289,7 +2308,7 @@ fn confirm_remote_install_with_running_server(
     if answer != "y" && answer != "yes" {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr install cancelled",
+            "remote Lawn install cancelled",
         ));
     }
 
@@ -2475,19 +2494,19 @@ fn confirm_remote_server_stop(
     if !io::stdin().is_terminal() {
         if required_upgrade {
             return Err(io::Error::other(format!(
-                "remote herdr server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
+                "remote Lawn server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
             )));
         }
 
         eprintln!(
-            "remote herdr server on {target} is still running v{}; it will use {} after it restarts.",
+            "remote Lawn server on {target} is still running v{}; it will use {} after it restarts.",
             version_label(version),
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote Lawn server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version));
     eprintln!("  prepared binary: {}", current_version());
     eprintln!();
@@ -2495,7 +2514,7 @@ fn confirm_remote_server_stop(
     match reason {
         RemoteServerRestartReason::EndpointProtocol => {
             eprintln!(
-                "the remote server predates Herdr's stable endpoint protocol and must update before this client can attach."
+                "the remote server predates Lawn's stable endpoint protocol and must update before this client can attach."
             );
         }
         RemoteServerRestartReason::SurfaceInterest => {
@@ -2508,7 +2527,7 @@ fn confirm_remote_server_stop(
         }
         RemoteServerRestartReason::DaemonDetach => {
             eprintln!(
-                "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
+                "the remote server was started by a Lawn build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
             );
         }
     }
@@ -2528,7 +2547,7 @@ fn confirm_remote_server_stop(
     if required_upgrade {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr server stop cancelled",
+            "remote Lawn server stop cancelled",
         ));
     }
 
@@ -2537,15 +2556,15 @@ fn confirm_remote_server_stop(
 
 fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<()> {
     let status = remote_client_status(ssh, remote_herdr)?.ok_or_else(|| {
-        io::Error::other("could not inspect the prepared remote herdr binary before live handoff")
+        io::Error::other("could not inspect the prepared remote Lawn binary before live handoff")
     })?;
     let protocol = status.protocol.ok_or_else(|| {
-        io::Error::other("prepared remote herdr did not report its private protocol")
+        io::Error::other("prepared remote Lawn did not report its private protocol")
     })?;
     let version = status
         .version
         .filter(|version| !version.is_empty())
-        .ok_or_else(|| io::Error::other("prepared remote herdr did not report its version"))?;
+        .ok_or_else(|| io::Error::other("prepared remote Lawn did not report its version"))?;
     let command =
         remote_herdr
             .executable
@@ -2556,7 +2575,7 @@ fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io
     }
 
     eprintln!(
-        "handed off the remote herdr server on {}; reconnecting to the prepared server.",
+        "handed off the remote Lawn server on {}; reconnecting to the prepared server.",
         ssh.target()
     );
     Ok(())
@@ -2573,7 +2592,7 @@ fn stop_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result
 
     wait_for_remote_server_shutdown(ssh, remote_herdr)?;
     eprintln!(
-        "stopped the remote herdr server on {}; it will restart when the remote client bridge attaches.",
+        "stopped the remote Lawn server on {}; it will restart when the remote client bridge attaches.",
         ssh.target()
     );
     Ok(())
@@ -2589,7 +2608,7 @@ fn wait_for_remote_server_shutdown(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) 
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "shutdown was requested, but the old remote herdr server on {target} is still responding after {} seconds",
+                    "shutdown was requested, but the old remote Lawn server on {target} is still responding after {} seconds",
                     REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs(),
                     target = ssh.target()
                 ),
@@ -2604,7 +2623,7 @@ fn version_label(version: Option<&str>) -> &str {
 }
 
 fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v lawn")?;
     if output.status.success()
         && remote_shell_resolves_managed_install(&String::from_utf8_lossy(&output.stdout))
     {
@@ -2612,7 +2631,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `herdr` to that path"
+        "lawn: installed remote binary to ~/.local/bin/lawn, but the remote shell does not resolve `lawn` to that path"
     );
     Ok(())
 }
@@ -2622,7 +2641,7 @@ fn remote_shell_resolves_managed_install(stdout: &str) -> bool {
         .lines()
         .next()
         .map(str::trim)
-        .is_some_and(|path| path.ends_with("/.local/bin/herdr"))
+        .is_some_and(|path| path.ends_with("/.local/bin/lawn"))
 }
 
 fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource> {
@@ -2630,7 +2649,7 @@ fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource
     let asset = remote_release_asset(&asset_key)?;
 
     let dir = private_download_dir(&asset_key)?;
-    let path = dir.join("herdr.tmp");
+    let path = dir.join("lawn.tmp");
     let status = crate::noninteractive_process::curl_command()
         .args(["-sfL", "--max-time", "120", "-o"])
         .arg(&path)
@@ -2681,64 +2700,37 @@ fn remote_asset_info(asset: &RemoteAssetRef) -> RemoteReleaseAsset {
     }
 }
 
-fn preview_assets_for_build<'a>(
-    manifest: &'a RemotePreviewManifest,
-    build_id: &str,
-) -> io::Result<(u32, &'a BTreeMap<String, RemoteAssetRef>)> {
-    if manifest.build_id == build_id {
-        return Ok((manifest.protocol, &manifest.assets));
-    }
-    let build = manifest.builds.get(build_id).ok_or_else(|| {
-        io::Error::other(format!(
-            "preview manifest no longer includes build {build_id}; run `herdr update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
-        ))
-    })?;
-    Ok((build.protocol, &build.assets))
-}
-
 fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
     if crate::build_info::is_preview() {
-        let build_id = crate::build_info::build_id().ok_or_else(|| {
-            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Herdr on the remote manually")
-        })?;
-        let manifest_bytes = fetch_remote_manifest(PREVIEW_UPDATE_MANIFEST_URL)?;
-        let manifest: RemotePreviewManifest =
-            serde_json::from_slice(&manifest_bytes).map_err(|err| {
-                io::Error::other(format!("failed to parse preview manifest JSON: {err}"))
-            })?;
-        let (protocol, assets) = preview_assets_for_build(&manifest, build_id)?;
-        if protocol != CURRENT_PROTOCOL {
-            return Err(io::Error::other(format!(
-                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching Herdr on the remote host manually"
-            )));
-        }
-        return assets.get(asset_key).map(remote_asset_info).ok_or_else(|| {
-            io::Error::other(format!(
-                "no {asset_key} binary in the preview manifest for build {build_id}"
-            ))
-        });
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Lawn preview remote assets are not published; set {REMOTE_BINARY_ENV_VAR} to the matching Lawn binary or ZIP"),
+        ));
     }
 
     let current_version = current_version();
-    let manifest_bytes = fetch_remote_manifest(STABLE_UPDATE_MANIFEST_URL)?;
+    let manifest_url = format!(
+        "https://github.com/wkentaro/lawn/releases/download/lawn-v{current_version}/latest.json"
+    );
+    let manifest_bytes = fetch_remote_manifest(&manifest_url)?;
     let manifest: RemoteUpdateManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|err| io::Error::other(format!("failed to parse update manifest JSON: {err}")))?;
     let release = manifest.release_for_version(&current_version).ok_or_else(|| {
         io::Error::other(format!(
-            "release manifest does not include herdr {current_version}; build herdr for {} or install it there manually",
+            "release manifest does not include lawn {current_version}; build lawn for {} or install it there manually",
             asset_key
         ))
     })?;
     if let Some(protocol) = release.protocol {
         if protocol != CURRENT_PROTOCOL {
             return Err(io::Error::other(format!(
-                "release manifest has herdr {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching herdr on the remote host manually"
+                "release manifest has lawn {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/lawn or install a matching Lawn on the remote host manually"
             )));
         }
     }
     let asset = release.assets.get(asset_key).ok_or_else(|| {
         io::Error::other(format!(
-            "no {asset_key} binary in the release manifest for herdr {current_version}"
+            "no {asset_key} binary in the release manifest for lawn {current_version}"
         ))
     })?;
     let mut asset = remote_asset_info(asset);
@@ -2758,7 +2750,7 @@ fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(&base)?;
     for attempt in 0..100 {
         let dir = base.join(format!(
-            "herdr-remote-{}-{}-{attempt}",
+            "lawn-remote-{}-{}-{attempt}",
             std::process::id(),
             asset_key
         ));
@@ -2771,7 +2763,7 @@ fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
 
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "failed to create private herdr remote download directory",
+        "failed to create private Lawn remote download directory",
     ))
 }
 
@@ -2801,14 +2793,14 @@ fn confirm_remote_install(
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() {
         return Err(io::Error::other(format!(
-            "matching remote herdr {} is not installed at {}; run from an interactive terminal to approve installation",
+            "matching remote Lawn {} is not installed at {}; run from an interactive terminal to approve installation",
             current_version(),
             remote_herdr.executable.display()
         )));
     }
 
     eprintln!(
-        "matching herdr {} is not installed on {target} for {}.",
+        "matching Lawn {} is not installed on {target} for {}.",
         current_version(),
         remote_herdr.platform.asset_key()
     );
@@ -2822,7 +2814,7 @@ fn confirm_remote_install(
     if !read_remote_confirmation(&mut io::stdin().lock(), true)? {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr installation cancelled",
+            "remote Lawn installation cancelled",
         ));
     }
 
@@ -2833,31 +2825,33 @@ fn posix_remote_api_discovery_script(platform: &RemotePlatform, session: &str) -
     format!(
         r#"set -f
 candidates=$(
-command -v herdr
+command -v lawn
 {discovery}
 )
 IFS='
 '
 for candidate in $candidates; do
     case "$candidate" in
-        */mise/shims/herdr) continue ;;
+        */mise/shims/lawn) continue ;;
         /*) ;;
         *) continue ;;
     esac
     [ -x "$candidate" ] || continue
+    version=$("$candidate" --version </dev/null 2>/dev/null) || continue
+    case "$version" in lawn\ *) ;; *) continue ;; esac
     if capability=$("$candidate" --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ "$capability" = herdr-api-bridge-v1 ]; then
         printf '%s\n' "$candidate"
         exit 0
     fi
 done
-printf '%s\n' 'remote Herdr does not support machine API forwarding; update Herdr on this machine' >&2
+printf '%s\n' 'remote Lawn does not support machine API forwarding; update Lawn on this machine' >&2
 exit 2"#,
         discovery = known_remote_binary_candidate_script(platform),
         session = shell_quote(session),
     )
 }
 
-pub(super) const STALE_API_METADATA: &str = "herdr-machine-metadata-stale-v1";
+pub(super) const STALE_API_METADATA: &str = "lawn-machine-metadata-stale-v1";
 
 pub(super) fn cached_remote_api_command(
     metadata: &crate::client::endpoint::SshMachineMetadata,
@@ -2867,7 +2861,7 @@ pub(super) fn cached_remote_api_command(
         let path = crate::platform::quote_powershell_arg(&metadata.executable);
         let session_arg = crate::platform::quote_powershell_arg(session);
         let probe = format!(
-            "$capability = & {path} --session {session_arg} remote-api-bridge --check 2>$null; if ($LASTEXITCODE -ne 0 -or $capability -ne 'herdr-api-bridge-v1') {{ [Console]::Error.WriteLine('{STALE_API_METADATA}'); exit 78 }}; "
+            "$env:HERDR_SOCKET_PATH = $null; $env:HERDR_CLIENT_SOCKET_PATH = $null; $env:HERDR_SESSION = $null; $version = & {path} --version 2>$null; if ($LASTEXITCODE -ne 0 -or ($version -join \"`n\") -notmatch '^lawn ') {{ [Console]::Error.WriteLine('{STALE_API_METADATA}'); exit 78 }}; $capability = & {path} --session {session_arg} remote-api-bridge --check 2>$null; if ($LASTEXITCODE -ne 0 -or $capability -ne 'herdr-api-bridge-v1') {{ [Console]::Error.WriteLine('{STALE_API_METADATA}'); exit 78 }}; "
         );
         return windows_powershell_script_command(&format!(
             "{probe}{}",
@@ -2880,7 +2874,7 @@ pub(super) fn cached_remote_api_command(
     let path = shell_quote(&metadata.executable);
     let session = shell_quote(session);
     let script = format!(
-        "if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ \"$capability\" = herdr-api-bridge-v1 ]; then\n{}\nelse\n    printf '%s\\n' '{STALE_API_METADATA}' >&2\n    exit 78\nfi",
+        "unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_SESSION\nversion=$({path} --version </dev/null 2>/dev/null) || version=''\ncase \"$version\" in lawn\\ *) ;; *) printf '%s\\n' '{STALE_API_METADATA}' >&2; exit 78 ;; esac\nif capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ \"$capability\" = herdr-api-bridge-v1 ]; then\n{}\nelse\n    printf '%s\\n' '{STALE_API_METADATA}' >&2\n    exit 78\nfi",
         posix_remote_output_command(&format!(
             "exec {path} --session {session} remote-api-bridge <&3"
         )),
@@ -3018,7 +3012,7 @@ impl SshStdioBridge {
                             if noninteractive {
                                 tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
                             } else {
-                                eprintln!("herdr: remote bridge failed: {err}");
+                                eprintln!("lawn: remote bridge failed: {err}");
                             }
                         }
                     }
@@ -3029,7 +3023,7 @@ impl SshStdioBridge {
                         if noninteractive {
                             tracing::warn!(error = %err, "saved SSH endpoint listener failed");
                         } else {
-                            eprintln!("herdr: remote bridge listener failed: {err}");
+                            eprintln!("lawn: remote bridge listener failed: {err}");
                         }
                         break;
                     }
@@ -3566,6 +3560,7 @@ fn configure_remote_client_environment(
     let preference_identity =
         serde_json::to_string(&(target, session)).map_err(io::Error::other)?;
     command
+        .env_remove("HERDR_SESSION")
         .env(
             crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
             local_socket,
@@ -3581,10 +3576,10 @@ fn local_forward_socket_path(target: &str, session_name: &str) -> PathBuf {
     let pid = std::process::id();
     let target_clean = sanitize_path_component(target);
     let session_clean = sanitize_path_component(session_name);
-    let readable_name = format!("herdr-remote-{pid}-{target_clean}-{session_clean}.sock");
+    let readable_name = format!("lawn-remote-{pid}-{target_clean}-{session_clean}.sock");
     let target_prefix: String = target_clean.chars().take(8).collect();
     let hash = short_socket_hash(target, session_name);
-    let short_name = format!("herdr-r-{pid}-{target_prefix}-{hash}.sock");
+    let short_name = format!("lawn-r-{pid}-{target_prefix}-{hash}.sock");
     crate::platform::remote_bridge_endpoint_path(&readable_name, &short_name)
 }
 
@@ -4488,6 +4483,13 @@ mod tests {
     }
 
     #[test]
+    fn herdr_version_cannot_pass_lawn_identity_probe() {
+        assert!(!is_lawn_version_output(b"herdr 0.9.5\n"));
+        assert!(!is_lawn_version_output(b"lawn\n"));
+        assert!(is_lawn_version_output(b"lawn 0.1.0\n"));
+    }
+
+    #[test]
     fn saved_machine_compatibility_uses_capabilities_not_release_or_private_protocol() {
         let linux = RemotePlatform {
             os: "linux",
@@ -4529,20 +4531,20 @@ mod tests {
         ] {
             assert_eq!(
                 herdr.executable.session_command("agents", args),
-                format!("{} --session agents {command}", herdr.executable.display())
+                format!("env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION {} --session agents {command}", herdr.executable.display())
             );
             assert_eq!(
                 herdr
                     .executable
                     .session_command(crate::session::DEFAULT_SESSION_NAME, args),
-                format!("{} {command}", herdr.executable.display())
+                format!("env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION {} {command}", herdr.executable.display())
             );
         }
         assert!(herdr
             .executable
             .live_handoff_command("agents", 19, "0.7.9")
             .starts_with(&format!(
-                "{} --session agents server live-handoff",
+                "env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION {} --session agents server live-handoff",
                 herdr.executable.display()
             )));
     }
@@ -4569,9 +4571,9 @@ mod tests {
 
     #[test]
     fn remote_install_stream_command_avoids_shell_c_wrapper() {
-        let command = remote_install_stream_command("/home/a b/.local/bin/herdr.tmp.123");
+        let command = remote_install_stream_command("/home/a b/.local/bin/lawn.tmp.123");
 
-        assert_eq!(command, "tee '/home/a b/.local/bin/herdr.tmp.123'");
+        assert_eq!(command, "tee '/home/a b/.local/bin/lawn.tmp.123'");
     }
 
     #[test]
@@ -4585,23 +4587,50 @@ mod tests {
         assert!(prepare.contains("mkdir -p \"$dir\""));
         assert!(prepare.contains("printf '%s\\0%s\\0' \"$tmp\" \"$dest\""));
         assert_eq!(
-            parse_remote_install_paths(b"/home/a b/herdr.tmp.42\0/home/a b/herdr\0").unwrap(),
+            parse_remote_install_paths(b"/home/a b/lawn.tmp.42\0/home/a b/lawn\0").unwrap(),
             (
-                "/home/a b/herdr.tmp.42".to_string(),
-                "/home/a b/herdr".to_string()
+                "/home/a b/lawn.tmp.42".to_string(),
+                "/home/a b/lawn".to_string()
             )
         );
         assert_eq!(
-            parse_remote_install_paths(b"/home/a b\n/herdr.tmp.42\0/home/a b\n/herdr\0").unwrap(),
+            parse_remote_install_paths(b"/home/a b\n/lawn.tmp.42\0/home/a b\n/lawn\0").unwrap(),
             (
-                "/home/a b\n/herdr.tmp.42".to_string(),
-                "/home/a b\n/herdr".to_string()
+                "/home/a b\n/lawn.tmp.42".to_string(),
+                "/home/a b\n/lawn".to_string()
             )
         );
-        assert_eq!(
-            remote_install_commit_script("/home/a b/herdr.tmp.42", "/home/a b/herdr"),
-            "set -eu\nchmod 755 '/home/a b/herdr.tmp.42'\nmv '/home/a b/herdr.tmp.42' '/home/a b/herdr'\n"
-        );
+        let commit = remote_install_commit_script("/home/a b/lawn.tmp.42", "/home/a b/lawn");
+        assert!(commit.contains("chmod 755 '/home/a b/lawn.tmp.42'"));
+        assert!(commit.contains("'/home/a b/lawn.tmp.42' --version"));
+        assert!(commit.contains("mv '/home/a b/lawn.tmp.42' '/home/a b/lawn'"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wrong_product_install_does_not_replace_existing_lawn() {
+        let root = std::env::temp_dir().join(format!("lawn-install-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let staged = root.join("staged");
+        let installed = root.join("lawn");
+        std::fs::write(&installed, "existing Lawn").unwrap();
+        for script in [
+            "#!/bin/sh\nprintf 'herdr 0.9.5\\n'\n",
+            "#!/bin/sh\nprintf 'lawn 0.1.0\\n'\nexit 1\n",
+        ] {
+            std::fs::write(&staged, script).unwrap();
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(remote_install_commit_script(
+                    staged.to_str().unwrap(),
+                    installed.to_str().unwrap(),
+                ))
+                .output()
+                .unwrap();
+            assert!(!output.status.success());
+            assert_eq!(std::fs::read(&installed).unwrap(), b"existing Lawn");
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -4777,7 +4806,7 @@ mod tests {
     fn windows_platform_probe_preserves_native_and_unsupported_architectures() {
         for arch in ["AMD64", "x86_64"] {
             assert_eq!(
-                parse_windows_platform_probe(&format!("profile noise\r\nherdr-windows:{arch}\r\n"))
+                parse_windows_platform_probe(&format!("profile noise\r\nlawn-windows:{arch}\r\n"))
                     .unwrap(),
                 Some(DetectedRemotePlatform {
                     platform: RemotePlatform {
@@ -4790,14 +4819,14 @@ mod tests {
         }
         assert_eq!(parse_windows_platform_probe("other output").unwrap(), None);
         assert_eq!(
-            parse_windows_platform_probe("herdr-windows:x86").unwrap_err(),
+            parse_windows_platform_probe("lawn-windows:x86").unwrap_err(),
             "unsupported remote platform: Windows X86"
         );
     }
 
     #[test]
     fn windows_arm64_probe_selects_x64_package() {
-        let platform = parse_windows_platform_probe("herdr-windows:ARM64")
+        let platform = parse_windows_platform_probe("lawn-windows:ARM64")
             .expect("Windows ARM64 should use the x64 build on a best-effort basis")
             .expect("the Windows platform marker should be recognized");
         assert_eq!(platform.platform.asset_key(), "windows-x86_64");
@@ -4913,7 +4942,7 @@ mod tests {
             arch: "x86_64",
         });
         assert!(remote.machine_metadata().is_none());
-        let path = "/home/user's files/$literal/herdr";
+        let path = "/home/user's files/$literal/lawn";
         let resolved = remote.with_posix_path(path);
         assert_eq!(resolved.machine_metadata().unwrap().executable, path);
         assert_eq!(resolved.executable.display(), shell_quote(path));
@@ -4922,7 +4951,7 @@ mod tests {
             arch: "x86_64",
         });
         assert!(remote.machine_metadata().is_none());
-        let path = r"C:\Users\A B\herdr.exe";
+        let path = r"C:\Users\A B\lawn.exe";
         assert_eq!(
             remote
                 .with_windows_path(path.into())
@@ -4935,7 +4964,7 @@ mod tests {
 
     #[test]
     fn cached_windows_api_command_checks_before_starting_the_stream() {
-        let path = r"C:\Users\A'B\herdr.exe";
+        let path = r"C:\Users\A'B\lawn.exe";
         let command = cached_remote_api_command(
             &crate::client::endpoint::SshMachineMetadata {
                 os: "windows".into(),
@@ -4955,6 +4984,11 @@ mod tests {
         assert!(script.contains(&crate::platform::quote_powershell_arg(path)));
         assert!(script.contains(STALE_API_METADATA));
         assert!(
+            script.find("--version").unwrap() < script.find("remote-api-bridge --check").unwrap()
+        );
+        assert!(script.contains("-notmatch '^lawn '"));
+        assert!(script.contains("herdr-api-bridge-v1"));
+        assert!(
             script.find("remote-api-bridge --check").unwrap()
                 < script.find("Start-Process").unwrap()
         );
@@ -4971,12 +5005,12 @@ mod tests {
         // can contain those characters, so the whole script travels base64
         // encoded and the command argument itself must stay free of them.
         for executable in [
-            "/opt/herdr",
-            "/home/a b/herdr",
-            "/home/o'brien/herdr",
-            "/opt/herdr-$build/herdr",
-            "/opt/herdr`id`/herdr",
-            "/opt/herdr\"quote/herdr",
+            "/opt/lawn",
+            "/home/a b/lawn",
+            "/home/o'brien/lawn",
+            "/opt/lawn-$build/lawn",
+            "/opt/lawn`id`/lawn",
+            "/opt/lawn\"quote/lawn",
         ] {
             let command = cached_remote_api_command(
                 &crate::client::endpoint::SshMachineMetadata {
@@ -5002,6 +5036,7 @@ mod tests {
             )
             .expect("UTF-8 script");
             assert!(script.contains(&shell_quote(executable)), "{script}");
+            assert!(script.contains("--version"), "{script}");
             assert!(script.contains("herdr-api-bridge-v1"), "{script}");
             assert!(script.contains(STALE_API_METADATA), "{script}");
             assert!(script.contains("remote-api-bridge <&3"), "{script}");
@@ -5022,6 +5057,7 @@ mod tests {
         fs::write(
             &executable,
             "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then printf '%s 0.1.0\\n' \"${FAKE_PRODUCT:-lawn}\"; exit 0; fi\n\
              if [ \"$1\" = \"--session\" ] && [ \"$3\" = \"remote-api-bridge\" ]; then\n\
              \x20 if [ \"$4\" = \"--check\" ]; then printf 'herdr-api-bridge-v1\\n'; exit 0; fi\n\
              \x20 cat\n\
@@ -5032,10 +5068,11 @@ mod tests {
         .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
 
-        let run = |command: &str, payload: Option<&[u8]>| {
+        let run = |command: &str, payload: Option<&[u8]>, product: &str| {
             let mut child = Command::new("/bin/sh")
                 .arg("-c")
                 .arg(command)
+                .env("FAKE_PRODUCT", product)
                 .stdin(if payload.is_some() {
                     Stdio::piped()
                 } else {
@@ -5058,14 +5095,56 @@ mod tests {
         let output = run(
             &cached_remote_api_command(&metadata(), "fleet"),
             Some(b"API-PAYLOAD"),
+            "lawn",
         );
         assert_eq!(output.status.code(), Some(23), "{output:?}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains(REMOTE_OUTPUT_READY_MARKER), "{stdout}");
         assert!(stdout.contains("API-PAYLOAD"), "{stdout}");
 
+        let upstream = run(
+            &cached_remote_api_command(&metadata(), "fleet"),
+            Some(b"MUST-NOT-FORWARD"),
+            "herdr",
+        );
+        assert_eq!(upstream.status.code(), Some(78), "{upstream:?}");
+        assert!(!String::from_utf8_lossy(&upstream.stdout).contains("MUST-NOT-FORWARD"));
+        assert!(String::from_utf8_lossy(&upstream.stderr).contains(STALE_API_METADATA));
+
+        let managed = directory.join(".local/bin/lawn");
+        fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&executable, &managed).unwrap();
+        let discovery = posix_remote_api_discovery_script(
+            &RemotePlatform {
+                os: "linux",
+                arch: "x86_64",
+            },
+            "fleet",
+        );
+        for (product, expected) in [("lawn", true), ("herdr", false)] {
+            let output = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&discovery)
+                .env("HOME", &directory)
+                .env("PATH", "/usr/bin:/bin")
+                .env("FAKE_PRODUCT", product)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.success(), expected, "{output:?}");
+            if expected {
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    managed.to_str().unwrap()
+                );
+            }
+        }
+
         fs::remove_file(&executable).unwrap();
-        let output = run(&cached_remote_api_command(&metadata(), "fleet"), None);
+        let output = run(
+            &cached_remote_api_command(&metadata(), "fleet"),
+            None,
+            "lawn",
+        );
         assert_eq!(output.status.code(), Some(78), "{output:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains(STALE_API_METADATA),
@@ -5096,52 +5175,52 @@ mod tests {
 
     #[test]
     fn windows_remote_commands_use_one_encoded_powershell_grammar() {
-        let executable = RemoteExecutable::WindowsPath("herdr.exe".to_string());
+        let executable = RemoteExecutable::WindowsPath("lawn.exe".to_string());
         let commands = [
             (
                 "platform probe",
                 windows_platform_probe_command(false),
-                "$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }; [Console]::Out.WriteLine('herdr-windows:' + $arch); exit 0",
+                "$arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }; [Console]::Out.WriteLine('lawn-windows:' + $arch); exit 0",
             ),
             (
                 "PATH lookup",
                 executable.exists_command(),
-                "if ($null -ne (Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue)) { exit 0 }; exit 1",
+                "if ($null -ne (Get-Command lawn.exe -CommandType Application -ErrorAction SilentlyContinue)) { exit 0 }; exit 1",
             ),
             (
                 "client status",
                 executable.status_client_command(),
-                "& herdr.exe status client '--json'; exit $LASTEXITCODE",
+                "& lawn.exe status client '--json'; exit $LASTEXITCODE",
             ),
             (
                 "named server status",
                 executable.session_command("agents", &["status", "server", "--json"]),
-                "& herdr.exe '--session' agents status server '--json'; exit $LASTEXITCODE",
+                "& lawn.exe '--session' agents status server '--json'; exit $LASTEXITCODE",
             ),
             (
                 "server stop",
                 executable.session_command("agents", &["server", "stop"]),
-                "& herdr.exe '--session' agents server stop; exit $LASTEXITCODE",
+                "& lawn.exe '--session' agents server stop; exit $LASTEXITCODE",
             ),
             (
                 "direct bridge",
                 executable.bridge_command("agents"),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session agents remote-client-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath lawn.exe -ArgumentList '--session agents remote-client-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "API bridge with explicit default session",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "default", false),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath lawn.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "API bridge capability probe",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "agents", true),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath lawn.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "saved bridge with closed stdin",
                 executable.saved_bridge_command("agents"),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session agents remote-client-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath lawn.exe -ArgumentList '--session agents remote-client-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
         ];
 
@@ -5153,6 +5232,14 @@ mod tests {
             let script = script
                 .strip_prefix(&preamble)
                 .unwrap_or_else(|| panic!("{label} lacks shared output marker: {script}"));
+            let isolated = "$env:HERDR_SOCKET_PATH = $null; $env:HERDR_CLIENT_SOCKET_PATH = $null; $env:HERDR_SESSION = $null; ";
+            let script = if label == "platform probe" || label == "PATH lookup" {
+                script
+            } else {
+                script
+                    .strip_prefix(isolated)
+                    .expect("remote command clears inherited Herdr overrides")
+            };
             assert_eq!(script, expected, "{label}");
         }
     }
@@ -5204,7 +5291,7 @@ mod tests {
             assert_eq!(output.status.code(), Some(1), "{env}: {output:?}");
             assert!(output.stderr.is_empty(), "{env}: {output:?}");
             assert!(
-                !String::from_utf8_lossy(&output.stdout).contains("herdr-windows:"),
+                !String::from_utf8_lossy(&output.stdout).contains("lawn-windows:"),
                 "{env}: {output:?}"
             );
         }
@@ -5239,9 +5326,9 @@ mod tests {
         assert_eq!(
             windows_scp_target(
                 "user@example",
-                &format!(r"{remote_dir}\herdr-windows-x86_64.zip")
+                &format!(r"{remote_dir}\lawn-windows-x86_64.zip")
             ),
-            "user@example:C:/Temp/Herdr O'Brien/测试/herdr-windows-x86_64.zip"
+            "user@example:C:/Temp/Herdr O'Brien/测试/lawn-windows-x86_64.zip"
         );
         assert_eq!(
             windows_scp_target("ssh://user@example:2222", r"C:\Temp\install.ps1"),
@@ -5253,12 +5340,16 @@ mod tests {
             "0.9.0-custom.digest",
             &"a".repeat(64),
         ));
+        assert!(command.contains("-LocalPackagePath $lawnPackage"));
         assert!(command.contains("-LocalPackageFormat zip"));
         assert!(command.contains("-LocalPackageIdentity 0.9.0-custom.digest"));
+        assert!(command.contains("-LocalPackageSha256"));
         assert!(command.contains(".Target"));
         assert!(command.contains(WINDOWS_REMOTE_INSTALL_RESULT_MARKER));
+        assert!(command.contains("LAWN_HOME"));
+        assert!(!command.contains("HERDR_HOME"));
 
-        let installed = r"C:\Users\test\测试\.herdr\packages\standalone\releases\0.9.0\herdr.exe";
+        let installed = r"C:\Users\test\测试\.lawn\packages\standalone\releases\0.9.0\lawn.exe";
         let encoded = base64::engine::general_purpose::STANDARD.encode(installed);
         assert_eq!(
             parse_windows_remote_path(
@@ -5281,8 +5372,8 @@ mod tests {
             os: "windows",
             arch: "x86_64",
         });
-        let path = r"C:\stale\herdr.exe";
-        let active = r"C:\Users\test\.herdr\packages\standalone\releases\current\herdr.exe";
+        let path = r"C:\stale\lawn.exe";
+        let active = r"C:\Users\test\.lawn\packages\standalone\releases\current\lawn.exe";
         let stdout = format!(
             "{WINDOWS_REMOTE_PATH_MARKER}{}\nnoise\n{WINDOWS_REMOTE_PATH_MARKER}{}\n{WINDOWS_REMOTE_PATH_MARKER}{}\n",
             base64::engine::general_purpose::STANDARD.encode(path),
@@ -5301,8 +5392,9 @@ mod tests {
         );
 
         let command = decode_windows_command(&windows_remote_binary_candidate_command());
-        assert!(command.contains("Get-Command herdr.exe"));
+        assert!(command.contains("Get-Command lawn.exe"));
         assert!(command.contains("$activeJunction.Target"));
+        assert!(!command.contains("HERDR_HOME"));
     }
 
     #[cfg(windows)]
@@ -5358,7 +5450,7 @@ function Get-Process {
     fn remote_output_framing_discards_any_banner_and_preserves_binary() {
         let payload = [0, 1, 2, 0xff, b'\n'];
         let mut input = vec![b'x'; 4 * 1024 * 1024];
-        input.extend_from_slice(b"\r\nherdr-remote-output-ready:1\r\n");
+        input.extend_from_slice(b"\r\nlawn-remote-output-ready:1\r\n");
         input.extend_from_slice(&payload);
         let mut reader = io::BufReader::with_capacity(17, io::Cursor::new(input));
 
@@ -5372,7 +5464,7 @@ function Get-Process {
         normalize_remote_stdout(&mut missing, false).unwrap();
         assert_eq!(missing, b"profile output without marker");
 
-        let mut platform = b"profile output\nherdr-remote-output-ready:1\nLinux\nx86_64\n".to_vec();
+        let mut platform = b"profile output\nlawn-remote-output-ready:1\nLinux\nx86_64\n".to_vec();
         normalize_remote_stdout(&mut platform, true).unwrap();
         let platform = String::from_utf8(platform).unwrap();
         let mut lines = platform.lines();
@@ -5390,43 +5482,43 @@ function Get-Process {
     fn reattach_command_includes_remote_and_session() {
         assert_eq!(
             reattach_command(
-                "target/release/herdr",
+                "target/release/lawn",
                 "user@host",
                 "work",
                 RemoteKeybindings::Local,
                 false,
             ),
-            "target/release/herdr --remote user@host --session work"
+            "target/release/lawn --remote user@host --session work"
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "lawn",
                 "host name",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Local,
                 false,
             ),
-            "herdr --remote 'host name'"
+            "lawn --remote 'host name'"
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "lawn",
                 "host",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Server,
                 false,
             ),
-            "herdr --remote host --remote-keybindings server"
+            "lawn --remote host --remote-keybindings server"
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "lawn",
                 "host",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Local,
                 true,
             ),
-            "herdr --remote host --handoff"
+            "lawn --remote host --handoff"
         );
     }
 
@@ -5436,7 +5528,7 @@ function Get-Process {
         let executable = std::env::current_exe().expect("current test executable");
         assert_eq!(
             reattach_command(
-                r"C:\Program Files\Herdr\herdr.exe",
+                r"C:\Program Files\Herdr\lawn.exe",
                 "host'name",
                 "work'name",
                 RemoteKeybindings::Local,
@@ -5459,7 +5551,7 @@ function Get-Process {
             assert_eq!(
                 remote_api_bridge_command(&remote_herdr, session, false),
                 posix_remote_output_command(&format!(
-                    "exec \"$HOME/.local/bin/herdr\" --session {session} remote-api-bridge"
+                    "exec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION \"$HOME/.local/bin/lawn\" --session {session} remote-api-bridge"
                 ))
             );
         }
@@ -5494,11 +5586,11 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\\n%s\\n' 'lawn-remote-output-ready:1'\nexec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION \"$HOME/.local/bin/lawn\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
-            "exec \"$HOME/.local/bin/herdr\" --session agents remote-client-bridge </dev/null"
+            "exec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION \"$HOME/.local/bin/lawn\" --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -5508,14 +5600,14 @@ function Get-Process {
             os: "linux",
             arch: "x86_64",
         });
-        let remote_herdr = remote_herdr_from_path_discovery(&remote_herdr, "/usr/bin/herdr\n")
+        let remote_herdr = remote_herdr_from_path_discovery(&remote_herdr, "/usr/bin/lawn\n")
             .expect("path binary");
 
         assert_eq!(
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec /usr/bin/herdr remote-client-bridge"
+            "printf '\\n%s\\n' 'lawn-remote-output-ready:1'\nexec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION /usr/bin/lawn remote-client-bridge"
         );
     }
 
@@ -5525,15 +5617,14 @@ function Get-Process {
             os: "linux",
             arch: "x86_64",
         });
-        let remote_herdr =
-            remote_herdr_from_path_discovery(&remote_herdr, "/opt/herdr bin/herdr\n")
-                .expect("path binary");
+        let remote_herdr = remote_herdr_from_path_discovery(&remote_herdr, "/opt/lawn bin/lawn\n")
+            .expect("path binary");
 
         assert_eq!(
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr bin/herdr' remote-client-bridge"
+            "printf '\\n%s\\n' 'lawn-remote-output-ready:1'\nexec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION '/opt/lawn bin/lawn' remote-client-bridge"
         );
     }
 
@@ -5544,14 +5635,14 @@ function Get-Process {
             arch: "aarch64",
         });
         let remote_herdr =
-            remote_herdr_from_path_discovery(&remote_herdr, "/opt/homebrew/bin/herdr\n")
+            remote_herdr_from_path_discovery(&remote_herdr, "/opt/homebrew/bin/lawn\n")
                 .expect("path binary");
 
         assert_eq!(
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/herdr remote-client-bridge"
+            "printf '\\n%s\\n' 'lawn-remote-output-ready:1'\nexec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION /opt/homebrew/bin/lawn remote-client-bridge"
         );
         assert_eq!(remote_herdr.platform.asset_key(), "macos-aarch64");
     }
@@ -5564,17 +5655,17 @@ function Get-Process {
         });
         let candidates = remote_herdrs_from_path_discovery(
             &remote_herdr,
-            "/usr/bin/herdr\nbin/herdr\n /opt/herdr bin/herdr\n",
+            "/usr/bin/lawn\nbin/lawn\n /opt/lawn bin/lawn\n",
         );
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(
             candidates[0].executable,
-            RemoteExecutable::PosixShellPath("/usr/bin/herdr".to_string())
+            RemoteExecutable::PosixShellPath("/usr/bin/lawn".to_string())
         );
         assert_eq!(
             candidates[1].executable,
-            RemoteExecutable::PosixShellPath("'/opt/herdr bin/herdr'".to_string())
+            RemoteExecutable::PosixShellPath("'/opt/lawn bin/lawn'".to_string())
         );
     }
 
@@ -5586,14 +5677,14 @@ function Get-Process {
         });
         let candidates = remote_herdrs_from_path_discovery(
             &remote_herdr,
-            "/home/can/.local/share/mise/shims/herdr\n/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr\n",
+            "/home/can/.local/share/mise/shims/lawn\n/home/can/.local/share/mise/installs/lawn/0.7.1/bin/lawn\n",
         );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].executable,
             RemoteExecutable::PosixShellPath(
-                "/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr".to_string()
+                "/home/can/.local/share/mise/installs/lawn/0.7.1/bin/lawn".to_string()
             )
         );
     }
@@ -5605,21 +5696,19 @@ function Get-Process {
             arch: "x86_64",
         });
 
-        assert!(script.contains("emit \"$home/.local/bin/herdr\""));
-        assert!(!script.contains("mise/shims/herdr"));
+        assert!(script.contains("emit \"$home/.local/bin/lawn\""));
+        assert!(!script.contains("mise/shims/lawn"));
         assert!(script.contains(&format!("version={}", shell_quote(&current_version()))));
-        assert!(
-            script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/bin/herdr\"")
-        );
-        assert!(script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/herdr\""));
+        assert!(script.contains("emit \"$home/.local/share/mise/installs/lawn/$version/bin/lawn\""));
+        assert!(script.contains("emit \"$home/.local/share/mise/installs/lawn/$version/lawn\""));
         assert!(script.contains(
-            "emit \"$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr\""
+            "emit \"$home/.local/share/mise/installs/github-wkentaro-lawn/$version/lawn\""
         ));
-        assert!(script.contains("emit \"$home/.nix-profile/bin/herdr\""));
-        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/herdr\""));
-        assert!(script.contains("emit \"/run/current-system/sw/bin/herdr\""));
-        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
-        assert!(!script.contains("emit \"/opt/homebrew/bin/herdr\""));
+        assert!(script.contains("emit \"$home/.nix-profile/bin/lawn\""));
+        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/lawn\""));
+        assert!(script.contains("emit \"/run/current-system/sw/bin/lawn\""));
+        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/lawn\""));
+        assert!(!script.contains("emit \"/opt/homebrew/bin/lawn\""));
     }
 
     #[test]
@@ -5629,9 +5718,9 @@ function Get-Process {
             arch: "aarch64",
         });
 
-        assert!(script.contains("emit \"/opt/homebrew/bin/herdr\""));
-        assert!(script.contains("emit \"/usr/local/bin/herdr\""));
-        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
+        assert!(script.contains("emit \"/opt/homebrew/bin/lawn\""));
+        assert!(script.contains("emit \"/usr/local/bin/lawn\""));
+        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/lawn\""));
     }
 
     #[test]
@@ -5641,14 +5730,14 @@ function Get-Process {
             arch: "x86_64",
         });
         let remote_herdr =
-            remote_herdr_from_path_discovery(&remote_herdr, "/opt/herdr's/bin/herdr\n")
+            remote_herdr_from_path_discovery(&remote_herdr, "/opt/lawn's/bin/lawn\n")
                 .expect("path binary");
 
         assert_eq!(
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr'\\''s/bin/herdr' remote-client-bridge"
+            "printf '\\n%s\\n' 'lawn-remote-output-ready:1'\nexec env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH -u HERDR_SESSION '/opt/lawn'\\''s/bin/lawn' remote-client-bridge"
         );
     }
 
@@ -5658,7 +5747,7 @@ function Get-Process {
             os: "linux",
             arch: "x86_64",
         });
-        let remote_herdr = remote_herdr_from_path_discovery(&remote_herdr, "bin/herdr\n");
+        let remote_herdr = remote_herdr_from_path_discovery(&remote_herdr, "bin/lawn\n");
 
         assert!(remote_herdr.is_none());
     }
@@ -5677,13 +5766,13 @@ function Get-Process {
     #[test]
     fn remote_shell_path_warning_accepts_managed_install() {
         assert!(remote_shell_resolves_managed_install(
-            "/home/can/.local/bin/herdr\n"
+            "/home/can/.local/bin/lawn\n"
         ));
         assert!(remote_shell_resolves_managed_install(
-            "/Users/can/.local/bin/herdr\n"
+            "/Users/can/.local/bin/lawn\n"
         ));
         assert!(!remote_shell_resolves_managed_install(
-            "/usr/local/bin/herdr\n"
+            "/usr/local/bin/lawn\n"
         ));
         assert!(!remote_shell_resolves_managed_install(""));
     }
@@ -5968,41 +6057,6 @@ function Get-Process {
     }
 
     #[test]
-    fn remote_preview_manifest_falls_back_to_archived_exact_build_assets() {
-        let manifest: RemotePreviewManifest = serde_json::from_str(
-            r#"{
-                "build_id": "2026-06-06-new",
-                "protocol": 12,
-                "assets": {
-                    "linux-x86_64": {
-                        "url": "https://example.com/new",
-                        "sha256": "new"
-                    }
-                },
-                "builds": {
-                    "2026-06-02-old": {
-                        "protocol": 11,
-                        "assets": {
-                            "linux-x86_64": {
-                                "url": "https://example.com/old",
-                                "sha256": "old"
-                            }
-                        }
-                    }
-                }
-            }"#,
-        )
-        .unwrap();
-
-        let (protocol, assets) =
-            preview_assets_for_build(&manifest, "2026-06-02-old").expect("archived build");
-        let asset = assets.get("linux-x86_64").expect("asset");
-        assert_eq!(protocol, 11);
-        assert_eq!(asset.url(), "https://example.com/old");
-        assert_eq!(asset.sha256(), Some("old"));
-    }
-
-    #[test]
     fn remote_live_handoff_uses_prepared_binary_identity() {
         let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
             os: "linux",
@@ -6028,18 +6082,20 @@ function Get-Process {
             arch: "aarch64",
         };
         assert_eq!(
-            install_source_description(&platform, Some(Path::new("/tmp/herdr-aarch64"))),
-            "HERDR_REMOTE_BINARY (/tmp/herdr-aarch64)"
+            install_source_description(&platform, Some(Path::new("/tmp/lawn-aarch64"))),
+            "LAWN_REMOTE_BINARY (/tmp/lawn-aarch64)"
         );
     }
 
     #[test]
-    fn bootstrap_version_resolves_current_herdr_release_with_checksums() {
-        let manifest: RemoteUpdateManifest =
-            serde_json::from_str(include_str!("../../distribution/latest.json")).unwrap();
+    fn bootstrap_version_resolves_current_lawn_release_with_checksums() {
+        let manifest: RemoteUpdateManifest = serde_json::from_str(&format!(
+            r#"{{"version":"{}","protocol":{},"assets":{{"linux-x86_64":"https://example.com/lawn","macos-aarch64":"https://example.com/lawn"}},"sha256":{{"linux-x86_64":"{}","macos-aarch64":"{}"}}}}"#,
+            current_version(), CURRENT_PROTOCOL, "a".repeat(64), "b".repeat(64)
+        )).unwrap();
         let release = manifest
             .release_for_version(&current_version())
-            .expect("compatible herdr release");
+            .expect("current Lawn release");
         assert_eq!(release.protocol, Some(CURRENT_PROTOCOL));
         for key in ["linux-x86_64", "macos-aarch64"] {
             assert!(release.assets.contains_key(key));
@@ -6071,9 +6127,9 @@ function Get-Process {
             os: "linux",
             arch: "aarch64",
         };
-        let source = resolve_install_source(&platform, Some(PathBuf::from("/tmp/herdr-aarch64")))
+        let source = resolve_install_source(&platform, Some(PathBuf::from("/tmp/lawn-aarch64")))
             .expect("override source");
-        assert_eq!(source.path, PathBuf::from("/tmp/herdr-aarch64"));
+        assert_eq!(source.path, PathBuf::from("/tmp/lawn-aarch64"));
         assert!(source.temporary_dir.is_none());
     }
 
@@ -6084,7 +6140,7 @@ function Get-Process {
         assert!(path.starts_with(crate::platform::remote_private_temp_base()));
         assert!(path
             .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("herdr-r-")));
+            .is_some_and(|name| name.to_string_lossy().starts_with("lawn-r-")));
     }
 
     #[cfg(unix)]
@@ -6112,7 +6168,7 @@ function Get-Process {
             .unwrap_or("")
             .to_string();
         assert!(
-            filename.starts_with("herdr-remote-"),
+            filename.starts_with("lawn-remote-"),
             "expected readable name, got {filename}"
         );
         assert!(filename.contains("-dev-default."), "got {filename}");
@@ -6171,7 +6227,7 @@ function Get-Process {
         assert!(fits, "fallback path still overflows: {}", path.display());
         assert_eq!(parent.as_deref(), Some(Path::new("/tmp")));
         assert!(
-            filename.starts_with("herdr-r-"),
+            filename.starts_with("lawn-r-"),
             "expected hashed fallback, got {filename}"
         );
     }
@@ -6184,7 +6240,7 @@ function Get-Process {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).expect("create temp dir");
-        let path = dir.join("herdr.tmp");
+        let path = dir.join("lawn.tmp");
         fs::write(&path, b"test").expect("write temp file");
 
         InstallSource::temporary(path, dir.clone()).cleanup();

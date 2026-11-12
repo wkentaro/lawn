@@ -37,7 +37,7 @@ describe("official publishing workflow boundaries", () => {
     expect(lawn.jobs.publish.if).toContain("github.event_name == 'push'");
     expect(lawn.jobs.publish.if).toContain("startsWith(github.ref, 'refs/tags/lawn-v')");
     expect(lawn.jobs.publish.needs).toBe("assemble");
-    expect(lawn.jobs.assemble.needs).toBe("build");
+    expect(lawn.jobs.assemble.needs).toEqual(["build", "windows-arm64"]);
     expect(lawn.jobs.publish.permissions.contents).toBe("write");
     const verify = lawn.jobs.publish.steps.find((step: any) => step.name?.startsWith("Verify tag"));
     expect(verify.run).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/main');
@@ -58,6 +58,17 @@ describe("official publishing workflow boundaries", () => {
     const packageStep = lawn.jobs.build.steps.find((step: any) => step.name === "Package and smoke");
     expect(packageStep.run).toContain('scripts/lawn_release.py --binary "$binary"');
     expect(packageStep.run).toContain('"$binary" --help');
+    const installSmoke = lawn.jobs.build.steps.find((step: any) => step.name === "Test Windows installation and update");
+    expect(installSmoke.if).toBe("runner.os == 'Windows'");
+    expect(installSmoke.shell).toBe("powershell");
+    expect(installSmoke.run).toContain("powershell.exe -NoProfile -ExecutionPolicy Bypass -File");
+    expect(installSmoke.run).toContain("windows_install_conpty_package_test.ps1 -ArchivePath");
+    expect(lawn.jobs["windows-arm64"].needs).toBe("build");
+    expect(lawn.jobs["windows-arm64"]["runs-on"]).toBe("windows-11-arm");
+    const armDownload = lawn.jobs["windows-arm64"].steps.find((step: any) => step.uses?.startsWith("actions/download-artifact@"));
+    expect(armDownload.with.name).toBe("lawn-windows-x86_64");
+    expect(lawn.jobs["windows-arm64"].steps.find((step: any) => step.name === "Test x86_64 fallback installation")?.run)
+      .toContain("windows_arm64_installer_test.ps1 -ArchivePath");
     expect(lawn.jobs.assemble.steps.find((step: any) => step.name === "Assemble complete release")?.run)
       .toContain("scripts/lawn_release.py --inputs inputs");
     expect(lawn.jobs.assemble.if).toContain("github.repository == 'wkentaro/lawn'");

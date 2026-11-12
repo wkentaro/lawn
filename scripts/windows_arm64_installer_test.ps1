@@ -1,3 +1,8 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$ArchivePath
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -11,39 +16,53 @@ if ($architecture -ne "Arm64") {
     throw "This test requires Windows ARM64, found $architecture."
 }
 
-$root = Join-Path $env:RUNNER_TEMP "herdr-windows-arm64-installer-test"
-$env:HERDR_HOME = Join-Path $root "home"
-$env:HERDR_INSTALL_DIR = Join-Path $root "bin"
-$env:HERDR_CHANNEL = "preview"
-Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-New-Item -ItemType Directory -Force -Path $root | Out-Null
+$root = Join-Path $env:RUNNER_TEMP ("lawn-windows-arm64-installer-test-" + [Guid]::NewGuid().ToString("N"))
+$oldHome = $env:LAWN_HOME
+$oldInstallDir = $env:LAWN_INSTALL_DIR
+$oldPath = $env:Path
+$env:LAWN_HOME = Join-Path $root "home"
+$env:LAWN_INSTALL_DIR = Join-Path $root "bin"
 $installer = (Resolve-Path (Join-Path $PSScriptRoot "..\distribution\install.ps1")).Path
-
-$previousErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
+$archive = (Resolve-Path -LiteralPath $ArchivePath).Path
+$hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+$registryKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+$registryOptions = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+$hadPath = $registryKey.GetValueNames() -contains "Path"
+$oldUserPath = if ($hadPath) { $registryKey.GetValue("Path", $null, $registryOptions) } else { $null }
+$oldUserPathKind = if ($hadPath) { $registryKey.GetValueKind("Path") } else { $null }
+$registryKey.Dispose()
 try {
-    $installerOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer 2>&1
-    $installerExitCode = $LASTEXITCODE
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    Expand-Archive -LiteralPath $archive -DestinationPath (Join-Path $root "probe")
+    $versionOutput = (& (Join-Path $root "probe\lawn.exe") --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^lawn ([0-9]+\.[0-9]+\.[0-9]+)$') {
+        throw "Windows ZIP does not contain a stable Lawn executable: $versionOutput"
+    }
+    & $installer -Channel stable -LocalPackagePath $archive -LocalPackageFormat zip `
+        -LocalPackageIdentity $Matches[1] -LocalPackageSha256 $hash
+    $installedLawn = Join-Path $env:LAWN_INSTALL_DIR "lawn.exe"
+    if (-not (Test-Path -LiteralPath $installedLawn -PathType Leaf)) {
+        throw "installer exited without activating lawn.exe"
+    }
+    if ((& $installedLawn --version | Out-String).Trim() -cne $versionOutput) {
+        throw "installed x86_64 Lawn executable failed under Windows ARM64 emulation"
+    }
+    $releases = Join-Path $env:LAWN_HOME "packages\standalone\releases"
+    if (@(Get-ChildItem -LiteralPath $releases -Force -Directory -Filter ".staging.*").Count -ne 0) {
+        throw "installer left a staging directory"
+    }
 } finally {
-    $ErrorActionPreference = $previousErrorActionPreference
+    $env:LAWN_HOME = $oldHome
+    $env:LAWN_INSTALL_DIR = $oldInstallDir
+    $env:Path = $oldPath
+    $registryKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    try {
+        if ($hadPath) {
+            $registryKey.SetValue("Path", $oldUserPath, $oldUserPathKind)
+        } else {
+            $registryKey.DeleteValue("Path", $false)
+        }
+    } finally { $registryKey.Dispose() }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
-$installerOutput | ForEach-Object { Write-Host $_ }
-if ($installerExitCode -ne 0) {
-    throw "The installer failed on Windows ARM64 with exit code $installerExitCode."
-}
-
-$installedHerdr = Join-Path $env:HERDR_INSTALL_DIR "herdr.exe"
-if (-not (Test-Path -LiteralPath $installedHerdr -PathType Leaf)) {
-    throw "The installer exited successfully without activating herdr.exe."
-}
-& $installedHerdr --version
-if ($LASTEXITCODE -ne 0) {
-    throw "The installed x86_64 Herdr executable failed with exit code $LASTEXITCODE."
-}
-
-$releases = Join-Path $env:HERDR_HOME "packages\standalone\releases"
-if (@(Get-ChildItem -LiteralPath $releases -Force -Directory -Filter ".staging.*" -ErrorAction SilentlyContinue).Count -ne 0) {
-    throw "The installer succeeded but left a staging directory behind."
-}
-
-Write-Host "Windows ARM64 installer test passed."
+Write-Host "Windows ARM64 Lawn installer test passed."

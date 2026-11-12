@@ -1040,9 +1040,18 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(base.join("home")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lawn"), bin.join("herdr")).unwrap();
     let quote =
         |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
+    fs::write(
+        bin.join("lawn"),
+        format!(
+            "#!/bin/sh\nexport HERDR_SOCKET_PATH={}\nexec {} \"$@\"\n",
+            quote(&remote_api),
+            quote(std::path::Path::new(env!("CARGO_BIN_EXE_lawn"))),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("lawn"), fs::Permissions::from_mode(0o700)).unwrap();
     let ssh_commands = base.join("ssh-commands");
     let bridge_pid = base.join("bridge-pid");
     fs::write(bin.join("ssh"), format!(
