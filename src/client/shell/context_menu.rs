@@ -7,45 +7,9 @@ impl ClientContextMenuOverlay {
 
         let item = |label, action| ClientContextMenuItem { label, action };
         match &self.target {
-            ClientContextMenuTarget::Workspace { is_git: false, .. } => {
+            ClientContextMenuTarget::Workspace { .. } => {
                 vec![item("Rename", Action::Rename), item("Close", Action::Close)]
             }
-            ClientContextMenuTarget::Workspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                is_linked_worktree: true,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("Delete worktree checkout...", Action::RemoveWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                has_worktree_children: true,
-                close_group,
-                collapsed,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item(
-                    if *close_group { "Close group" } else { "Close" },
-                    Action::Close,
-                ),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
-                item(
-                    if *collapsed { "Expand" } else { "Collapse" },
-                    Action::ToggleGroup,
-                ),
-            ],
             ClientContextMenuTarget::Tab { .. } => vec![
                 item("New tab", Action::NewTab),
                 item("Rename", Action::Rename),
@@ -99,35 +63,15 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(workspace) = snapshot
+        if !snapshot
             .workspaces
             .iter()
-            .find(|workspace| workspace.workspace_id == workspace_id)
-        else {
+            .any(|workspace| workspace.workspace_id == workspace_id)
+        {
             return;
-        };
-        let worktree = workspace.worktree.as_ref();
-        let has_worktree_children = worktree.is_some_and(|worktree| {
-            !worktree.is_linked_worktree
-                && snapshot.workspaces.iter().any(|candidate| {
-                    candidate.worktree.as_ref().is_some_and(|candidate| {
-                        candidate.key == worktree.key && candidate.is_linked_worktree
-                    })
-                })
-        });
-        let close_group = super::sidebar::workspace_close_is_group(snapshot, workspace);
-        let collapsed = worktree.is_some_and(|worktree| {
-            self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
-        });
+        }
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Workspace {
-                workspace_id,
-                is_git: worktree.is_some() || workspace.branch.is_some(),
-                is_linked_worktree: worktree.is_some_and(|worktree| worktree.is_linked_worktree),
-                has_worktree_children,
-                close_group,
-                collapsed,
-            },
+            target: ClientContextMenuTarget::Workspace { workspace_id },
             x,
             y,
             highlighted: 0,
@@ -238,11 +182,9 @@ impl ClientShellState {
             } => {
                 self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Restore, outcome);
             }
-            ClientContextMenuTarget::Workspace {
-                workspace_id,
-                close_group,
-                ..
-            } => self.activate_workspace_context_action(workspace_id, close_group, action, outcome),
+            ClientContextMenuTarget::Workspace { workspace_id } => {
+                self.activate_workspace_context_action(workspace_id, action, outcome)
+            }
             ClientContextMenuTarget::Tab {
                 tab_id,
                 workspace_id,
@@ -268,12 +210,9 @@ impl ClientShellState {
     fn activate_workspace_context_action(
         &mut self,
         workspace_id: String,
-        close_group: bool,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
-        use crate::input::KeybindAction;
-
         match action {
             ClientContextMenuAction::Rename => {
                 let label = self
@@ -295,31 +234,7 @@ impl ClientShellState {
                 }
             }
             ClientContextMenuAction::Close => {
-                self.request_workspace_close(workspace_id, Some(close_group), outcome);
-            }
-            ClientContextMenuAction::NewWorktree => {
-                self.begin_worktree_action_for(KeybindAction::NewWorktree, workspace_id, outcome)
-            }
-            ClientContextMenuAction::OpenWorktree => {
-                self.begin_worktree_action_for(KeybindAction::OpenWorktree, workspace_id, outcome)
-            }
-            ClientContextMenuAction::RemoveWorktree => {
-                self.begin_worktree_action_for(KeybindAction::RemoveWorktree, workspace_id, outcome)
-            }
-            ClientContextMenuAction::ToggleGroup => {
-                let key = self.snapshot.as_deref().and_then(|snapshot| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_id == workspace_id)
-                        .and_then(|workspace| workspace.worktree.as_ref())
-                        .map(|worktree| worktree.key.clone())
-                });
-                if let Some(key) = key {
-                    let endpoint_id = self.active_endpoint_id.clone();
-                    self.toggle_collapsed_group(&endpoint_id, key);
-                    self.persist_chrome_preferences(outcome);
-                }
+                self.request_workspace_close(workspace_id, outcome);
             }
             _ => {}
         }

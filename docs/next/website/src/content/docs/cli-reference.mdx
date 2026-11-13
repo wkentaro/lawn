@@ -75,16 +75,15 @@ Workspace, tab, pane IDs, and agent names belong to a single server. Selecting a
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
 ```
 
 The selector must match an enabled saved profile ID or a unique, case-sensitive label, not an arbitrary SSH hostname. The saved remote session is used; combining `--machine` with `--session` or `--remote` is an error. Without the prefix, commands retain their existing local session/socket behavior.
 
-Supported commands are `workspace`, `worktree`, `tab`, `pane`, `notification`, `agent` (except `attach` and local `explain --file`), `api snapshot`, `status server`, and API-backed plugin commands (`link`, `unlink`, `enable`, `disable`, `list`, `action`, `log`, `pane`). Server commands support `stop`, `reload-config`, `agent-manifests`, and `reload-agent-manifests`. Local installation/configuration commands, plugin installation, session management, and interactive terminal attachment are not forwarded.
+Supported commands are `workspace`, `tab`, `pane`, `notification`, `agent` (except `attach` and local `explain --file`), `api snapshot`, `status server`, and API-backed plugin commands (`link`, `unlink`, `enable`, `disable`, `list`, `action`, `log`, `pane`). Server commands support `stop`, `reload-config`, `agent-manifests`, and `reload-agent-manifests`. Local installation/configuration commands, plugin installation, session management, and interactive terminal attachment are not forwarded.
 
 Requests and responses travel through the JSON API over non-interactive SSH; API payloads are not interpolated into the SSH shell command. No open TUI is required, and the bridge never installs, starts, or restarts a server. Update the local CLI and remote Herdr installation to support machine forwarding, and keep the running remote server's API protocol compatible. Authentication, unavailable machines, and incompatible versions fail without falling back to Local. Requests are not automatically retried after connection failure.
 
-Local pane IDs are not inherited by remote commands. Use explicit remote IDs; `--current` cannot refer to the caller's local pane. Remote worktree paths must be absolute, `~`, or start with `~/` (expanded on the server); plugin link paths must be absolute. The prefix targets one machine at a time; combined listings and routing through another TUI's connections are not included.
+Local pane IDs are not inherited by remote commands. Use explicit remote IDs; `--current` cannot refer to the caller's local pane. Plugin link paths must be absolute. The prefix targets one machine at a time; combined listings and routing through another TUI's connections are not included.
 
 ## Shell completions
 
@@ -161,7 +160,7 @@ herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
-herdr workspace close <workspace_id> [--group]
+herdr workspace close <workspace_id>
 ```
 
 Create a workspace without stealing focus:
@@ -171,21 +170,6 @@ herdr workspace create --cwd ~/project --label api --no-focus
 ```
 
 A workspace is a top-level project or work context. Creating one also creates its first tab and root pane. The JSON response exposes their IDs as `.result.workspace.workspace_id`, `.result.tab.tab_id`, and `.result.root_pane.pane_id`.
-
-## Worktrees
-
-```bash
-herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
-herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree remove --workspace ID [--force] [--trust-repository]
-```
-
-Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. If `--branch` names an existing local branch, Herdr checks it out; otherwise it creates the branch from `--base` or `HEAD`. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
-
-`workspace close` closes only Herdr state. Closing a primary workspace while linked-worktree workspaces are open requires `--group`; without it, the command leaves the group open and returns `workspace_group_close_required`. To delete the checkout, run `worktree remove`. It runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
-
-Git rejects repositories owned by another user by default. If you have independently verified the repository, pass `--trust-repository` to trust its resolved path for that command only. Herdr does not change your Git configuration.
 
 ## Tabs
 
@@ -198,7 +182,7 @@ herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
+A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action.
 
 With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab or its only pane from a keybinding or the tab/pane menu. Ordinary pane closes and CLI/API closes remain immediate.
 

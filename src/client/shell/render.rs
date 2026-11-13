@@ -239,8 +239,6 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
-    pub(super) collapsed_groups: &'a HashSet<String>,
-    pub(super) remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
     pub(super) tab_scroll: &'a mut usize,

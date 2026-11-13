@@ -47,14 +47,6 @@ impl TextEditor {
         self.replace_on_type = false;
     }
 
-    pub fn trim_and_accept(&mut self) {
-        let leading = self.text.len() - self.text.trim_start().len();
-        self.text = self.text.trim().to_owned();
-        self.cursor = self.cursor.saturating_sub(leading).min(self.text.len());
-        self.replace_on_type = false;
-        self.repair_cursor();
-    }
-
     fn repair_cursor(&mut self) {
         // Insertion/deletion can join clusters across the edit. Snap forward, never
         // leave an insertion offset inside the newly formed grapheme.
@@ -411,19 +403,6 @@ mod tests {
         assert_eq!(editor.cursor, "e\u{301}".len());
         key(&mut editor, KeyCode::Delete, KeyModifiers::NONE);
         assert_eq!(editor.as_str(), "e\u{301}");
-    }
-
-    #[test]
-    fn accepting_trimmed_branch_preserves_cursor_and_local_kill_buffer() {
-        let mut editor = TextEditor::new("  feature/name  ", true);
-        editor.trim_and_accept();
-        assert_eq!(editor.as_str(), "feature/name");
-        assert!(!editor.replace_on_type);
-        assert_eq!(editor.cursor, editor.len());
-        key(&mut editor, KeyCode::Char('w'), KeyModifiers::CONTROL);
-        editor.trim_and_accept();
-        key(&mut editor, KeyCode::Char('y'), KeyModifiers::CONTROL);
-        assert_eq!(editor.as_str(), "feature/name");
     }
 
     #[test]

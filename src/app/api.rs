@@ -12,7 +12,6 @@ pub(super) mod responses;
 mod session;
 mod tabs;
 mod workspaces;
-mod worktrees;
 
 use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
 use crate::events::AppEvent;
@@ -30,23 +29,11 @@ enum RuntimeExitAction {
 impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         match ev {
-            AppEvent::GitStatusRefreshed {
-                results,
-                cache_updates,
-            } => self.handle_git_status_refreshed(results, cache_updates),
             AppEvent::TabBarCommandFinished {
                 generation,
                 segment_index,
                 result,
             } => self.handle_tab_bar_command_finished(generation, segment_index, result),
-            AppEvent::WorktreeReadFinished(result) => {
-                let changes_workspace = matches!(
-                    &result.request.method,
-                    crate::api::schema::Method::WorktreeOpen(_)
-                );
-                self.handle_api_worktree_read_finished(*result);
-                changes_workspace
-            }
             ev @ AppEvent::TerminalBell { .. } => {
                 self.handle_internal_event(ev);
                 false
@@ -58,31 +45,6 @@ impl App {
         }
     }
 
-    fn handle_git_status_refreshed(
-        &mut self,
-        results: Vec<crate::workspace::WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
-    ) -> bool {
-        self.git_refresh_in_flight = false;
-        for (key, entry) in cache_updates {
-            self.git_status_cache.insert(key, entry);
-        }
-        if self.git_refresh_due_after_in_flight {
-            self.mark_git_status_refresh_due(Instant::now());
-            self.git_refresh_due_after_in_flight = false;
-        } else {
-            self.last_git_remote_status_refresh = Instant::now();
-        }
-        let changed = self
-            .state
-            .apply_workspace_git_statuses(&self.terminal_runtimes, results);
-        if changed {
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
-        }
-        changed
-    }
-
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
         let _ = self.handle_internal_event_with_pane_updates(ev);
     }
@@ -91,64 +53,10 @@ impl App {
         &mut self,
         ev: AppEvent,
     ) -> Vec<crate::app::actions::PaneStateUpdate> {
-        let mut worktree_restore_failed = false;
-        let ev = match ev {
-            AppEvent::WorktreeRuntimeRestoreFailed {
-                pane_id,
-                operation_id,
-            } => {
-                if !self.claim_worktree_runtime_restore_failure(pane_id, operation_id) {
-                    return Vec::new();
-                }
-                worktree_restore_failed = true;
-                AppEvent::PaneDied {
-                    pane_id,
-                    exit_reason: crate::platform::ChildExitReason::Exited,
-                }
-            }
-            ev => ev,
-        };
         if matches!(
             &ev,
             AppEvent::TerminalBell { .. } | AppEvent::ClipboardWrite { .. }
         ) {
-            return Vec::new();
-        }
-
-        if let AppEvent::GitStatusRefreshed {
-            results,
-            cache_updates,
-        } = ev
-        {
-            self.handle_git_status_refreshed(results, cache_updates);
-            return Vec::new();
-        }
-
-        if let AppEvent::RestoredWorktreeSpaceChecked {
-            workspace_id,
-            expected,
-            valid,
-        } = ev
-        {
-            self.pending_restored_worktree_spaces
-                .retain(|(id, space)| id != &workspace_id || space != &expected);
-            let changed_workspace = (!valid)
-                .then(|| {
-                    self.state.workspaces.iter().position(|workspace| {
-                        workspace.id == workspace_id
-                            && workspace.worktree_space.as_ref() == Some(&expected)
-                    })
-                })
-                .flatten();
-            self.state
-                .handle_app_event(AppEvent::RestoredWorktreeSpaceChecked {
-                    workspace_id,
-                    expected,
-                    valid,
-                });
-            if let Some(ws_idx) = changed_workspace {
-                self.emit_workspace_updated(ws_idx);
-            }
             return Vec::new();
         }
 
@@ -193,21 +101,6 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::WorktreeReadFinished(result) = ev {
-            self.handle_api_worktree_read_finished(*result);
-            return Vec::new();
-        }
-
-        if let AppEvent::WorktreeAddFinished(result) = ev {
-            self.handle_api_worktree_add_finished(*result);
-            return Vec::new();
-        }
-
-        if let AppEvent::WorktreeRemoveFinished(result) = ev {
-            return self.handle_api_worktree_remove_finished(*result);
-        }
-
-        let mut worktree_restore_updates = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if self
                 .state
@@ -218,53 +111,22 @@ impl App {
                 self.close_popup_pane();
                 return Vec::new();
             }
-            if worktree_restore_failed {
-                worktree_restore_updates
-                    .extend(self.publish_worktree_runtime_agent_release(*pane_id));
-            } else {
-                let expected_exit = self
-                    .pending_worktree_remove_runtime_exits
-                    .get_mut(pane_id)
-                    .map(|remaining| {
-                        *remaining -= 1;
-                        *remaining == 0
-                    });
-                if let Some(remove_entry) = expected_exit {
-                    let restore_failed = if remove_entry {
-                        self.pending_worktree_remove_runtime_exits.remove(pane_id);
-                        let restore_requested = self
-                            .pending_worktree_remove_runtime_restores
-                            .remove(pane_id)
-                            .is_some();
-                        if restore_requested {
-                            worktree_restore_updates
-                                .extend(self.publish_worktree_runtime_agent_release(*pane_id));
-                        }
-                        restore_requested && !self.respawn_shell_for_launch_pane(*pane_id, false)
-                    } else {
-                        false
-                    };
-                    if !restore_failed {
-                        return worktree_restore_updates;
-                    }
-                }
-                let previous_toast = self.state.toast.clone();
-                if let Some(update) = self
-                    .state
-                    .publish_pane_process_exit_if_agent(*pane_id, false)
-                {
-                    self.sync_full_lifecycle_authority_detection_pauses();
-                    self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
-                    self.emit_pane_state_update(&update);
-                }
-                if self.runtime_exit_action(*pane_id) == RuntimeExitAction::RespawnShell
-                    && self.respawn_shell_for_launch_pane(*pane_id, true)
-                {
-                    self.overlay_panes.remove(pane_id);
-                    self.render_dirty.request_generic();
-                    self.render_notify.notify_one();
-                    return worktree_restore_updates;
-                }
+            let previous_toast = self.state.toast.clone();
+            if let Some(update) = self
+                .state
+                .publish_pane_process_exit_if_agent(*pane_id, false)
+            {
+                self.sync_full_lifecycle_authority_detection_pauses();
+                self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
+                self.emit_pane_state_update(&update);
+            }
+            if self.runtime_exit_action(*pane_id) == RuntimeExitAction::RespawnShell
+                && self.respawn_shell_for_launch_pane(*pane_id, true)
+            {
+                self.overlay_panes.remove(pane_id);
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+                return Vec::new();
             }
         }
 
@@ -355,7 +217,7 @@ impl App {
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         let previous_toast = self.state.toast.clone();
-        let mut pane_updates = self.state.handle_app_event(ev);
+        let pane_updates = self.state.handle_app_event(ev);
         if update_ready.is_some() {
             self.state.latest_release_notes = crate::release_notes::load_latest();
         }
@@ -380,7 +242,6 @@ impl App {
         }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
-            self.request_git_identity_refresh(Instant::now());
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -409,7 +270,6 @@ impl App {
 
         self.sync_toast_deadline(previous_toast);
         self.shutdown_detached_terminal_runtimes();
-        pane_updates.extend(worktree_restore_updates);
         pane_updates
     }
 
@@ -643,51 +503,6 @@ impl App {
         }
         self.schedule_session_save();
         true
-    }
-
-    pub(crate) fn claim_worktree_runtime_restore_failure(
-        &mut self,
-        pane_id: crate::layout::PaneId,
-        operation_id: u64,
-    ) -> bool {
-        if self.pending_worktree_remove_runtime_restores.get(&pane_id) != Some(&operation_id) {
-            return false;
-        }
-        self.pending_worktree_remove_runtime_restores
-            .remove(&pane_id);
-        self.pending_worktree_remove_runtime_exits.remove(&pane_id);
-        true
-    }
-
-    pub(crate) fn publish_worktree_runtime_agent_release(
-        &mut self,
-        pane_id: crate::layout::PaneId,
-    ) -> Option<crate::app::actions::PaneStateUpdate> {
-        self.state.pending_agent_notifications.remove(&pane_id);
-        let previous_toast = self.state.toast.clone();
-        let update = self
-            .state
-            .publish_pane_process_exit_if_agent(pane_id, true)?;
-        self.sync_full_lifecycle_authority_detection_pauses();
-        self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
-        self.emit_pane_state_update(&update);
-        Some(update)
-    }
-
-    fn queue_worktree_runtime_restore_failed(
-        &self,
-        pane_id: crate::layout::PaneId,
-        operation_id: u64,
-    ) {
-        let event_tx = self.event_tx.clone();
-        tokio::spawn(async move {
-            let _ = event_tx
-                .send(AppEvent::WorktreeRuntimeRestoreFailed {
-                    pane_id,
-                    operation_id,
-                })
-                .await;
-        });
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
@@ -1089,27 +904,15 @@ impl App {
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target);
             }
-            Method::WorktreeList(_) | Method::WorktreeOpen(_) => {
+            // Frozen v1 methods; lawn has no git integration.
+            Method::WorktreeList(_)
+            | Method::WorktreeCreate(_)
+            | Method::WorktreeOpen(_)
+            | Method::WorktreeRemove(_) => {
                 return responses::encode_error(
                     request.id,
-                    "invalid_request",
-                    "worktree discovery is handled asynchronously by the app runtime",
-                );
-            }
-            Method::WorktreeCreate(params) => {
-                let _ = params;
-                return responses::encode_error(
-                    request.id,
-                    "invalid_request",
-                    "worktree.create is handled asynchronously by the app runtime",
-                );
-            }
-            Method::WorktreeRemove(params) => {
-                let _ = params;
-                return responses::encode_error(
-                    request.id,
-                    "invalid_request",
-                    "worktree.remove is handled asynchronously by the app runtime",
+                    "unsupported",
+                    "lawn has no git integration",
                 );
             }
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
@@ -1405,6 +1208,10 @@ fn agent_manifest_info(
 
 #[cfg(test)]
 pub(super) mod test_support {
+    pub(crate) fn canonical_or_original(path: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
     pub(crate) fn exiting_test_command() -> &'static str {
         #[cfg(windows)]
         {
@@ -1428,16 +1235,6 @@ pub(super) mod test_support {
 mod tests {
     use super::*;
     use crate::detect::{Agent, AgentState};
-
-    #[cfg(unix)]
-    fn init_repo(path: &std::path::Path) {
-        let status = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(path)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git init failed for {}", path.display());
-    }
 
     fn app_with_overlay(
         workspace: crate::workspace::Workspace,
@@ -1879,8 +1676,6 @@ mod tests {
         let live_cwd = temp_root.join("__herdr_projects__");
         std::fs::create_dir_all(&stale_cwd).unwrap();
         std::fs::create_dir_all(&live_cwd).unwrap();
-        init_repo(&stale_cwd);
-        init_repo(&live_cwd);
 
         workspace.identity_cwd = stale_cwd.clone();
         app.state.workspaces = vec![workspace];
@@ -1972,8 +1767,6 @@ mod tests {
         let live_cwd = temp_root.join("__herdr_projects__");
         std::fs::create_dir_all(&stale_cwd).unwrap();
         std::fs::create_dir_all(&live_cwd).unwrap();
-        init_repo(&stale_cwd);
-        init_repo(&live_cwd);
 
         workspace.identity_cwd = stale_cwd.clone();
         app.state.workspaces = vec![workspace];
@@ -2412,66 +2205,6 @@ mod tests {
             app.runtime_exit_action(pane_id),
             RuntimeExitAction::ClosePane
         );
-    }
-
-    #[test]
-    fn stalled_worktree_runtime_exit_closes_pane() {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &crate::config::Config::default(),
-            crate::app::AppPolicy::TEST,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        let workspace = crate::workspace::Workspace::test_new("worktree");
-        let pane_id = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
-        app.state.workspaces = vec![workspace];
-        app.state.ensure_test_terminals();
-        #[cfg(windows)]
-        {
-            app.state.default_shell = "powershell.exe".into();
-            app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
-            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
-            terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-            terminal.set_detected_state_with_screen_signals_at(
-                Some(Agent::Codex),
-                AgentState::Idle,
-                false,
-                false,
-                false,
-                true,
-                std::time::Instant::now(),
-            );
-            assert_eq!(
-                app.runtime_exit_action(pane_id),
-                RuntimeExitAction::RespawnShell
-            );
-        }
-        app.pending_worktree_remove_runtime_exits.insert(pane_id, 1);
-        app.pending_worktree_remove_runtime_restores
-            .insert(pane_id, 8);
-
-        app.handle_internal_event(AppEvent::WorktreeRuntimeRestoreFailed {
-            pane_id,
-            operation_id: 7,
-        });
-        assert_eq!(
-            app.pending_worktree_remove_runtime_restores.get(&pane_id),
-            Some(&8)
-        );
-        assert!(app.event_rx.try_recv().is_err());
-
-        app.handle_internal_event(AppEvent::WorktreeRuntimeRestoreFailed {
-            pane_id,
-            operation_id: 8,
-        });
-
-        assert!(app.find_pane(pane_id).is_none());
-        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
-        assert!(app.pending_worktree_remove_runtime_exits.is_empty());
-        assert!(app.pending_worktree_remove_runtime_restores.is_empty());
     }
 
     #[test]

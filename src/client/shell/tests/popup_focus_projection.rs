@@ -45,39 +45,6 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
     }));
     assert!(state.modal_paste_target_active());
 
-    state.overlay = Some(ClientShellOverlay::WorktreeCreate(
-        ClientWorktreeCreateOverlay {
-            source_workspace_id: "ws_1".into(),
-            repo_name: "repo".into(),
-            branch: TextEditor::default(),
-            checkout_path: String::new(),
-            error: None,
-            creating: true,
-        },
-    ));
-    assert!(!state.modal_paste_target_active());
-    if let Some(ClientShellOverlay::WorktreeCreate(create)) = state.overlay.as_mut() {
-        create.creating = false;
-    }
-    assert!(state.modal_paste_target_active());
-
-    state.overlay = Some(ClientShellOverlay::WorktreeOpen(
-        ClientWorktreeOpenOverlay {
-            source_workspace_id: "ws_1".into(),
-            entries: Vec::new(),
-            selected: 0,
-            query: TextEditor::default(),
-            search_focused: false,
-            error: None,
-            opening: false,
-        },
-    ));
-    assert!(!state.modal_paste_target_active());
-    if let Some(ClientShellOverlay::WorktreeOpen(open)) = state.overlay.as_mut() {
-        open.search_focused = true;
-    }
-    assert!(state.modal_paste_target_active());
-
     state.overlay = Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
         prefix_pending: false,
         query: TextEditor::default(),
@@ -165,7 +132,6 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
         .join("\n");
     assert!(text.contains("spaces"));
     assert!(text.contains("client-shell"));
-    assert!(text.contains("main"));
     assert!(text.contains("LIVE"));
     assert!(!text.contains("1 1"));
     assert_eq!(

@@ -101,7 +101,7 @@ Raw socket method names use dot notation:
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
 | Workspace | `workspace.create`, `workspace.ensure_active`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
-| Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
+| Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` (always return `unsupported`) |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.move_to_workspace`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
@@ -131,8 +131,7 @@ tab layout snapshots, and agent records. It is not a subscription. For cache
 bootstrap and recovery, subscribe first, then reconcile through authoritative
 reads as described under Event subscriptions below. Events invalidate cached state; they
 cannot be unconditionally replayed over a snapshot. Call `session.snapshot`
-again after reconnecting or when the local cache may be stale. Attached worktree provenance is included on workspace
-records. Full repo worktree discovery remains `worktree.list`.
+again after reconnecting or when the local cache may be stale.
 
 From the CLI, `herdr api snapshot` prints the live `session.snapshot` response
 as JSON for clients and agents that want a simple bootstrap command.
@@ -363,31 +362,7 @@ Set or clear the foreground client's outer terminal window title:
 `type: "client_window_title"` with `changed` and reason `set`, `cleared`, or
 `no_foreground_client`.
 
-Worktree methods manage Git checkouts as Herdr workspaces. `worktree.create` creates a checkout and returns the new `workspace`, `tab`, `root_pane`, and `worktree` records. If the requested branch already exists locally, it checks out that branch; otherwise it creates the branch from the requested base or `HEAD`. `worktree.open` opens an existing checkout or returns the already-open workspace. `worktree.remove` runs `git worktree remove` against a linked child workspace and never deletes the branch.
-
-Create a worktree from a source workspace:
-
-```json
-{"id":"req_1","method":"worktree.create","params":{"workspace_id":"w1","branch":"worktree/api","focus":false}}
-```
-
-Open an existing checkout:
-
-```json
-{"id":"req_2","method":"worktree.open","params":{"workspace_id":"w1","branch":"worktree/api","focus":true}}
-```
-
-Remove a linked checkout:
-
-```json
-{"id":"req_3","method":"worktree.remove","params":{"workspace_id":"2","force":false}}
-```
-
-Use at most one of `workspace_id` or `cwd` for `worktree.list`, `worktree.create`, and `worktree.open`; omit both to use the active workspace. Use exactly one of `path` or `branch` for `worktree.open`. Raw socket `cwd` and `path` values must be absolute; the CLI expands relative `--cwd` and `--path` values before sending requests. Workspace responses include optional `worktree` provenance when a workspace belongs to a Herdr worktree group. Worktree commands can emit `workspace.updated` when an existing workspace gains or changes worktree provenance.
-
-Worktree commands also emit lifecycle events. `worktree.create` emits `workspace.created`, `tab.created`, `pane.created`, and `worktree.created`. `worktree.open` emits `worktree.opened`, and it also emits workspace/tab/pane creation events when it opens a new Herdr workspace. `worktree.remove` emits `worktree.removed`; if the linked workspace is still open, it also emits `workspace.closed`.
-
-`workspace.close` rejects closing a primary workspace while linked-worktree workspaces are open unless its params include `"close_group": true`, returning `workspace_group_close_required` when explicit group intent is missing. An explicit group close emits one `workspace.closed` event for each workspace it closes.
+Lawn has no Git integration. `worktree.list`, `worktree.create`, `worktree.open`, and `worktree.remove` stay in the API schema for compatibility, but every call returns an `unsupported` error. Workspace records never include `worktree` provenance, and `worktree.created`, `worktree.opened`, and `worktree.removed` events are never emitted. `workspace.close` accepts `close_group` for compatibility, ignores it, and closes only the target workspace.
 
 ## Agent view queries
 
@@ -488,7 +463,7 @@ it.
 
 Herdr validates event hook `on` values against known event names at link time.
 An unrecognised name does not block the link, but the returned plugin info
-includes a warning (e.g. `"unknown event 'worktree.craeted'"`). Check the
+includes a warning (e.g. `"unknown event 'workspace.craeted'"`). Check the
 `warnings` field in the `plugin.link` and `plugin.list` responses.
 
 Link a local plugin manifest:
@@ -524,7 +499,7 @@ contexts = ["workspace"]
 command = ["bun", "run", "bootstrap.ts"]
 
 [[events]]
-on = "worktree.created"
+on = "workspace.created"
 command = ["bun", "run", "bootstrap.ts"]
 
 [[panes]]
@@ -579,7 +554,7 @@ Invoke an action by its qualified id or bare action id:
 `plugin.action.invoke` resolves the manifest action, starts the manifest
 command, and returns the Herdr-built invocation context plus the started command
 log record. Missing context fields are filled from the active workspace, tab,
-focused pane, worktree provenance, and request id. Invoking an action from a
+focused pane, and request id. Invoking an action from a
 disabled plugin returns a `plugin_disabled` error.
 
 Herdr injects `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ENV=1`,
@@ -597,7 +572,7 @@ List recent action and event command logs:
 ```
 
 Event hooks run for enabled installed plugins when Herdr emits a matching event
-name such as `worktree.created`.
+name such as `workspace.created`.
 
 There is no Herdr-managed plugin storage API in v1. `HERDR_PLUGIN_CONFIG_DIR`
 and `HERDR_PLUGIN_STATE_DIR` are path discovery only; plugins own their files,
@@ -974,7 +949,7 @@ Recovery restores current state, not the missing event history. Another
 `events_lost` requires resubscribing and reconciling again. Slow readers may
 need to increase read throughput or reduce event load.
 
-Workspace event subscriptions include `workspace.created`, `workspace.updated`, `workspace.metadata_updated`, `workspace.renamed`, `workspace.moved`, `workspace.reordered`, `workspace.closed`, and `workspace.focused`. `workspace.metadata_updated` reports token changes and TTL expiry without invoking plugin event hooks. Other workspace events describe Herdr UI/runtime lifecycle. `workspace.created` includes optional `workspace.worktree` provenance when the workspace belongs to a worktree group. `workspace.moved` includes the moved `workspace_id`, requested `insert_index`, and updated ordered `workspaces` list. `workspace.reordered` includes the atomically moved `workspace_ids`, optional `before_workspace_id`, and authoritative ordered `workspaces` list. `workspace.closed` includes a final `workspace` snapshot when Herdr can still identify it before removal.
+Workspace event subscriptions include `workspace.created`, `workspace.updated`, `workspace.metadata_updated`, `workspace.renamed`, `workspace.moved`, `workspace.reordered`, `workspace.closed`, and `workspace.focused`. `workspace.metadata_updated` reports token changes and TTL expiry without invoking plugin event hooks. Other workspace events describe Herdr UI/runtime lifecycle. `workspace.moved` includes the moved `workspace_id`, requested `insert_index`, and updated ordered `workspaces` list. `workspace.reordered` includes the atomically moved `workspace_ids`, optional `before_workspace_id`, and authoritative ordered `workspaces` list. `workspace.closed` includes a final `workspace` snapshot when Herdr can still identify it before removal.
 Tab event subscriptions include `tab.created`, `tab.closed`, `tab.focused`,
 `tab.renamed`, and `tab.moved`. `tab.moved` includes the moved `tab_id`,
 `workspace_id`, requested `insert_index`, and updated ordered `tabs` list for
@@ -993,8 +968,6 @@ Layout event subscriptions include `layout.updated`. The event carries the
 updated `PaneLayoutSnapshot` for one tab. Clients maintaining a cache with
 `session.snapshot` should use this event to refresh the affected layout through
 an authoritative read; a delayed payload may predate their latest snapshot.
-
-Worktree event subscriptions include `worktree.created`, `worktree.opened`, and `worktree.removed`. Worktree events describe Git checkout lifecycle. `worktree.created` includes the opened `workspace` and created `worktree`. `worktree.opened` includes the target `workspace`, opened `worktree`, and `already_open`. `worktree.removed` includes the `workspace_id`, removed `worktree`, and `forced`.
 
 Use `events.subscribe` for lifecycle events. Dedicated wait helpers are documented separately when a one-shot wait is supported.
 

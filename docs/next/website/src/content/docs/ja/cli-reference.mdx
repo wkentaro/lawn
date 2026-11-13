@@ -73,16 +73,15 @@ herdr machine remove <profile-id>
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
 ```
 
 有効なプロファイル ID または一意のラベル（大文字・小文字を区別）を指定します。任意の SSH ホスト名は使えません。保存済みのリモートセッションを使うため、`--session` や `--remote` との併用はエラーです。省略時のローカル動作は変わりません。
 
-対応するのは `workspace`、`worktree`、`tab`、`pane`、`notification`、`agent`（`attach` とローカルの `explain --file` 以外）、`api snapshot`、`status server`、API ベースのプラグイン操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）です。サーバー操作は `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests` に対応します。ローカルのインストール・設定、プラグインのインストール、セッション管理、対話的な端末接続は転送しません。
+対応するのは `workspace`、`tab`、`pane`、`notification`、`agent`（`attach` とローカルの `explain --file` 以外）、`api snapshot`、`status server`、API ベースのプラグイン操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）です。サーバー操作は `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests` に対応します。ローカルのインストール・設定、プラグインのインストール、セッション管理、対話的な端末接続は転送しません。
 
 JSON API を非対話 SSH で転送します。API の内容を SSH のシェルコマンドに埋め込むことはありません。開いた TUI は不要で、サーバーのインストール・起動・再起動も自動では行いません。ローカル CLI とリモート Herdr を更新し、実行中サーバーの API プロトコルとの互換性を保ってください。認証、接続、互換性のエラーで Local にフォールバックしたり、要求を自動再送したりすることはありません。
 
-呼び出し元のローカルペイン ID は継承しません。リモート ID を明示してください。`--current` でローカルペインを指定することはできません。リモート worktree パスには絶対パス、`~`、または `~/` で始まるパスを指定します（サーバー側で展開）。プラグインの link パスは絶対パスが必要です。対象は 1 台ずつで、一覧の統合や別の TUI の接続を使った転送は含みません。
+呼び出し元のローカルペイン ID は継承しません。リモート ID を明示してください。`--current` でローカルペインを指定することはできません。プラグインの link パスは絶対パスが必要です。対象は 1 台ずつで、一覧の統合や別の TUI の接続を使った転送は含みません。
 
 ## シェル補完
 
@@ -157,7 +156,7 @@ herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
-herdr workspace close <workspace_id> [--group]
+herdr workspace close <workspace_id>
 ```
 
 フォーカスを奪わずにワークスペースを作成します:
@@ -167,21 +166,6 @@ herdr workspace create --cwd ~/project --label api --no-focus
 ```
 
 ワークスペースは最上位のプロジェクトまたは作業コンテキストです。作成時に最初のタブとルートペインも作られます。JSON レスポンスの `.result.workspace.workspace_id`、`.result.tab.tab_id`、`.result.root_pane.pane_id` から各 ID を取得できます。
-
-## Worktree
-
-```bash
-herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
-herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree remove --workspace ID [--force] [--trust-repository]
-```
-
-worktree は、Git チェックアウトの出自情報を持つ通常の Herdr ワークスペースです。`worktree create` は Git worktree のチェックアウトを作成し、ワークスペースとして開き、親リポジトリのワークスペースとグループ化します。`--branch` が既存のローカルブランチを指す場合はそれをチェックアウトし、そうでなければ `--base` または `HEAD` からブランチを作成します。`--path` がない場合、チェックアウトは `<worktrees.directory>/<repo>/<branch-slug>` の下に作成されます。
-
-`workspace close` は Herdr の状態だけを閉じます。リンクされた worktree ワークスペースが開いている間に親ワークスペースを閉じるには `--group` が必要です。指定しない場合、グループは開いたままになり `workspace_group_close_required` が返されます。`worktree remove` が明示的なチェックアウト削除の経路です。`git worktree remove` を実行し、ブランチは決して削除せず、Git がダーティなチェックアウトを拒否する場合は `--force` が必要です。
-
-Git はデフォルトで、別のユーザーが所有するリポジトリを拒否します。リポジトリを別途確認済みの場合は `--trust-repository` を渡すと、解決されたパスをそのコマンドでのみ信頼します。Herdr は Git 設定を変更しません。
 
 ## タブ
 
@@ -194,7 +178,7 @@ herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-タブはワークスペース内の別のターミナルレイアウトです。`--workspace` を省略すると、`tab create` はアクティブなワークスペースを使い、存在しなければ失敗します。JSON レスポンスの `.result.tab.tab_id` と `.result.root_pane.pane_id` から ID を取得できます。ワークスペースの最後のタブを閉じると、そのワークスペースも閉じられます。`ui.confirm_close` が有効で、親ワークツリーの最後のタブを閉じるとワークツリーグループ全体が閉じられる場合、`tab close` は `confirmation_required` エラーを返します。
+タブはワークスペース内の別のターミナルレイアウトです。`--workspace` を省略すると、`tab create` はアクティブなワークスペースを使い、存在しなければ失敗します。JSON レスポンスの `.result.tab.tab_id` と `.result.root_pane.pane_id` から ID を取得できます。ワークスペースの最後のタブを閉じると、そのワークスペースも閉じられます。
 
 `ui.confirm_close` が有効な場合、キーバインドやタブ／ペインメニューからワークスペースの最後のタブ、または唯一のペインを閉じる前に、TUI が確認を求めます。通常のペイン終了や CLI/API による終了は引き続き即座に実行されます。
 

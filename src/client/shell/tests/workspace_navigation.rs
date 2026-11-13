@@ -14,18 +14,6 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
     projected
 }
 
-fn grouped_workspaces() -> ClientShellSnapshot {
-    let mut projected = workspaces(3);
-    for (index, linked) in [(0, false), (2, true)] {
-        projected.workspaces[index].worktree = Some(ClientShellWorktree {
-            key: "repo".into(),
-            label: "repo".into(),
-            is_linked_worktree: linked,
-        });
-    }
-    projected
-}
-
 fn navigation_state(mut projected: ClientShellSnapshot) -> (ClientShellState, ClientEndpointId) {
     let (mut state, remote) = state_with_remote();
     state.set_snapshot(Box::new(projected.clone()));
@@ -359,65 +347,6 @@ fn mouse_clicks_cancel_remote_workspace_navigation() {
 }
 
 #[test]
-fn single_machine_compact_navigation_includes_visible_collapsed_group_children() {
-    let (mut state, _) = navigation_state(grouped_workspaces());
-    state.set_endpoint_catalog(&[]);
-    state.toggle_collapsed_group(&ClientEndpointId::Local, "repo".into());
-    state.sidebar_collapsed = true;
-    state.compose(100, 28).unwrap();
-    workspace_rect(&state, &ClientEndpointId::Local, "ws_3");
-    enter_navigation(&mut state);
-    for id in ["ws_2", "ws_3"] {
-        preview_key(&mut state, b"\x1b[B");
-        assert_selected(&state, &ClientEndpointId::Local, id);
-    }
-}
-
-#[test]
-fn workspace_navigation_respects_each_machines_visible_worktree_groups() {
-    for (cols, compact, unavailable, show_child) in [
-        (100, false, false, false),
-        (100, true, false, true),
-        (44, false, false, true),
-        (44, true, true, false),
-    ] {
-        let (mut state, remote) = navigation_state(grouped_workspaces());
-        state.toggle_collapsed_group(&remote, "repo".into());
-        state.sidebar_collapsed = compact;
-        if unavailable {
-            state.pane_surface = None;
-        }
-        state.compose(cols, 28).unwrap();
-        enter_navigation(&mut state);
-        let local = if compact && !unavailable {
-            ["ws_2", "ws_3"]
-        } else {
-            ["ws_3", "ws_2"]
-        };
-        let remote_ids: &[&str] = if !show_child {
-            &["ws_1", "ws_2"]
-        } else if compact {
-            &["ws_1", "ws_2", "ws_3"]
-        } else {
-            &["ws_1", "ws_3", "ws_2"]
-        };
-        for (endpoint, ids) in [
-            (&ClientEndpointId::Local, local.as_slice()),
-            (&remote, remote_ids),
-        ] {
-            for id in ids {
-                preview_key(&mut state, b"\x1b[B");
-                assert_selected(&state, endpoint, id);
-                state.compose(cols, 28).unwrap();
-                workspace_rect(&state, endpoint, id);
-            }
-        }
-        assert!(state.group_is_collapsed(&remote, "repo"));
-        assert!(!state.group_is_collapsed(&ClientEndpointId::Local, "repo"));
-    }
-}
-
-#[test]
 fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
     for invalidation in [
         "offline",
@@ -479,15 +408,15 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
 }
 
 #[test]
-fn navigation_uses_displayed_group_order_when_local_is_unavailable() {
+fn navigation_uses_displayed_order_when_local_is_unavailable() {
     for cols in [100, 44] {
-        let (mut state, remote) = navigation_state(grouped_workspaces());
+        let (mut state, remote) = navigation_state(workspaces(3));
         state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
         state.select_unavailable_local();
         state.sidebar_collapsed = true;
         state.compose(cols, 18).unwrap();
         enter_navigation(&mut state);
-        for id in ["ws_1", "ws_3", "ws_2"] {
+        for id in ["ws_1", "ws_2", "ws_3"] {
             preview_key(&mut state, b"\x1b[B");
             assert_selected(&state, &remote, id);
             state.compose(cols, 18).unwrap();
@@ -497,7 +426,7 @@ fn navigation_uses_displayed_group_order_when_local_is_unavailable() {
         assert!(
             matches!(enter.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
             endpoint_id, target: Some(ClientEndpointFocusTarget::Workspace(id)),
-        }] if endpoint_id == &remote && id == "ws_2")
+        }] if endpoint_id == &remote && id == "ws_3")
         );
     }
 }

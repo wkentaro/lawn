@@ -524,27 +524,10 @@ impl ClientShellState {
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
-            .filter(|hit| {
-                hit.group_toggle.as_ref().is_none_or(|(_, key)| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| {
-                            workspace.worktree.as_ref().is_some_and(|worktree| {
-                                worktree.key == *key && !worktree.is_linked_worktree
-                            })
-                        })
-                        .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
-                })
-            })
+            .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
-        let empty_collapsed_groups = HashSet::new();
-        let collapsed_groups = self
-            .collapsed_groups_for_endpoint(&self.active_endpoint_id)
-            .unwrap_or(&empty_collapsed_groups);
-        let entries = render::workspace_entries(snapshot, collapsed_groups, self.active_parking());
+        let entries = render::workspace_entries(snapshot, self.active_parking());
         let last_hit = self
             .hits
             .workspaces
@@ -557,26 +540,15 @@ impl ClientShellState {
                 .get(entry.index)
                 .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
         })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| {
-            entry.indented
-                || last_hit.group_toggle.as_ref().is_some_and(|(_, key)| {
-                    snapshot.workspaces[entry.index]
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.key == *key)
-                })
-        }) {
-            let before = next.and_then(|entry| {
-                snapshot
-                    .workspaces
-                    .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
-            });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
-            }
+        let before = entries.get(last_position + 1).and_then(|entry| {
+            snapshot
+                .workspaces
+                .get(entry.index)
+                .map(|workspace| workspace.workspace_id.clone())
+        });
+        let row = last_hit.rect.bottom();
+        if row < self.hits.new_workspace.y {
+            slots.push((before, row));
         }
         slots
             .into_iter()
@@ -591,90 +563,29 @@ impl ClientShellState {
         before_workspace_id: Option<&str>,
     ) -> Option<crate::api::schema::Method> {
         let snapshot = self.snapshot.as_deref()?;
-        let source = snapshot
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.workspace_id == source_workspace_id)?;
-        if source
-            .worktree
-            .as_ref()
-            .is_some_and(|worktree| worktree.is_linked_worktree)
-        {
-            return None;
-        }
         if before_workspace_id == Some(source_workspace_id) {
             return None;
         }
-        let roots = snapshot
+        let source_position = snapshot
             .workspaces
             .iter()
-            .filter(|workspace| {
-                !workspace
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            })
-            .collect::<Vec<_>>();
-        let source_position = roots
-            .iter()
             .position(|workspace| workspace.workspace_id == source_workspace_id)?;
-        let remaining = roots
-            .iter()
-            .copied()
-            .filter(|workspace| workspace.workspace_id != source_workspace_id)
-            .collect::<Vec<_>>();
-        let insert_position = match before_workspace_id {
-            Some(target) => remaining
+        let insert_index = match before_workspace_id {
+            Some(target) => snapshot
+                .workspaces
                 .iter()
                 .position(|workspace| workspace.workspace_id == target)?,
-            None => remaining.len(),
+            None => snapshot.workspaces.len(),
         };
-        if source.worktree.is_none() && insert_position == source_position {
+        if insert_index == source_position + 1 {
             return None;
         }
-
-        if let Some(worktree) = source.worktree.as_ref() {
-            let workspace_ids = std::iter::once(source.workspace_id.clone())
-                .chain(
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .filter(|workspace| workspace.workspace_id != source.workspace_id)
-                        .filter(|workspace| {
-                            workspace
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|candidate| candidate.key == worktree.key)
-                        })
-                        .map(|workspace| workspace.workspace_id.clone()),
-                )
-                .collect::<Vec<_>>();
-            if before_workspace_id.is_some_and(|target| workspace_ids.iter().any(|id| id == target))
-            {
-                return None;
-            }
-            Some(crate::api::schema::Method::WorkspaceMoveBlock(
-                crate::api::schema::WorkspaceMoveBlockParams {
-                    workspace_ids,
-                    before_workspace_id: before_workspace_id.map(str::to_owned),
-                },
-            ))
-        } else {
-            let insert_index = before_workspace_id
-                .and_then(|target| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .position(|workspace| workspace.workspace_id == target)
-                })
-                .unwrap_or(snapshot.workspaces.len());
-            Some(crate::api::schema::Method::WorkspaceMove(
-                crate::api::schema::WorkspaceMoveParams {
-                    workspace_id: source.workspace_id.clone(),
-                    insert_index,
-                },
-            ))
-        }
+        Some(crate::api::schema::Method::WorkspaceMove(
+            crate::api::schema::WorkspaceMoveParams {
+                workspace_id: source_workspace_id.to_owned(),
+                insert_index,
+            },
+        ))
     }
 
     /// Routes mouse input through overlays, shell controls, and pane interactions.
@@ -1443,83 +1354,6 @@ impl ClientShellState {
             }
             return;
         }
-        if matches!(
-            self.overlay,
-            Some(
-                ClientShellOverlay::WorktreeCreate(_)
-                    | ClientShellOverlay::WorktreeOpen(_)
-                    | ClientShellOverlay::WorktreeRemove(_)
-            )
-        ) {
-            match mouse.kind {
-                MouseEventKind::ScrollUp
-                    if matches!(self.overlay, Some(ClientShellOverlay::WorktreeOpen(_))) =>
-                {
-                    self.move_worktree_open_selection(-1);
-                    outcome.repaint = true;
-                }
-                MouseEventKind::ScrollDown
-                    if matches!(self.overlay, Some(ClientShellOverlay::WorktreeOpen(_))) =>
-                {
-                    self.move_worktree_open_selection(1);
-                    outcome.repaint = true;
-                }
-                MouseEventKind::Down(MouseButton::Left) => {
-                    if super::contains(self.hits.overlay_cancel, point) {
-                        let busy =
-                            matches!(
-                                self.overlay,
-                                Some(
-                                    ClientShellOverlay::WorktreeCreate(
-                                        ClientWorktreeCreateOverlay { creating: true, .. }
-                                    ) | ClientShellOverlay::WorktreeOpen(
-                                        ClientWorktreeOpenOverlay { opening: true, .. }
-                                    ) | ClientShellOverlay::WorktreeRemove(
-                                        ClientWorktreeRemoveOverlay { removing: true, .. }
-                                    )
-                                )
-                            );
-                        if !busy {
-                            self.overlay = None;
-                            outcome.repaint = true;
-                        }
-                    } else if super::contains(self.hits.worktree_search, point) {
-                        if let Some(ClientShellOverlay::WorktreeOpen(open)) = self.overlay.as_mut()
-                        {
-                            open.search_focused = true;
-                            outcome.repaint = true;
-                        }
-                    } else if let Some((_, index)) = self
-                        .hits
-                        .worktree_rows
-                        .iter()
-                        .find(|(rect, _)| super::contains(*rect, point))
-                        .copied()
-                    {
-                        if let Some(ClientShellOverlay::WorktreeOpen(open)) = self.overlay.as_mut()
-                        {
-                            open.selected = index;
-                        }
-                        self.submit_worktree_open(outcome);
-                    } else if super::contains(self.hits.overlay_primary, point) {
-                        match self.overlay.as_ref() {
-                            Some(ClientShellOverlay::WorktreeCreate(_)) => {
-                                self.submit_worktree_create(outcome)
-                            }
-                            Some(ClientShellOverlay::WorktreeOpen(_)) => {
-                                self.submit_worktree_open(outcome)
-                            }
-                            Some(ClientShellOverlay::WorktreeRemove(_)) => {
-                                self.submit_worktree_remove(outcome)
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
         if matches!(self.overlay, Some(ClientShellOverlay::Settings(_))) {
             if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
                 if let Some((_, section)) = self
@@ -2075,16 +1909,6 @@ impl ClientShellState {
                         .saturating_add(1)
                         .min(tab_count.saturating_sub(1));
                     outcome.repaint = true;
-                    return;
-                }
-                let group_toggle = self.hits.workspaces.iter().find_map(|hit| {
-                    let (rect, key) = hit.group_toggle.as_ref()?;
-                    super::contains(*rect, point).then(|| (hit.endpoint_id.clone(), key.clone()))
-                });
-                if let Some((endpoint_id, key)) = group_toggle {
-                    self.toggle_collapsed_group(&endpoint_id, key);
-                    outcome.repaint = true;
-                    self.persist_chrome_preferences(outcome);
                     return;
                 }
                 let workspace_press = self

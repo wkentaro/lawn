@@ -620,18 +620,9 @@ fn machine_api_never_inherits_the_callers_pane() {
 fn machine_api_remote_paths_and_wait_parameters_reach_the_server() {
     for (args, method, expected) in [
         (
-            vec![
-                "worktree",
-                "create",
-                "--cwd",
-                "~/Projects/herdr",
-                "--branch",
-                "review",
-                "--path",
-                "/srv/review",
-            ],
-            "worktree.create",
-            json!({"cwd":"~/Projects/herdr", "branch":"review", "path":"/srv/review"}),
+            vec!["workspace", "create", "--cwd", "~/Projects/herdr"],
+            "workspace.create",
+            json!({"cwd":"~/Projects/herdr"}),
         ),
         (
             vec![

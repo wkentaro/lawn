@@ -366,7 +366,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         number: 2,
         label: "background".into(),
         custom_label: true,
-        branch: Some("feature".into()),
+        branch: None,
         git_ahead_behind: None,
         tokens: Vec::new(),
         worktree: None,
@@ -400,7 +400,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("feature · tab two · 2/2"), "{text}");
+    assert!(text.contains("  tab two · 2/2"), "{text}");
     assert!(text.contains("2 · logs"), "{text}");
     assert!(!text.contains("7 · logs"), "{text}");
 }

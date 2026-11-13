@@ -39,7 +39,6 @@ mod target;
 mod title;
 mod workspace;
 pub(crate) mod workspace_bindings;
-pub(crate) mod worktree;
 
 const TERMINAL_SESSION_OBSERVE_USAGE: &str =
     "usage: lawn terminal session observe <target> [--cols N] [--rows N]";
@@ -126,7 +125,6 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "channel" => run_channel_command(&args[2..])?,
         "machine" => machine::run_machine_command(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
-        "worktree" => worktree::run_worktree_command(&args[2..])?,
         "tab" => tab::run_tab_command(&args[2..])?,
         "notification" => notification::run_notification_command(&args[2..])?,
         "agent" => agent::run_agent_command(&args[2..])?,
@@ -145,7 +143,6 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
 fn api_group(name: &str) -> Option<clap::Command> {
     Some(match name {
         "workspace" => workspace_bindings::command(),
-        "worktree" => worktree::command(),
         "tab" => tab::command(),
         "notification" => notification::command(),
         "agent" => agent::command(),

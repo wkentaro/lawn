@@ -55,8 +55,6 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub custom_name: Option<String>,
     pub identity_cwd: PathBuf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -168,7 +166,6 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             id: None,
             custom_name: snap.custom_name,
             identity_cwd,
-            worktree_space: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -306,7 +303,6 @@ fn capture_workspace(
         id: Some(ws.id.clone()),
         custom_name: ws.custom_name.clone(),
         identity_cwd,
-        worktree_space: ws.worktree_space.clone(),
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -654,6 +650,28 @@ mod tests {
     }
 
     #[test]
+    fn session_saved_with_git_integration_fields_still_loads() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(session_fixture("current-herdr")).unwrap();
+        value["workspaces"][0]["worktree_space"] = serde_json::json!({
+            "key": "/repo/.git",
+            "label": "repo",
+            "repo_root": "/repo",
+            "checkout_path": "/repo-worktrees/topic",
+            "is_linked_worktree": true,
+        });
+        value["collapsed_space_keys"] = serde_json::json!(["/repo/.git"]);
+
+        let snap = parse_snapshot(&value.to_string()).unwrap();
+
+        assert_eq!(snap.workspaces.len(), 2);
+        assert_eq!(
+            snap.workspaces[0].identity_cwd,
+            PathBuf::from("/home/test/projects/project-a")
+        );
+    }
+
+    #[test]
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
@@ -727,7 +745,6 @@ mod tests {
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
-                worktree_space: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -934,25 +951,6 @@ mod tests {
         assert_eq!(snapshot.sidebar_width, None);
         assert_eq!(snapshot.sidebar_section_split, None);
         assert!(snapshot.collapsed_space_keys.is_empty());
-    }
-
-    #[test]
-    fn capture_contract_tracks_worktree_space_membership() {
-        let mut state = state_with_workspaces(&["main"]);
-        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: PathBuf::from("/repo/herdr"),
-            checkout_path: PathBuf::from("/repo/herdr/worktree-a"),
-            is_linked_worktree: true,
-        });
-
-        let snapshot = capture_from_state(&state);
-
-        assert_eq!(
-            snapshot.workspaces[0].worktree_space,
-            state.workspaces[0].worktree_space
-        );
     }
 
     #[test]
@@ -1428,7 +1426,6 @@ mod tests {
                 id: Some("test-ws".to_string()),
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
-                worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

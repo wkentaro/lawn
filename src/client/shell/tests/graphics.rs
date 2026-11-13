@@ -258,7 +258,6 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
         }),
         ClientShellOverlay::ConfirmClose(ClientConfirmCloseOverlay {
             workspace_id: "ws_1".into(),
-            close_group: false,
             tab_target: None,
             title: "close".into(),
             detail: "confirm".into(),
@@ -275,30 +274,6 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             scroll: None,
             parked: false,
             moving: None,
-        }),
-        ClientShellOverlay::WorktreeCreate(ClientWorktreeCreateOverlay {
-            source_workspace_id: "ws_1".into(),
-            repo_name: "repo".into(),
-            branch: "branch".into(),
-            checkout_path: "path".into(),
-            error: None,
-            creating: false,
-        }),
-        ClientShellOverlay::WorktreeOpen(ClientWorktreeOpenOverlay {
-            source_workspace_id: "ws_1".into(),
-            entries: Vec::new(),
-            selected: 0,
-            query: TextEditor::default(),
-            search_focused: false,
-            error: None,
-            opening: false,
-        }),
-        ClientShellOverlay::WorktreeRemove(ClientWorktreeRemoveOverlay {
-            workspace_id: "ws_1".into(),
-            path: "path".into(),
-            error: None,
-            removing: false,
-            force_confirmation: false,
         }),
         ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {

@@ -13,21 +13,12 @@ impl ClientShellState {
 
     pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
         press.endpoint_id == self.active_endpoint_id
-            && self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_id == press.workspace_id)
-                })
-                .is_some_and(|workspace| {
-                    !workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
-                })
+            && self.snapshot.as_deref().is_some_and(|snapshot| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.workspace_id == press.workspace_id)
+            })
     }
 
     pub(super) fn finish_endpoint_workspace_press(
@@ -114,8 +105,6 @@ impl ClientShellState {
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
             let multiple = self.multi_endpoint_active();
-            let mobile = self.mobile_layout_active();
-            let empty_groups = HashSet::new();
             let targets = |include_hidden: bool| {
                 self.endpoints
                     .iter()
@@ -125,15 +114,8 @@ impl ClientShellState {
                             .snapshot
                             .as_deref()
                             .map_or_else(Vec::new, |snapshot| {
-                                let groups = if !multiple && !mobile && !include_hidden {
-                                    self.collapsed_groups_for_endpoint(&endpoint.endpoint_id)
-                                        .unwrap_or(&empty_groups)
-                                } else {
-                                    &empty_groups
-                                };
                                 render::workspace_entries(
                                     snapshot,
-                                    groups,
                                     (!include_hidden).then_some(&endpoint.parking),
                                 )
                                 .into_iter()

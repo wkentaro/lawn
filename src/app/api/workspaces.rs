@@ -126,7 +126,7 @@ impl App {
                 },
             );
         }
-        let home = crate::worktree::expand_tilde_path("~");
+        let home = crate::home_path::expand_tilde_path("~");
         match self.create_workspace_with_launch_env(home, true, Vec::new()) {
             Ok(index) => {
                 self.emit_workspace_open_events(index);
@@ -375,42 +375,18 @@ impl App {
         if self.state.workspaces.get(index).is_none() {
             return workspace_not_found(id, &params.workspace_id);
         }
-        let close_indices = if params.close_group {
-            self.state.workspace_group_close_indices(index)
-        } else {
-            self.state.workspace_close_indices(index)
-        };
-        if let Err(response) = self.require_restored_group_close_ready(&id, &close_indices) {
-            return response;
-        }
-        if close_indices.len() >= 2 && !params.close_group {
-            return encode_error(
-                id,
-                "workspace_group_close_required",
-                "workspace has linked worktree workspaces; use --group (close_group=true in the API) to close the group",
-            );
-        }
-        let closed_workspaces = close_indices
-            .iter()
-            .map(|index| {
-                (
-                    self.public_workspace_id(*index),
-                    self.workspace_info(*index),
-                )
-            })
-            .collect::<Vec<_>>();
+        let workspace_id = self.public_workspace_id(index);
+        let workspace = self.workspace_info(index);
         self.state.selected = index;
-        self.state.close_workspaces(close_indices);
+        self.state.close_selected_workspace();
         self.shutdown_detached_terminal_runtimes();
-        for (workspace_id, workspace) in closed_workspaces {
-            self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceClosed,
-                data: EventData::WorkspaceClosed {
-                    workspace_id,
-                    workspace: Some(workspace),
-                },
-            });
-        }
+        self.emit_event(EventEnvelope {
+            event: EventKind::WorkspaceClosed,
+            data: EventData::WorkspaceClosed {
+                workspace_id,
+                workspace: Some(workspace),
+            },
+        });
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -488,7 +464,7 @@ mod tests {
         assert_eq!(app.state.workspaces.len(), 2);
         assert_eq!(
             app.state.workspaces[1].identity_cwd,
-            crate::worktree::expand_tilde_path("~")
+            crate::home_path::expand_tilde_path("~")
         );
         assert_eq!(app.state.active, Some(1));
 
@@ -576,12 +552,12 @@ mod tests {
         ));
         let created_cwd = &app.state.workspaces[1].identity_cwd;
         assert_eq!(
-            crate::worktree::canonical_or_original(created_cwd),
-            crate::worktree::canonical_or_original(&focused_cwd)
+            super::super::test_support::canonical_or_original(created_cwd),
+            super::super::test_support::canonical_or_original(&focused_cwd)
         );
         assert_ne!(
-            crate::worktree::canonical_or_original(created_cwd),
-            crate::worktree::canonical_or_original(&root_cwd)
+            super::super::test_support::canonical_or_original(created_cwd),
+            super::super::test_support::canonical_or_original(&root_cwd)
         );
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&focused_cwd);
@@ -635,8 +611,10 @@ mod tests {
             ResponseResult::WorkspaceCreated { .. }
         ));
         assert_eq!(
-            crate::worktree::canonical_or_original(&app.state.workspaces[2].identity_cwd),
-            crate::worktree::canonical_or_original(&source_cwd)
+            super::super::test_support::canonical_or_original(
+                &app.state.workspaces[2].identity_cwd
+            ),
+            super::super::test_support::canonical_or_original(&source_cwd)
         );
 
         let invalid = app.handle_workspace_create(
@@ -668,337 +646,17 @@ mod tests {
             ResponseResult::WorkspaceCreated { .. }
         ));
         assert_eq!(
-            crate::worktree::canonical_or_original(&app.state.workspaces[3].identity_cwd),
-            crate::worktree::canonical_or_original(&source_cwd)
+            super::super::test_support::canonical_or_original(
+                &app.state.workspaces[3].identity_cwd
+            ),
+            super::super::test_support::canonical_or_original(&source_cwd)
         );
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&source_cwd);
     }
 
-    fn app_with_linked_worktree() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::TEST,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.workspaces = vec![Workspace::test_new("issue")];
-        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
-        app
-    }
-
-    fn app_with_worktree_group() -> App {
-        let mut app = app_with_linked_worktree();
-        let mut parent = Workspace::test_new("parent");
-        parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
-        app.state.workspaces.insert(0, parent);
-        app.state.active = Some(1);
-        app.state.selected = 1;
-        app.state.mode = crate::app::Mode::Terminal;
-        app
-    }
-
     #[test]
-    fn restored_group_close_waits_for_every_membership_before_mutating_state() {
-        for method in ["workspace.close", "pane.close", "tab.close", "group"] {
-            for pending_index in [0, 2] {
-                for valid in [false, true] {
-                    let mut app = app_with_worktree_group();
-                    let parent = app.state.workspaces.remove(0);
-                    let linked = app.state.workspaces.remove(0);
-                    app.state = crate::app::AppState::test_with_adversarial_identity_state();
-                    app.state.workspaces.insert(0, parent);
-                    app.state.workspaces.push(linked);
-                    app.state.confirm_close = false;
-                    app.state.ensure_test_terminals();
-                    app.state.assert_invariants_for_test();
-                    let expected = app.state.workspaces[pending_index]
-                        .worktree_space
-                        .clone()
-                        .unwrap();
-                    let pending_id = app.state.workspaces[pending_index].id.clone();
-                    app.pending_restored_worktree_spaces
-                        .push((pending_id.clone(), expected.clone()));
-                    let parent_pane = app.state.workspaces[0].tabs[0].root_pane;
-                    let request = serde_json::json!({
-                        "id": "req",
-                        "method": if method == "group" { "workspace.close" } else { method },
-                        "params": match method {
-                            "pane.close" => serde_json::json!({"pane_id": app.public_pane_id(0, parent_pane).unwrap()}),
-                            "tab.close" => serde_json::json!({"tab_id": app.public_tab_id(0, 0).unwrap()}),
-                            _ => serde_json::json!({"workspace_id": app.public_workspace_id(0), "close_group": method == "group"}),
-                        }
-                    });
-                    let before = app.workspace_list_info();
-                    let response =
-                        app.handle_api_request(serde_json::from_value(request.clone()).unwrap());
-                    let response: ErrorResponse = serde_json::from_str(&response).unwrap();
-                    assert_eq!(response.error.code, "worktree_operation_in_progress");
-                    assert_eq!(app.workspace_list_info(), before);
-                    assert!(app.state.terminal_runtime_shutdowns.is_empty());
-                    assert!(app.event_hub.events_after(0).is_empty());
-                    app.state.assert_invariants_for_test();
-
-                    app.handle_internal_event(
-                        crate::events::AppEvent::RestoredWorktreeSpaceChecked {
-                            workspace_id: pending_id,
-                            expected,
-                            valid,
-                        },
-                    );
-                    let response = app.handle_api_request(serde_json::from_value(request).unwrap());
-                    if valid && method == "workspace.close" {
-                        let response: ErrorResponse = serde_json::from_str(&response).unwrap();
-                        assert_eq!(response.error.code, "workspace_group_close_required");
-                    } else {
-                        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
-                        assert_eq!(app.state.workspaces.len(), if valid { 1 } else { 2 });
-                    }
-                    app.state.assert_invariants_for_test();
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn restored_linked_workspace_can_close_while_its_validation_is_pending() {
-        let mut app = app_with_worktree_group();
-        let linked = &app.state.workspaces[1];
-        app.pending_restored_worktree_spaces
-            .push((linked.id.clone(), linked.worktree_space.clone().unwrap()));
-        let response = app.handle_workspace_close(
-            "req".into(),
-            WorkspaceCloseParams {
-                workspace_id: app.public_workspace_id(1),
-                close_group: true,
-            },
-        );
-        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "parent");
-    }
-
-    #[test]
-    fn api_workspace_close_parent_group_requires_explicit_group_intent() {
-        for confirm_close in [true, false] {
-            let mut app = app_with_worktree_group();
-            app.state.confirm_close = confirm_close;
-            let parent_id = app.public_workspace_id(0);
-            let workspace_ids = app
-                .state
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.id.clone())
-                .collect::<Vec<_>>();
-
-            let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
-                "id": "req",
-                "method": "workspace.close",
-                "params": { "workspace_id": parent_id }
-            }))
-            .unwrap();
-            let response = app.handle_api_request(request);
-
-            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-            assert_eq!(response["error"]["code"], "workspace_group_close_required");
-            assert!(app.event_hub.events_after(0).is_empty());
-            assert_eq!(app.state.mode, crate::app::Mode::Terminal);
-            assert_eq!(app.state.active, Some(1));
-            assert_eq!(app.state.selected, 1);
-            assert_eq!(
-                app.state
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace.id.clone())
-                    .collect::<Vec<_>>(),
-                workspace_ids
-            );
-        }
-    }
-
-    #[test]
-    fn duplicate_repo_parents_close_independently_unless_group_is_explicit() {
-        for method in ["workspace.close", "pane.close", "tab.close", "group"] {
-            for target_index in [1, 3] {
-                let mut app = app_with_worktree_group();
-                let parent = app.state.workspaces.remove(0);
-                let linked = app.state.workspaces.remove(0);
-                let mut duplicate = Workspace::test_new("duplicate");
-                duplicate.worktree_space = parent.worktree_space.clone();
-                app.state = crate::app::state::AppState::test_with_adversarial_identity_state();
-                let focused_id = app.state.workspaces[0].id.clone();
-                app.state.workspaces.extend([parent, linked, duplicate]);
-                app.state.ensure_test_terminals();
-                app.state.assert_invariants_for_test();
-                let target_id = app.public_workspace_id(target_index);
-                let target_pane = app.state.workspaces[target_index].tabs[0].root_pane;
-                let target_terminal = app
-                    .state
-                    .terminal_id_for_pane(target_index, target_pane)
-                    .unwrap();
-                let closed_indices = if method == "group" {
-                    vec![1, 2, 3]
-                } else {
-                    vec![target_index]
-                };
-                let closed_ids = closed_indices
-                    .iter()
-                    .map(|index| app.public_workspace_id(*index))
-                    .collect::<Vec<_>>();
-                let surviving_ids = app
-                    .state
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| !closed_indices.contains(index))
-                    .map(|(_, workspace)| workspace.id.clone())
-                    .collect::<Vec<_>>();
-                let request = serde_json::json!({
-                    "id": "req",
-                    "method": if method == "group" { "workspace.close" } else { method },
-                    "params": match method {
-                        "pane.close" => serde_json::json!({"pane_id": app.public_pane_id(target_index, target_pane).unwrap()}),
-                        "tab.close" => serde_json::json!({"tab_id": app.public_tab_id(target_index, 0).unwrap()}),
-                        _ => serde_json::json!({"workspace_id": target_id, "close_group": method == "group"}),
-                    }
-                });
-
-                let response = app.handle_api_request(serde_json::from_value(request).unwrap());
-                let _: SuccessResponse = serde_json::from_str(&response).unwrap();
-
-                assert_eq!(
-                    app.state
-                        .workspaces
-                        .iter()
-                        .map(|workspace| workspace.id.clone())
-                        .collect::<Vec<_>>(),
-                    surviving_ids
-                );
-                assert_eq!(
-                    app.state.workspaces[app.state.active.unwrap()].id,
-                    focused_id
-                );
-                assert!(!app.state.terminals.contains_key(&target_terminal));
-                app.state.assert_invariants_for_test();
-                let closed_events = app
-                    .event_hub
-                    .events_after(0)
-                    .into_iter()
-                    .filter_map(|(_, event)| match event.data {
-                        EventData::WorkspaceClosed { workspace_id, .. } => Some(workspace_id),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                assert_eq!(closed_events, closed_ids);
-            }
-        }
-    }
-
-    #[test]
-    fn api_workspace_close_noncontiguous_group_preserves_adversarial_identity_state() {
-        let mut app = app_with_worktree_group();
-        let parent = app.state.workspaces.remove(0);
-        let linked = app.state.workspaces.remove(0);
-        app.state = crate::app::state::AppState::test_with_adversarial_identity_state();
-        let survivor_id = app.state.workspaces[0].id.clone();
-        app.state.workspaces.insert(0, parent);
-        app.state.workspaces.push(linked);
-        app.state.active = Some(1);
-        app.state.selected = 1;
-        app.state.mode = crate::app::Mode::Terminal;
-        app.state.ensure_test_terminals();
-        let closed_pane_ids = [0, 2].map(|index| app.state.workspaces[index].tabs[0].root_pane);
-        let closed_terminal_ids = [0, 2].map(|index| {
-            app.state
-                .terminal_id_for_pane(index, app.state.workspaces[index].tabs[0].root_pane)
-                .expect("closed workspace pane has a terminal")
-        });
-        for pane_id in closed_pane_ids {
-            app.state.plugin_panes.insert(
-                pane_id,
-                crate::app::state::PluginPaneRecord {
-                    plugin_id: "example.pane".into(),
-                    entrypoint: "board".into(),
-                },
-            );
-        }
-        app.state.assert_invariants_for_test();
-
-        let parent_id = app.public_workspace_id(0);
-        let closed = [0, 2]
-            .into_iter()
-            .map(|index| (app.public_workspace_id(index), app.workspace_info(index)))
-            .collect::<Vec<_>>();
-
-        let response = app.handle_workspace_close(
-            "req".into(),
-            WorkspaceCloseParams {
-                workspace_id: parent_id,
-                close_group: true,
-            },
-        );
-
-        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
-        assert_eq!(success.id, "req");
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].id, survivor_id);
-        for terminal_id in closed_terminal_ids {
-            assert!(!app.state.terminals.contains_key(&terminal_id));
-        }
-        for pane_id in closed_pane_ids {
-            assert!(!app.state.plugin_panes.contains_key(&pane_id));
-        }
-        assert!(app.state.terminal_runtime_shutdowns.is_empty());
-        app.state.assert_invariants_for_test();
-        let events = app.event_hub.events_after(0);
-        assert_eq!(events.len(), closed.len());
-        for ((_, event), (workspace_id, workspace)) in events.iter().zip(closed) {
-            assert!(matches!(event.event, EventKind::WorkspaceClosed));
-            assert!(matches!(
-                &event.data,
-                EventData::WorkspaceClosed {
-                    workspace_id: closed_id,
-                    workspace: Some(closed_workspace),
-                } if closed_id == &workspace_id && closed_workspace == &workspace
-            ));
-        }
-    }
-
-    #[test]
-    fn api_workspace_close_closes_linked_worktree_workspace_only() {
-        let mut app = app_with_worktree_group();
-        let linked_id = app.public_workspace_id(1);
-
-        let response = app.handle_workspace_close(
-            "req".into(),
-            WorkspaceCloseParams {
-                workspace_id: linked_id,
-                close_group: true,
-            },
-        );
-
-        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
-        assert_eq!(success.id, "req");
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "parent");
-    }
-
-    #[test]
-    fn api_workspace_close_event_includes_final_worktree_snapshot() {
+    fn api_workspace_close_closes_only_the_target_and_emits_its_snapshot() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -1008,19 +666,21 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        app.state.workspaces = app_with_linked_worktree().state.workspaces;
-        let workspace_id = app.state.workspaces[0].id.clone();
+        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        let workspace_id = app.public_workspace_id(0);
 
         let response = app.handle_workspace_close(
             "req".into(),
             WorkspaceCloseParams {
                 workspace_id: workspace_id.clone(),
-                close_group: false,
+                close_group: true,
             },
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(success.id, "req");
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "two");
         let events = event_hub.events_after(0);
         assert!(events.iter().any(|(_, event)| {
             matches!(
@@ -1028,11 +688,7 @@ mod tests {
                 EventData::WorkspaceClosed {
                     workspace_id: closed_id,
                     workspace: Some(workspace),
-                } if closed_id == &workspace_id
-                    && workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                } if closed_id == &workspace_id && workspace.worktree.is_none()
             )
         }));
     }

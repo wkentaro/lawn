@@ -133,8 +133,6 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_close: Rect,
     pub(super) navigator_scrollbar: Rect,
     pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
-    pub(super) worktree_search: Rect,
-    pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
     pub(super) help_scrollbar: Rect,
     pub(super) help_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -245,8 +243,6 @@ pub(super) struct WorkspaceHit {
     pub(super) rect: Rect,
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) workspace_id: String,
-    pub(super) indented: bool,
-    pub(super) group_toggle: Option<(Rect, String)>,
 }
 
 #[derive(Debug)]
@@ -306,9 +302,6 @@ pub(super) enum ClientShellOverlayKind {
     ConfirmClose,
     Help,
     Navigator,
-    WorktreeCreate,
-    WorktreeOpen,
-    WorktreeRemove,
     ContextMenu,
     GlobalMenu,
     Settings,
@@ -456,100 +449,10 @@ pub(super) struct ClientSettingsOverlay {
     pub(super) installing_integrations: bool,
 }
 
-#[derive(Debug)]
-pub(super) struct ClientWorktreeCreateOverlay {
-    pub(super) source_workspace_id: String,
-    pub(super) repo_name: String,
-    pub(super) branch: TextEditor,
-    pub(super) checkout_path: String,
-    pub(super) error: Option<String>,
-    pub(super) creating: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct ClientWorktreeOpenEntry {
-    pub(super) path: String,
-    pub(super) branch: Option<String>,
-    pub(super) is_linked_worktree: bool,
-    pub(super) is_detached: bool,
-    pub(super) open_workspace_id: Option<String>,
-    pub(super) label: String,
-}
-
-impl ClientWorktreeOpenEntry {
-    pub(super) fn status_label(&self) -> &'static str {
-        if self.open_workspace_id.is_some() {
-            "open"
-        } else if self.branch.is_some() {
-            ""
-        } else if self.is_detached && self.is_linked_worktree {
-            "detached"
-        } else {
-            "root"
-        }
-    }
-
-    pub(super) fn matches_query(&self, query: &str) -> bool {
-        let query = query.trim().to_lowercase();
-        query.is_empty()
-            || format!(
-                "{} {} {} {}",
-                self.label,
-                self.branch.as_deref().unwrap_or_default(),
-                self.path,
-                self.status_label()
-            )
-            .to_lowercase()
-            .contains(&query)
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ClientWorktreeOpenOverlay {
-    pub(super) source_workspace_id: String,
-    pub(super) entries: Vec<ClientWorktreeOpenEntry>,
-    pub(super) selected: usize,
-    pub(super) query: TextEditor,
-    pub(super) search_focused: bool,
-    pub(super) error: Option<String>,
-    pub(super) opening: bool,
-}
-
-impl ClientWorktreeOpenOverlay {
-    pub(super) fn filtered_indices(&self) -> Vec<usize> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| entry.matches_query(&self.query).then_some(index))
-            .collect()
-    }
-
-    pub(super) fn selected_entry_index(&self) -> Option<usize> {
-        let filtered = self.filtered_indices();
-        filtered
-            .contains(&self.selected)
-            .then_some(self.selected)
-            .or_else(|| filtered.first().copied())
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct ClientWorktreeRemoveOverlay {
-    pub(super) workspace_id: String,
-    pub(super) path: String,
-    pub(super) error: Option<String>,
-    pub(super) removing: bool,
-    pub(super) force_confirmation: bool,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientContextMenuAction {
     Rename,
     Close,
-    NewWorktree,
-    OpenWorktree,
-    RemoveWorktree,
-    ToggleGroup,
     NewTab,
     RenamePane,
     ClearPaneName,
@@ -568,11 +471,6 @@ pub(super) enum ClientContextMenuAction {
 pub(super) enum ClientContextMenuTarget {
     Workspace {
         workspace_id: String,
-        is_git: bool,
-        is_linked_worktree: bool,
-        has_worktree_children: bool,
-        close_group: bool,
-        collapsed: bool,
     },
     Tab {
         tab_id: String,
@@ -615,7 +513,6 @@ pub(super) struct ClientTabCloseConfirmation {
 #[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: String,
-    pub(super) close_group: bool,
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
@@ -630,9 +527,6 @@ pub(super) enum ClientShellOverlay {
     ConfirmClose(ClientConfirmCloseOverlay),
     Help(ClientHelpOverlay),
     Navigator(ClientNavigatorOverlay),
-    WorktreeCreate(ClientWorktreeCreateOverlay),
-    WorktreeOpen(ClientWorktreeOpenOverlay),
-    WorktreeRemove(ClientWorktreeRemoveOverlay),
     ContextMenu(ClientContextMenuOverlay),
     GlobalMenu(ClientGlobalMenuOverlay),
     Settings(ClientSettingsOverlay),
@@ -648,9 +542,6 @@ impl ClientShellOverlay {
             Self::ConfirmClose(_) => ClientShellOverlayKind::ConfirmClose,
             Self::Help(_) => ClientShellOverlayKind::Help,
             Self::Navigator(_) => ClientShellOverlayKind::Navigator,
-            Self::WorktreeCreate(_) => ClientShellOverlayKind::WorktreeCreate,
-            Self::WorktreeOpen(_) => ClientShellOverlayKind::WorktreeOpen,
-            Self::WorktreeRemove(_) => ClientShellOverlayKind::WorktreeRemove,
             Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
             Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
             Self::Settings(_) => ClientShellOverlayKind::Settings,
@@ -670,20 +561,6 @@ pub(super) enum PendingEndpointKind {
     ReloadConfig,
     IntegrationList,
     IntegrationInstall,
-    PrepareWorktreeCreate {
-        workspace_id: String,
-    },
-    PrepareWorktreeOpen {
-        workspace_id: String,
-    },
-    PrepareWorktreeRemove {
-        workspace_id: String,
-    },
-    WorktreeCreate,
-    WorktreeOpen,
-    WorktreeRemove {
-        forced: bool,
-    },
     SelectionCopy,
     PaneScroll {
         pane_id: String,
@@ -922,8 +799,6 @@ pub(crate) struct ClientShellState {
     pub(super) chrome_drag: Option<ClientChromeDrag>,
     pub(super) workspace_press: Option<ClientWorkspacePress>,
     pub(super) tab_press: Option<ClientTabPress>,
-    pub(super) collapsed_groups: HashSet<String>,
-    pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1032,8 +907,6 @@ pub(super) fn release_notes_state(
 #[derive(Clone, Copy)]
 pub(super) struct WorkspaceEntry {
     pub(super) index: usize,
-    pub(super) indented: bool,
-    pub(super) last_child: bool,
 }
 
 impl ClientShellState {
@@ -1062,16 +935,6 @@ impl ClientShellState {
             .unwrap_or(0.5);
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
-        }
-        let mut remote_collapsed_groups = HashMap::<ClientEndpointId, HashSet<String>>::new();
-        for saved in preferences.remote_collapsed_groups {
-            let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
-                continue;
-            };
-            remote_collapsed_groups
-                .entry(ClientEndpointId::Ssh(profile_id))
-                .or_default()
-                .extend(saved.collapsed_groups);
         }
         let mut primary_endpoint = local_endpoint();
         primary_endpoint.parking.set_path(
@@ -1105,8 +968,6 @@ impl ClientShellState {
             chrome_drag: None,
             workspace_press: None,
             tab_press: None,
-            collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
-            remote_collapsed_groups,
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1207,50 +1068,11 @@ impl ClientShellState {
             .is_some_and(|(cols, rows)| !self.layout(cols, rows).mobile_header.is_empty())
     }
 
-    pub(super) fn collapsed_groups_for_endpoint(
-        &self,
-        endpoint_id: &ClientEndpointId,
-    ) -> Option<&HashSet<String>> {
-        if endpoint_id.is_local() {
-            Some(&self.collapsed_groups)
-        } else {
-            self.remote_collapsed_groups.get(endpoint_id)
-        }
-    }
-
-    pub(super) fn group_is_collapsed(&self, endpoint_id: &ClientEndpointId, key: &str) -> bool {
-        self.collapsed_groups_for_endpoint(endpoint_id)
-            .is_some_and(|groups| groups.contains(key))
-    }
-
-    pub(super) fn toggle_collapsed_group(&mut self, endpoint_id: &ClientEndpointId, key: String) {
-        let groups = if endpoint_id.is_local() {
-            &mut self.collapsed_groups
-        } else {
-            self.remote_collapsed_groups
-                .entry(endpoint_id.clone())
-                .or_default()
-        };
-        if !groups.remove(&key) {
-            groups.insert(key);
-        }
-    }
-
     pub(super) fn navigation_workspace_entries(
         &self,
         snapshot: &ClientShellSnapshot,
     ) -> Vec<WorkspaceEntry> {
-        let empty_collapsed_groups = HashSet::new();
-        if self.mobile_layout_active() {
-            render::workspace_entries(snapshot, &empty_collapsed_groups, self.active_parking())
-        } else {
-            render::workspace_entries(
-                snapshot,
-                self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups),
-                self.active_parking(),
-            )
-        }
+        render::workspace_entries(snapshot, self.active_parking())
     }
 
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {

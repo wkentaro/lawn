@@ -464,7 +464,7 @@ fn normalize_plugin_path_arg(value: &str) -> std::io::Result<String> {
             "remote plugin paths must be absolute",
         ));
     }
-    let path = crate::worktree::expand_tilde_path(value);
+    let path = crate::home_path::expand_tilde_path(value);
     let absolute = if path.is_absolute() {
         path
     } else {

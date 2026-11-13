@@ -71,16 +71,6 @@ mod tests {
     use crate::terminal::TerminalState;
 
     #[cfg(unix)]
-    fn init_repo(path: &std::path::Path) {
-        let status = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(path)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git init failed for {}", path.display());
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn toast_message_uses_live_root_runtime_cwd_label() {
         let mut state = AppState::test_new();
@@ -102,8 +92,6 @@ mod tests {
         let live_cwd = temp_root.join("__herdr_projects__");
         std::fs::create_dir_all(&stale_cwd).unwrap();
         std::fs::create_dir_all(&live_cwd).unwrap();
-        init_repo(&stale_cwd);
-        init_repo(&live_cwd);
         state.workspaces[0].custom_name = None;
         state.workspaces[0].identity_cwd = stale_cwd.clone();
         let mut terminal = TerminalState::new(terminal_id.clone(), stale_cwd);
