@@ -730,12 +730,17 @@ pub(crate) fn render_navigator_overlay(
     )
     .intersection(a);
     let i = panel(b, q, p.accent, p.panel_bg)?;
+    let title = match &n.moving {
+        Some(moving) => format!(" move {} ", moving.label),
+        None if n.parked => " parked ".into(),
+        None => " active ".into(),
+    };
     put_text(
         b,
         q.x + 2,
         q.y,
         q.width.saturating_sub(4),
-        if n.parked { " parked " } else { " active " },
+        &title,
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
     if height < minimum_height {
@@ -979,12 +984,18 @@ pub(crate) fn render_navigator_overlay(
         };
         b.set_style(rect, st);
         let wide = rect.width >= 64;
-        let agent_text = if n.parked && r.stale && !wide {
-            "cached"
-        } else if r.parked && !wide {
-            "parked"
+        let tag = if n.parked && r.stale {
+            Some("cached")
+        } else if n.moves(&r.target) {
+            Some("moving")
+        } else if r.parked {
+            Some("parked")
         } else {
-            r.agent.as_deref().unwrap_or("terminal")
+            None
+        };
+        let agent_text = match tag {
+            Some(tag) if !wide => tag,
+            _ => r.agent.as_deref().unwrap_or("terminal"),
         };
         let columns = if !is_pane {
             0
@@ -1099,15 +1110,11 @@ pub(crate) fn render_navigator_overlay(
                     rect.right() - 11,
                     rect.y,
                     11,
-                    if n.parked && r.stale {
-                        "cached"
-                    } else if r.parked {
-                        "parked"
-                    } else if r.agent.is_some() {
+                    tag.unwrap_or(if r.agent.is_some() {
                         r.status.map(status_text).unwrap_or("unknown")
                     } else {
                         "shell"
-                    },
+                    }),
                     meta_style,
                 );
             }
@@ -1160,7 +1167,14 @@ pub(crate) fn render_navigator_overlay(
             Style::default().fg(p.overlay0).bg(p.panel_bg),
         );
     }
-    let action_label = if selected_row.is_some_and(|row| row.parked) {
+    let action_label = if n.moving.is_some() {
+        match selected_row.map(|row| &row.target) {
+            Some(target) if n.moves(target) => " Move Enter",
+            Some(ClientNavigatorTarget::Workspace { .. }) => " New tab Enter",
+            Some(ClientNavigatorTarget::NewWorkspace) => " New workspace Enter",
+            _ => " Split right Enter",
+        }
+    } else if selected_row.is_some_and(|row| row.parked) {
         if i.width >= 38 {
             " Unpark & open Enter"
         } else {
@@ -1177,7 +1191,7 @@ pub(crate) fn render_navigator_overlay(
         display_width(action_label).min(i.width.saturating_sub(close_width + 1)),
         1,
     );
-    let preview = if selected_row.is_some_and(|row| !row.stale) {
+    let preview = if selected_row.is_some_and(|row| !row.stale && !n.moves(&row.target)) {
         action_area
     } else {
         Rect::default()

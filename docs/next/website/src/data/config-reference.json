@@ -705,6 +705,12 @@
           "description": "Park the focused workspace pane in Lawn without stopping its terminal. Unset by default."
         },
         {
+          "key": "keys.move_pane",
+          "type": "keybinding",
+          "default": "\"prefix+m\"",
+          "description": "Pick a workspace, pane, or new workspace for the focused pane and move it there."
+        },
+        {
           "key": "keys.restore_pane",
           "type": "keybinding",
           "default": "unset",

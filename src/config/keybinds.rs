@@ -381,6 +381,7 @@ pub struct Keybinds {
     pub close_tab: ActionKeybinds,
     pub rename_pane: ActionKeybinds,
     pub park_pane: ActionKeybinds,
+    pub move_pane: ActionKeybinds,
     pub restore_pane: ActionKeybinds,
     pub open_parked: ActionKeybinds,
 
@@ -568,6 +569,7 @@ impl Config {
             close_tab: empty_action!(),
             rename_pane: empty_action!(),
             park_pane: empty_action!(),
+            move_pane: empty_action!(),
             restore_pane: empty_action!(),
             open_parked: empty_action!(),
 
@@ -720,6 +722,7 @@ impl Config {
             apply_action!(keybinds.close_tab, close_tab, source);
             apply_action!(keybinds.rename_pane, rename_pane, source);
             apply_action!(keybinds.park_pane, park_pane, source);
+            apply_action!(keybinds.move_pane, move_pane, source);
             apply_action!(keybinds.restore_pane, restore_pane, source);
             apply_action!(keybinds.open_parked, open_parked, source);
 

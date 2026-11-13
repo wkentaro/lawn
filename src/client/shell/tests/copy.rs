@@ -2379,3 +2379,150 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         );
     }
 }
+
+#[test]
+fn move_picker_sends_each_destination_as_a_pane_move() {
+    use crate::api::schema::{Method, PaneMoveDestination, SplitDirection};
+
+    let mut projected = snapshot();
+    let mut sibling = projected.panes[0].clone();
+    sibling.pane_id = "pane_2".into();
+    sibling.label = Some("reviewer".into());
+    sibling.focused = false;
+    projected.panes.push(sibling.clone());
+    sibling.pane_id = "pane_3".into();
+    sibling.tab_id = "tab_2".into();
+    projected.panes.push(sibling);
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.focused = false;
+    projected.tabs.push(tab);
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.label = "docs".into();
+    other.focused = false;
+    projected.workspaces.push(other);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let send = |state: &mut ClientShellState, select: Option<ClientNavigatorTarget>| {
+        state.open_move_overlay("pane_1".into());
+        if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+            if select.is_some() {
+                navigator.selected = select;
+            }
+        }
+        let outcome = state.handle_input_bytes(b"\r");
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            return None;
+        };
+        let Method::PaneMove(params) = &request.method else {
+            panic!("move sends pane.move, got {:?}", request.method);
+        };
+        assert_eq!(params.pane_id, "pane_1");
+        assert!(state.overlay.is_none(), "a sent move closes the picker");
+        Some(params.destination.clone())
+    };
+
+    state.open_move_overlay("pane_1".into());
+    let frame = state.compose(106, 30).expect("move frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    assert!(
+        text.contains(" move terminal · 1 "),
+        "title names the moving pane"
+    );
+    assert!(text.contains("moving"), "the source row is tagged");
+    assert!(text.contains("+ New workspace"));
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("move picker");
+    };
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let selectable = rows
+        .iter()
+        .filter(|row| navigator.selectable(&row.target))
+        .count();
+    assert_eq!(selectable, rows.len(), "every row is a destination");
+
+    assert_eq!(
+        send(&mut state, None),
+        None,
+        "the source pane is not a destination"
+    );
+    assert!(state.overlay.is_some());
+    state.overlay = None;
+
+    let endpoint_id = state.active_endpoint_id.clone();
+    let pane = |pane_id: &str| {
+        Some(ClientNavigatorTarget::Pane {
+            endpoint_id: endpoint_id.clone(),
+            pane_id: pane_id.into(),
+        })
+    };
+    assert_eq!(
+        send(&mut state, pane("pane_2")),
+        None,
+        "same-tab moves are refused"
+    );
+    assert!(
+        state.overlay.is_some(),
+        "a refused move keeps the picker open"
+    );
+    assert_eq!(
+        send(&mut state, pane("pane_3")),
+        Some(PaneMoveDestination::Tab {
+            tab_id: "tab_2".into(),
+            target_pane_id: Some("pane_3".into()),
+            split: SplitDirection::Right,
+            ratio: None,
+        })
+    );
+    assert_eq!(
+        send(
+            &mut state,
+            Some(ClientNavigatorTarget::Workspace {
+                endpoint_id: endpoint_id.clone(),
+                workspace_id: "ws_2".into()
+            })
+        ),
+        Some(PaneMoveDestination::NewTab {
+            workspace_id: Some("ws_2".into()),
+            label: None,
+        })
+    );
+    assert_eq!(
+        send(&mut state, Some(ClientNavigatorTarget::NewWorkspace)),
+        Some(PaneMoveDestination::NewWorkspace {
+            label: None,
+            tab_label: None,
+        })
+    );
+
+    let mut zoomed = state.snapshot.as_deref().expect("snapshot").clone();
+    zoomed.tabs[0].zoomed = true;
+    state.set_snapshot(Box::new(zoomed));
+    assert_eq!(
+        send(&mut state, Some(ClientNavigatorTarget::NewWorkspace)),
+        None,
+        "a pane in a zoomed tab is not moved"
+    );
+}
+
+#[test]
+fn move_pane_binding_toggles_the_move_picker() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.handle_input_bytes(b"\x02m");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(ref n)) if n.moving.as_ref().is_some_and(|m| m.pane_id == "pane_1")
+    ));
+    state.handle_input_bytes(b"\x02m");
+    assert!(state.overlay.is_none());
+}

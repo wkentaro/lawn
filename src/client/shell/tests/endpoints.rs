@@ -2462,6 +2462,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
         ClientNavigatorTarget::Pane { .. } =>
             row.depth == 2 && (row.status.is_some() == row.agent.is_some()),
+        ClientNavigatorTarget::NewWorkspace => false,
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
 
@@ -2471,6 +2472,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
             ClientNavigatorTarget::Machine { .. } => " ",
             ClientNavigatorTarget::Workspace { .. } => "   ",
             ClientNavigatorTarget::Pane { .. } => "   └─ ",
+            ClientNavigatorTarget::NewWorkspace => unreachable!("only the move picker adds it"),
         };
         let prefix = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
             .iter()
@@ -2509,7 +2511,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     assert!(rows.iter().all(|row| match row.target {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 0,
         ClientNavigatorTarget::Pane { .. } => row.depth == 1,
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::NewWorkspace => false,
     }));
 }
 
@@ -2576,7 +2578,7 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
             && row.stale
     }));
     assert!(!rows.iter().any(|row| match &row.target {
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::NewWorkspace => false,
         ClientNavigatorTarget::Workspace {
             endpoint_id: target,
             ..

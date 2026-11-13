@@ -72,6 +72,7 @@ impl ClientContextMenuOverlay {
                 if source_pane_id.is_some() {
                     items.push(item("Swap with focused pane", Action::SwapWithFocusedPane));
                 }
+                items.push(item("Move to...", Action::MovePane));
                 items.extend([
                     item("Split right", Action::SplitRight),
                     item("Split down", Action::SplitDown),
@@ -414,6 +415,7 @@ impl ClientShellState {
         };
 
         match action {
+            ClientContextMenuAction::MovePane => self.open_move_overlay(pane_id),
             ClientContextMenuAction::ParkPane => {
                 self.parking_action(
                     self.active_endpoint_id.clone(),
