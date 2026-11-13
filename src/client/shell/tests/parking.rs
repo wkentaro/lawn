@@ -290,6 +290,29 @@ fn empty_state_close_shows_the_confirmation() {
 }
 
 #[test]
+fn a_machine_without_workspaces_shows_home() {
+    let mut projected = snapshot();
+    projected.workspaces.clear();
+    projected.tabs.clear();
+    projected.panes.clear();
+    projected.focused_workspace_id = None;
+    let mut state = state_with_snapshot(projected);
+    let frame = state.compose(100, 24).expect("home frame");
+    assert_eq!(
+        empty_actions(&state),
+        [crate::input::KeybindAction::NewWorkspace]
+    );
+    assert!(frame_rows(&frame).join("\n").contains("New workspace"));
+    let new_workspace = state.hits.empty_actions[0].0;
+    let outcome = click(&mut state, new_workspace);
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(request.method, crate::api::schema::Method::WorkspaceCreate(_))
+    )));
+}
+
+#[test]
 fn closing_an_empty_workspace_leaves_it_without_closing_parked_terminals() {
     let mut state = state();
     state.config.confirm_close = false;

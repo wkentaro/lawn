@@ -524,13 +524,6 @@ impl HeadlessServer {
                 needs_graphics_render = false;
             }
 
-            if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
-                needs_render = true;
-                needs_full_render = true;
-                needs_graphics_render = false;
-                crate::render_prof::event("full_render_cause.default_workspace");
-            }
-
             if self.expire_native_graphics(now) {
                 needs_render = true;
                 needs_full_render = true;
@@ -1964,6 +1957,8 @@ impl HeadlessServer {
                     render_encoding = ?protocol::RenderEncoding::SemanticFrame,
                     "client connected"
                 );
+                // Connecting starts with a shell. Closing the last workspace later
+                // leaves the machine empty, and the client shows Home.
                 self.app.ensure_default_workspace();
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.allocate_activity_stamp();
@@ -2959,7 +2954,6 @@ impl HeadlessServer {
     fn handle_api_request_with_shutdown_check_inner(
         &mut self,
         msg: api::ApiRequestMessage,
-        skip_default_workspace_for_request: bool,
         client_local: bool,
         client_presentation: Option<pane_presentation::ClientPaneRequest>,
     ) -> bool {
@@ -3039,11 +3033,6 @@ impl HeadlessServer {
         }
 
         let mut changed = metadata_expired | api::request_changes_ui(&msg.request);
-        let skip_default_workspace = skip_default_workspace_for_request
-            || matches!(
-                &msg.request.method,
-                api::schema::Method::ServerStop(_) | api::schema::Method::ServerLiveHandoff(_)
-            );
         if !client_local {
             changed |= self.drain_all_internal_events_with_forwarding();
         }
@@ -3386,10 +3375,6 @@ impl HeadlessServer {
                     );
                 }
             }
-        }
-
-        if !skip_default_workspace && latest_shell_client(&self.clients).is_some() {
-            changed |= self.app.ensure_default_workspace();
         }
 
         changed

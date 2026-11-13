@@ -913,7 +913,7 @@ impl HeadlessServer {
                 (original, proxy_rx)
             });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false, None);
+        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, None);
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
@@ -1038,12 +1038,8 @@ impl HeadlessServer {
         self.set_default_shell_target_from_client(client_id);
         let popup_before = self.app.state.popup_pane.is_some();
         let popup_owner = self.shell_tab_id_for_client(client_id);
-        let changed = self.handle_api_request_with_shutdown_check_inner(
-            msg,
-            false,
-            true,
-            presentation_request,
-        );
+        let changed =
+            self.handle_api_request_with_shutdown_check_inner(msg, true, presentation_request);
         self.focus_shell_client_on_default_target(client_id);
         if !popup_before && self.app.state.popup_pane.is_some() {
             self.popup_owner_tab_id = popup_owner;

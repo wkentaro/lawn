@@ -1,4 +1,5 @@
 use super::*;
+use crate::input::KeybindAction;
 use crate::protocol::endpoint::pane_presentation::{
     PaneIdentities, PanePresentationError, SetPanePresentation,
 };
@@ -301,6 +302,23 @@ impl ClientShellState {
             .is_some_and(|parking| parking.preview_pane().is_some())
     }
 
+    /// Machine Home: the server has no workspace and owns no terminal.
+    pub(super) fn render_machine_home(&mut self, buffer: &mut Buffer, area: Rect) -> bool {
+        if !self
+            .snapshot
+            .as_deref()
+            .is_some_and(|snapshot| snapshot.workspaces.is_empty())
+        {
+            return false;
+        }
+        self.render_empty_actions(
+            buffer,
+            area,
+            &[("New workspace", KeybindAction::NewWorkspace)],
+        );
+        true
+    }
+
     pub(super) fn render_parking_chrome(
         &mut self,
         buffer: &mut Buffer,
@@ -370,11 +388,6 @@ impl ClientShellState {
         else {
             return false;
         };
-        let area = layout.pane_surface;
-        if area.is_empty() {
-            return true;
-        }
-        use crate::input::KeybindAction;
         let actions: &[(&str, KeybindAction)] = if parking.shows_workspace(workspace) {
             &[
                 ("New tab", KeybindAction::NewTab),
@@ -387,6 +400,21 @@ impl ClientShellState {
                 ("Open parked", KeybindAction::OpenParked),
             ]
         };
+        self.render_empty_actions(buffer, layout.pane_surface, actions);
+        true
+    }
+
+    /// Draws a centered column of equal-width actions for a screen with no terminal.
+    fn render_empty_actions(
+        &mut self,
+        buffer: &mut Buffer,
+        area: Rect,
+        actions: &[(&str, KeybindAction)],
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let p = &self.config.palette;
         let count = actions.len() as u16;
         let gap = if area.height >= count * 2 - 1 { 2 } else { 1 };
         let label_width = actions
@@ -418,6 +446,5 @@ impl ClientShellState {
             );
             self.hits.empty_actions.push((rect, *action));
         }
-        true
     }
 }

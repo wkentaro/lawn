@@ -1086,3 +1086,25 @@ async fn background_wait_both_transports_drain_pane_death_beyond_batch_limit() {
         assert_background_drains_pane_death("background.wait.set", endpoint);
     }
 }
+
+#[tokio::test]
+async fn closing_the_last_workspace_leaves_the_machine_empty() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("only")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let _ = client_shell_snapshot(&control);
+    let workspace_id = server.app.public_workspace_id(0);
+    let (_, response) = socket_request(
+        &mut server,
+        Method::WorkspaceClose(api::schema::WorkspaceCloseParams {
+            workspace_id,
+            close_group: false,
+        }),
+    );
+    assert!(response.get("error").is_none(), "{response}");
+    // A connected shell client sees machine Home, not a recreated workspace.
+    assert!(server.app.state.workspaces.is_empty());
+}

@@ -377,7 +377,8 @@ impl ClientShellState {
             self.hits.tab_scroll_left = Rect::default();
             self.hits.tab_scroll_right = Rect::default();
         }
-        let empty_parked_workspace = self.render_parking_chrome(&mut buffer, layout);
+        let empty_parked_workspace = self.render_machine_home(&mut buffer, layout.pane_surface)
+            || self.render_parking_chrome(&mut buffer, layout);
         let snapshot = self.snapshot.as_deref()?;
         let surface = self.pane_surface.as_ref()?;
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
