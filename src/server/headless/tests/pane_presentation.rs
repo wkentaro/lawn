@@ -707,3 +707,164 @@ async fn malformed_wrong_boot_and_stale_policies_leave_the_accepted_view_unchang
     }
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn focusing_a_parked_terminal_peeks_without_moving_the_shared_location() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("peek");
+    let visible = workspace.tabs[0].root_pane;
+    let parked = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let channels = server.app.tab_channels();
+    server.app.state.park_pane(0, parked, channels).unwrap();
+    let parked_terminal = server.app.state.workspaces[0].tabs[1]
+        .terminal_id(parked)
+        .unwrap()
+        .to_string();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let home = server.shell_target_for_client(7).unwrap();
+    assert_eq!(home.tab_index, 0);
+
+    let mut peek = request(&server, 1);
+    peek.focus_terminal = Some(parked_terminal);
+    assert!(apply(&mut server, 7, &peek));
+    let target = server.shell_target_for_client(7).unwrap();
+    assert_eq!(target.tab_index, 1);
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, parked);
+    assert!(server.shell_client_accepts_pane_input(7, 0, parked));
+    assert!(!server.shell_client_accepts_pane_input(7, 0, visible));
+    server.reconcile_client_shell_locations();
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 1);
+
+    server.deactivate_client_pane_focus(7);
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, visible);
+}
+
+/// Two visible tabs, with a pane parked from the first in a hidden third tab.
+fn two_tabs_and_a_parked_pane() -> (HeadlessServer, String) {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("peek");
+    workspace.test_add_tab(Some("second"));
+    workspace.switch_tab(0);
+    let parked = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let channels = server.app.tab_channels();
+    server.app.state.park_pane(0, parked, channels).unwrap();
+    let parked_terminal = server.app.state.workspaces[0].tabs[2]
+        .terminal_id(parked)
+        .unwrap()
+        .to_string();
+    (server, parked_terminal)
+}
+
+fn peek_at(server: &mut HeadlessServer, terminal: String) {
+    let mut peek = request(server, 1);
+    peek.focus_terminal = Some(terminal);
+    assert!(apply(server, 7, &peek));
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 2);
+}
+
+#[tokio::test]
+async fn clearing_a_peek_returns_to_the_shared_location() {
+    let (mut server, parked) = two_tabs_and_a_parked_pane();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+    peek_at(&mut server, parked);
+
+    let clear = request(&server, 2);
+    assert!(apply(&mut server, 7, &clear));
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+}
+
+#[tokio::test]
+async fn requests_during_a_peek_keep_the_shared_location() {
+    let (mut server, parked) = two_tabs_and_a_parked_pane();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    server.app.state.workspaces[0].switch_tab(1);
+    peek_at(&mut server, parked);
+
+    client_request(
+        &mut server,
+        api::schema::Method::WorkspaceList(api::schema::EmptyParams::default()),
+    );
+    let clear = request(&server, 2);
+    assert!(apply(&mut server, 7, &clear));
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+}
+
+#[tokio::test]
+async fn public_focus_navigation_ends_a_peek() {
+    let (mut server, parked) = two_tabs_and_a_parked_pane();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    peek_at(&mut server, parked);
+    let tab_id = server.app.public_tab_id(0, 1).unwrap();
+
+    let (respond_to, response) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "public-focus".into(),
+            method: api::schema::Method::TabFocus(api::schema::TabTarget { tab_id }),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+    response.recv().unwrap();
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 1);
+}
+
+#[tokio::test]
+async fn parked_peek_geometry_follows_the_remaining_viewer() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("peek");
+    let parked = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.insert_test_runtime(
+        parked,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"PARKED"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let channels = server.app.tab_channels();
+    server.app.state.park_pane(0, parked, channels).unwrap();
+    let terminal = server.app.state.workspaces[0].tabs[1]
+        .terminal_id(parked)
+        .unwrap()
+        .to_string();
+    let _home = connect_test_shell(&mut server, 9, 80, 30);
+    let _small = connect_test_shell(&mut server, 7, 80, 24);
+    let _tall = connect_test_shell(&mut server, 8, 80, 40);
+    for client in [7, 8] {
+        let mut peek = request(&server, 1);
+        peek.focus_terminal = Some(terminal.clone());
+        assert!(apply(&mut server, client, &peek));
+    }
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&parked].current_size()
+    };
+    let tab_id = server.shell_tab_id_for_client(8).unwrap();
+    let controller = server.tab_geometry_controllers[&tab_id];
+    let other = if controller == 7 { 8 } else { 7 };
+    let before = size(&server);
+
+    let boot_id = server.client_shell_boot_id.clone();
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: controller,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "background".into(),
+                method: api::schema::Method::ClientShellSurfaceSet(
+                    api::schema::ClientShellSurfaceSetParams { active: false },
+                ),
+            }),
+        })
+    );
+    assert_eq!(server.tab_geometry_controllers.get(&tab_id), Some(&other));
+    assert_ne!(size(&server), before);
+    shutdown_test_runtimes(&mut server);
+}

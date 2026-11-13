@@ -35,7 +35,10 @@ impl App {
         }
     }
 
-    pub(super) fn parked_pane_infos(&self) -> Vec<PaneInfo> {
+    pub(super) fn parked_pane_infos(
+        &self,
+        pane_info: fn(&Self, usize, crate::layout::PaneId) -> Option<PaneInfo>,
+    ) -> Vec<PaneInfo> {
         self.state
             .workspaces
             .iter()
@@ -43,7 +46,7 @@ impl App {
             .flat_map(|(ws_idx, ws)| {
                 ws.parked_tabs()
                     .iter()
-                    .filter_map(move |tab| self.pane_info(ws_idx, tab.root_pane))
+                    .filter_map(move |tab| pane_info(self, ws_idx, tab.root_pane))
             })
             .collect()
     }
