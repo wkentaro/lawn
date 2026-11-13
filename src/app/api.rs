@@ -1068,6 +1068,9 @@ impl App {
             Method::WorkspaceCreate(params) => {
                 return self.handle_workspace_create(request.id, params);
             }
+            Method::WorkspaceEnsureActive(params) => {
+                return self.handle_workspace_ensure_active(request.id, params);
+            }
             Method::WorkspaceFocus(target) => {
                 return self.handle_workspace_focus(request.id, target);
             }

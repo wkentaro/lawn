@@ -28,6 +28,14 @@ cli_params! {
     }
 }
 
+/// Focuses a workspace with a pane outside `excluded_terminal_ids`, or
+/// opens a new one at the server's home directory when none exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceEnsureActiveParams {
+    #[serde(default)]
+    pub excluded_terminal_ids: Vec<String>,
+}
+
 cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct WorkspaceCloseParams => WorkspaceCloseProjection {

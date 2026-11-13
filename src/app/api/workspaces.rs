@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
-    WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceTarget,
+    WorkspaceCreateParams, WorkspaceEnsureActiveParams, WorkspaceMoveBlockParams,
+    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceReportMetadataParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -73,6 +73,62 @@ impl App {
                         crate::logging::workspace_renamed(&workspace.id);
                     }
                 }
+                self.emit_workspace_open_events(index);
+                encode_success(
+                    id,
+                    self.workspace_created_result(index)
+                        .expect("new workspace should produce a complete create response"),
+                )
+            }
+            Err(err) => encode_error(id, "workspace_create_failed", err.to_string()),
+        }
+    }
+
+    /// Requests run one at a time on the server loop, so concurrent callers
+    /// reuse the first workspace this creates.
+    pub(super) fn handle_workspace_ensure_active(
+        &mut self,
+        id: String,
+        params: WorkspaceEnsureActiveParams,
+    ) -> String {
+        let excluded: std::collections::HashSet<&str> = params
+            .excluded_terminal_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let mut workspace_order = self
+            .state
+            .active
+            .into_iter()
+            .chain(0..self.state.workspaces.len());
+        let target = workspace_order.find_map(|ws_idx| {
+            let ws = self.state.workspaces.get(ws_idx)?;
+            let mut tab_order = std::iter::once(ws.active_tab).chain(0..ws.tabs.len());
+            tab_order.find_map(|tab_idx| {
+                let tab = ws.tabs.get(tab_idx)?;
+                std::iter::once(tab.layout.focused())
+                    .chain(tab.layout.pane_ids())
+                    .find(|pane_id| {
+                        tab.terminal_id(*pane_id)
+                            .is_some_and(|terminal| !excluded.contains(terminal.as_str()))
+                    })
+                    .map(|pane_id| (ws_idx, pane_id))
+            })
+        });
+        if let Some((ws_idx, pane_id)) = target {
+            self.state.focus_pane_in_workspace(ws_idx, pane_id);
+            self.state.mark_active_tab_seen();
+            self.state.mode = crate::app::Mode::Terminal;
+            return encode_success(
+                id,
+                ResponseResult::WorkspaceInfo {
+                    workspace: self.workspace_info(ws_idx),
+                },
+            );
+        }
+        let home = crate::worktree::expand_tilde_path("~");
+        match self.create_workspace_with_launch_env(home, true, Vec::new()) {
+            Ok(index) => {
                 self.emit_workspace_open_events(index);
                 encode_success(
                     id,
@@ -385,6 +441,68 @@ mod tests {
         config::Config,
         workspace::Workspace,
     };
+
+    #[tokio::test]
+    async fn workspace_ensure_active_creates_one_home_workspace_and_skips_parked_terminals() {
+        use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        app.state.workspaces = vec![Workspace::test_new("parked")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let parked: Vec<String> = app.state.workspaces[0]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .map(|pane| pane.attached_terminal_id.to_string())
+            .collect();
+        let ensure = |app: &mut App| {
+            let response = app.handle_workspace_ensure_active(
+                "ensure".into(),
+                WorkspaceEnsureActiveParams {
+                    excluded_terminal_ids: parked.clone(),
+                },
+            );
+            serde_json::from_str::<SuccessResponse>(&response)
+                .unwrap()
+                .result
+        };
+
+        assert!(matches!(
+            ensure(&mut app),
+            ResponseResult::WorkspaceCreated { .. }
+        ));
+        assert!(matches!(
+            ensure(&mut app),
+            ResponseResult::WorkspaceInfo { .. }
+        ));
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(
+            app.state.workspaces[1].identity_cwd,
+            crate::worktree::expand_tilde_path("~")
+        );
+        assert_eq!(app.state.active, Some(1));
+
+        // The last selected workspace holds only parked terminals.
+        app.state.switch_workspace(0);
+        assert!(matches!(
+            ensure(&mut app),
+            ResponseResult::WorkspaceInfo { .. }
+        ));
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.mode, crate::app::Mode::Terminal);
+        shutdown_test_runtimes(&mut app);
+    }
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the

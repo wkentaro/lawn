@@ -287,6 +287,10 @@ mod tests {
             Some("e3c8307c45b93a855e74cd0ced58ec7d43a8e66a2289cb801268ddd3a2272f4d")
         );
         assert_eq!(
+            actual.remove("workspace.ensure_active").as_deref(),
+            Some("735bd64c16735caa501615994b62c914ef85554b7bd85ceb04a33a18ef5bbded")
+        );
+        assert_eq!(
             actual.remove("pane.snapshot").as_deref(),
             Some("a6ace65cfe47d808c5d86a6104cb4b471480e7f7c27cbbd3dc2e1ad0ce5b0cd7")
         );
@@ -340,6 +344,12 @@ mod tests {
 
     #[test]
     fn client_shell_lane_excludes_api_front_door_and_lifecycle_methods() {
+        // Closing the last visible workspace sends workspace.ensure_active.
+        assert!(supports_client_shell_method(
+            &Method::WorkspaceEnsureActive(crate::api::schema::WorkspaceEnsureActiveParams {
+                excluded_terminal_ids: Vec::new(),
+            })
+        ));
         // The TUI move picker sends tab.move_to_workspace for tabs.
         assert!(supports_client_shell_method(&Method::TabMoveToWorkspace(
             crate::api::schema::TabMoveToWorkspaceParams {
