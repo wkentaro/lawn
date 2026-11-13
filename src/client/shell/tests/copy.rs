@@ -2547,6 +2547,17 @@ fn tab_move_picker_offers_only_other_workspaces() {
     other.label = "docs".into();
     other.focused = false;
     projected.workspaces.push(other);
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.workspace_id = "ws_2".into();
+    tab.focused = false;
+    projected.tabs.push(tab);
+    let mut pane = projected.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.tab_id = "tab_2".into();
+    pane.workspace_id = "ws_2".into();
+    pane.focused = false;
+    projected.panes.push(pane);
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
@@ -2597,6 +2608,24 @@ fn tab_move_picker_offers_only_other_workspaces() {
         ("tab_1", "ws_2")
     );
     assert!(state.overlay.is_none());
+
+    state.open_move_overlay(ClientMoveSource::Tab {
+        tab_id: "tab_1".into(),
+        workspace_id: "ws_1".into(),
+    });
+    state.handle_input_bytes(b"docs");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(
+        matches!(
+            &outcome.actions[..],
+            [ClientShellAction::Endpoint { request, .. }] if matches!(
+                &request.method,
+                Method::TabMoveToWorkspace(params) if params.workspace_id == "ws_2"
+            )
+        ),
+        "a workspace search moves the tab there, got {:?}",
+        outcome.actions
+    );
 }
 
 #[test]
