@@ -72,7 +72,7 @@ contexts = ["workspace"]
 command = ["node", "dist/apply.js"]
 
 [[events]]
-on = "worktree.created"
+on = "workspace.created"
 command = ["herdr", "workspace", "list"]
 
 [[panes]]
@@ -251,7 +251,7 @@ Herdr 恢复会话且 API socket 就绪后,会为每个已启用插件运行一�
 同步或删除其中的内容。文件格式和生命周期归插件所有。
 
 `HERDR_PLUGIN_CONTEXT_JSON` 在本次调用可用时,可以包含工作区、标签页、
-聚焦窗格、worktree、智能体、选中文本、点击的 URL 和链接处理器字段。
+聚焦窗格、智能体、选中文本、点击的 URL 和链接处理器字段。
 shell 插件可以从各个环境变量读取常用 id,或解析上下文 JSON 获取完整结构。
 
 当插件需要从 Node、PowerShell、Bash 或其他运行时可移植地调用 Herdr 时,

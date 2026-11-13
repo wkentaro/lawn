@@ -50,7 +50,7 @@ herdr server reload-config
 
 重载会在不重启窗格的情况下应用大多数 UI 设置。仅启动时生效的设置仍需重启。
 
-主题、侧边栏布局、复制行为等显示设置来自客户端的本地配置，查看 SSH 机器时也一样。窗格默认值、worktree、集成和自定义命令属于运行窗格的服务器。UI 中的 `reload config` 会同时重载客户端本地设置和选中服务器的配置，本地按键绑定也会更新；指定 `--remote-keybindings server` 时则使用选中服务器的按键绑定。
+主题、侧边栏布局、复制行为等显示设置来自客户端的本地配置，查看 SSH 机器时也一样。窗格默认值、集成和自定义命令属于运行窗格的服务器。UI 中的 `reload config` 会同时重载客户端本地设置和选中服务器的配置，本地按键绑定也会更新；指定 `--remote-keybindings server` 时则使用选中服务器的按键绑定。
 
 ## 无客户端终端尺寸
 
@@ -92,23 +92,6 @@ new_cwd = "follow"
 ```
 
 `new_cwd = "follow"` 保持默认行为，并继承来源窗格或工作区。没有来源工作区时，Herdr 从 `$HOME` 启动。使用 `"home"` 可始终从 `$HOME` 启动，使用 `"current"` 可采用 Herdr 的进程目录，也可以指定 `"~/Projects"` 这样的固定路径。CLI 或 socket API 显式提供的 `--cwd` 值仍然优先。
-
-## Worktree
-
-设置 Herdr 从侧边栏创建 Git worktree 检出时使用的根目录：
-
-```toml
-[worktrees]
-directory = "~/.herdr/worktrees"
-```
-
-Herdr 会在 `<directory>/<repo>/<branch-slug>` 下创建检出。若要使用同级目录风格的检出，请将其设置为 `~/Projects/herdr-worktrees` 这样的目录。应用配置时，相对路径会解析为绝对路径。
-
-Git 工作区行提供 worktree 操作。`New worktree` 会创建检出：如果输入的分支已存在，则检出该本地分支，否则创建该分支；随后将其作为新的 Herdr 工作区打开，并归组到来源工作区下。`Open worktree...` 会列出该仓库现有的 Git worktree 检出；选择已打开的检出会聚焦它，选择尚未打开的检出会在同一组中打开它。
-
-归组的 worktree 仍像普通 Herdr 工作区一样工作：可以聚焦、重命名和关闭，也可以拥有自己的标签页和窗格。父行是原始工作区。关闭父行会关闭整个 Herdr 组，但不会删除检出目录或分支。
-
-删除 worktree 检出需要显式操作。在归组的子工作区上使用 `Delete worktree checkout...` 来运行 `git worktree remove`。Herdr 会先请求 Git 安全删除。如果 Git 因检出中存在已修改或未跟踪的文件而拒绝，Herdr 会在强制删除前再次确认。分支不会被删除。
 
 ## 远程连接
 
@@ -371,7 +354,6 @@ rows = [
 row_gap = 0
 rows = [
   ["state_icon", "workspace"],
-  ["branch", "git_status"],
 ]
 ```
 
@@ -393,9 +375,9 @@ Space 行支持以下内置 token：
 - `state_icon` — Space 汇总后智能体状态的彩色图标。
 - `state_text` — Space 汇总后智能体状态的文本。
 - `workspace` — 工作区名称。
-- `branch` — Git 分支（如有）。
-- `git_status` — 非零时显示 Git ahead 和 behind 数量。
 - `$name` — 名为 `name` 的自定义工作区元数据。
+
+Lawn 没有 Git 集成。已停用的 `branch` 和 `git_status` token 仍可解析，但 Lawn 会忽略它们并给出配置警告。
 
 token 会按配置顺序渲染。Herdr 通常使用 ` · ` 分隔相邻值，并在 `state_icon` 后使用一个空格。缺失值及其分隔符会消失；当一行中的所有 token 都没有值时，该行会消失。已有的自定义行不会改变；如果希望在自定义的多机器布局中显示机器标识，请显式添加 `machine`。每个布局最多可包含 16 行，每行最多可包含 16 个 token。
 
@@ -409,7 +391,7 @@ rows = [
 ]
 ```
 
-`fg` 只接受严格的 `#RGB` 或 `#RRGGBB`，`bold` 和 `dim` 接受布尔值。省略字段会保留上下文样式；显式 `false` 会移除对应修饰。样式只作用于当前出现位置。为 `git_status` 设置 `fg` 后，ahead 和 behind 会使用同一种颜色，而不是默认的绿色和红色。token 样式不会改变分隔符或行背景。
+`fg` 只接受严格的 `#RGB` 或 `#RRGGBB`，`bold` 和 `dim` 接受布尔值。省略字段会保留上下文样式；显式 `false` 会移除对应修饰。样式只作用于当前出现位置。token 样式不会改变分隔符或行背景。
 
 文本值 token 还可以包含最多 16 条有序的 `rules`。每条规则必须恰好包含一个条件：`equals`、`contains`、`starts_with`、`gt` 或 `lt`，并可选地覆盖 `fg`、`bold` 和 `dim`：
 
@@ -428,9 +410,9 @@ rows = [
 
 `gt` 和 `lt` 接受有限数值阈值，分别进行严格大于和小于比较，不包含等于。整个值必须能解析为有限数值；支持小数和指数形式，但带空白、单位、`NaN` 或无穷大的值不会匹配。数值规则不接受 `ignore_case`。比较使用浮点数，不保证大整数的精确比较。
 
-规则适用于 Agent 行、`rows_by_agent` 覆盖和 Space 行中的文本值内置 token 及自定义 `$name` token。上例中，`$load` 报告 `"90"` 时显示红色粗体，`"60"` 时显示黄色，`"90%"` 时保持白色。未报告的 token 仍然不显示。`state_icon` 和复合 token `git_status` 仅接受固定样式，不支持规则。未知条件或格式错误的规则会在加载配置时被拒绝；不支持正则表达式、模糊匹配或脚本。
+规则适用于 Agent 行、`rows_by_agent` 覆盖和 Space 行中的文本值内置 token 及自定义 `$name` token。上例中，`$load` 报告 `"90"` 时显示红色粗体，`"60"` 时显示黄色，`"90%"` 时保持白色。未报告的 token 仍然不显示。`state_icon` 仅接受固定样式，不支持规则。未知条件或格式错误的规则会在加载配置时被拒绝；不支持正则表达式、模糊匹配或脚本。
 
-`row_gap` 分别控制 Agent 和 Space 面板中条目之间的空白终端行数。默认值为 `0`，会紧密排列条目；设为 `1` 可恢复之前的间距。它不会在 `rows` 声明的内容行之间添加间距。连续缩进的 worktree 子项仍会作为一个 Space 组紧密排列。
+`row_gap` 分别控制 Agent 和 Space 面板中条目之间的空白终端行数。默认值为 `0`，会紧密排列条目；设为 `1` 可恢复之前的间距。它不会在 `rows` 声明的内容行之间添加间距。
 
 在 `rows_by_agent` 下为已知智能体覆盖完整的 Agent 布局：
 

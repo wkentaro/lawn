@@ -73,16 +73,15 @@ herdr machine remove <profile-id>
 herdr --machine "Build machine" agent list
 herdr --machine <profile-id> pane list
 herdr --machine "Build machine" agent prompt w1:p1 "review this change"
-herdr --machine "Build machine" worktree create --cwd /srv/project --branch review
 ```
 
 选择器必须是已启用的配置 ID 或唯一标签（区分大小写），不能是任意 SSH 主机名。命令使用保存的远程会话，不能与 `--session` 或 `--remote` 混用。省略前缀时，本地行为保持不变。
 
-支持 `workspace`、`worktree`、`tab`、`pane`、`notification`、`agent`（不含 `attach` 和本地 `explain --file`）、`api snapshot`、`status server`，以及基于 API 的插件操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）。服务器操作支持 `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests`。本地安装和配置、插件安装、会话管理及交互式终端连接不会被转发。
+支持 `workspace`、`tab`、`pane`、`notification`、`agent`（不含 `attach` 和本地 `explain --file`）、`api snapshot`、`status server`，以及基于 API 的插件操作（`link`、`unlink`、`enable`、`disable`、`list`、`action`、`log`、`pane`）。服务器操作支持 `stop`、`reload-config`、`agent-manifests`、`reload-agent-manifests`。本地安装和配置、插件安装、会话管理及交互式终端连接不会被转发。
 
 请求和响应通过非交互式 SSH 传输 JSON API，API 内容不会被拼接到 SSH shell 命令中。不需要打开 TUI，也不会自动安装、启动或重启服务器。请更新本地 CLI 和远程 Herdr，并确保运行中的服务器 API 协议兼容。认证、连接或版本错误不会回退到 Local，连接失败后也不会自动重试请求。
 
-远程命令不会继承调用方的本地窗格 ID，请显式指定远程 ID。`--current` 不能引用本地窗格。远程 worktree 路径必须为绝对路径、`~` 或以 `~/` 开头（由服务器展开）；插件 link 路径必须为绝对路径。每次只操作一台机器，不包含合并列表或通过其他 TUI 连接转发的功能。
+远程命令不会继承调用方的本地窗格 ID，请显式指定远程 ID。`--current` 不能引用本地窗格。插件 link 路径必须为绝对路径。每次只操作一台机器，不包含合并列表或通过其他 TUI 连接转发的功能。
 
 ## Shell 补全
 
@@ -157,7 +156,7 @@ herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
-herdr workspace close <workspace_id> [--group]
+herdr workspace close <workspace_id>
 ```
 
 不抢占焦点地创建工作区:
@@ -167,21 +166,6 @@ herdr workspace create --cwd ~/project --label api --no-focus
 ```
 
 工作区是顶层项目或工作上下文。创建工作区也会创建第一个标签页和根窗格。JSON 响应中的 `.result.workspace.workspace_id`、`.result.tab.tab_id` 和 `.result.root_pane.pane_id` 是对应 ID。
-
-## Worktree
-
-```bash
-herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
-herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]
-herdr worktree remove --workspace ID [--force] [--trust-repository]
-```
-
-worktree 是带有 Git 检出来源信息的普通 Herdr 工作区。`worktree create` 创建一个 Git worktree 检出,作为工作区打开,并与父仓库工作区分到一组。如果 `--branch` 指向已有的本地分支,Herdr 检出它;否则从 `--base` 或 `HEAD` 创建分支。没有 `--path` 时,Herdr 在 `<worktrees.directory>/<repo>/<branch-slug>` 下创建检出。
-
-`workspace close` 只关闭 Herdr 状态。当关联的 worktree 工作区仍然打开时，关闭父工作区需要 `--group`；否则命令会保留整个组并返回 `workspace_group_close_required`。`worktree remove` 是显式的检出删除路径;它运行 `git worktree remove`,从不删除分支,并在 Git 拒绝脏检出时要求 `--force`。
-
-Git 默认拒绝由其他用户拥有的仓库。如果你已独立验证该仓库,可传入 `--trust-repository`,仅在本次命令中信任解析后的仓库路径。Herdr 不会修改你的 Git 配置。
 
 ## 标签页
 
@@ -194,7 +178,7 @@ herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-标签页是工作区内的另一个终端布局。不指定 `--workspace` 时,`tab create` 使用活动工作区;如果没有活动工作区则失败。JSON 响应中的 `.result.tab.tab_id` 和 `.result.root_pane.pane_id` 是对应 ID。关闭工作区的最后一个标签页也会关闭该工作区。启用 `ui.confirm_close` 时，如果关闭父工作树的最后一个标签页会连带关闭整个工作树组，`tab close` 会返回 `confirmation_required` 错误。
+标签页是工作区内的另一个终端布局。不指定 `--workspace` 时,`tab create` 使用活动工作区;如果没有活动工作区则失败。JSON 响应中的 `.result.tab.tab_id` 和 `.result.root_pane.pane_id` 是对应 ID。关闭工作区的最后一个标签页也会关闭该工作区。
 
 启用 `ui.confirm_close` 时，通过快捷键或标签页／窗格菜单关闭工作区的最后一个标签页或唯一窗格前，TUI 会要求确认。普通的窗格关闭及 CLI/API 关闭操作仍立即执行。
 

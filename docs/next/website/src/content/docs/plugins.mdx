@@ -82,7 +82,7 @@ contexts = ["workspace"]
 command = ["node", "dist/apply.js"]
 
 [[events]]
-on = "worktree.created"
+on = "workspace.created"
 command = ["herdr", "workspace", "list"]
 
 [[panes]]
@@ -283,7 +283,7 @@ under `HERDR_PLUGIN_CONFIG_DIR`, and put local runtime state under
 but it does not validate, sync, or delete their contents. The plugin owns the
 file format and lifecycle.
 
-`HERDR_PLUGIN_CONTEXT_JSON` can include workspace, tab, focused pane, worktree,
+`HERDR_PLUGIN_CONTEXT_JSON` can include workspace, tab, focused pane,
 agent, selected text, clicked URL, and link handler fields when they are
 available for that invocation. Shell plugins can read the individual env vars
 for common ids, or parse the context JSON for the full shape.

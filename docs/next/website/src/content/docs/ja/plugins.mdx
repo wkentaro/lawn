@@ -84,7 +84,7 @@ contexts = ["workspace"]
 command = ["node", "dist/apply.js"]
 
 [[events]]
-on = "worktree.created"
+on = "workspace.created"
 command = ["herdr", "workspace", "list"]
 
 [[panes]]
@@ -282,7 +282,7 @@ GitHub からインストールされたプラグインのルートは管理さ�
 しません。ファイル形式とライフサイクルはプラグインが所有します。
 
 `HERDR_PLUGIN_CONTEXT_JSON` には、その呼び出しで利用可能な場合、ワークスペース、
-タブ、フォーカス中のペイン、worktree、エージェント、選択テキスト、クリックされた
+タブ、フォーカス中のペイン、エージェント、選択テキスト、クリックされた
 URL、リンクハンドラーのフィールドが含まれます。シェルプラグインは、よく使う id は
 個別の環境変数から読み、完全な形が必要ならコンテキスト JSON をパースできます。
 
