@@ -939,6 +939,63 @@ fn workspace_close_preserves_parked_panes() {
 }
 
 #[test]
+fn legacy_group_root_close_is_blocked_when_only_linked_workspaces_have_parked_sessions() {
+    let mut state = parked_with_active_shell(false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Restore,
+        &mut ClientShellInput::default(),
+    );
+    let restored = request(&mut state);
+    acknowledge(&mut state, &restored, Some("pane_2"));
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_3".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let parked = request(&mut state);
+    // An older server still reports ws_1 as the root of a worktree group
+    // that contains ws_2.
+    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    for (workspace, is_linked_worktree) in projected.workspaces.iter_mut().zip([false, true]) {
+        workspace.worktree = Some(crate::protocol::ClientShellWorktree {
+            key: "repo".into(),
+            label: "repo".into(),
+            is_linked_worktree,
+        });
+    }
+    projected.panes.retain(|pane| pane.pane_id != "pane_1");
+    projected.tabs.retain(|tab| tab.tab_id != "tab_1");
+    projected.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    acknowledge(&mut state, &parked, Some("pane_2"));
+    state.config.confirm_close = false;
+    for method in [
+        crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
+            workspace_id: "ws_1".into(),
+            close_group: false,
+        }),
+        crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
+            tab_id: "tab_2".into(),
+        }),
+        crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+            pane_id: "pane_2".into(),
+        }),
+    ] {
+        let mut outcome = ClientShellInput::default();
+        assert!(!state.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::Generic,
+            &mut outcome
+        ));
+        assert!(outcome.actions.is_empty());
+    }
+    assert!(state.active_parking().unwrap().hides_pane("pane_3"));
+}
+
+#[test]
 fn mixed_tab_and_stale_pane_closes_preserve_parked_panes() {
     for confirm in [false, true] {
         let mut state = parked_with_active_shell(true);
