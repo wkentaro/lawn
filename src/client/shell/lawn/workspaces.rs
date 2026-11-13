@@ -80,6 +80,29 @@ impl ClientShellState {
             .filter(|pane| !parking.hides_pane(&pane.pane_id))
             .map(|pane| pane.pane_id.clone())
             .collect();
+        if let Method::WorkspaceClose(target) = method {
+            // Closing keeps parked terminals, so it leaves the workspace instead.
+            let focused_workspace = snapshot.focused_workspace_id.clone();
+            // A group close may target the root while a linked member is focused.
+            let left = focused_workspace
+                .clone()
+                .filter(|focused| panes.iter().any(|pane| &pane.workspace_id == focused))
+                .unwrap_or_else(|| target.workspace_id.clone());
+            // Other group members may keep active panes; only the left one matters.
+            let idle = !panes
+                .iter()
+                .any(|pane| pane.workspace_id == left && !parking.hides_pane(&pane.pane_id));
+            if let Some(endpoint) = self
+                .endpoints
+                .iter_mut()
+                .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            {
+                endpoint
+                    .parking
+                    .leave_workspace(&left, focused_workspace, idle);
+            }
+            outcome.repaint = true;
+        }
         for pane_id in active {
             self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome);
         }

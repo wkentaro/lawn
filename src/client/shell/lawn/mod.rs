@@ -178,29 +178,6 @@ impl ClientShellState {
                     .or_else(|| self.focused_navigation_target())
             })
             .flatten();
-        let replacement = matches!(action, ParkingAction::Park)
-            .then(|| {
-                let endpoint = self
-                    .endpoints
-                    .iter()
-                    .find(|endpoint| endpoint.endpoint_id == endpoint_id)?;
-                let snapshot = endpoint.snapshot.as_deref()?;
-                let source = snapshot.panes.iter().find(|item| item.pane_id == pane)?;
-                (!endpoint.parking.hides_pane(&pane)
-                    && snapshot.panes.iter().all(|item| {
-                        item.workspace_id != source.workspace_id
-                            || item.pane_id == pane
-                            || endpoint.parking.hides_pane(&item.pane_id)
-                    }))
-                .then(|| crate::api::schema::TabCreateParams {
-                    workspace_id: Some(source.workspace_id.clone()),
-                    cwd: source.foreground_cwd.clone().or_else(|| source.cwd.clone()),
-                    focus: true,
-                    label: None,
-                    env: Default::default(),
-                })
-            })
-            .flatten();
         let result = self
             .endpoints
             .iter_mut()
@@ -239,9 +216,6 @@ impl ClientShellState {
         }
         if !matches!(action, ParkingAction::Park) {
             self.activate_endpoint(endpoint_id, outcome);
-        }
-        if let Some(replacement) = replacement {
-            self.push_endpoint_method(crate::api::schema::Method::TabCreate(replacement), outcome);
         }
         self.selection = None;
         self.copy_mode = None;
@@ -382,47 +356,61 @@ impl ClientShellState {
             );
             return false;
         }
-        let empty = snapshot
+        let Some(workspace) = snapshot
             .focused_workspace_id
             .as_deref()
-            .is_some_and(|workspace| !parking.shows_workspace(workspace));
-        if empty && !layout.pane_surface.is_empty() {
-            let area = layout.pane_surface;
-            if area.height >= 3 {
-                let new_workspace = Rect::new(
-                    area.x + area.width.saturating_sub(17) / 2,
-                    (area.y + area.height / 2).saturating_sub(1).max(area.y),
-                    area.width.min(17),
-                    1,
-                );
-                render::put_text(
-                    buffer,
-                    new_workspace.x,
-                    new_workspace.y,
-                    new_workspace.width,
-                    " New workspace ",
-                    Style::default().fg(p.accent).bg(p.surface0),
-                );
-                self.hits.new_workspace_empty = new_workspace;
+            .filter(|workspace| !parking.has_active_terminals(workspace))
+        else {
+            return false;
+        };
+        let area = layout.pane_surface;
+        if area.is_empty() {
+            return true;
+        }
+        use crate::input::KeybindAction;
+        let actions: &[(&str, KeybindAction)] = if parking.shows_workspace(workspace) {
+            &[
+                ("New tab", KeybindAction::NewTab),
+                ("Open parked", KeybindAction::OpenParked),
+                ("Close workspace", KeybindAction::CloseWorkspace),
+            ]
+        } else {
+            &[
+                ("New workspace", KeybindAction::NewWorkspace),
+                ("Open parked", KeybindAction::OpenParked),
+            ]
+        };
+        let count = actions.len() as u16;
+        let gap = if area.height >= count * 2 - 1 { 2 } else { 1 };
+        let label_width = actions
+            .iter()
+            .map(|(label, _)| render::display_width(label))
+            .max()
+            .unwrap_or(0);
+        let width = label_width.saturating_add(4).min(area.width);
+        let x = area.x + area.width.saturating_sub(width) / 2;
+        let top = area.y + area.height.saturating_sub((count - 1) * gap + 1) / 2;
+        for (index, (label, action)) in actions.iter().enumerate() {
+            let y = top + index as u16 * gap;
+            if y >= area.bottom() {
+                break;
             }
-            let button = Rect::new(
-                area.x + area.width.saturating_sub(14) / 2,
-                (area.y + area.height / 2)
-                    .saturating_add(1)
-                    .min(area.bottom().saturating_sub(1)),
-                area.width.min(14),
-                1,
-            );
+            let style = match (index, action) {
+                (0, _) => Style::default().fg(p.accent).bg(p.surface0),
+                (_, KeybindAction::CloseWorkspace) => Style::default().fg(p.overlay0),
+                _ => Style::default().fg(p.accent),
+            };
+            let rect = Rect::new(x, y, width, 1);
             render::put_text(
                 buffer,
-                button.x,
-                button.y,
-                button.width,
-                " open parked ",
-                Style::default().fg(p.accent).bg(p.surface0),
+                rect.x,
+                rect.y,
+                rect.width,
+                &format!("  {label:<pad$}  ", pad = usize::from(label_width)),
+                style,
             );
-            self.hits.open_parked = button;
+            self.hits.empty_actions.push((rect, *action));
         }
-        empty
+        true
     }
 }

@@ -338,7 +338,11 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
-                if !parked && !endpoint.parking.shows_workspace(&workspace.workspace_id) {
+                if !parked
+                    && !endpoint
+                        .parking
+                        .has_active_terminals(&workspace.workspace_id)
+                {
                     continue;
                 }
                 let workspace_matches =

@@ -26,6 +26,13 @@ pub(in crate::client::shell) struct PaneParking {
     pub(super) hidden_panes: HashSet<String>,
     visible_tabs: HashSet<String>,
     visible_workspaces: HashSet<String>,
+    /// Focused workspace whose last visible terminal was parked or closed.
+    /// It stays in navigation until the user leaves it.
+    kept_workspace: Option<String>,
+    /// Workspace the user closed; it must not be kept while focus moves away.
+    left_workspace: Option<String>,
+    /// Focused workspace that had a visible terminal at the last recompute.
+    visible_focus: Option<String>,
     pub(in crate::client::shell) departed_workspace: Option<WorkspaceDeparture>,
     terminal_panes: HashMap<String, String>,
     dirty: bool,
@@ -75,6 +82,9 @@ impl PaneParking {
                 self.hidden_panes.clear();
                 self.visible_tabs.clear();
                 self.visible_workspaces.clear();
+                self.kept_workspace = None;
+                self.left_workspace = None;
+                self.visible_focus = None;
                 self.terminal_panes.clear();
             }
         }
@@ -106,9 +116,35 @@ impl PaneParking {
     }
 
     pub(in crate::client::shell) fn shows_workspace(&self, workspace: &str) -> bool {
+        self.has_active_terminals(workspace) || self.kept_workspace.as_deref() == Some(workspace)
+    }
+
+    pub(in crate::client::shell) fn has_active_terminals(&self, workspace: &str) -> bool {
         !self.supported
             || !self.all_workspaces.contains(workspace)
             || self.visible_workspaces.contains(workspace)
+    }
+
+    /// Removes a closed workspace from navigation. With no active terminal left
+    /// to close, record the departure now so focus moves to a neighbor.
+    pub(in crate::client::shell) fn leave_workspace(
+        &mut self,
+        workspace: &str,
+        focused_workspace: Option<String>,
+        idle: bool,
+    ) {
+        if self.kept_workspace.as_deref() == Some(workspace) {
+            self.kept_workspace = None;
+        }
+        if idle {
+            self.departed_workspace = Some(WorkspaceDeparture {
+                workspace_id: workspace.to_owned(),
+                focused_workspace,
+                origin: None,
+            });
+        }
+        self.left_workspace = Some(workspace.to_owned());
+        self.repaint = true;
     }
 
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
@@ -199,6 +235,9 @@ impl PaneParking {
             self.hidden_panes.clear();
             self.visible_tabs.clear();
             self.visible_workspaces.clear();
+            self.kept_workspace = None;
+            self.left_workspace = None;
+            self.visible_focus = None;
             self.pane_workspaces.clear();
             self.focused_workspace = None;
             self.departed_workspace = None;
@@ -327,6 +366,7 @@ impl PaneParking {
     }
 
     fn recompute_visibility(&mut self) {
+        let was_visible = self.visible_focus.take();
         self.hidden_panes.clear();
         self.terminal_panes.clear();
         if let Some((_, ids)) = &self.identities {
@@ -353,6 +393,26 @@ impl PaneParking {
                 .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
                 .map(|(_, workspace)| workspace.clone()),
         );
+        if self.left_workspace != self.focused_workspace {
+            self.left_workspace = None;
+        }
+        if let Some(workspace) = was_visible.filter(|workspace| {
+            self.focused_workspace.as_ref() == Some(workspace)
+                && !self.has_active_terminals(workspace)
+                && self.left_workspace.as_ref() != Some(workspace)
+        }) {
+            self.kept_workspace = Some(workspace);
+        }
+        if self.kept_workspace.as_ref().is_some_and(|workspace| {
+            Some(workspace) != self.focused_workspace.as_ref()
+                || self.has_active_terminals(workspace)
+        }) {
+            self.kept_workspace = None;
+        }
+        self.visible_focus = self
+            .focused_workspace
+            .clone()
+            .filter(|workspace| self.visible_workspaces.contains(workspace));
     }
 
     pub(in crate::client::shell) fn poll(&mut self, now: Instant) -> Option<SetPanePresentation> {
