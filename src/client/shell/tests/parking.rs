@@ -273,6 +273,23 @@ fn restoring_into_a_closed_workspace_reopens_it() {
 }
 
 #[test]
+fn empty_state_close_shows_the_confirmation() {
+    let mut state = state();
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let parked = request(&mut state);
+    acknowledge(&mut state, &parked, None);
+    state.compose(100, 24).unwrap();
+    state.config.confirm_close = true;
+    let close = state.hits.empty_actions[2].0;
+    let outcome = click(&mut state, close);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ConfirmClose(_))
+    ));
+    assert!(outcome.repaint);
+}
+
+#[test]
 fn closing_an_empty_workspace_leaves_it_without_closing_parked_terminals() {
     let mut state = state();
     state.config.confirm_close = false;

@@ -103,7 +103,9 @@ impl ClientShellState {
             match (action, focused) {
                 // Close the workspace on screen, not a navigation highlight.
                 (crate::input::KeybindAction::CloseWorkspace, Some(workspace)) => {
-                    self.request_workspace_close(workspace, None, outcome)
+                    self.request_workspace_close(workspace, None, outcome);
+                    // The confirmation overlay needs a frame to appear.
+                    outcome.repaint = true;
                 }
                 _ => self.record_binding(crate::input::KeybindMatch::Action(action), outcome),
             }
