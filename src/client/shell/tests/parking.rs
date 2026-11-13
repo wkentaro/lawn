@@ -342,6 +342,59 @@ fn goto_filters_parked_panes_in_separate_and_mixed_tabs() {
 }
 
 #[test]
+fn active_and_parked_launchers_group_pane_counts_above_the_sidebar_controls() {
+    for mixed_tab in [false, true] {
+        for remote in [false, true] {
+            let mut state = parked_with_active_shell(false, mixed_tab);
+            if remote {
+                let profile = crate::client::endpoint::SavedSshEndpoint {
+                    id: crate::client::endpoint::ProfileId::parse(
+                        "0123456789abcdef0123456789abcdef",
+                    )
+                    .unwrap(),
+                    label: "Build".into(),
+                    target: "dev@build.example".into(),
+                    session: "agents".into(),
+                    enabled: true,
+                };
+                let endpoint = ClientEndpointId::Ssh(profile.id.clone());
+                state.set_endpoint_catalog(&[profile]);
+                state.set_endpoint_snapshot(&endpoint, Box::new(tabbed_snapshot()));
+            }
+            for mode in [
+                SidebarCollapsedModeConfig::Compact,
+                SidebarCollapsedModeConfig::Hidden,
+            ] {
+                state.config.sidebar_collapsed_mode = mode;
+                for height in [8, 24] {
+                    let frame = state.compose(100, height).unwrap();
+                    let active = state.hits.active_launcher;
+                    let parked = state.hits.parked_launcher;
+                    assert_eq!(active.height, 1);
+                    assert_eq!(active.bottom(), parked.y);
+                    assert_eq!((active.x, active.width), (parked.x, parked.width));
+                    assert_eq!(state.hits.workspace_body.bottom(), active.y);
+                    assert_eq!(parked.bottom(), state.hits.global_launcher.y);
+                    let buffer = frame.to_ratatui_buffer().unwrap();
+                    let row = |area: Rect| {
+                        (area.x..area.right())
+                            .map(|x| buffer[(x, area.y)].symbol())
+                            .collect::<String>()
+                    };
+                    let active_row = row(active);
+                    assert!(active_row.starts_with(" active"));
+                    assert!(active_row.ends_with(if remote { "5 " } else { "2 " }));
+                    let parked_row = row(parked);
+                    assert!(parked_row.starts_with(" parked"));
+                    assert!(parked_row.ends_with("1 "));
+                    assert!(!frame_rows(&frame)[0].contains("jump"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn parked_launcher_counts_cached_terminals_across_machines() {
     let mut state = state();
     let profile = crate::client::endpoint::SavedSshEndpoint {

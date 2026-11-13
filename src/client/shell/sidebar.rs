@@ -220,8 +220,6 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    render_jump_launcher(buffer, workspace_area, config, hits);
-
     let entries = workspace_entries(
         snapshot,
         state.collapsed_groups,
@@ -237,7 +235,7 @@ pub(crate) fn render_sidebar(
         workspace_area.width,
         workspace_area
             .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.parked_height),
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.navigation_height),
     );
     hits.workspace_body = body;
     let row_heights = entries
@@ -824,24 +822,4 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
-}
-
-pub(in crate::client::shell) fn render_jump_launcher(
-    buffer: &mut Buffer,
-    area: Rect,
-    config: &ClientShellConfig,
-    hits: &mut ShellHitMap,
-) {
-    if !config.mouse_capture || area.width < 14 || area.height < 10 {
-        return;
-    }
-    hits.jump_launcher = Rect::new(area.right().saturating_sub(5), area.y, 5, 1);
-    put_text(
-        buffer,
-        hits.jump_launcher.x,
-        area.y,
-        5,
-        "jump",
-        Style::default().fg(config.palette.overlay0),
-    );
 }

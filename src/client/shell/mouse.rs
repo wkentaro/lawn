@@ -2042,7 +2042,7 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if super::contains(self.hits.jump_launcher, point) {
+                if super::contains(self.hits.active_launcher, point) {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
                     return;

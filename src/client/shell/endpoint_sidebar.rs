@@ -262,8 +262,6 @@ pub(super) fn render_expanded(
             .add_modifier(Modifier::BOLD),
     );
 
-    super::sidebar::render_jump_launcher(buffer, workspace_area, config, hits);
-
     let empty_collapsed_groups = HashSet::new();
 
     enum Row {
@@ -302,7 +300,7 @@ pub(super) fn render_expanded(
         workspace_area.width,
         workspace_area
             .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.parked_height),
+            .saturating_sub(WORKSPACE_HEADER_ROWS + 1 + state.navigation_height),
     );
     hits.workspace_body = body;
     let row_heights = rows

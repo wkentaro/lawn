@@ -114,7 +114,7 @@ pub(super) struct ShellHitMap {
     pub(super) mobile_targets: Vec<(Rect, ClientMobileTarget)>,
     pub(super) mobile_max_scroll: usize,
     pub(super) global_launcher: Rect,
-    pub(super) jump_launcher: Rect,
+    pub(super) active_launcher: Rect,
     pub(super) parked_launcher: Rect,
     pub(super) restore_pane: Rect,
     pub(super) dismiss_parking_preview: Rect,

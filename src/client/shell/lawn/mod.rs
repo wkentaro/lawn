@@ -6,7 +6,7 @@ use std::{path::PathBuf, time::Instant};
 
 mod parked;
 mod parking_store;
-pub(super) use parked::{height as parked_height, render as render_parked, ParkedState};
+pub(super) use parked::{height as navigation_height, render as render_navigation, ParkedState};
 mod parking;
 pub(super) use parking::PaneParking;
 mod workspaces;

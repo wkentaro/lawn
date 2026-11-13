@@ -708,7 +708,7 @@ fn hidden_sidebar_mode_uses_the_keybinding_without_a_toggle_button() {
         assert_eq!(state.hits.parked_launcher.y, 26);
         assert_eq!(
             state.hits.workspace_body.bottom(),
-            state.hits.parked_launcher.y
+            state.hits.active_launcher.y
         );
 
         let parked = state.hits.parked_launcher;
@@ -724,7 +724,7 @@ fn hidden_sidebar_mode_uses_the_keybinding_without_a_toggle_button() {
         state.overlay = None;
         state.compose(100, 28).expect("unchanged Parked launcher");
         assert_eq!(state.hits.parked_launcher.height, 1);
-        assert_eq!(state.hits.workspace_body.bottom(), parked.y);
+        assert_eq!(state.hits.workspace_body.bottom(), parked.y - 1);
         assert!(!state.sidebar_collapsed);
 
         for collapsed in [true, false] {
@@ -1441,7 +1441,8 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     );
 
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 11).expect("scrolled endpoint frame");
+    // Leave room for all three rows and their gap above the two-row navigation footer.
+    state.compose(100, 12).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics
@@ -3146,7 +3147,7 @@ fn workspace_navigation_has_no_aggregate_signals_or_agents_panel() {
 }
 
 #[test]
-fn jump_launcher_opens_existing_navigation_without_terminal_input() {
+fn active_launcher_opens_existing_navigation_without_terminal_input() {
     for (remote, surface_available) in [(false, true), (true, true), (false, false), (true, false)]
     {
         let (mut state, _) = state_with_remote();
@@ -3157,7 +3158,7 @@ fn jump_launcher_opens_existing_navigation_without_terminal_input() {
             state.pane_surface = None;
         }
         state.compose(100, 28).unwrap();
-        let launcher = state.hits.jump_launcher;
+        let launcher = state.hits.active_launcher;
         assert!(!launcher.is_empty());
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -3179,6 +3180,7 @@ fn jump_launcher_opens_existing_navigation_without_terminal_input() {
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect();
-        assert!(text.contains("Go to"));
+        assert!(text.contains(" active "));
+        assert!(!text.contains("Go to"));
     }
 }
