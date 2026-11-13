@@ -1210,7 +1210,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         ("", vec!["pane_1", "pane_2"]),
         ("review", vec!["pane_1", "pane_2"]),
         ("client-shell", vec!["pane_1", "pane_2"]),
-        ("main", vec!["pane_1", "pane_2"]),
+        ("main", vec![]),
         ("claude", vec!["pane_2"]),
         ("checking navigation", vec!["pane_2"]),
         ("/repo/subproject", vec!["pane_2"]),
@@ -1343,6 +1343,32 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
 }
 
 #[test]
+fn navigator_rows_hide_branches_and_end_at_the_agent_name() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+    let mut checked_narrow = false;
+    for width in [60, 80, 106] {
+        let frame = state.compose(width, 30).expect("navigator frame");
+        for (rect, _) in &state.hits.navigator_rows {
+            let row = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
+                .iter()
+                .take(rect.width as usize)
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>();
+            assert!(!row.contains("main"), "{row:?} shows the branch");
+            let pane_row = row.contains("├─") || row.contains("└─");
+            if pane_row && (36..64).contains(&rect.width) {
+                checked_narrow = true;
+                assert_eq!(row.trim_end(), row, "blank cells follow the agent name");
+            }
+        }
+    }
+    assert!(checked_narrow, "no width produced the narrow agent column");
+}
+
+#[test]
 fn navigator_keeps_empty_workspaces_searchable() {
     let mut projected = snapshot();
     projected.tabs.clear();
@@ -1353,7 +1379,7 @@ fn navigator_keeps_empty_workspaces_searchable() {
     for (query, expected) in [
         ("", true),
         ("client-shell", true),
-        ("main", true),
+        ("main", false),
         ("missing", false),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {

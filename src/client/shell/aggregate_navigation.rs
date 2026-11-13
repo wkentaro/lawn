@@ -336,13 +336,8 @@ pub(super) fn navigator_rows(
                 if !parked && !endpoint.parking.shows_workspace(&workspace.workspace_id) {
                     continue;
                 }
-                let workspace_matches = words.is_empty()
-                    || text(&format!(
-                        "{} {} {}",
-                        endpoint.label,
-                        workspace.label,
-                        workspace.branch.as_deref().unwrap_or_default()
-                    ));
+                let workspace_matches =
+                    words.is_empty() || text(&format!("{} {}", endpoint.label, workspace.label));
                 let mut children = Vec::new();
                 let workspace_tabs = tabs_by_workspace
                     .get(workspace.workspace_id.as_str())
@@ -400,10 +395,9 @@ pub(super) fn navigator_rows(
                             .unwrap_or_default();
                         if tab_matches
                             || text(&format!(
-                                "{} {} {} {} {} {} {} {} {} {} {}",
+                                "{} {} {} {} {} {} {} {} {} {}",
                                 endpoint.label,
                                 workspace.label,
-                                workspace.branch.as_deref().unwrap_or_default(),
                                 tab.label,
                                 label,
                                 meta,
@@ -445,7 +439,7 @@ pub(super) fn navigator_rows(
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
                         label: workspace.label.clone(),
-                        meta: workspace.branch.clone().unwrap_or_default(),
+                        meta: String::new(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,
                         status: None,

@@ -978,14 +978,20 @@ pub(crate) fn render_navigator_overlay(
             st
         };
         b.set_style(rect, st);
-        let columns = if is_pane {
-            if rect.width >= 64 {
-                24
-            } else if rect.width >= 36 {
-                12
-            } else {
-                0
-            }
+        let wide = rect.width >= 64;
+        let agent_text = if n.parked && r.stale && !wide {
+            "cached"
+        } else if r.parked && !wide {
+            "parked"
+        } else {
+            r.agent.as_deref().unwrap_or("terminal")
+        };
+        let columns = if !is_pane {
+            0
+        } else if wide {
+            24
+        } else if rect.width >= 36 {
+            display_width(agent_text).min(11) + 1
         } else {
             0
         };
@@ -1082,18 +1088,12 @@ pub(crate) fn render_navigator_overlay(
                     b,
                     rect.right() - columns + 1,
                     rect.y,
-                    11,
-                    if n.parked && r.stale && columns == 12 {
-                        "cached"
-                    } else if r.parked && columns == 12 {
-                        "parked"
-                    } else {
-                        r.agent.as_deref().unwrap_or("terminal")
-                    },
+                    if wide { 11 } else { columns - 1 },
+                    agent_text,
                     meta_style,
                 );
             }
-            if columns == 24 {
+            if wide {
                 put_text(
                     b,
                     rect.right() - 11,
@@ -1136,15 +1136,6 @@ pub(crate) fn render_navigator_overlay(
                     })
             };
             put_right_text(b, rect, rect.y, &signal, signal_style);
-        } else if !is_pane && !r.meta.is_empty() {
-            let label_width = display_width(&label).min(rect.width);
-            let meta = Rect::new(
-                rect.x.saturating_add(label_width).saturating_add(1),
-                rect.y,
-                rect.width.saturating_sub(label_width.saturating_add(1)),
-                1,
-            );
-            put_right_text(b, meta, rect.y, &r.meta, st)
         }
     }
     if let Some(track) = scrollbar {
