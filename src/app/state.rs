@@ -925,6 +925,23 @@ impl AppState {
         }
     }
 
+    /// Removes a workspace a move left empty. Active and selected indexes
+    /// that pointed at it follow `follow` (an index before removal), or
+    /// clamp in place when it is None.
+    pub(crate) fn remove_emptied_workspace(&mut self, idx: usize, follow: Option<usize>) {
+        self.workspaces.remove(idx);
+        if self.workspaces.is_empty() {
+            self.active = None;
+            self.selected = 0;
+            return;
+        }
+        let shift = |i: usize| if i > idx { i - 1 } else { i };
+        let replacement = follow.map_or(idx.min(self.workspaces.len() - 1), shift);
+        let remap = |i: usize| if i == idx { replacement } else { shift(i) };
+        self.active = self.active.map(remap);
+        self.selected = remap(self.selected);
+    }
+
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
