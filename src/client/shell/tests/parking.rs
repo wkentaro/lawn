@@ -1187,6 +1187,54 @@ fn closing_another_workspace_before_the_first_close_lands_keeps_both_closed() {
 }
 
 #[test]
+fn a_failed_close_does_not_stop_the_workspace_from_being_kept() {
+    for unsupported in [false, true] {
+        let mut state = parked_with_active_shell(false, false);
+        if unsupported {
+            state.endpoints[0].methods = Some(HashSet::new());
+        }
+        let outcome = close_workspace(&mut state, "ws_1");
+        if unsupported {
+            assert!(closed_panes(&outcome).is_empty());
+            assert!(state.endpoints[0].parking.departed_workspace.is_none());
+        } else {
+            let [ClientShellAction::Endpoint {
+                boot_id, request, ..
+            }] = outcome.actions.as_slice()
+            else {
+                panic!("pane close request");
+            };
+            state.handle_endpoint_result(
+                boot_id,
+                &request.id,
+                Err(ClientShellEndpointError {
+                    code: Some("rejected".into()),
+                    message: "pane busy".into(),
+                }),
+            );
+        }
+        state.parking_action(
+            ClientEndpointId::Local,
+            "pane_2".into(),
+            lawn::ParkingAction::Park,
+            &mut ClientShellInput::default(),
+        );
+        let parked = request(&mut state);
+        acknowledge(&mut state, &parked, None);
+        state.compose(100, 24).unwrap();
+        assert_eq!(
+            empty_actions(&state),
+            [
+                crate::input::KeybindAction::NewTab,
+                crate::input::KeybindAction::OpenParked,
+                crate::input::KeybindAction::CloseWorkspace,
+            ],
+            "unsupported={unsupported}"
+        );
+    }
+}
+
+#[test]
 fn closing_the_workspace_hides_it_and_focuses_another_once() {
     let mut state = parked_with_active_shell(false, false);
     assert!(tick(&mut state).actions.is_empty());

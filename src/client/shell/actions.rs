@@ -657,6 +657,11 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
+            PendingEndpointKind::ParkedPaneClose { pane_id } => {
+                if let (Err(_), Some(parking)) = (&result, self.active_parking_mut()) {
+                    parking.forget_closing(&pane_id);
+                }
+            }
             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {

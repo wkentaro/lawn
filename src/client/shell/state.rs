@@ -660,6 +660,10 @@ impl ClientShellOverlay {
 #[derive(Debug)]
 pub(super) enum PendingEndpointKind {
     Generic,
+    /// Closes an active pane while its workspace keeps parked terminals.
+    ParkedPaneClose {
+        pane_id: String,
+    },
     ProductAnnouncementDismiss {
         version: String,
         id: String,

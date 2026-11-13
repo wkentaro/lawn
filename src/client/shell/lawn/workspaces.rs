@@ -80,27 +80,39 @@ impl ClientShellState {
             .filter(|pane| !parking.hides_pane(&pane.pane_id))
             .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
             .collect();
-        if let Method::WorkspaceClose(target) = method {
-            // Closing keeps parked terminals, so it leaves the workspace instead.
-            let focused_workspace = snapshot.focused_workspace_id.clone();
-            // A group close may target the root while a linked member is focused.
-            let left = focused_workspace
-                .clone()
-                .filter(|focused| panes.iter().any(|pane| &pane.workspace_id == focused))
-                .unwrap_or_else(|| target.workspace_id.clone());
-            if let Some(endpoint) = self
-                .endpoints
-                .iter_mut()
-                .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            {
-                endpoint
-                    .parking
-                    .leave_workspace(&left, focused_workspace, active.iter().cloned());
+        // Closing keeps parked terminals, so a workspace close leaves the workspace.
+        let leave = match method {
+            Method::WorkspaceClose(target) => {
+                let focused_workspace = snapshot.focused_workspace_id.clone();
+                // A group close may target the root while a linked member is focused.
+                let left = focused_workspace
+                    .clone()
+                    .filter(|focused| panes.iter().any(|pane| &pane.workspace_id == focused))
+                    .unwrap_or_else(|| target.workspace_id.clone());
+                Some((left, focused_workspace))
+            }
+            _ => None,
+        };
+        let attempted = active.len();
+        let mut closing = Vec::new();
+        for (pane_id, workspace_id) in active {
+            let kind = PendingEndpointKind::ParkedPaneClose {
+                pane_id: pane_id.clone(),
+            };
+            let target = PaneTarget {
+                pane_id: pane_id.clone(),
+            };
+            if self.push_endpoint_method_with_kind(Method::PaneClose(target), kind, outcome) {
+                closing.push((pane_id, workspace_id));
+            }
+        }
+        // Nothing could be sent, so the workspace stays as it was.
+        let leave = leave.filter(|_| attempted == 0 || !closing.is_empty());
+        if let Some((left, focused_workspace)) = leave {
+            if let Some(parking) = self.active_parking_mut() {
+                parking.leave_workspace(&left, focused_workspace, closing);
             }
             outcome.repaint = true;
-        }
-        for (pane_id, _) in active {
-            self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome);
         }
         Some(true)
     }

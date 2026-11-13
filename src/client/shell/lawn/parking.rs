@@ -126,6 +126,11 @@ impl PaneParking {
             || self.visible_workspaces.contains(workspace)
     }
 
+    /// Drops the close record of a pane whose close request failed.
+    pub(in crate::client::shell) fn forget_closing(&mut self, pane: &str) {
+        self.closing_panes.remove(pane);
+    }
+
     fn is_closing(&self, workspace: &str) -> bool {
         self.closing_panes.values().any(|owner| owner == workspace)
     }
@@ -406,8 +411,6 @@ impl PaneParking {
         }) {
             self.kept_workspace = Some(workspace);
         }
-        // ponytail: a rejected close keeps its pane recorded until the pane goes
-        // away; drop entries on close errors if that ever matters.
         let panes = &self.pane_workspaces;
         self.closing_panes
             .retain(|pane, _| panes.contains_key(pane));

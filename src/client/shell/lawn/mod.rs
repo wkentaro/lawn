@@ -140,6 +140,13 @@ impl ClientShellState {
             .map(|endpoint| &endpoint.parking)
     }
 
+    pub(super) fn active_parking_mut(&mut self) -> Option<&mut PaneParking> {
+        self.endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .map(|endpoint| &mut endpoint.parking)
+    }
+
     pub(super) fn parking_ready(&self) -> bool {
         self.active_parking().is_none_or(PaneParking::ready)
     }
