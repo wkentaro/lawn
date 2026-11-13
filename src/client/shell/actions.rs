@@ -152,7 +152,7 @@ impl ClientShellState {
                         self.push_endpoint_method(
                             crate::api::schema::Method::WorkspaceCreate(
                                 crate::api::schema::WorkspaceCreateParams {
-                                    source_workspace_id: self.workspace_action_id(),
+                                    source_workspace_id: None,
                                     cwd: None,
                                     focus: true,
                                     label: None,

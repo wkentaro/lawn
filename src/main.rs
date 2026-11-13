@@ -114,7 +114,8 @@ const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # shell_mode = "auto"
 
 # CWD policy for new panes, tabs, and workspaces when no explicit --cwd is provided.
-# Use "follow" to inherit the source pane/workspace, "home" for $HOME,
+# "follow" starts workspaces in $HOME; tabs and splits inherit the source pane.
+# Use "home" for $HOME,
 # "current" for Lawn's process directory, or a fixed path such as "~/Projects".
 # new_cwd = "follow"
 

@@ -309,11 +309,7 @@ pub(super) enum ClientShellOverlayKind {
 
 #[derive(Debug)]
 pub(super) enum ClientRenameTarget {
-    NewWorkspace {
-        source_workspace_id: Option<String>,
-        cwd: Option<String>,
-        suggested_name: String,
-    },
+    NewWorkspace,
     Workspace {
         workspace_id: String,
     },

@@ -2302,26 +2302,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_creation_in_navigate_mode_uses_selected_workspace_seed_cwd() {
-        let mut app = test_app();
-        let mut first = Workspace::test_new("herdr");
-        first.identity_cwd = std::path::PathBuf::from("/tmp/herdr");
-        let mut second = Workspace::test_new("pion");
-        second.identity_cwd = std::path::PathBuf::from("/tmp/pion");
-
-        app.state.workspaces = vec![first, second];
-        app.state.active = Some(0);
-        app.state.selected = 1;
-        app.state.mode = Mode::Navigate;
-
-        let ws_idx = app.workspace_creation_source().unwrap();
-        let seed_cwd = app.seed_cwd_from_workspace(ws_idx).unwrap();
-
-        assert_eq!(ws_idx, 1);
-        assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
-    }
-
-    #[test]
     fn new_terminal_cwd_follow_uses_source_cwd() {
         let cwd = creation::resolve_new_terminal_cwd(
             &crate::config::NewTerminalCwdConfig::Follow,
@@ -2332,15 +2312,17 @@ mod tests {
     }
 
     #[test]
-    fn new_terminal_cwd_follow_without_source_uses_home() {
-        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+    fn new_terminal_cwd_without_source_uses_home() {
+        let Some(home) = std::env::home_dir() else {
             return;
         };
 
-        let cwd =
-            creation::resolve_new_terminal_cwd(&crate::config::NewTerminalCwdConfig::Follow, None);
-
-        assert_eq!(cwd, home);
+        for policy in [
+            crate::config::NewTerminalCwdConfig::Follow,
+            crate::config::NewTerminalCwdConfig::Home,
+        ] {
+            assert_eq!(creation::resolve_new_terminal_cwd(&policy, None), home);
+        }
     }
 
     #[test]

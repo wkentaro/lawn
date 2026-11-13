@@ -498,7 +498,7 @@ fn desktop_workspace_navigation_reveals_overflowing_selection() {
 }
 
 #[test]
-fn named_workspace_overlay_targets_projected_source_workspace() {
+fn named_workspace_overlay_defers_cwd_to_server_without_inheriting_source() {
     let mut config = Config::default();
     config.ui.prompt_new_workspace_name = true;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -512,12 +512,9 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
         state.overlay.as_ref(),
         Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             input: value,
-            target: ClientRenameTarget::NewWorkspace {
-                source_workspace_id,
-                ..
-            },
+            target: ClientRenameTarget::NewWorkspace,
             ..
-        })) if value.as_str() == "repo" && source_workspace_id.as_deref() == Some("ws_1")
+        })) if value.as_str() == "workspace"
     ));
     let create = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = &create.actions[..] else {
@@ -526,8 +523,8 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::WorkspaceCreate(params)
-            if params.source_workspace_id.as_deref() == Some("ws_1")
-                && params.cwd.as_deref() == Some("/repo")
+            if params.source_workspace_id.is_none()
+                && params.cwd.is_none()
                 && params.label.is_none()
     ));
 }
