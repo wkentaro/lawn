@@ -251,6 +251,7 @@ mod tests {
             panes: Vec::new(),
             agents: Vec::new(),
             commands: Vec::new(),
+            parked_panes: Vec::new(),
         }
     }
 

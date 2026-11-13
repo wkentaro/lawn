@@ -11,6 +11,7 @@ use ratatui::layout::Rect;
 pub(crate) struct PaneLocation {
     pub(crate) target: TabSurfaceTarget,
     pub(crate) pane_id: PaneId,
+    pub(crate) parked: bool,
 }
 
 pub(crate) fn terminal_locations(state: &AppState) -> HashMap<&str, PaneLocation> {
@@ -33,6 +34,7 @@ pub(crate) fn terminal_locations(state: &AppState) -> HashMap<&str, PaneLocation
                                     tab_index,
                                 },
                                 pane_id,
+                                parked: tab.parked_from.is_some(),
                             },
                         )
                     })
@@ -48,6 +50,7 @@ pub(crate) struct ClientPanePresentation {
     read_only: HashSet<PaneId>,
     preview: Option<PaneLocation>,
     focus: Option<PaneId>,
+    peek: Option<TabSurfaceTarget>,
     pub(crate) preview_active: bool,
     focus_active: bool,
 }
@@ -65,6 +68,7 @@ impl ClientPanePresentation {
             read_only: HashSet::new(),
             preview: None,
             focus: None,
+            peek: None,
         };
         result.refresh(locations);
         result
@@ -95,6 +99,28 @@ impl ClientPanePresentation {
         if let Some(id) = self.request.focus_terminal.as_deref() {
             self.focus = locations.get(id).map(|location| location.pane_id);
         }
+        self.peek = self
+            .requested_location(locations)
+            .filter(|location| location.parked)
+            .map(|location| location.target);
+    }
+
+    fn requested_location<'a>(
+        &self,
+        locations: &'a HashMap<&str, PaneLocation>,
+    ) -> Option<&'a PaneLocation> {
+        self.request
+            .preview_terminal
+            .as_ref()
+            .or(self.request.focus_terminal.as_ref())
+            .and_then(|id| locations.get(id.as_str()))
+    }
+
+    /// A parked pane this client is checking in on; it overrides the shared
+    /// location without moving it, so ending the peek returns to the same tab.
+    pub(crate) fn peek_target(&self) -> Option<TabSurfaceTarget> {
+        self.peek
+            .filter(|_| self.preview_active || self.focus_active)
     }
 
     pub(crate) fn presents(&self, pane_id: PaneId) -> bool {
@@ -153,11 +179,8 @@ impl ClientPanePresentation {
         &self,
         locations: &HashMap<&str, PaneLocation>,
     ) -> Option<TabSurfaceTarget> {
-        self.request
-            .preview_terminal
-            .as_ref()
-            .or(self.request.focus_terminal.as_ref())
-            .and_then(|id| locations.get(id.as_str()))
+        self.requested_location(locations)
+            .filter(|location| !location.parked)
             .map(|location| location.target)
     }
 
@@ -167,7 +190,7 @@ impl ClientPanePresentation {
         target: TabSurfaceTarget,
     ) -> TabSurfaceTarget {
         if self.preview_active {
-            if let Some(preview) = self.preview {
+            if let Some(preview) = self.preview.filter(|preview| !preview.parked) {
                 return preview.target;
             }
         }
@@ -222,6 +245,7 @@ mod tests {
             PaneLocation {
                 target,
                 pane_id: first,
+                parked: false,
             },
         )]);
         let mut policy = ClientPanePresentation::new(request(), &locations);
@@ -231,6 +255,7 @@ mod tests {
             PaneLocation {
                 target,
                 pane_id: second,
+                parked: false,
             },
         );
         policy.refresh(&locations);

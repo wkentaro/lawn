@@ -493,9 +493,15 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
-        let Some(_tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
+        if self.state.workspaces[ws_idx].tabs[tab_idx]
+            .parked_from
+            .is_some()
+        {
+            return encode_error(id, "pane_parked", "pane is parked; unpark it to focus it");
+        }
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
         self.state.mark_active_tab_seen();

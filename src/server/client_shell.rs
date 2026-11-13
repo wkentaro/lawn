@@ -46,15 +46,22 @@ pub(super) fn snapshot_with_completions(
             .filter_map(|agent| agent.completion_seq.map(|seq| (agent.pane_id.clone(), seq)))
             .collect(),
     };
-    let focused_workspace_id = location
-        .and_then(|location| location.focused_workspace_id.clone())
+    let peek = presentation.and_then(|presentation| presentation.peek_target());
+    let focused_workspace_id = peek
+        .map(|peek| app.public_workspace_id(peek.workspace_index))
+        .or_else(|| location.and_then(|location| location.focused_workspace_id.clone()))
         .or_else(|| snapshot.focused_workspace_id.clone());
-    let focused_tab_id = location
-        .and_then(|location| location.focused_tab_id().map(str::to_owned))
+    let focused_tab_id = peek
+        .and_then(|peek| app.public_tab_id(peek.workspace_index, peek.tab_index))
+        .or_else(|| location.and_then(|location| location.focused_tab_id().map(str::to_owned)))
         .or_else(|| snapshot.focused_tab_id.clone());
-    let focused_pane_id = focused_tab_id
-        .as_deref()
-        .and_then(|tab_id| app.parse_tab_id(tab_id))
+    let focused_pane_id = peek
+        .map(|peek| (peek.workspace_index, peek.tab_index))
+        .or_else(|| {
+            focused_tab_id
+                .as_deref()
+                .and_then(|tab_id| app.parse_tab_id(tab_id))
+        })
         .and_then(|(workspace_index, tab_index)| {
             let tab = app
                 .state
@@ -135,37 +142,39 @@ pub(super) fn snapshot_with_completions(
             }
         })
         .collect();
-    let panes = snapshot
-        .panes
+    let mut shell_pane = |pane: crate::api::schema::PaneInfo| {
+        let pane_id = pane.pane_id;
+        if let Some(identities) = identities.as_mut() {
+            identities
+                .pane_terminals
+                .insert(pane_id.clone(), pane.terminal_id);
+        }
+        let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
+        let right_click_passthrough = app
+            .parse_pane_id(&pane_id)
+            .and_then(|(workspace_index, pane_id)| {
+                app.state
+                    .workspaces
+                    .get(workspace_index)?
+                    .pane_state(pane_id)
+            })
+            .is_some_and(|pane| pane.right_click_passthrough);
+        protocol::ClientShellPane {
+            pane_id,
+            workspace_id: pane.workspace_id,
+            tab_id: pane.tab_id,
+            label: pane.label,
+            cwd: pane.cwd,
+            foreground_cwd: pane.foreground_cwd,
+            focused,
+            right_click_passthrough,
+        }
+    };
+    let panes = snapshot.panes.into_iter().map(&mut shell_pane).collect();
+    let parked_panes = snapshot
+        .parked_panes
         .into_iter()
-        .map(|pane| {
-            let pane_id = pane.pane_id;
-            if let Some(identities) = identities.as_mut() {
-                identities
-                    .pane_terminals
-                    .insert(pane_id.clone(), pane.terminal_id);
-            }
-            let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
-            let right_click_passthrough = app
-                .parse_pane_id(&pane_id)
-                .and_then(|(workspace_index, pane_id)| {
-                    app.state
-                        .workspaces
-                        .get(workspace_index)?
-                        .pane_state(pane_id)
-                })
-                .is_some_and(|pane| pane.right_click_passthrough);
-            protocol::ClientShellPane {
-                pane_id,
-                workspace_id: pane.workspace_id,
-                tab_id: pane.tab_id,
-                label: pane.label,
-                cwd: pane.cwd,
-                foreground_cwd: pane.foreground_cwd,
-                focused,
-                right_click_passthrough,
-            }
-        })
+        .map(&mut shell_pane)
         .collect();
     let agents = snapshot
         .agents
@@ -283,6 +292,7 @@ pub(super) fn snapshot_with_completions(
         panes,
         agents,
         commands: app.client_shell_command_manifest(),
+        parked_panes,
     };
     (shell, completions, identities)
 }

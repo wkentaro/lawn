@@ -325,9 +325,9 @@ Moving a workspace's last tab closes that workspace. Subscribers see
 The pane moves to a hidden tab in the same workspace and keeps its pane id, so
 pane and agent requests such as `pane.read`, `pane.report_agent`, and
 `agent.send_keys` still reach it. Tab requests and the `tabs` list in
-`session.snapshot` skip hidden tabs, and `pane.split` refuses to split a parked
-pane. A workspace with parked panes stays open when its last visible tab closes
-or moves away. `session.snapshot` lists parked panes under `parked_panes`.
+`session.snapshot` skip hidden tabs. `pane.split` refuses to split a parked
+pane, and `pane.focus` rejects it with `pane_parked`. A workspace with parked
+panes stays open when its last visible tab closes or moves away. `session.snapshot` lists parked panes under `parked_panes`.
 Closing the workspace closes its parked panes too.
 `pane.unpark` returns the pane to the tab it left, or to a new tab when that tab
 is gone. The response is `type: "pane_info"`. Park and unpark emit no events

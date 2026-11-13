@@ -14,9 +14,7 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        let mut snapshot = self.session_snapshot_with_pane_info(Self::pane_info);
-        snapshot.parked_panes = self.parked_pane_infos();
-        snapshot
+        self.session_snapshot_with_pane_info(Self::pane_info)
     }
 
     pub(crate) fn session_metadata_snapshot(&self) -> SessionSnapshot {
@@ -74,9 +72,7 @@ impl App {
             panes,
             layouts,
             agents: self.collect_agent_infos(),
-            // Only session.snapshot lists parked panes; the per-frame
-            // metadata snapshot skips them.
-            parked_panes: Vec::new(),
+            parked_panes: self.parked_pane_infos(pane_info),
         }
     }
 }

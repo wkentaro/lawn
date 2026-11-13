@@ -35,7 +35,10 @@ impl App {
         }
     }
 
-    pub(super) fn parked_pane_infos(&self) -> Vec<PaneInfo> {
+    pub(super) fn parked_pane_infos(
+        &self,
+        pane_info: fn(&Self, usize, crate::layout::PaneId) -> Option<PaneInfo>,
+    ) -> Vec<PaneInfo> {
         self.state
             .workspaces
             .iter()
@@ -43,7 +46,7 @@ impl App {
             .flat_map(|(ws_idx, ws)| {
                 ws.parked_tabs()
                     .iter()
-                    .filter_map(move |tab| self.pane_info(ws_idx, tab.root_pane))
+                    .filter_map(move |tab| pane_info(self, ws_idx, tab.root_pane))
             })
             .collect()
     }
@@ -226,6 +229,22 @@ mod tests {
             "{agents}"
         );
         assert!(app.pane_launch_env(0, parked, Vec::new()).is_some());
+    }
+
+    #[test]
+    fn focusing_a_parked_pane_is_rejected_without_moving_focus() {
+        let (mut app, parked) = split_app();
+        let pane_id = park(&mut app, parked);
+        let before = app.state.workspaces[0].active_tab_index();
+        let focus = call(
+            &mut app,
+            "pane.focus",
+            serde_json::json!({ "pane_id": pane_id }),
+        );
+        assert_eq!(focus["error"]["code"], "pane_parked", "{focus}");
+        assert!(!app.state.focus_pane_in_workspace(0, parked));
+        assert_eq!(app.state.workspaces[0].active_tab_index(), before);
+        app.state.workspaces[0].assert_invariants_for_test();
     }
 
     #[test]

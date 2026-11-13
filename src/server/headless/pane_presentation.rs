@@ -169,7 +169,7 @@ impl HeadlessServer {
         }
         let target = presentation
             .requested_target(&locations)
-            .or_else(|| self.shell_target_for_client(client_id))
+            .or_else(|| self.shared_shell_target(client_id))
             .map(|target| presentation.reflow_target(&self.app.state, target));
         let location = target.and_then(|target| {
             self.app

@@ -241,7 +241,7 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 {"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
 ```
 
-窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。暂存和恢复目前还不会发送事件。
+窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格，`pane.focus` 会返回 `pane_parked` 错误。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。暂存和恢复目前还不会发送事件。
 
 `pane.zoom` 切换、启用或禁用目标窗格所在标签页的缩放:
 

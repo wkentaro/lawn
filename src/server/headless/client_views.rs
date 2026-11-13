@@ -3,6 +3,7 @@ use super::*;
 use crate::layout::PaneId;
 use crate::server::client_shell::resize_popup_runtime;
 use crate::server::clients::ClientShellTopology;
+use crate::server::pane_presentation::ClientPanePresentation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShellFocusTarget {
@@ -54,6 +55,22 @@ impl HeadlessServer {
     }
 
     pub(super) fn shell_target_for_client(
+        &self,
+        client_id: u64,
+    ) -> Option<crate::ui::TabSurfaceTarget> {
+        let client = self.clients.get(&client_id)?;
+        if let Some(peek) = client
+            .pane_presentation
+            .as_ref()
+            .and_then(ClientPanePresentation::peek_target)
+        {
+            return Some(peek);
+        }
+        self.shared_shell_target(client_id)
+    }
+
+    /// The client's shared location, ignoring a peek at a parked pane.
+    pub(super) fn shared_shell_target(
         &self,
         client_id: u64,
     ) -> Option<crate::ui::TabSurfaceTarget> {
@@ -135,8 +152,14 @@ impl HeadlessServer {
         }
         let topology = self.client_shell_topology();
         let live_clients = self.clients.keys().copied().collect::<HashSet<_>>();
+        // A peek shows a parked tab that the shared topology leaves out.
+        let viewed_tabs = live_clients
+            .iter()
+            .filter_map(|&client_id| self.shell_tab_id_for_client(client_id))
+            .collect::<HashSet<_>>();
         self.tab_geometry_controllers.retain(|tab_id, client_id| {
-            topology.tab_workspace_ids.contains_key(tab_id) && live_clients.contains(client_id)
+            (topology.tab_workspace_ids.contains_key(tab_id) || viewed_tabs.contains(tab_id))
+                && live_clients.contains(client_id)
         });
         let mut placements = None;
         let app = &self.app;
@@ -196,6 +219,15 @@ impl HeadlessServer {
             if let Some(location) = client.shell_location.as_mut() {
                 location.focus_tab(workspace_id.clone(), tab_id.clone());
             }
+            // Public focus navigation ends a peek at a parked pane.
+            if let Some(presentation) = client
+                .pane_presentation
+                .as_mut()
+                .filter(|presentation| presentation.peek_target().is_some())
+            {
+                presentation.deactivate_focus();
+                client.shell_snapshot = None;
+            }
         }
         let (lost, gained) =
             self.shell_location_focus_transitions(focus_before, &focused_panes_before);
@@ -219,7 +251,7 @@ impl HeadlessServer {
     }
 
     pub(super) fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
-        let Some(target) = self.shell_target_for_client(client_id) else {
+        let Some(target) = self.shared_shell_target(client_id) else {
             return false;
         };
         if self.default_shell_target() == Some(target) {
@@ -642,6 +674,9 @@ impl HeadlessServer {
         start_pending_agent_resumes: bool,
     ) -> bool {
         let mut viewed_tabs = HashMap::<String, Vec<u64>>::new();
+        // Viewed targets resolve parked tabs that a peek shows, which
+        // `parse_tab_id` rejects.
+        let mut viewed_targets = HashMap::new();
         for (&client_id, client) in &self.clients {
             if !client.is_active_shell_client() || client.writer.is_none() {
                 continue;
@@ -649,6 +684,9 @@ impl HeadlessServer {
             let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
                 continue;
             };
+            if let Some(target) = self.shell_target_for_client(client_id) {
+                viewed_targets.insert(tab_id.clone(), target);
+            }
             viewed_tabs.entry(tab_id).or_default().push(client_id);
         }
         for viewers in viewed_tabs.values_mut() {
@@ -672,18 +710,18 @@ impl HeadlessServer {
             .tab_geometry_controllers
             .iter()
             .filter_map(|(tab_id, &client_id)| {
-                self.app
-                    .parse_tab_id(tab_id)
-                    .map(|(workspace_index, tab_index)| {
-                        (
-                            tab_id.clone(),
-                            client_id,
-                            crate::ui::TabSurfaceTarget {
+                viewed_targets
+                    .get(tab_id)
+                    .copied()
+                    .or_else(|| {
+                        self.app
+                            .parse_tab_id(tab_id)
+                            .map(|(workspace_index, tab_index)| crate::ui::TabSurfaceTarget {
                                 workspace_index,
                                 tab_index,
-                            },
-                        )
+                            })
                     })
+                    .map(|target| (tab_id.clone(), client_id, target))
             })
             .collect::<Vec<_>>();
         controlled_tabs.sort_unstable_by(|left, right| left.0.cmp(&right.0));
