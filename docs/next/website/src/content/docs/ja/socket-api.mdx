@@ -241,7 +241,7 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 {"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
 ```
 
-ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割しません。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。保留と復帰はまだイベントを送信しません。
+ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割せず、`pane.focus` は `pane_parked` エラーを返します。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。保留と復帰はまだイベントを送信しません。
 
 `pane.zoom` は、対象ペインのタブのズームをトグル、有効化、無効化します:
 

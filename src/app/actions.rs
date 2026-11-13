@@ -227,7 +227,10 @@ impl AppState {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return false;
         };
-        let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = ws
+            .find_tab_index_for_pane(pane_id)
+            .filter(|&tab_idx| ws.tabs[tab_idx].parked_from.is_none())
+        else {
             return false;
         };
         let previous = self.current_pane_focus_target();

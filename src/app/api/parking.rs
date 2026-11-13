@@ -229,6 +229,22 @@ mod tests {
     }
 
     #[test]
+    fn focusing_a_parked_pane_is_rejected_without_moving_focus() {
+        let (mut app, parked) = split_app();
+        let pane_id = park(&mut app, parked);
+        let before = app.state.workspaces[0].active_tab_index();
+        let focus = call(
+            &mut app,
+            "pane.focus",
+            serde_json::json!({ "pane_id": pane_id }),
+        );
+        assert_eq!(focus["error"]["code"], "pane_parked", "{focus}");
+        assert!(!app.state.focus_pane_in_workspace(0, parked));
+        assert_eq!(app.state.workspaces[0].active_tab_index(), before);
+        app.state.workspaces[0].assert_invariants_for_test();
+    }
+
+    #[test]
     fn a_parked_tab_is_hidden_from_tab_requests() {
         let (mut app, parked) = split_app();
         let parked_pane_id = park(&mut app, parked);
