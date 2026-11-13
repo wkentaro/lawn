@@ -188,7 +188,19 @@ impl ClientShellState {
                 outcome,
             );
         } else {
-            self.handle_endpoint_navigation(crate::input::KeybindAction::NextWorkspace, outcome);
+            self.selection = None;
+            self.copy_mode = None;
+            self.mode = ClientShellMode::Terminal;
+            let excluded_terminal_ids = self
+                .active_parking()
+                .map(|parking| parking.parked_terminals().cloned().collect())
+                .unwrap_or_default();
+            self.push_endpoint_method(
+                Method::WorkspaceEnsureActive(crate::api::schema::WorkspaceEnsureActiveParams {
+                    excluded_terminal_ids,
+                }),
+                outcome,
+            );
         }
     }
 }

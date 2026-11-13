@@ -728,12 +728,16 @@ impl App {
         self.terminal_runtimes.assume_handoff_ownership();
     }
 
-    pub(crate) fn ensure_default_workspace(&mut self) -> bool {
+    pub(crate) fn ensure_default_workspace(&mut self, after_close: bool) -> bool {
         if !self.state.workspaces.is_empty() {
             return false;
         }
 
-        let cwd = self.resolve_new_terminal_cwd(None);
+        let cwd = if after_close {
+            crate::home_path::expand_tilde_path("~")
+        } else {
+            self.resolve_new_terminal_cwd(None)
+        };
         let preserve_checkpoint = self.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
         match self.create_workspace_with_options(cwd, true) {
@@ -3088,6 +3092,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_default_workspace_keeps_the_configured_directory() {
+        let mut app = test_app();
+        app.state.new_terminal_cwd = crate::config::NewTerminalCwdConfig::Current;
+        assert!(app.ensure_default_workspace(false));
+        assert_eq!(
+            app.state.workspaces[0].identity_cwd,
+            std::env::current_dir().unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let config_home = unique_temp_path("signaled-pane-session-checkpoint");
@@ -3112,7 +3127,14 @@ mod tests {
             exit_reason: crate::platform::ChildExitReason::Interrupted,
         });
         assert!(app.state.workspaces.is_empty());
-        assert!(app.ensure_default_workspace());
+        app.state.new_terminal_cwd = crate::config::NewTerminalCwdConfig::Current;
+        assert!(app.ensure_default_workspace(true));
+        assert_eq!(
+            app.state.workspaces[0].identity_cwd,
+            crate::home_path::expand_tilde_path("~")
+        );
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert!(!app.ensure_default_workspace(true));
 
         app.save_session_on_shutdown();
 

@@ -524,7 +524,9 @@ impl HeadlessServer {
                 needs_graphics_render = false;
             }
 
-            if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
+            if latest_shell_client(&self.clients).is_some()
+                && self.app.ensure_default_workspace(true)
+            {
                 needs_render = true;
                 needs_full_render = true;
                 needs_graphics_render = false;
@@ -1950,7 +1952,7 @@ impl HeadlessServer {
                     render_encoding = ?protocol::RenderEncoding::SemanticFrame,
                     "client connected"
                 );
-                self.app.ensure_default_workspace();
+                self.app.ensure_default_workspace(false);
                 let last_activity = self.allocate_activity_stamp();
                 let observed = crate::kitty_graphics::HostCellSize {
                     width_px: cell_width_px,
@@ -3318,7 +3320,7 @@ impl HeadlessServer {
         }
 
         if !skip_default_workspace && latest_shell_client(&self.clients).is_some() {
-            changed |= self.app.ensure_default_workspace();
+            changed |= self.app.ensure_default_workspace(true);
         }
 
         changed

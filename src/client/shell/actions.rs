@@ -435,6 +435,7 @@ impl ClientShellState {
         }
         let changes_focus = match &method {
             crate::api::schema::Method::WorkspaceFocus(_)
+            | crate::api::schema::Method::WorkspaceEnsureActive(_)
             | crate::api::schema::Method::TabFocus(_)
             | crate::api::schema::Method::PaneFocus(_)
             | crate::api::schema::Method::PaneFocusDirection(_) => true,
