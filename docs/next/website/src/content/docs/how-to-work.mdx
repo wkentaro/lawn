@@ -20,10 +20,9 @@ Herdr starts or attaches to your local background session automatically. You do 
 Detach the client with `ctrl+b q`. Your panes keep running.
 
 In Lawn, Park moves a pane into Parked while its terminal keeps running. Parking
-the last active pane in a workspace opens one fresh shell in that pane's current
-directory. Parking a pane while another pane is active does not create a shell.
-Closing the replacement shell does not create another one. If no directory is
-reported, the shell uses the normal new-terminal directory policy.
+the last active pane in a workspace does not open a new shell. The workspace stays
+in Spaces and shows New tab, Open parked, and Close workspace. The same view
+appears when the last active shell exits.
 
 The sidebar footer groups Active and Parked with right-aligned pane counts across
 machines. Active opens the picker for panes that have not been parked, including
@@ -36,13 +35,13 @@ Search across names,
 machines, and paths, or filter by agent state. Select a terminal to
 preview it without unparking it.
 
-Closing the last active shell hides an all-parked workspace from Spaces and normal
-workspace switching. Lawn focuses the nearest open workspace in sidebar order on
-the same machine, preferring the following workspace when equally close. If none
-remain, it switches to an open workspace on another connected machine. The empty
-view remains only when no open workspaces are available. Parked sessions stay
-parked. Unpark brings back the original workspace and terminal; Dismiss or Escape
-closes a read-only preview.
+Close workspace hides a workspace whose terminals are all parked from Spaces and
+normal workspace switching. Lawn focuses the nearest open workspace in sidebar
+order on the same machine, preferring the following workspace when equally close.
+If none remain, it switches to an open workspace on another connected machine.
+With no open workspace left, the view shows New workspace and Open parked. Parked
+sessions stay parked. Unpark brings back the original workspace and terminal;
+Dismiss or Escape closes a read-only preview.
 
 Closing a workspace or mixed tab through Lawn's UI closes only its active panes
 and retains parked sessions. The explicit socket API close methods still stop
