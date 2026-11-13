@@ -167,22 +167,12 @@ mod tests {
             .find_subcommand("pane")
             .and_then(|pane| pane.find_subcommand("open"))
             .expect("plugin pane open");
-        let worktree = family("worktree");
         for shell in super::SUPPORTED_SHELLS {
             let shell = super::parse_shell(shell).expect("supported shell");
             let full = script(shell, &root);
             assert!(!full.contains("live-handoff"), "{shell}: hidden command");
             assert!(!advertises(&full, "group"), "{shell}: hidden group");
             assert!(advertises(&full, "version"), "{shell}: public root flag");
-            let worktree = script(shell, worktree);
-            assert!(
-                !advertises(&worktree, "json"),
-                "{shell}: hidden worktree json"
-            );
-            assert!(
-                advertises(&worktree, "base"),
-                "{shell}: public worktree flag"
-            );
             let plugin = script(shell, open);
             for hidden in ["width", "height"] {
                 assert!(!advertises(&plugin, hidden), "{shell}: hidden {hidden}");

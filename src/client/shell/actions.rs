@@ -113,15 +113,6 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
-                if matches!(
-                    action,
-                    crate::input::KeybindAction::NewWorktree
-                        | crate::input::KeybindAction::OpenWorktree
-                        | crate::input::KeybindAction::RemoveWorktree
-                ) {
-                    self.begin_worktree_action(action, outcome);
-                    return;
-                }
                 if action == crate::input::KeybindAction::Help {
                     self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
                         query: TextEditor::default(),
@@ -181,7 +172,7 @@ impl ClientShellState {
                 }
                 if action == crate::input::KeybindAction::CloseWorkspace {
                     if let Some(workspace_id) = self.workspace_action_id() {
-                        self.request_workspace_close(workspace_id, None, outcome);
+                        self.request_workspace_close(workspace_id, outcome);
                     }
                     outcome.repaint = true;
                     return;
@@ -932,11 +923,6 @@ impl ClientShellState {
             kind @ (PendingEndpointKind::IntegrationList
             | PendingEndpointKind::IntegrationInstall) => {
                 return self.handle_settings_endpoint_result(kind, result);
-            }
-            kind => {
-                let mut outcome = ClientShellInput::default();
-                let repaint = self.handle_worktree_endpoint_result(kind, result, &mut outcome);
-                return (repaint || outcome.repaint, outcome.actions);
             }
         }
         let repaint = match result {

@@ -39,7 +39,6 @@ pub(super) fn command() -> Command {
         .subcommand(server_command())
         .subcommand(api_command())
         .subcommand(workspace_command())
-        .subcommand(worktree_command())
         .subcommand(tab_command())
         .subcommand(notification_command())
         .subcommand(agent_command())
@@ -199,10 +198,6 @@ fn api_command() -> Command {
 
 fn workspace_command() -> Command {
     super::workspace_bindings::command()
-}
-
-fn worktree_command() -> Command {
-    super::worktree::command()
 }
 
 fn tab_command() -> Command {
@@ -569,23 +564,6 @@ mod tests {
         assert!(String::from_utf8(help)
             .unwrap()
             .contains("Usage: lawn agent rename <TARGET> <NAME>|--clear"));
-    }
-
-    #[test]
-    fn worktree_json_compatibility_flag_stays_out_of_public_help() {
-        let cmd = super::command();
-        for subcommand in ["list", "create", "open", "remove"] {
-            let worktree_command = command_path(&cmd, &["worktree", subcommand]);
-            assert!(option_arg(worktree_command, "json").is_hide_set());
-            assert!(
-                !worktree_command
-                    .clone()
-                    .render_long_help()
-                    .to_string()
-                    .contains("--json"),
-                "lawn worktree {subcommand} should not advertise --json"
-            );
-        }
     }
 
     #[test]

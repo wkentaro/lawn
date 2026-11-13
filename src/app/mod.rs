@@ -18,7 +18,6 @@ mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
-mod git_refresh;
 mod ids;
 mod popup;
 mod runtime;
@@ -29,7 +28,6 @@ mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
 mod window_title;
-mod worktrees;
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -38,8 +36,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
-const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
-const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -116,24 +112,6 @@ pub struct App {
     pub(crate) config_diagnostic_deadline: Option<Instant>,
     pub(crate) toast_deadline: Option<Instant>,
     pub(crate) last_api_notification_at: Option<Instant>,
-    pub(crate) last_git_remote_status_refresh: Instant,
-    pub(crate) last_git_repo_discovery_refresh: Instant,
-    pub(crate) git_refresh_in_flight: bool,
-    pub(crate) git_refresh_due_after_in_flight: bool,
-    pub(crate) git_identity_refresh_requested: bool,
-    /// A refresh worker failed to start; retry it even without a client.
-    pub(crate) git_refresh_spawn_retry_pending: bool,
-    pub(crate) pending_restored_worktree_spaces:
-        Vec<(String, crate::workspace::WorktreeSpaceMembership)>,
-    pub(crate) restored_worktree_validation_retry_at: Option<Instant>,
-    pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
-    pub(crate) pending_api_worktree_creates: HashMap<std::path::PathBuf, u64>,
-    pub(crate) worktree_read_slots: std::sync::Arc<tokio::sync::Semaphore>,
-    pub(crate) pending_api_worktree_removes: HashMap<String, u64>,
-    pub(crate) pending_api_worktree_remove_paths: HashMap<std::path::PathBuf, u64>,
-    pub(crate) pending_worktree_remove_runtime_exits: HashMap<crate::layout::PaneId, usize>,
-    pub(crate) pending_worktree_remove_runtime_restores: HashMap<crate::layout::PaneId, u64>,
-    pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) next_auto_update_check: Option<Instant>,
     pub(crate) next_agent_manifest_update_check: Option<Instant>,
     pub(crate) update_version_check_enabled: bool,
@@ -462,9 +440,6 @@ impl App {
 
         let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
 
-        let worktree_directory =
-            crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
-
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
             "using pane scrollback configuration"
@@ -507,7 +482,6 @@ impl App {
             mode,
             should_quit: false,
             request_client_config_reload: false,
-            worktree_directory,
             latest_release_notes,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
@@ -630,22 +604,6 @@ impl App {
             terminal_runtimes: restored_terminal_runtimes,
             event_tx,
             event_rx,
-            last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
-            last_git_repo_discovery_refresh: Instant::now(),
-            git_refresh_in_flight: false,
-            git_refresh_due_after_in_flight: false,
-            git_identity_refresh_requested: false,
-            git_refresh_spawn_retry_pending: false,
-            pending_restored_worktree_spaces: Vec::new(),
-            restored_worktree_validation_retry_at: None,
-            git_status_cache: HashMap::new(),
-            pending_api_worktree_creates: HashMap::new(),
-            worktree_read_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
-            pending_api_worktree_removes: HashMap::new(),
-            pending_api_worktree_remove_paths: HashMap::new(),
-            pending_worktree_remove_runtime_exits: HashMap::new(),
-            pending_worktree_remove_runtime_restores: HashMap::new(),
-            next_api_worktree_operation_id: 1,
             next_auto_update_check: version_check_enabled
                 .then_some(Instant::now() + AUTO_UPDATE_CHECK_INTERVAL),
             next_agent_manifest_update_check: manifest_check_enabled
@@ -693,7 +651,6 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
-        app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }
 
@@ -758,7 +715,6 @@ impl App {
                 .get(idx)
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
-        app.refresh_restored_workspace_git_metadata();
         Ok(app)
     }
 
@@ -904,6 +860,7 @@ impl App {
                 diagnostics.push(format!("{diagnostic}; keeping previous [ui] settings"));
             } else {
                 diagnostics.extend(config.ui.sound.diagnostics());
+                diagnostics.extend(config.ui.sidebar.spaces.diagnostics());
                 diagnostics.extend(crate::config::tab_bar_right_diagnostics(
                     &config.ui.tab_bar_right,
                 ));
@@ -1017,11 +974,6 @@ impl App {
             self.state.new_terminal_cwd = config.terminal.new_cwd.clone();
         }
 
-        if !invalid_section("worktrees") {
-            self.state.worktree_directory =
-                crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
-        }
-
         if !invalid_section("theme") {
             self.state.theme_runtime = theme_runtime_config(config, !invalid_section("ui"));
             self.refresh_effective_app_theme();
@@ -1121,29 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn git_refresh_deadline_is_suppressed_while_in_flight() {
-        let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
-        app.git_refresh_in_flight = true;
-
-        assert_eq!(app.git_refresh_deadline(), None);
-    }
-
-    #[test]
-    fn unchanged_git_status_event_has_no_render_impact() {
-        let mut app = test_app();
-        app.git_refresh_in_flight = true;
-
-        let changed = app.handle_internal_event_with_render_impact(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
-        });
-
-        assert!(!changed);
-        assert!(!app.git_refresh_in_flight);
-    }
-
-    #[test]
     fn tab_bar_command_events_render_only_when_visible_output_changes() {
         if !crate::platform::status_commands_supported() {
             return;
@@ -1172,47 +1101,6 @@ mod tests {
             generation.wrapping_add(1),
             Some("stale"),
         )));
-    }
-
-    #[test]
-    fn git_status_event_clears_in_flight_refresh() {
-        let mut app = test_app();
-        app.git_refresh_in_flight = true;
-        let previous_refresh = Instant::now() - Duration::from_secs(10);
-        app.last_git_remote_status_refresh = previous_refresh;
-
-        app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
-        });
-
-        assert!(!app.git_refresh_in_flight);
-        assert!(app.last_git_remote_status_refresh > previous_refresh);
-    }
-
-    #[test]
-    fn git_status_event_marks_render_dirty_when_status_changes() {
-        let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
-        let _ = app.render_dirty.take();
-        let workspace_id = app.state.workspaces[0].id.clone();
-        let resolved_identity_cwd = app.state.workspaces[0].resolved_identity_cwd().unwrap();
-
-        app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![crate::workspace::WorkspaceGitStatus {
-                workspace_id,
-                resolved_identity_cwd: resolved_identity_cwd.clone(),
-                status_cache_key: resolved_identity_cwd,
-                demand: crate::workspace::GitStatusRefreshDemand::ALL,
-                auto_label: "one".into(),
-                branch: Some("render-dirty-test".into()),
-                ahead_behind: Some((1, 0)),
-                space: None,
-            }],
-            cache_updates: Vec::new(),
-        });
-
-        assert!(app.render_dirty.is_pending());
     }
 
     #[test]
@@ -1347,21 +1235,6 @@ mod tests {
             }
         );
         assert!(app.state.toast.is_none());
-    }
-
-    #[test]
-    fn unchanged_git_status_drain_has_no_render_impact() {
-        let mut app = test_app();
-        app.git_refresh_in_flight = true;
-        app.event_tx
-            .try_send(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new(),
-            })
-            .unwrap();
-
-        assert!(!app.drain_internal_events());
-        assert!(!app.git_refresh_in_flight);
     }
 
     #[test]
@@ -3130,46 +3003,6 @@ mod tests {
     }
 
     #[test]
-    fn pane_close_request_requires_confirmation_before_closing_parent_worktree_group() {
-        let mut app = test_app();
-        let mut parent = Workspace::test_new("api-pane-close-parent");
-        parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
-        let mut child = Workspace::test_new("api-pane-close-child");
-        child.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-child".into(),
-            is_linked_worktree: true,
-        });
-        app.state.workspaces = vec![parent, child];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 1;
-
-        let target_pane = app.state.workspaces[0].tabs[0].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).unwrap().pane_id;
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_pane_close_parent_group".into(),
-            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
-                pane_id: target_pane_id,
-            }),
-        });
-        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-
-        assert_eq!(response["error"]["code"], "confirmation_required");
-        assert_eq!(app.state.selected, 1);
-        assert_eq!(app.state.workspaces.len(), 2);
-    }
-
-    #[test]
     fn session_dirty_flag_schedules_debounced_save() {
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -3189,7 +3022,7 @@ mod tests {
         app.next_auto_update_check = Some(now + Duration::from_secs(6));
 
         assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.next_headless_loop_deadline(now, false),
             app.session_save_deadline
         );
     }
@@ -3204,10 +3037,7 @@ mod tests {
         app.session_save_deadline = None;
         app.state.workspaces.clear();
 
-        assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
-            None
-        );
+        assert_eq!(app.next_headless_loop_deadline(now, false), None);
     }
 
     #[test]

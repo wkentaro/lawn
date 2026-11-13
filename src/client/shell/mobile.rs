@@ -718,7 +718,13 @@ fn mobile_items(
             items.push(MobileItem {
                 lines: vec![
                     Line::from(vec![
-                        Span::styled("  ", Style::default().bg(background)),
+                        Span::styled(
+                            "  ",
+                            Style::default()
+                                .fg(palette.overlay0)
+                                .bg(background)
+                                .add_modifier(dim),
+                        ),
                         Span::styled(
                             status_icon(agent.agent_status, config.status_indicators),
                             Style::default()
@@ -769,11 +775,7 @@ fn mobile_items(
         palette,
     ));
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
-        for entry in super::render::workspace_entries(
-            endpoint.snapshot,
-            &HashSet::new(),
-            Some(endpoint.parking),
-        ) {
+        for entry in super::render::workspace_entries(endpoint.snapshot, Some(endpoint.parking)) {
             let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
                 continue;
             };
@@ -797,34 +799,7 @@ fn mobile_items(
             } else {
                 palette.panel_bg
             };
-            let connector = if entry.indented {
-                if entry.last_child {
-                    "└─ "
-                } else {
-                    "├─ "
-                }
-            } else {
-                ""
-            };
-            let name = if entry.indented && !workspace.custom_label {
-                workspace
-                    .branch
-                    .as_deref()
-                    .and_then(|branch| branch.strip_prefix("worktree/").or(Some(branch)))
-                    .unwrap_or(&workspace.label)
-            } else {
-                &workspace.label
-            };
-            let branch = workspace.branch.as_deref().unwrap_or("shell");
-            let detail_prefix = if entry.indented {
-                if entry.last_child {
-                    "       "
-                } else {
-                    "  │    "
-                }
-            } else {
-                "  "
-            };
+            let name = &workspace.label;
             let dim = if endpoint.stale() {
                 Modifier::DIM
             } else {
@@ -849,7 +824,7 @@ fn mobile_items(
                 lines: vec![
                     Line::from(vec![
                         Span::styled(
-                            format!("  {connector}"),
+                            "  ",
                             Style::default()
                                 .fg(palette.overlay0)
                                 .bg(background)
@@ -863,11 +838,7 @@ fn mobile_items(
                         Span::styled(
                             crate::ui::truncate_end(
                                 &format!("{} · {name}", endpoint.label),
-                                usize::from(content_width.saturating_sub(if entry.indented {
-                                    8
-                                } else {
-                                    5
-                                })),
+                                usize::from(content_width.saturating_sub(5)),
                             ),
                             Style::default()
                                 .fg(foreground)
@@ -878,7 +849,7 @@ fn mobile_items(
                     Line::from(Span::styled(
                         crate::ui::truncate_end(
                             &format!(
-                                "{detail_prefix}{branch} · {}{stale_detail}",
+                                "  {}{stale_detail}",
                                 compact_tab_status(
                                     endpoint.snapshot,
                                     workspace,

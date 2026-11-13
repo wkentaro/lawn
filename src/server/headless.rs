@@ -611,11 +611,7 @@ impl HeadlessServer {
             // 8. Wait for next event.
             let next_deadline = self
                 .app
-                .next_headless_loop_deadline_with_git_refresh(
-                    now,
-                    needs_render,
-                    self.git_refresh_scheduled(),
-                )
+                .next_headless_loop_deadline(now, needs_render)
                 .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
                 .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL));
             let next_deadline = self
@@ -933,16 +929,6 @@ impl HeadlessServer {
                 && client.direct_graphics
                 && client.pixel_mouse
         })
-    }
-
-    fn has_app_client(&self) -> bool {
-        self.app_client_count() > 0
-    }
-
-    /// Periodic Git refresh follows attached clients. A refresh whose worker
-    /// failed to start still retries without one, so restored metadata settles.
-    fn git_refresh_scheduled(&self) -> bool {
-        self.has_app_client() || self.app.git_refresh_spawn_retry_pending
     }
 
     fn remove_client(&mut self, client_id: u64) -> bool {
@@ -1965,7 +1951,6 @@ impl HeadlessServer {
                     "client connected"
                 );
                 self.app.ensure_default_workspace();
-                let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.allocate_activity_stamp();
                 let observed = crate::kitty_graphics::HostCellSize {
                     width_px: cell_width_px,
@@ -2052,9 +2037,6 @@ impl HeadlessServer {
                 self.send_to_client(client_id, snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);
-                }
-                if first_app_client {
-                    self.app.mark_git_status_refresh_due(Instant::now());
                 }
                 self.sync_foreground_client_state();
                 self.claim_unowned_shell_tab_geometry(client_id, true);
@@ -2618,56 +2600,18 @@ impl HeadlessServer {
                 final_chunk,
                 data,
             } => {
-                let command_surface_revision = self.clients.get(&client_id).and_then(|client| {
-                    (matches!(client.mode, ClientConnectionMode::ClientShell)
+                let in_flight = self.clients.get(&client_id).is_some_and(|client| {
+                    matches!(client.mode, ClientConnectionMode::ClientShell)
                         && client.shell_endpoint_command_in_flight
-                        && boot_id == self.client_shell_boot_id)
-                        .then_some(client.shell_endpoint_command_surface_revision)
-                        .flatten()
+                        && boot_id == self.client_shell_boot_id
                 });
-                let Some(command_surface_revision) = command_surface_revision else {
+                if !in_flight {
                     return false;
-                };
-                let completed_deferred_response =
-                    self.clients.get_mut(&client_id).and_then(|client| {
-                        let response = client.shell_deferred_navigation_response.as_mut()?;
-                        response.extend_from_slice(&data);
-                        final_chunk
-                            .then(|| client.shell_deferred_navigation_response.take())
-                            .flatten()
-                    });
+                }
                 if final_chunk {
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.shell_endpoint_command_in_flight = false;
-                        client.shell_endpoint_command_surface_revision = None;
-                        client.shell_deferred_navigation_request_id = None;
                     }
-                }
-                let deferred_tab_id = completed_deferred_response
-                    .as_deref()
-                    .and_then(Self::deferred_endpoint_navigation_tab_id);
-                let focus_before = self.shell_focus_target(client_id);
-                let focused_panes_before = self.focused_shell_panes();
-                let navigation_changed = self.clients.get(&client_id).is_some_and(|client| {
-                    client.is_active_shell_client()
-                        && client.shell_projection_revision == command_surface_revision
-                }) && deferred_tab_id
-                    .as_deref()
-                    .is_some_and(|tab_id| self.focus_shell_client_on_tab(client_id, tab_id));
-                let geometry_changed =
-                    navigation_changed && self.claim_shell_tab_geometry(client_id, false);
-                if navigation_changed {
-                    self.deactivate_client_pane_focus(client_id);
-                    self.reconcile_client_shell_locations();
-                    let focus_after = self.shell_focus_target(client_id);
-                    let focused_panes_after = self.focused_shell_panes();
-                    self.app.accept_current_focus_without_events();
-                    self.send_shell_navigation_focus_events(
-                        focus_before.as_ref(),
-                        focus_after.as_ref(),
-                        &focused_panes_before,
-                        &focused_panes_after,
-                    );
                 }
                 self.send_to_client(
                     client_id,
@@ -2678,7 +2622,7 @@ impl HeadlessServer {
                         data,
                     },
                 );
-                navigation_changed | geometry_changed
+                false
             }
             ServerEvent::ClientDetach { client_id } => {
                 info!(client_id, "client detached");
@@ -3120,21 +3064,6 @@ impl HeadlessServer {
                 .handle_deferred_agent_api_request(msg.request, msg.respond_to);
             return changed | deferred_changed;
         }
-        if matches!(
-            &msg.request.method,
-            api::schema::Method::WorktreeCreate(_)
-                | api::schema::Method::WorktreeRemove(_)
-                | api::schema::Method::WorktreeList(_)
-                | api::schema::Method::WorktreeOpen(_)
-        ) {
-            let read_only = matches!(&msg.request.method, api::schema::Method::WorktreeList(_));
-            let deferred_changed = self.app.handle_deferred_worktree_api_request(
-                msg.request,
-                msg.respond_to,
-                client_local,
-            );
-            return changed | (deferred_changed && !read_only);
-        }
         if self.foreground_client_id.is_some_and(|client_id| {
             self.clients
                 .get(&client_id)
@@ -3444,18 +3373,6 @@ impl HeadlessServer {
                 }
                 changed = true;
             }
-        }
-
-        if self
-            .app
-            .restored_worktree_validation_retry_at
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.app.start_restored_worktree_validation(now);
-        }
-
-        if self.git_refresh_scheduled() {
-            self.app.start_git_status_refresh_if_due(now);
         }
 
         if self

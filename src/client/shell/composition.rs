@@ -61,8 +61,6 @@ impl ClientShellState {
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
             collapsed_endpoints: &self.collapsed_endpoints,
-            collapsed_groups: &self.collapsed_groups,
-            remote_collapsed_groups: &self.remote_collapsed_groups,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
@@ -254,8 +252,6 @@ impl ClientShellState {
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
                 collapsed_endpoints: &self.collapsed_endpoints,
-                collapsed_groups: &self.collapsed_groups,
-                remote_collapsed_groups: &self.remote_collapsed_groups,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
@@ -733,8 +729,6 @@ impl ClientShellState {
                 self.hits.navigator_close = rendered.navigator_close;
                 self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
                 self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
-                self.hits.worktree_search = rendered.worktree_search;
-                self.hits.worktree_rows = rendered.worktree_rows;
                 self.hits.help_popup = rendered.help_popup;
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;

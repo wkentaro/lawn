@@ -331,19 +331,6 @@ impl App {
             .unwrap_or_default();
 
         if closes_workspace {
-            if let Err(response) = self.require_restored_group_close_ready(
-                &id,
-                &self.state.workspace_close_indices(ws_idx),
-            ) {
-                return response;
-            }
-            if self.state.confirm_implicit_worktree_group_close(ws_idx) {
-                return encode_error(
-                    id,
-                    "confirmation_required",
-                    "closing this tab would close a worktree group",
-                );
-            }
             let workspace = self.workspace_info(ws_idx);
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();
@@ -692,8 +679,8 @@ mod tests {
         let created_terminal_id = created.terminal_id(created.root_pane).unwrap();
         let created_cwd = &app.state.terminals.get(created_terminal_id).unwrap().cwd;
         assert_eq!(
-            crate::worktree::canonical_or_original(created_cwd),
-            crate::worktree::canonical_or_original(&cached_cwd)
+            super::super::test_support::canonical_or_original(created_cwd),
+            super::super::test_support::canonical_or_original(&cached_cwd)
         );
         shutdown_test_runtimes(&mut app);
     }

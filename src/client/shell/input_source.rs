@@ -8,7 +8,6 @@ impl ClientShellState {
                 ClientShellOverlay::ConfirmClose(_)
                     | ClientShellOverlay::Help(_)
                     | ClientShellOverlay::Navigator(_)
-                    | ClientShellOverlay::WorktreeRemove(_)
                     | ClientShellOverlay::ContextMenu(_)
                     | ClientShellOverlay::GlobalMenu(_)
             );

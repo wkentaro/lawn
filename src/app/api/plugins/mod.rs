@@ -3186,76 +3186,6 @@ command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
             pane_context.focused_pane_id.as_deref(),
             Some(active_public_pane_id.as_str())
         );
-
-        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
-        let workspace = app.workspace_info(0);
-        let worktree = crate::api::schema::WorktreeInfo {
-            path: "/repo/herdr-issue".into(),
-            branch: Some("worktree/issue".into()),
-            is_bare: false,
-            is_detached: false,
-            is_prunable: false,
-            is_linked_worktree: true,
-            open_workspace_id: None,
-            label: "herdr".into(),
-        };
-        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-other".into(),
-            is_linked_worktree: true,
-        });
-        let changed_context = app.plugin_context_for_event(
-            &crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::WorktreeRemoved,
-                data: crate::api::schema::EventData::WorktreeRemoved {
-                    workspace_id: workspace_id.clone(),
-                    workspace: Some(workspace.clone()),
-                    worktree: worktree.clone(),
-                    forced: true,
-                },
-            },
-            "worktree.removed",
-        );
-        assert_eq!(
-            changed_context
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.checkout_path.as_str()),
-            Some("/repo/herdr-issue")
-        );
-
-        app.state.workspaces.clear();
-        let removed_context = app.plugin_context_for_event(
-            &crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::WorktreeRemoved,
-                data: crate::api::schema::EventData::WorktreeRemoved {
-                    workspace_id: workspace_id.clone(),
-                    workspace: Some(workspace),
-                    worktree,
-                    forced: true,
-                },
-            },
-            "worktree.removed",
-        );
-        assert_eq!(
-            removed_context.workspace_id.as_deref(),
-            Some(workspace_id.as_str())
-        );
-        assert_eq!(
-            removed_context
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.checkout_path.as_str()),
-            Some("/repo/herdr-issue")
-        );
     }
 
     #[cfg(unix)]
@@ -3471,13 +3401,6 @@ action = "missing"
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.workspaces[0].custom_name = Some("Plugin Work".into());
-        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let pane_public = app.public_pane_id(0, pane_id).unwrap();
         let tab_public = app.public_tab_id(0, 0).unwrap();
@@ -3550,12 +3473,6 @@ command = ["show-ctx"]
         );
         assert_eq!(context.invocation_source.as_deref(), Some("api"));
         assert_eq!(context.correlation_id.as_deref(), Some("invoke-context"));
-        let worktree = context.worktree.as_ref().unwrap();
-        assert_eq!(worktree.repo_key, "repo-key");
-        assert_eq!(worktree.repo_name, "herdr");
-        assert_eq!(worktree.repo_root, "/repo/herdr");
-        assert_eq!(worktree.checkout_path, "/repo/herdr-issue");
-        assert!(worktree.is_linked_worktree);
 
         let _ = std::fs::remove_dir_all(root);
     }

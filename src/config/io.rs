@@ -17,7 +17,6 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "theme",
     "ui",
     "update",
-    "worktrees",
 ];
 
 pub fn app_dir_name() -> &'static str {
@@ -351,14 +350,6 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.advanced = section,
-    );
-    load_live_section(
-        table,
-        "worktrees",
-        "worktree config",
-        &mut diagnostics,
-        &mut invalid_sections,
-        |section| config.worktrees = section,
     );
     load_live_section(
         table,

@@ -620,9 +620,6 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_overlay_text(&mut self, text: &str) -> bool {
-        if self.insert_worktree_overlay_text(text) {
-            return true;
-        }
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::Rename(rename)) => {
                 rename.input.insert(text);
@@ -800,9 +797,6 @@ impl ClientShellState {
             return;
         }
 
-        if self.route_worktree_overlay_key(key, outcome) {
-            return;
-        }
         if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
             if matches!(key.code, KeyCode::Modifier(_))
                 || (key.kind == KeyEventKind::Repeat
@@ -1087,25 +1081,16 @@ impl ClientShellState {
     pub(super) fn request_workspace_close(
         &mut self,
         workspace_id: String,
-        close_group: Option<bool>,
         outcome: &mut ClientShellInput,
     ) {
         if self.config.confirm_close {
-            self.open_close_confirmation(workspace_id, None, close_group);
+            self.open_close_confirmation(workspace_id, None);
             return;
         }
-        let close_group = close_group.unwrap_or_else(|| {
-            self.snapshot.as_deref().is_some_and(|snapshot| {
-                snapshot.workspaces.iter().any(|workspace| {
-                    workspace.workspace_id == workspace_id
-                        && super::sidebar::workspace_close_is_group(snapshot, workspace)
-                })
-            })
-        });
         self.push_endpoint_method(
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id,
-                close_group,
+                close_group: false,
             }),
             outcome,
         );
@@ -1129,7 +1114,7 @@ impl ClientShellState {
             .then(|| (tab.workspace_id.clone(), tab.tab_id.clone()))
         });
         if let Some((workspace_id, tab_id)) = target {
-            if self.open_close_confirmation(workspace_id, Some(tab_id), None) {
+            if self.open_close_confirmation(workspace_id, Some(tab_id)) {
                 if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
                     if let Some(target) = confirm.tab_target.as_mut() {
                         target.pane_id = Some(pane_id);
@@ -1162,7 +1147,7 @@ impl ClientShellState {
             .then(|| target.workspace_id.clone())
         });
         if let Some(workspace_id) = workspace_id {
-            if self.open_close_confirmation(workspace_id, Some(tab_id.clone()), None) {
+            if self.open_close_confirmation(workspace_id, Some(tab_id.clone())) {
                 outcome.repaint = true;
                 return;
             }
@@ -1212,22 +1197,17 @@ impl ClientShellState {
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,
-                close_group: confirm.close_group,
+                close_group: false,
             })
         };
         self.push_endpoint_method(method, outcome);
     }
 
     pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: String) {
-        self.open_close_confirmation(workspace_id, None, None);
+        self.open_close_confirmation(workspace_id, None);
     }
 
-    fn open_close_confirmation(
-        &mut self,
-        workspace_id: String,
-        tab_id: Option<String>,
-        close_group: Option<bool>,
-    ) -> bool {
+    fn open_close_confirmation(&mut self, workspace_id: String, tab_id: Option<String>) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
@@ -1238,34 +1218,6 @@ impl ClientShellState {
         else {
             return false;
         };
-        let group_key = workspace
-            .worktree
-            .as_ref()
-            .filter(|_| {
-                close_group.unwrap_or_else(|| {
-                    super::sidebar::workspace_close_is_group(snapshot, workspace)
-                })
-            })
-            .map(|worktree| worktree.key.as_str());
-        let group = group_key
-            .map(|key| {
-                snapshot
-                    .workspaces
-                    .iter()
-                    .filter(|member| {
-                        member
-                            .worktree
-                            .as_ref()
-                            .is_some_and(|worktree| worktree.key == key)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| vec![workspace]);
-        let closes_group = group.len() > 1;
-        // Keep parent-group tab closes on the existing server confirmation path.
-        if tab_id.is_some() && closes_group {
-            return false;
-        }
         let tab_target = if let Some(tab_id) = tab_id {
             let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
             else {
@@ -1279,24 +1231,14 @@ impl ClientShellState {
         } else {
             None
         };
-        let pane_count = group
-            .iter()
-            .map(|member| {
-                snapshot
-                    .panes
-                    .iter()
-                    .filter(|pane| pane.workspace_id == member.workspace_id)
-                    .count()
-            })
-            .sum::<usize>();
-        let parked_count = group
-            .iter()
-            .flat_map(|member| {
-                snapshot
-                    .panes
-                    .iter()
-                    .filter(move |pane| pane.workspace_id == member.workspace_id)
-            })
+        let workspace_panes = || {
+            snapshot
+                .panes
+                .iter()
+                .filter(|pane| pane.workspace_id == workspace.workspace_id)
+        };
+        let pane_count = workspace_panes().count();
+        let parked_count = workspace_panes()
             .filter(|pane| {
                 self.active_parking()
                     .is_some_and(|parking| parking.hides_pane(&pane.pane_id))
@@ -1310,22 +1252,12 @@ impl ClientShellState {
         } else {
             format!("{pane_count} panes")
         };
-        let scope = if closes_group {
-            format!("{} workspaces, {panes}", group.len())
-        } else {
-            panes
-        };
         self.overlay = Some(ClientShellOverlay::ConfirmClose(
             ClientConfirmCloseOverlay {
                 workspace_id,
-                close_group: closes_group,
                 tab_target,
-                title: if closes_group {
-                    "Close worktree group?".to_owned()
-                } else {
-                    "Close workspace?".to_owned()
-                },
-                detail: format!("{} — {scope}", workspace.label),
+                title: "Close workspace?".to_owned(),
+                detail: format!("{} — {panes}", workspace.label),
             },
         ));
         true

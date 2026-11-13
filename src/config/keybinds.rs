@@ -355,9 +355,6 @@ pub struct Keybinds {
     pub help: ActionKeybinds,
     pub settings: ActionKeybinds,
     pub new_workspace: ActionKeybinds,
-    pub new_worktree: ActionKeybinds,
-    pub open_worktree: ActionKeybinds,
-    pub remove_worktree: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
@@ -543,9 +540,6 @@ impl Config {
             help: empty_action!(),
             settings: empty_action!(),
             new_workspace: empty_action!(),
-            new_worktree: empty_action!(),
-            open_worktree: empty_action!(),
-            remove_worktree: empty_action!(),
             rename_workspace: empty_action!(),
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
@@ -677,9 +671,6 @@ impl Config {
             apply_action!(keybinds.help, help, source);
             apply_action!(keybinds.settings, settings, source);
             apply_action!(keybinds.new_workspace, new_workspace, source);
-            apply_action!(keybinds.new_worktree, new_worktree, source);
-            apply_action!(keybinds.open_worktree, open_worktree, source);
-            apply_action!(keybinds.remove_worktree, remove_worktree, source);
             apply_action!(keybinds.rename_workspace, rename_workspace, source);
             apply_action!(keybinds.close_workspace, close_workspace, source);
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
@@ -1680,18 +1671,6 @@ next_tab = "prefix+n"
     }
 
     #[test]
-    fn new_worktree_defaults_to_prefix_shift_g() {
-        let kb = Config::default().keybinds();
-        assert_eq!(
-            binding_triggers(&kb.new_worktree),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('g'),
-                KeyModifiers::SHIFT
-            ))]
-        );
-    }
-
-    #[test]
     fn goto_defaults_to_prefix_g() {
         let kb = Config::default().keybinds();
         assert_eq!(
@@ -1701,13 +1680,6 @@ next_tab = "prefix+n"
                 KeyModifiers::empty()
             ))]
         );
-    }
-
-    #[test]
-    fn open_and_remove_worktree_keybinds_are_unset_by_default() {
-        let kb = Config::default().keybinds();
-        assert!(kb.open_worktree.bindings.is_empty());
-        assert!(kb.remove_worktree.bindings.is_empty());
     }
 
     #[test]

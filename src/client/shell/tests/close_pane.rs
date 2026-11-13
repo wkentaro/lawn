@@ -221,62 +221,6 @@ fn last_pane_confirmation_rejects_missing_moved_or_reconnected_targets() {
 }
 
 #[test]
-fn last_pane_close_preserves_parent_group_and_linked_workspace_scope() {
-    for linked in [false, true] {
-        let mut state = close_state(true, 1);
-        let mut projected = state.snapshot.as_deref().unwrap().clone();
-        projected.workspaces[0].worktree = Some(ClientShellWorktree {
-            key: "repo".into(),
-            label: "repo".into(),
-            is_linked_worktree: linked,
-        });
-        let mut sibling = projected.workspaces[0].clone();
-        sibling.workspace_id = "ws_2".into();
-        sibling.active_tab_id = "tab_2".into();
-        sibling.focused = false;
-        sibling.worktree.as_mut().unwrap().is_linked_worktree = !linked;
-        projected.workspaces.push(sibling);
-        let mut tab = projected.tabs[0].clone();
-        tab.tab_id = "tab_2".into();
-        tab.workspace_id = "ws_2".into();
-        tab.focused = false;
-        projected.tabs.push(tab);
-        state.set_snapshot(Box::new(projected));
-
-        let close = request_close(&mut state, false);
-        if linked {
-            assert_no_close(&close);
-            assert!(matches!(
-                state.overlay,
-                Some(ClientShellOverlay::ConfirmClose(_))
-            ));
-            assert_pane_close(&state.handle_input_bytes(b"\r"));
-        } else {
-            assert_pane_close(&close);
-            assert!(state.overlay.is_none());
-            let [ClientShellAction::Endpoint { request, .. }] = close.actions.as_slice() else {
-                panic!("tab close request");
-            };
-            state.handle_endpoint_result(
-                "boot-1",
-                &request.id,
-                Err(ClientShellEndpointError {
-                    code: Some("confirmation_required".into()),
-                    message: "closing this tab would close a worktree group".into(),
-                }),
-            );
-            assert!(matches!(state.overlay.as_ref(),
-                Some(ClientShellOverlay::ConfirmClose(confirm)) if confirm.title == "Close worktree group?"));
-            let accepted = state.handle_input_bytes(b"\r");
-            assert!(matches!(accepted.actions.as_slice(),
-                [ClientShellAction::Endpoint { request, .. }]
-                    if matches!(&request.method, Method::WorkspaceClose(params)
-                        if params.workspace_id == "ws_1" && params.close_group)));
-        }
-    }
-}
-
-#[test]
 fn ordinary_pane_close_stays_immediate_with_another_pane() {
     for menu in [false, true] {
         let mut state = close_state(true, 1);

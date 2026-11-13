@@ -128,8 +128,9 @@ pub enum SpaceSidebarToken {
     StateIcon,
     StateText,
     Workspace,
-    Branch,
-    GitStatus,
+    /// A token from the removed git integration (`branch`, `git_status`).
+    /// It still parses so old configs load, renders nothing, and is reported.
+    Retired(&'static str),
     Custom(String),
     Styled {
         token: Box<SpaceSidebarToken>,
@@ -199,9 +200,7 @@ impl RawSidebarToken {
                 if token.rules.len() > 16 {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
-                if !token.rules.is_empty()
-                    && matches!(token.token.as_str(), "state_icon" | "git_status")
-                {
+                if !token.rules.is_empty() && token.token == "state_icon" {
                     return Err("sidebar rules require a text-valued token".into());
                 }
                 Ok((
@@ -289,8 +288,7 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::StateIcon => "state_icon".into(),
         SpaceSidebarToken::StateText => "state_text".into(),
         SpaceSidebarToken::Workspace => "workspace".into(),
-        SpaceSidebarToken::Branch => "branch".into(),
-        SpaceSidebarToken::GitStatus => "git_status".into(),
+        SpaceSidebarToken::Retired(name) => (*name).into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
     }
@@ -385,8 +383,8 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
                 ("workspace", Self::Workspace),
-                ("branch", Self::Branch),
-                ("git_status", Self::GitStatus),
+                ("branch", Self::Retired("branch")),
+                ("git_status", Self::Retired("git_status")),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -466,12 +464,36 @@ pub struct SpacesSidebarConfig {
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
-            rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
-            ],
+            rows: vec![vec![
+                SpaceSidebarToken::StateIcon,
+                SpaceSidebarToken::Workspace,
+            ]],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
         }
+    }
+}
+
+impl SpacesSidebarConfig {
+    pub(crate) fn diagnostics(&self) -> Vec<String> {
+        let mut retired = self
+            .rows
+            .iter()
+            .flatten()
+            .filter_map(|token| match token.parts().0 {
+                SpaceSidebarToken::Retired(name) => Some(*name),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        retired.sort_unstable();
+        retired.dedup();
+        retired
+            .into_iter()
+            .map(|name| {
+                format!(
+                    "sidebar token `{name}` in ui.sidebar.spaces.rows is no longer supported; ignoring token"
+                )
+            })
+            .collect()
     }
 }
 
@@ -505,10 +527,10 @@ mod tests {
         assert_eq!(config.agents.row_gap, 0);
         assert_eq!(
             config.spaces.rows,
-            vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
-            ]
+            vec![vec![
+                SpaceSidebarToken::StateIcon,
+                SpaceSidebarToken::Workspace
+            ]]
         );
         assert_eq!(config.spaces.row_gap, 0);
     }
@@ -599,7 +621,7 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = tru
         assert_eq!(style.dim, Some(false));
 
         let (token, style) = config.ui.sidebar.spaces.rows[0][0].parts();
-        assert_eq!(token, &SpaceSidebarToken::GitStatus);
+        assert_eq!(token, &SpaceSidebarToken::Retired("git_status"));
         assert_eq!(
             style.fg.unwrap().ratatui(),
             ratatui::style::Color::Rgb(0xff, 0x00, 0xaa)
@@ -642,11 +664,7 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
             let input = format!("[agents]\nrows = [[{{ token = 'machine', rules = [{rule}] }}]]");
             assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{rule}");
         }
-        for (section, token) in [
-            ("agents", "state_icon"),
-            ("spaces", "state_icon"),
-            ("spaces", "git_status"),
-        ] {
+        for (section, token) in [("agents", "state_icon"), ("spaces", "state_icon")] {
             let input = format!(
                 "[{section}]\nrows = [[{{ token = '{token}', rules = [{{ equals = 'x' }}] }}]]"
             );
@@ -659,6 +677,26 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
             let input = format!("[agents]\nrows = [[{{ token = 'machine', rules = [{rules}] }}]]");
             assert_eq!(toml::from_str::<SidebarConfig>(&input).is_ok(), count == 16);
         }
+    }
+
+    #[test]
+    fn retired_git_tokens_parse_and_report_a_diagnostic() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", { token = "git_status", rules = [{ equals = "x" }] }, "branch"]]
+"#,
+        )
+        .expect("retired tokens still parse");
+
+        assert_eq!(
+            config.ui.sidebar.spaces.diagnostics(),
+            vec![
+                "sidebar token `branch` in ui.sidebar.spaces.rows is no longer supported; ignoring token",
+                "sidebar token `git_status` in ui.sidebar.spaces.rows is no longer supported; ignoring token",
+            ]
+        );
+        assert!(SpacesSidebarConfig::default().diagnostics().is_empty());
     }
 
     #[test]

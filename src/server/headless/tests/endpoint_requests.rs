@@ -175,9 +175,6 @@ async fn background_endpoint_observations_preserve_presentation_and_pending_comm
                             client.last_activity,
                             client.shell_projection_revision,
                             client.shell_endpoint_command_in_flight,
-                            client.shell_endpoint_command_surface_revision,
-                            client.shell_deferred_navigation_request_id.clone(),
-                            client.shell_deferred_navigation_response.clone(),
                         )
                     }),
                 )
@@ -461,9 +458,6 @@ async fn background_endpoint_list_chunks_maximum_escaped_commands_without_presen
                     client.last_activity,
                     client.shell_projection_revision,
                     client.shell_endpoint_command_in_flight,
-                    client.shell_endpoint_command_surface_revision,
-                    client.shell_deferred_navigation_request_id.clone(),
-                    client.shell_deferred_navigation_response.clone(),
                 )
             }),
         )
@@ -807,9 +801,6 @@ async fn background_socket_requests_preserve_presentation_and_pending_work() {
                     client.last_activity,
                     client.shell_projection_revision,
                     client.shell_endpoint_command_in_flight,
-                    client.shell_endpoint_command_surface_revision,
-                    client.shell_deferred_navigation_request_id.clone(),
-                    client.shell_deferred_navigation_response.clone(),
                 )
             }),
         )

@@ -36,6 +36,7 @@ mod metadata_tokens;
 mod noninteractive_process;
 mod pane;
 use ghostty_vt::pane_graphics_files;
+mod home_path;
 mod persist;
 mod platform;
 mod plugin_command;
@@ -63,7 +64,6 @@ mod thread_spawn;
 mod ui;
 mod update;
 mod workspace;
-mod worktree;
 
 const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # Place this file at ~/.config/lawn/config.toml
@@ -153,9 +153,6 @@ const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
 # new_workspace = "prefix+shift+n"
-# new_worktree = "prefix+shift+g"
-# open_worktree = ""    # optional, unset by default
-# remove_worktree = ""  # optional, unset by default; opens confirmation
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
 # previous_workspace = "" # optional, unset by default
@@ -235,9 +232,6 @@ const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # allow_unelevated_clients = false
 # headless_cols = 120
 # headless_rows = 40
-
-# [worktrees]
-# directory = "~/.herdr/worktrees"
 
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
@@ -362,13 +356,13 @@ const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
 
-# Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
+# Expanded space rows. Built-ins are state_icon, state_text, and workspace.
 # Custom values reported through workspace metadata use a $name token, for example $jj_status.
 # Inline token styles accept strict #RGB/#RRGGBB foregrounds plus bold and dim booleans.
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# rows = [["state_icon", "workspace"]]
 
 # Background notification popup delivery
 [ui.toast]
@@ -628,7 +622,6 @@ fn main() -> io::Result<()> {
         println!("       lawn config <subcommand> ...");
         println!("       lawn channel <subcommand> ...");
         println!("       lawn workspace <subcommand> ...");
-        println!("       lawn worktree <subcommand> ...");
         println!("       lawn tab <subcommand> ...");
         println!("       lawn notification <subcommand> ...");
         println!("       lawn agent <subcommand> ...");
@@ -673,10 +666,6 @@ fn main() -> io::Result<()> {
             (
                 "lawn workspace <subcommand>",
                 "Workspace helpers over the socket API",
-            ),
-            (
-                "lawn worktree <subcommand>",
-                "Git worktree helpers over the socket API",
             ),
             ("lawn tab <subcommand>", "Tab helpers over the socket API"),
             (
@@ -776,7 +765,6 @@ fn main() -> io::Result<()> {
                 "channel",
                 "machine",
                 "workspace",
-                "worktree",
                 "pane",
                 "session",
                 "integration",

@@ -2,8 +2,8 @@
 use super::*;
 use crate::api::schema::AgentStatus;
 use crate::protocol::{
-    ClientShellAgent, ClientShellPane, ClientShellTab, ClientShellWorktree, PaneSurfacePane,
-    PaneSurfaceSplit, PaneSurfaceSplitDirection, SurfaceRect,
+    ClientShellAgent, ClientShellPane, ClientShellTab, PaneSurfacePane, PaneSurfaceSplit,
+    PaneSurfaceSplitDirection, SurfaceRect,
 };
 use crossterm::event::MouseEvent;
 mod text_editing;
@@ -19,7 +19,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         server_keybindings_toml: None,
         latest_release_notes_available: false,
         integration_updates_available: false,
-        worktree_directory: "/tmp/herdr-worktrees".into(),
+        worktree_directory: String::new(),
         release_notes: None,
         focused_workspace_id: Some("ws_1".into()),
         focused_tab_id: Some("tab_1".into()),
@@ -35,7 +35,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             number: 1,
             label: "client-shell".into(),
             custom_label: false,
-            branch: Some("main".into()),
+            branch: None,
             git_ahead_behind: None,
             tokens: Vec::new(),
             worktree: None,
@@ -64,28 +64,6 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
         }],
         agents: Vec::new(),
         commands: Vec::new(),
-    }
-}
-
-fn worktree_list_result(open_workspace_id: Option<&str>) -> crate::api::schema::ResponseResult {
-    crate::api::schema::ResponseResult::WorktreeList {
-        source: crate::api::schema::WorktreeSourceInfo {
-            repo_key: "repo-key".into(),
-            repo_name: "repo".into(),
-            repo_root: "/repo".into(),
-            source_checkout_path: "/repo".into(),
-            source_workspace_id: Some("ws_1".into()),
-        },
-        worktrees: vec![crate::api::schema::WorktreeInfo {
-            path: "/repo-feature".into(),
-            branch: Some("feature".into()),
-            is_bare: false,
-            is_detached: false,
-            is_prunable: false,
-            is_linked_worktree: true,
-            open_workspace_id: open_workspace_id.map(str::to_owned),
-            label: "repo".into(),
-        }],
     }
 }
 
@@ -246,7 +224,7 @@ fn surface_with_popup() -> PaneSurfaceFrame {
     surface
 }
 
-mod agents_worktrees_notifications;
+mod agents_notifications;
 mod chrome_context;
 mod close_pane;
 mod close_tab;

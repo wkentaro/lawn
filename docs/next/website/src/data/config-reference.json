@@ -507,24 +507,6 @@
           "description": "Create a new workspace."
         },
         {
-          "key": "keys.new_worktree",
-          "type": "keybinding",
-          "default": "\"prefix+shift+g\"",
-          "description": "Create a Git worktree from the selected workspace."
-        },
-        {
-          "key": "keys.open_worktree",
-          "type": "keybinding",
-          "default": "unset",
-          "description": "Open an existing Git worktree from the selected workspace. Unset by default."
-        },
-        {
-          "key": "keys.remove_worktree",
-          "type": "keybinding",
-          "default": "unset",
-          "description": "Delete the selected managed worktree checkout after confirmation. Unset by default."
-        },
-        {
           "key": "keys.rename_workspace",
           "type": "keybinding",
           "default": "\"prefix+shift+w\"",
@@ -1107,13 +1089,13 @@
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
-          "description": "Blank terminal rows between worktree groups and unrelated top-level Spaces. Worktree parents and their indented children remain packed."
+          "description": "Blank terminal rows between Spaces."
         },
         {
           "key": "ui.sidebar.spaces.rows",
           "type": "list of token rows",
-          "default": "[[\"state_icon\", \"workspace\"], [\"branch\", \"git_status\"]]",
-          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. At most 16 rows and 16 tokens per row."
+          "default": "[[\"state_icon\", \"workspace\"]]",
+          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon accepts fixed styles only. The retired branch and git_status tokens are ignored with a config warning. At most 16 rows and 16 tokens per row."
         },
         {
           "key": "ui.accent",
@@ -1466,18 +1448,6 @@
           "type": "integer",
           "default": "100",
           "description": "Milliseconds between automatic agent restores after a server restart. The first agent starts without this delay; 0 disables spacing. Does not delay manual launches or explicit terminal attaches. Restart the server to apply."
-        }
-      ]
-    },
-    {
-      "id": "worktrees",
-      "title": "Worktrees",
-      "keys": [
-        {
-          "key": "worktrees.directory",
-          "type": "string",
-          "default": "\"~/.herdr/worktrees\"",
-          "description": "Root directory under which Herdr creates <repo>/<branch-slug> checkouts."
         }
       ]
     },

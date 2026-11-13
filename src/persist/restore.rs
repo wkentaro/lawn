@@ -415,15 +415,6 @@ fn restore_workspace(
             id: workspace_id,
             custom_name: snap.custom_name.clone(),
             identity_cwd: snap.identity_cwd.clone(),
-            cached_identity_cwd: snap.identity_cwd.clone(),
-            // Repository metadata is optional and may block on unavailable
-            // storage. The app refreshes it after restoring the session.
-            cached_auto_label: crate::workspace::fallback_label_from_cwd(&snap.identity_cwd),
-            cached_git_status_key: snap.identity_cwd.clone(),
-            cached_git_branch: None,
-            cached_git_ahead_behind: None,
-            cached_git_space: None,
-            worktree_space: snap.worktree_space.clone(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -469,23 +460,6 @@ fn unavailable_restored_terminal(
         }
     }
     terminal
-}
-
-pub(crate) fn restored_worktree_space_membership(
-    space: Option<crate::workspace::WorktreeSpaceMembership>,
-) -> Option<crate::workspace::WorktreeSpaceMembership> {
-    space.filter(|space| {
-        crate::workspace::git_space_metadata(&space.checkout_path).is_none_or(|current| {
-            // Discovery may find an ancestor repo, or fall back to a per-worktree
-            // Git directory without objects when common-directory metadata is unreadable.
-            current.checkout_key
-                != crate::worktree::canonical_or_original(&space.checkout_path)
-                    .display()
-                    .to_string()
-                || current.key == space.key
-                || !std::path::Path::new(&current.key).join("objects").is_dir()
-        })
-    })
 }
 
 fn restore_tab(
@@ -1096,83 +1070,6 @@ mod tests {
     }
 
     #[test]
-    fn restored_worktree_space_membership_preserves_unavailable_checkout_and_rejects_replacement() {
-        let root = std::env::temp_dir().join(format!(
-            "herdr-restored-worktree-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        let ancestor = crate::workspace::git_space_metadata(&root).unwrap();
-        let checkout = root.join("checkout");
-        let membership = crate::workspace::WorktreeSpaceMembership {
-            key: "original-repo-key".into(),
-            label: "herdr".into(),
-            repo_root: root.join("original-repo"),
-            checkout_path: checkout.clone(),
-            is_linked_worktree: true,
-        };
-
-        // Missing and leftover directories may discover an unrelated ancestor repo.
-        assert_eq!(
-            restored_worktree_space_membership(Some(membership.clone())),
-            Some(membership.clone())
-        );
-        std::fs::create_dir_all(&checkout).unwrap();
-        assert_eq!(
-            restored_worktree_space_membership(Some(membership.clone())),
-            Some(membership.clone())
-        );
-
-        // A real repository at the saved checkout path can prove replacement.
-        std::fs::create_dir_all(checkout.join(".git/objects")).unwrap();
-        std::fs::write(checkout.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-        assert_eq!(
-            restored_worktree_space_membership(Some(membership.clone())),
-            None
-        );
-        let current = crate::workspace::git_space_metadata(&checkout).unwrap();
-        assert_ne!(current.key, ancestor.key);
-        let matching = crate::workspace::WorktreeSpaceMembership {
-            key: current.key,
-            ..membership.clone()
-        };
-        assert_eq!(
-            restored_worktree_space_membership(Some(matching.clone())),
-            Some(matching)
-        );
-
-        // Partial linked-worktree metadata is not evidence of replacement.
-        std::fs::remove_dir_all(checkout.join(".git")).unwrap();
-        let git_dir = root.join(".git/worktrees/restored");
-        std::fs::create_dir_all(&git_dir).unwrap();
-        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
-        std::fs::write(
-            checkout.join(".git"),
-            format!("gitdir: {}\n", git_dir.display()),
-        )
-        .unwrap();
-        let linked = crate::workspace::WorktreeSpaceMembership {
-            key: ancestor.key,
-            ..membership.clone()
-        };
-        assert_eq!(
-            restored_worktree_space_membership(Some(linked.clone())),
-            Some(linked)
-        );
-        std::fs::remove_dir_all(root).unwrap();
-        assert!(crate::workspace::git_space_metadata(&checkout).is_none());
-        assert_eq!(
-            restored_worktree_space_membership(Some(membership.clone())),
-            Some(membership)
-        );
-    }
-
-    #[test]
     fn restore_plan_respects_opt_in_and_allowlist() {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
@@ -1445,14 +1342,6 @@ mod tests {
                     }
                 }
             }
-            let membership = crate::workspace::WorktreeSpaceMembership {
-                key: "saved-repo-key".into(),
-                label: "saved-repo".into(),
-                repo_root: cwd.clone(),
-                checkout_path: missing.clone(),
-                is_linked_worktree: true,
-            };
-            snapshot.workspaces[0].worktree_space = Some(membership.clone());
             let failed = snapshot.workspaces[0].tabs[0].panes.get_mut(&1).unwrap();
             failed.cwd = missing.clone();
             failed.label = Some("keep my pane".into());
@@ -1488,11 +1377,6 @@ mod tests {
                 "a launch failure must not delete a workspace"
             );
             assert_eq!(captured.workspaces[0].tabs.len(), 2);
-            assert_eq!(
-                captured.workspaces[0].worktree_space,
-                Some(membership),
-                "an unavailable checkout must retain its saved repository group across restart"
-            );
             let pane = captured.workspaces[0].tabs[0]
                 .panes
                 .values()
@@ -1535,7 +1419,6 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1616,7 +1499,6 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                worktree_space: None,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 public_tab_numbers: vec![5],
@@ -1765,7 +1647,6 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                worktree_space: None,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
                 public_tab_numbers: vec![1, 3, 4, 5],
@@ -1848,7 +1729,6 @@ mod tests {
             id: Some("w1".into()),
             custom_name: None,
             identity_cwd: cwd,
-            worktree_space: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -1887,7 +1767,6 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
-                worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -2375,7 +2254,6 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd,
-                worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

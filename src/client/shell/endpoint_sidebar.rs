@@ -2,17 +2,6 @@
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 
-fn collapsed_groups_for_endpoint<'a>(
-    state: &'a ShellRenderState<'_>,
-    endpoint_id: &ClientEndpointId,
-) -> Option<&'a HashSet<String>> {
-    if endpoint_id.is_local() {
-        Some(state.collapsed_groups)
-    } else {
-        state.remote_collapsed_groups.get(endpoint_id)
-    }
-}
-
 pub(super) fn render_collapsed(
     buffer: &mut Buffer,
     area: Rect,
@@ -190,8 +179,6 @@ pub(super) fn render_collapsed(
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
                 workspace_id: workspace.workspace_id.clone(),
-                indented: false,
-                group_toggle: None,
             });
             y = y.saturating_add(1);
         }
@@ -262,8 +249,6 @@ pub(super) fn render_expanded(
             .add_modifier(Modifier::BOLD),
     );
 
-    let empty_collapsed_groups = HashSet::new();
-
     enum Row {
         Endpoint(usize),
         Workspace {
@@ -278,19 +263,13 @@ pub(super) fn render_expanded(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                .unwrap_or(&empty_collapsed_groups);
             rows.extend(
-                super::sidebar::workspace_entries(
-                    snapshot,
-                    collapsed_groups,
-                    Some(&endpoint.parking),
-                )
-                .into_iter()
-                .map(|entry| Row::Workspace {
-                    endpoint: endpoint_index,
-                    entry,
-                }),
+                super::sidebar::workspace_entries(snapshot, Some(&endpoint.parking))
+                    .into_iter()
+                    .map(|entry| Row::Workspace {
+                        endpoint: endpoint_index,
+                        entry,
+                    }),
             );
         }
     }
@@ -309,27 +288,16 @@ pub(super) fn render_expanded(
             Row::Endpoint(_) => 1,
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
-                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups);
                 endpoint
                     .snapshot
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(entry.index)?;
                         Some(
-                            super::sidebar::workspace_rows(
-                                workspace,
-                                super::sidebar::displayed_workspace_status(
-                                    snapshot,
-                                    workspace,
-                                    collapsed_groups,
-                                ),
-                                entry.indented,
-                                &config.spaces,
-                            )
-                            .len()
-                            .max(1)
-                            .min(u16::MAX as usize) as u16,
+                            super::sidebar::workspace_rows(workspace, &config.spaces)
+                                .len()
+                                .max(1)
+                                .min(u16::MAX as usize) as u16,
                         )
                     })
                     .unwrap_or(1)
@@ -344,9 +312,9 @@ pub(super) fn render_expanded(
                 Row::Workspace { endpoint, .. },
                 Some(Row::Workspace {
                     endpoint: next_endpoint,
-                    entry,
+                    ..
                 }),
-            ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
+            ) if endpoint == next_endpoint => config.spaces.row_gap,
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -442,19 +410,7 @@ pub(super) fn render_expanded(
                 let Some(workspace) = snapshot.workspaces.get(entry.index) else {
                     continue;
                 };
-                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups);
-                let status = super::sidebar::displayed_workspace_status(
-                    snapshot,
-                    workspace,
-                    collapsed_groups,
-                );
-                let tokens = super::sidebar::workspace_rows(
-                    workspace,
-                    status,
-                    entry.indented,
-                    &config.spaces,
-                );
+                let tokens = super::sidebar::workspace_rows(workspace, &config.spaces);
                 let height = (tokens.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
                 if y.saturating_add(height) > body.bottom() {
                     break;
@@ -473,9 +429,8 @@ pub(super) fn render_expanded(
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
-                    status,
+                    workspace.agent_status,
                     config.status_indicators,
-                    entry,
                     tokens,
                     endpoint_active && workspace.focused,
                     selected,
@@ -491,20 +446,10 @@ pub(super) fn render_expanded(
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                let group_toggle = super::sidebar::render_parent_group_toggle(
-                    buffer,
-                    rect,
-                    snapshot,
-                    entry.index,
-                    collapsed_groups,
-                    palette,
-                );
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
-                    indented: entry.indented,
-                    group_toggle,
                 });
                 y = y
                     .saturating_add(height)

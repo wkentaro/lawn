@@ -299,29 +299,10 @@ impl HeadlessServer {
     /// in the headless server — use this method instead.
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
-    pub(super) fn handle_internal_event_with_forwarding(&mut self, mut ev: AppEvent) -> bool {
+    pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
         if self.host_shutdown_requested() {
             return false;
         }
-        let focus_response = match &mut ev {
-            AppEvent::WorktreeAddFinished(result) => result
-                .api_request
-                .as_mut()
-                .filter(|request| request.focus)
-                .map(|request| &mut request.respond_to),
-            AppEvent::WorktreeReadFinished(result)
-                if matches!(&result.request.method,
-                api::schema::Method::WorktreeOpen(params) if params.focus) =>
-            {
-                Some(&mut result.respond_to)
-            }
-            _ => None,
-        };
-        let mut focused_worktree_response = focus_response.map(|respond_to| {
-            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
-            let original = std::mem::replace(respond_to, proxy_tx);
-            (original, proxy_rx)
-        });
         match &ev {
             AppEvent::TerminalBell { pane_id, count } => {
                 if !self.send_to_foreground_client(ServerMessage::TerminalBell { count: *count }) {
@@ -575,80 +556,7 @@ impl HeadlessServer {
 
                 true
             }
-            AppEvent::WorktreeReadFinished(result)
-                if matches!(&result.request.method, api::schema::Method::WorktreeList(_)) =>
-            {
-                self.app.handle_internal_event_with_render_impact(ev)
-            }
-            AppEvent::WorktreeAddFinished(_) | AppEvent::WorktreeReadFinished(_) => {
-                let deferred_request_id = match &ev {
-                    AppEvent::WorktreeAddFinished(result) => result
-                        .api_request
-                        .as_ref()
-                        .map(|request| request.id.as_str()),
-                    AppEvent::WorktreeReadFinished(result) => Some(result.request.id.as_str()),
-                    _ => None,
-                };
-                let client_local =
-                    matches!(&ev, AppEvent::WorktreeReadFinished(result) if result.client_local);
-                let shell_navigation_pending = client_local
-                    || deferred_request_id.is_some_and(|request_id| {
-                        self.clients.values().any(|client| {
-                            client.shell_deferred_navigation_request_id.as_deref()
-                                == Some(request_id)
-                        })
-                    });
-                let changed = self.app.handle_internal_event_with_render_impact(ev);
-                let api_focus_succeeded = super::client_views::forward_proxied_api_response(
-                    focused_worktree_response.take(),
-                )
-                .is_some();
-                self.reconcile_client_shell_locations();
-                if shell_navigation_pending {
-                    self.app.accept_current_focus_without_events();
-                } else if api_focus_succeeded {
-                    self.focus_all_shell_clients_on_default_target();
-                }
-                changed
-            }
-            AppEvent::WorktreeRemoveFinished(result) => {
-                let focus_before = self.shell_focus_targets();
-                let focused_panes_before = self.focused_shell_panes();
-                let shutdown_terminals = result
-                    .api_request
-                    .as_ref()
-                    .map(|request| {
-                        request
-                            .shutdown_panes
-                            .iter()
-                            .filter_map(|pane_id| {
-                                self.app.find_pane(*pane_id).map(|(_, pane)| {
-                                    (*pane_id, pane.attached_terminal_id.to_string())
-                                })
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                let pane_updates = self.app.handle_internal_event_with_pane_updates(ev);
-                for update in &pane_updates {
-                    self.forward_semantic_agent_notification(update);
-                    self.forward_pane_state_update_notifications_to_clients(update);
-                }
-                self.reconcile_client_shell_locations();
-                self.finish_shell_location_reconciliation(focus_before, &focused_panes_before);
-                self.reapply_controlled_shell_tab_geometry(false);
-                for (pane_id, terminal_id) in shutdown_terminals {
-                    if self.app.find_pane(pane_id).is_none() {
-                        self.shutdown_terminal_stream_clients(
-                            &terminal_id,
-                            format!("terminal {terminal_id} exited"),
-                        );
-                    }
-                }
-                true
-            }
-            AppEvent::PaneDied { pane_id, .. }
-            | AppEvent::WorktreeRuntimeRestoreFailed { pane_id, .. } => {
+            AppEvent::PaneDied { pane_id, .. } => {
                 let focus_before = self.shell_focus_targets();
                 let focused_panes_before = self.focused_shell_panes();
                 let pane_id_val = *pane_id;
@@ -659,21 +567,14 @@ impl HeadlessServer {
                             .map(|pane| pane.attached_terminal_id.to_string())
                     })
                 });
-                if matches!(&ev, AppEvent::PaneDied { .. })
-                    && !self
-                        .app
-                        .pending_worktree_remove_runtime_exits
-                        .contains_key(&pane_id_val)
+                if let Some(update) = self
+                    .app
+                    .state
+                    .publish_pane_process_exit_if_agent(pane_id_val, false)
                 {
-                    if let Some(update) = self
-                        .app
-                        .state
-                        .publish_pane_process_exit_if_agent(pane_id_val, false)
-                    {
-                        self.app.emit_pane_state_update(&update);
-                        self.forward_semantic_agent_notification(&update);
-                        self.forward_pane_state_update_notifications_to_clients(&update);
-                    }
+                    self.app.emit_pane_state_update(&update);
+                    self.forward_semantic_agent_notification(&update);
+                    self.forward_pane_state_update_notifications_to_clients(&update);
                 }
 
                 let pane_updates = self.app.handle_internal_event_with_pane_updates(ev);

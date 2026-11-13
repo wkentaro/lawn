@@ -256,9 +256,6 @@ impl HeadlessServer {
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceEnsureActive(_)
-                | Method::WorktreeCreate(_)
-                | Method::WorktreeOpen(_)
-                | Method::WorktreeRemove(_)
         )
     }
 
@@ -300,9 +297,6 @@ impl HeadlessServer {
                 | Method::WorkspaceMove(_)
                 | Method::WorkspaceMoveBlock(_)
                 | Method::WorkspaceRename(_)
-                | Method::WorktreeCreate(_)
-                | Method::WorktreeOpen(_)
-                | Method::WorktreeRemove(_)
         )
     }
 
@@ -330,24 +324,7 @@ impl HeadlessServer {
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceEnsureActive(_)
                 | Method::WorkspaceFocus(_)
-                | Method::WorktreeCreate(_)
-                | Method::WorktreeOpen(_)
-                | Method::WorktreeRemove(_)
         )
-    }
-
-    pub(super) fn deferred_endpoint_navigation_tab_id(response: &[u8]) -> Option<String> {
-        let response = serde_json::from_slice::<serde_json::Value>(response).ok()?;
-        if !matches!(
-            response.pointer("/result/type")?.as_str()?,
-            "worktree_created" | "worktree_opened"
-        ) {
-            return None;
-        }
-        response
-            .pointer("/result/tab/tab_id")?
-            .as_str()
-            .map(str::to_owned)
     }
 
     fn apply_shell_navigation_request(
@@ -494,27 +471,6 @@ impl HeadlessServer {
             self.shell_location_focus_transitions(focus_before, focused_panes_before);
         self.app.accept_current_focus_without_events();
         self.send_shell_focus_transitions(&lost, &gained);
-    }
-
-    pub(super) fn send_shell_navigation_focus_events(
-        &self,
-        before: Option<&ShellFocusTarget>,
-        after: Option<&ShellFocusTarget>,
-        focused_panes_before: &HashSet<PaneId>,
-        focused_panes_after: &HashSet<PaneId>,
-    ) {
-        let (lost, gained) = classify_shell_focus_transition(
-            before,
-            after,
-            focused_panes_before,
-            focused_panes_after,
-        );
-        if let Some(target) = lost {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
-        }
-        if let Some(target) = gained {
-            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Gained);
-        }
     }
 
     pub(super) fn shell_client_views_pane(

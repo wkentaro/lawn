@@ -307,9 +307,16 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
         _ => panic!("workspace context menu"),
     };
-    assert!(workspace_items
-        .iter()
-        .any(|item| item.action == ClientContextMenuAction::NewWorktree));
+    assert_eq!(
+        workspace_items
+            .iter()
+            .map(|item| item.action)
+            .collect::<Vec<_>>(),
+        [
+            ClientContextMenuAction::Rename,
+            ClientContextMenuAction::Close
+        ]
+    );
     state.compose(106, 20).expect("workspace context menu");
     let rename = state.hits.context_menu_rows[0].0;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {

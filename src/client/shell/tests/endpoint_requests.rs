@@ -1,5 +1,5 @@
 use super::*;
-use crate::client::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::client::endpoint::ClientEndpointId;
 
 fn pending_popup() -> (ClientShellState, Vec<ClientShellAction>) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -30,182 +30,11 @@ fn pending_popup() -> (ClientShellState, Vec<ClientShellAction>) {
     (state, outcome.actions)
 }
 
-fn pending_worktree() -> (ClientShellState, Vec<ClientShellAction>) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
-    submit_worktree(state)
-}
-
-fn submit_worktree(mut state: ClientShellState) -> (ClientShellState, Vec<ClientShellAction>) {
-    let boot_id = state.snapshot.as_ref().unwrap().boot_id.clone();
-    let mut outcome = ClientShellInput::default();
-    state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorktree),
-        &mut outcome,
-    );
-    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
-        panic!("expected worktree preparation");
-    };
-    state.handle_endpoint_result(&boot_id, &request.id, Ok(worktree_list_result(None)));
-    state.handle_input_bytes(b"feature/reconnect");
-    let outcome = state.handle_input_bytes(b"\r");
-    assert!(matches!(
-        &state.overlay,
-        Some(ClientShellOverlay::WorktreeCreate(create)) if create.creating
-    ));
-    (state, outcome.actions)
-}
-
 fn request_id(actions: &[ClientShellAction]) -> &str {
     let [ClientShellAction::Endpoint { request, .. }] = actions else {
         panic!("expected one endpoint request");
     };
     &request.id
-}
-
-fn worktree_created_result() -> crate::api::schema::ResponseResult {
-    serde_json::from_value(serde_json::json!({
-        "type": "worktree_created",
-        "workspace": {
-            "workspace_id": "ws_2", "number": 2, "label": "worktree",
-            "focused": false, "pane_count": 1, "tab_count": 1,
-            "active_tab_id": "tab_2", "agent_status": "idle"
-        },
-        "tab": {
-            "tab_id": "tab_2", "workspace_id": "ws_2", "number": 1,
-            "label": "worktree", "focused": false, "pane_count": 1,
-            "agent_status": "idle"
-        },
-        "root_pane": {
-            "pane_id": "pane_2", "terminal_id": "term_2", "workspace_id": "ws_2",
-            "tab_id": "tab_2", "focused": false, "agent_status": "idle", "revision": 0
-        },
-        "worktree": {
-            "path": "/repo-feature", "branch": "feature/reconnect", "is_bare": false,
-            "is_detached": false, "is_prunable": false, "is_linked_worktree": true,
-            "open_workspace_id": "ws_2", "label": "worktree"
-        }
-    }))
-    .unwrap()
-}
-
-fn add_remote(state: &mut ClientShellState) -> ClientEndpointId {
-    let profile = crate::client::endpoint::SavedSshEndpoint {
-        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
-        label: "Build".into(),
-        target: "dev@build.example".into(),
-        session: "agents".into(),
-        enabled: true,
-    };
-    let remote = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
-    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
-    let mut projection = snapshot();
-    projection.boot_id = "remote-boot".into();
-    state.set_endpoint_snapshot(&remote, Box::new(projection));
-    remote
-}
-
-#[test]
-fn worktree_create_leaves_server_focus_unchanged() {
-    let (_, actions) = pending_worktree();
-    let [ClientShellAction::Endpoint { request, .. }] = &actions[..] else {
-        panic!("expected worktree creation");
-    };
-    assert!(matches!(
-        &request.method,
-        crate::api::schema::Method::WorktreeCreate(params) if !params.focus
-    ));
-}
-
-#[test]
-fn worktree_create_success_focuses_returned_tab_on_its_endpoint_after_snapshot_update() {
-    for use_remote in [false, true] {
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-        state.set_snapshot(Box::new(snapshot()));
-        if use_remote {
-            let remote = add_remote(&mut state);
-            assert!(state.activate_endpoint_projection(&remote));
-        }
-        let (mut state, actions) = submit_worktree(state);
-        let endpoint_id = state.active_endpoint_id.clone();
-        let mut updated = state.snapshot.clone().unwrap();
-        let boot_id = updated.boot_id.clone();
-        updated.revision += 1;
-        updated.workspaces[0].label = "updated while creating".into();
-        state.set_endpoint_snapshot(&endpoint_id, updated);
-        let (repaint, focus) = state.handle_endpoint_result(
-            &boot_id,
-            request_id(&actions),
-            Ok(worktree_created_result()),
-        );
-        assert!(repaint);
-        assert!(state.overlay.is_none());
-        let [ClientShellAction::Endpoint {
-            endpoint_id: target,
-            boot_id: target_boot,
-            request,
-        }] = &focus[..]
-        else {
-            panic!("creation should request focus through normal client navigation");
-        };
-        assert_eq!(target, &endpoint_id);
-        assert_eq!(target_boot, &boot_id);
-        assert!(matches!(
-            &request.method,
-            crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_2"
-        ));
-        assert!(state
-            .handle_endpoint_result(
-                &boot_id,
-                request_id(&actions),
-                Ok(worktree_created_result())
-            )
-            .1
-            .is_empty());
-    }
-}
-
-#[test]
-fn worktree_create_late_success_does_not_focus_after_switching_away_and_back() {
-    let (mut state, actions) = pending_worktree();
-    let remote = add_remote(&mut state);
-    assert!(state.activate_endpoint_projection(&remote));
-    assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
-    assert!(state
-        .handle_endpoint_result(
-            "boot-1",
-            request_id(&actions),
-            Ok(worktree_created_result())
-        )
-        .1
-        .is_empty());
-}
-
-#[test]
-fn worktree_create_cancelled_or_failed_request_never_focuses() {
-    for cancel in [false, true] {
-        let (mut state, actions) = pending_worktree();
-        let id = request_id(&actions);
-        if cancel {
-            assert!(state.cancel_endpoint_request(id));
-        } else {
-            let (_, follow_up) = state.handle_endpoint_result(
-                "boot-1",
-                id,
-                Err(ClientShellEndpointError {
-                    code: Some("worktree_failed".into()),
-                    message: "creation failed".into(),
-                }),
-            );
-            assert!(follow_up.is_empty());
-        }
-        assert!(state
-            .handle_endpoint_result("boot-1", id, Ok(worktree_created_result()))
-            .1
-            .is_empty());
-    }
 }
 
 #[test]
@@ -220,27 +49,6 @@ fn cancelling_popup_request_unblocks_input_and_ignores_late_success() {
         .1
         .is_empty());
     assert!(!state.popup_pending);
-    assert!(!state.handle_input_bytes(b"x").requests.is_empty());
-}
-
-#[test]
-fn disconnect_cancels_worktree_dialog_before_same_server_reconnect() {
-    let (mut state, _) = pending_worktree();
-    state.mark_endpoint_disconnected(&ClientEndpointId::Local);
-    assert!(state.pending_requests.is_empty());
-    assert!(matches!(
-        &state.overlay,
-        Some(ClientShellOverlay::WorktreeCreate(create)) if !create.creating
-    ));
-    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
-    state.set_endpoint_snapshot(&ClientEndpointId::Local, Box::new(snapshot()));
-    assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
-    state.set_pane_surface(surface());
-    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
-        KeyCode::Esc,
-        KeyModifiers::NONE,
-    ))]);
-    assert!(state.overlay.is_none());
     assert!(!state.handle_input_bytes(b"x").requests.is_empty());
 }
 
@@ -295,12 +103,12 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
 }
 
 #[test]
-fn dispatcher_cancels_worktree_requests_on_frozen_surface_or_failed_send() {
+fn dispatcher_cancels_requests_on_frozen_surface_or_failed_send() {
     use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry};
     use crate::client::endpoint_commands::EndpointCommands;
 
     for fail_send in [false, true] {
-        let (mut state, actions) = pending_worktree();
+        let (mut state, actions) = pending_popup();
         let mut endpoints = EndpointRegistry::new(
             TestTransport { fail: fail_send },
             1,
@@ -321,10 +129,7 @@ fn dispatcher_cancels_worktree_requests_on_frozen_surface_or_failed_send() {
         assert!(repaint);
         assert!(replay.is_empty());
         assert!(state.pending_requests.is_empty());
-        assert!(matches!(
-            &state.overlay,
-            Some(ClientShellOverlay::WorktreeCreate(create)) if !create.creating
-        ));
+        assert!(!state.popup_pending);
         assert!(state
             .visible_endpoint_notice
             .as_ref()
