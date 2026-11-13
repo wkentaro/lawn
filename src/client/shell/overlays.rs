@@ -1167,9 +1167,14 @@ pub(crate) fn render_navigator_overlay(
             Style::default().fg(p.overlay0).bg(p.panel_bg),
         );
     }
-    let action_label = if n.moving.is_some() {
+    let action_label = if let Some(moving) = &n.moving {
         match selected_row.map(|row| &row.target) {
             Some(target) if n.moves(target) => " Move Enter",
+            Some(ClientNavigatorTarget::Workspace { .. })
+                if matches!(moving.source, ClientMoveSource::Tab { .. }) =>
+            {
+                " Move here Enter"
+            }
             Some(ClientNavigatorTarget::Workspace { .. }) => " New tab Enter",
             Some(ClientNavigatorTarget::NewWorkspace) => " New workspace Enter",
             _ => " Split right Enter",

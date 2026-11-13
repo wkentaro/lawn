@@ -383,14 +383,24 @@ pub(super) struct ClientNavigatorOverlay {
     // None uses the initial selection; Some preserves an explicitly scrolled viewport.
     pub(super) scroll: Option<usize>,
     pub(super) parked: bool,
-    // Some turns the picker into a destination list for this active-endpoint pane.
-    pub(super) moving: Option<ClientPaneMove>,
+    // Some turns the picker into a destination list for this active-endpoint pane or tab.
+    pub(super) moving: Option<ClientMove>,
 }
 
 #[derive(Debug)]
-pub(super) struct ClientPaneMove {
-    pub(super) pane_id: String,
+pub(super) struct ClientMove {
+    pub(super) source: ClientMoveSource,
     pub(super) label: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ClientMoveSource {
+    Pane(String),
+    // A tab moves whole, so only workspaces are destinations.
+    Tab {
+        tab_id: String,
+        workspace_id: String,
+    },
 }
 
 #[derive(Debug)]
@@ -551,7 +561,7 @@ pub(super) enum ClientContextMenuAction {
     ClosePane,
     ParkPane,
     RestorePane,
-    MovePane,
+    Move,
 }
 
 #[derive(Debug)]

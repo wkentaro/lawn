@@ -79,6 +79,7 @@ operations::define_operations! {
     TabFocus(TabTarget) => "tab.focus", true, true;
     TabRename(TabRenameParams) => "tab.rename", true, true;
     TabMove(TabMoveParams) => "tab.move", true, true;
+    TabMoveToWorkspace(TabMoveToWorkspaceParams) => "tab.move_to_workspace", true, true;
     TabClose(TabTarget) => "tab.close", true, true;
     AgentList(EmptyParams) => "agent.list", false, false;
     AgentGet(AgentTarget) => "agent.get", false, false;
@@ -94,7 +95,7 @@ operations::define_operations! {
     AgentWait(AgentWaitParams) => "agent.wait", false, false;
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;
-    PaneMove(PaneMoveParams) => "pane.move", true, false;
+    PaneMove(PaneMoveParams) => "pane.move", true, true;
     PaneZoom(PaneZoomParams) => "pane.zoom", true, true;
     PaneLayout(PaneLayoutParams) => "pane.layout", false, false;
     PaneProcessInfo(PaneProcessInfoParams) => "pane.process_info", false, false;

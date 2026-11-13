@@ -904,6 +904,64 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
 }
 
 #[tokio::test]
+async fn client_shell_endpoint_lane_admits_pane_move() {
+    let mut server = test_headless_server();
+    let mut source = crate::workspace::Workspace::test_new("source");
+    let other = crate::workspace::Workspace::test_new("other");
+    let pane = source.tabs[0].root_pane;
+    source.insert_test_runtime(
+        pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"moving"),
+    );
+    server.app.state.workspaces = vec![source, other];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let pane_id = server.app.public_pane_id(0, pane).expect("pane id");
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let client_id = 43;
+    server.handle_server_event(ServerEvent::ClientShellConnected {
+        surface_reuse: false,
+        surface_delta: false,
+        surface_scroll: false,
+        client_id,
+        surface_cols: 80,
+        surface_rows: 23,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+        direct_graphics: false,
+        endpoint_keybindings: false,
+        mouse_capture: false,
+        surface_active: true,
+        writer,
+    });
+    let _initial_snapshot = client_shell_snapshot(&control_rx);
+    let boot_id = server.client_shell_boot_id.clone();
+
+    server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        client_id,
+        boot_id,
+        request: Box::new(api::schema::Request {
+            id: "client-shell:move".into(),
+            method: api::schema::Method::PaneMove(api::schema::PaneMoveParams {
+                pane_id,
+                destination: api::schema::PaneMoveDestination::NewWorkspace {
+                    label: Some("moved".into()),
+                    tab_label: None,
+                },
+                focus: true,
+            }),
+        }),
+    });
+    assert!(
+        control_rx.try_recv().is_err(),
+        "the lane must not reject pane.move as unsupported"
+    );
+    assert!(server.clients[&client_id].shell_endpoint_command_in_flight);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn endpoint_pane_read_keeps_active_and_inactive_surfaces_unchanged() {
     for (surface_active, snapshot) in [(true, false), (false, false), (true, true), (false, true)] {
         let mut server = test_headless_server();
@@ -2501,6 +2559,70 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 
     let after = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
     assert_ne!(after, before);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn client_shell_pane_move_reapplies_controller_geometry() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("move-geometry");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    let terminal_ids =
+        [first_pane, second_pane].map(|pane| workspace.tabs[0].terminal_id(pane).unwrap().clone());
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    // Registry runtimes follow the terminal, unlike workspace-local test runtimes.
+    for terminal_id in &terminal_ids {
+        server.app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let second_pane_id = server.app.public_pane_id(0, second_pane).unwrap();
+
+    let (control, _) = connect_test_shell(&mut server, 67, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    let split = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_ids[1])
+        .unwrap()
+        .current_size();
+
+    let (respond_to, _response_rx) = std::sync::mpsc::channel();
+    server.handle_client_shell_api_request(
+        67,
+        crate::api::ApiRequestMessage {
+            request: crate::api::schema::Request {
+                id: "move-geometry".into(),
+                method: crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+                    pane_id: second_pane_id,
+                    destination: crate::api::schema::PaneMoveDestination::NewWorkspace {
+                        label: None,
+                        tab_label: None,
+                    },
+                    focus: true,
+                }),
+            },
+            respond_to,
+            response_write_complete: None,
+        },
+    );
+
+    let moved = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_ids[1])
+        .unwrap()
+        .current_size();
+    assert!(
+        moved.1 > split.1,
+        "the moved pane fills its new tab: {split:?} -> {moved:?}"
+    );
     shutdown_test_runtimes(&mut server);
 }
 

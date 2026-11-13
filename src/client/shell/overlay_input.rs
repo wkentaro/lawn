@@ -217,27 +217,85 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::Navigator(navigator));
     }
 
-    pub(super) fn open_move_overlay(&mut self, pane_id: String) {
+    pub(super) fn open_move_overlay(&mut self, source: ClientMoveSource) {
         self.open_navigator_overlay();
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
-        let source = ClientNavigatorTarget::Pane {
-            endpoint_id: self.active_endpoint_id.clone(),
-            pane_id: pane_id.clone(),
-        };
+        let endpoint_id = self.active_endpoint_id.clone();
+        // The picker opens on the source's own row: the pane, or the tab's workspace.
+        let (row_target, tab_label) =
+            match &source {
+                ClientMoveSource::Pane(pane_id) => (
+                    ClientNavigatorTarget::Pane {
+                        endpoint_id,
+                        pane_id: pane_id.clone(),
+                    },
+                    None,
+                ),
+                ClientMoveSource::Tab {
+                    tab_id,
+                    workspace_id,
+                } => {
+                    let Some(tab) = self.snapshot.as_deref().and_then(|snapshot| {
+                        snapshot.tabs.iter().find(|tab| tab.tab_id == *tab_id)
+                    }) else {
+                        self.overlay = None;
+                        return;
+                    };
+                    (
+                        ClientNavigatorTarget::Workspace {
+                            endpoint_id,
+                            workspace_id: workspace_id.clone(),
+                        },
+                        Some(tab.label.clone()),
+                    )
+                }
+            };
         // Parked and unknown panes have no row, so they cannot be moved from here.
-        let Some(label) =
+        let Some(row_label) =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator)
                 .into_iter()
-                .find(|row| row.target == source)
+                .find(|row| row.target == row_target)
                 .map(|row| row.label)
         else {
             self.overlay = None;
             return;
         };
-        navigator.selected = Some(source);
-        navigator.moving = Some(ClientPaneMove { pane_id, label });
+        navigator.selected = Some(row_target);
+        navigator.moving = Some(ClientMove {
+            source,
+            label: tab_label.unwrap_or(row_label),
+        });
+    }
+
+    fn accept_tab_move_selection(
+        &mut self,
+        tab_id: String,
+        source_workspace_id: String,
+        target: ClientNavigatorTarget,
+        outcome: &mut ClientShellInput,
+    ) {
+        use crate::api::schema::{Method, TabMoveToWorkspaceParams};
+
+        let ClientNavigatorTarget::Workspace { workspace_id, .. } = target else {
+            return;
+        };
+        self.overlay = None;
+        outcome.repaint = true;
+        if workspace_id == source_workspace_id {
+            self.receive_endpoint_unavailable("Pick another workspace".into());
+            return;
+        }
+        self.push_endpoint_method(
+            Method::TabMoveToWorkspace(TabMoveToWorkspaceParams {
+                tab_id,
+                workspace_id,
+                insert_index: None,
+                focus: true,
+            }),
+            outcome,
+        );
     }
 
     fn accept_move_selection(
@@ -384,8 +442,25 @@ impl ClientShellState {
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
         let target = super::aggregate_navigation::selected_navigator_target(&rows, navigator);
         if let Some(moving) = navigator.moving.as_ref() {
-            if let Some(target) = target {
-                self.accept_move_selection(moving.pane_id.clone(), target, outcome);
+            match (&moving.source, target) {
+                (ClientMoveSource::Pane(pane_id), Some(target)) => {
+                    self.accept_move_selection(pane_id.clone(), target, outcome);
+                }
+                (
+                    ClientMoveSource::Tab {
+                        tab_id,
+                        workspace_id,
+                    },
+                    Some(target),
+                ) => {
+                    self.accept_tab_move_selection(
+                        tab_id.clone(),
+                        workspace_id.clone(),
+                        target,
+                        outcome,
+                    );
+                }
+                (_, None) => {}
             }
             return;
         }

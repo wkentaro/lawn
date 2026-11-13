@@ -576,16 +576,7 @@ impl Workspace {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;
         }
-        let tab = self.tabs.remove(idx);
-        for pane_id in tab.panes.keys() {
-            self.unregister_pane(*pane_id);
-        }
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
-        }
-        true
+        self.take_tab(idx).is_some()
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
@@ -966,6 +957,36 @@ impl Workspace {
         }
         self.tabs.push(tab);
         self.tabs.len() - 1
+    }
+
+    /// Detaches a tab and releases its pane numbers. The caller removes the
+    /// workspace when this leaves it without tabs.
+    pub(crate) fn take_tab(&mut self, idx: usize) -> Option<Tab> {
+        if idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(idx);
+        for pane_id in tab.panes.keys() {
+            self.unregister_pane(*pane_id);
+        }
+        self.adjust_active_tab_after_removal(idx);
+        Some(tab)
+    }
+
+    /// Adopts a tab detached from another workspace, giving it and its panes
+    /// fresh public numbers here. Returns the tab's index.
+    pub(crate) fn insert_moved_tab(&mut self, mut tab: Tab, insert_index: Option<usize>) -> usize {
+        tab.number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        for pane_id in tab.layout.pane_ids() {
+            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
+        }
+        let idx = insert_index.unwrap_or(self.tabs.len()).min(self.tabs.len());
+        if idx <= self.active_tab && !self.tabs.is_empty() {
+            self.active_tab += 1;
+        }
+        self.tabs.insert(idx, tab);
+        idx
     }
 
     pub(crate) fn unregister_moved_pane(&mut self, pane_id: PaneId) {

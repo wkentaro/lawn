@@ -1176,7 +1176,7 @@ impl App {
             }
         };
 
-        let previous_focus = self.state.current_pane_focus_target();
+        let mut previous_focus = self.state.current_pane_focus_target();
         let taken = match self
             .state
             .workspaces
@@ -1209,26 +1209,8 @@ impl App {
 
         let mut closed_workspace_id = None;
         if source_workspace_empty && cross_workspace {
-            self.state.workspaces.remove(source_ws_idx);
+            self.state.remove_emptied_workspace(source_ws_idx, None);
             closed_workspace_id = Some(previous_workspace_id.clone());
-            if self.state.workspaces.is_empty() {
-                self.state.active = None;
-                self.state.selected = 0;
-            } else {
-                if let Some(active) = self.state.active {
-                    if active == source_ws_idx {
-                        self.state.active =
-                            Some(source_ws_idx.min(self.state.workspaces.len() - 1));
-                    } else if active > source_ws_idx {
-                        self.state.active = Some(active - 1);
-                    }
-                }
-                if self.state.selected == source_ws_idx {
-                    self.state.selected = source_ws_idx.min(self.state.workspaces.len() - 1);
-                } else if self.state.selected > source_ws_idx {
-                    self.state.selected -= 1;
-                }
-            }
         }
 
         let mut created_workspace = false;
@@ -1312,6 +1294,14 @@ impl App {
             }
         };
 
+        if cross_workspace {
+            let target_workspace_id = self.public_workspace_id(target_ws_idx);
+            self.state.retarget_moved_panes(
+                &[moved_pane_id],
+                &target_workspace_id,
+                &mut previous_focus,
+            );
+        }
         if focus || self.state.active.is_none() {
             self.state
                 .switch_workspace_tab(target_ws_idx, target_tab_idx);
@@ -3783,6 +3773,31 @@ mod tests {
             &app.state.workspaces[0].tabs[0].render_dirty,
             &app.render_dirty
         ));
+    }
+
+    #[test]
+    fn api_pane_move_across_workspaces_retargets_focus_history() {
+        let mut app = app_with_linked_worktree();
+        let moving = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces.push(Workspace::test_new("other"));
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        let moving_id = app.public_pane_id(0, moving).unwrap();
+        let target_id = app.public_workspace_id(1);
+
+        app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: moving_id,
+                destination: PaneMoveDestination::NewTab {
+                    workspace_id: Some(target_id.clone()),
+                    label: None,
+                },
+                focus: true,
+            },
+        );
+
+        app.state.assert_invariants_for_test();
     }
 
     #[test]

@@ -50,6 +50,7 @@ impl ClientContextMenuOverlay {
                 item("New tab", Action::NewTab),
                 item("Rename", Action::Rename),
                 item("Close", Action::Close),
+                item("Move to...", Action::Move),
             ],
             ClientContextMenuTarget::ParkedPane { .. } => {
                 vec![item("Unpark", Action::RestorePane)]
@@ -72,7 +73,7 @@ impl ClientContextMenuOverlay {
                 if source_pane_id.is_some() {
                     items.push(item("Swap with focused pane", Action::SwapWithFocusedPane));
                 }
-                items.push(item("Move to...", Action::MovePane));
+                items.push(item("Move to...", Action::Move));
                 items.extend([
                     item("Split right", Action::SplitRight),
                     item("Split down", Action::SplitDown),
@@ -393,6 +394,12 @@ impl ClientShellState {
                     }));
                 }
             }
+            ClientContextMenuAction::Move => {
+                self.open_move_overlay(ClientMoveSource::Tab {
+                    tab_id,
+                    workspace_id,
+                });
+            }
             ClientContextMenuAction::Close => {
                 self.request_tab_close(tab_id, outcome);
             }
@@ -415,7 +422,9 @@ impl ClientShellState {
         };
 
         match action {
-            ClientContextMenuAction::MovePane => self.open_move_overlay(pane_id),
+            ClientContextMenuAction::Move => {
+                self.open_move_overlay(ClientMoveSource::Pane(pane_id))
+            }
             ClientContextMenuAction::ParkPane => {
                 self.parking_action(
                     self.active_endpoint_id.clone(),

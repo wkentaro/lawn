@@ -480,7 +480,11 @@ pub(super) fn navigator_rows(
             rows.extend(endpoint_rows);
         }
     }
-    if moving {
+    if navigator
+        .moving
+        .as_ref()
+        .is_some_and(|moving| matches!(moving.source, ClientMoveSource::Pane(_)))
+    {
         rows.push(ClientNavigatorRow {
             depth: 0,
             label: "+ New workspace".into(),
@@ -500,7 +504,10 @@ pub(super) fn navigator_rows(
 impl ClientNavigatorOverlay {
     pub(super) fn selectable(&self, target: &ClientNavigatorTarget) -> bool {
         match target {
-            ClientNavigatorTarget::Pane { .. } => true,
+            ClientNavigatorTarget::Pane { .. } => !self
+                .moving
+                .as_ref()
+                .is_some_and(|moving| matches!(moving.source, ClientMoveSource::Tab { .. })),
             ClientNavigatorTarget::Workspace { .. } | ClientNavigatorTarget::NewWorkspace => {
                 self.moving.is_some()
             }
@@ -510,7 +517,7 @@ impl ClientNavigatorOverlay {
 
     pub(super) fn moves(&self, target: &ClientNavigatorTarget) -> bool {
         matches!(target, ClientNavigatorTarget::Pane { pane_id, .. }
-            if self.moving.as_ref().is_some_and(|moving| moving.pane_id == *pane_id))
+            if self.moving.as_ref().is_some_and(|moving| moving.source == ClientMoveSource::Pane(pane_id.clone())))
     }
 }
 
@@ -526,7 +533,10 @@ pub(super) fn navigator_selected_index(
         // Workspace headers stay as ancestors of matching panes, so prefer the first pane.
         None => rows
             .iter()
-            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .position(|row| {
+                matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                    && navigator.selectable(&row.target)
+            })
             .or_else(|| {
                 rows.iter()
                     .position(|row| navigator.selectable(&row.target))

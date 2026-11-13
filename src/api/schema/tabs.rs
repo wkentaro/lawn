@@ -62,6 +62,17 @@ pub struct TabMoveParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct TabMoveToWorkspaceParams {
+    pub tab_id: String,
+    pub workspace_id: String,
+    /// Position among the target workspace's tabs. Appends when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_index: Option<usize>,
+    #[serde(default)]
+    pub focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct TabInfo {
     pub tab_id: String,
     pub workspace_id: String,
