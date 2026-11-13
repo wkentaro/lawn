@@ -1229,12 +1229,7 @@ impl ClientShellState {
     }
 
     fn popup_input_target(&self) -> Option<ClientInputTarget> {
-        if !self.parking_ready()
-            || self
-                .active_parking()
-                .and_then(|parking| parking.preview_pane())
-                .is_some()
-        {
+        if !self.parking_ready() {
             return None;
         }
         self.popup_terminal_id
@@ -1277,13 +1272,7 @@ impl ClientShellState {
         );
         let accepts = match &target {
             ClientInputTarget::Pane(pane) => self.pane_accepts_input(pane),
-            ClientInputTarget::Popup(_) => {
-                self.parking_ready()
-                    && self
-                        .active_parking()
-                        .and_then(|parking| parking.preview_pane())
-                        .is_none()
-            }
+            ClientInputTarget::Popup(_) => self.parking_ready(),
         };
         if releases || accepts {
             super::push_target_event(target, event, outcome);

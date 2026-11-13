@@ -592,6 +592,75 @@ async fn preview_rejects_input_and_clipboard_staging_until_explicit_policy_repla
 }
 
 #[tokio::test]
+async fn interactive_peek_policy_accepts_input_only_until_the_parked_policy_returns() {
+    let mut server = test_headless_server();
+    let mut input = install_focused_test_runtime(&mut server, b"\x1b[?1000h");
+    server.app.state.ensure_test_terminals();
+    let pane = server.app.state.workspaces[0].tabs[0].root_pane;
+    let terminal = server.app.state.workspaces[0].tabs[0]
+        .terminal_id(pane)
+        .unwrap()
+        .to_string();
+    let public = server.app.public_pane_id(0, pane).unwrap();
+    let (control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let _ = client_shell_snapshot(&control);
+    let clipboard = protocol::ClientClipboardImageTarget::Pane(public.clone());
+    let mut parked = request(&server, 1);
+    parked.hidden_terminals.push(terminal.clone());
+    assert!(apply(&mut server, 7, &parked));
+    assert!(!server.client_clipboard_image_target_is_valid(7, &clipboard));
+
+    let mut peek = request(&server, 2);
+    peek.focus_terminal = Some(terminal);
+    assert!(apply(&mut server, 7, &peek));
+    assert!(server.client_clipboard_image_target_is_valid(7, &clipboard));
+    for (event, expected) in [
+        (
+            protocol::ClientPaneInputEvent::TextCommit("reply".into()),
+            b"reply".as_slice(),
+        ),
+        (
+            protocol::ClientPaneInputEvent::Paste("paste".into()),
+            b"paste".as_slice(),
+        ),
+        (
+            protocol::ClientPaneInputEvent::Mouse {
+                kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
+                position: protocol::ClientMousePosition::Cell { column: 0, row: 0 },
+                geometry: None,
+                modifiers: 0,
+                lines: 1,
+            },
+            b"\x1b[M !!".as_slice(),
+        ),
+    ] {
+        server.handle_server_event(ServerEvent::ClientShellPaneInput {
+            client_id: 7,
+            pane_id: public.clone(),
+            events: vec![event],
+        });
+        assert_eq!(input.try_recv().unwrap().as_ref(), expected);
+    }
+    assert!(server.paste_client_clipboard_image_path(7, clipboard.clone(), "image.png".into()));
+    assert_eq!(input.try_recv().unwrap(), Bytes::from_static(b"image.png"));
+    parked.sequence = 3;
+    assert!(apply(&mut server, 7, &parked));
+    while input.try_recv().is_ok() {} // The policy releases the peek's held mouse button.
+    assert!(!server.client_clipboard_image_target_is_valid(7, &clipboard));
+    assert!(!server.paste_client_clipboard_image_path(7, clipboard, "must not paste".into()));
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 7,
+        pane_id: public,
+        events: vec![protocol::ClientPaneInputEvent::TextCommit(
+            "must not type".into(),
+        )],
+    });
+    assert!(input.try_recv().is_err());
+    server.app.state.assert_invariants_for_test();
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn malformed_wrong_boot_and_stale_policies_leave_the_accepted_view_unchanged() {
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"");

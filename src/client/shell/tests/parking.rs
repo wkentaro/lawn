@@ -250,14 +250,92 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     let opened = state.handle_input_bytes(b"\r");
     assert!(opened.actions.is_empty());
     assert!(state.overlay.is_none());
-    assert!(!state.has_parking_preview());
+    assert!(state.has_parking_preview());
+    assert!(state
+        .handle_input_bytes(b"wait for policy")
+        .requests
+        .is_empty());
+    let preview = request(&mut state);
+    assert!(preview.hidden_terminals.is_empty());
+    assert!(preview.read_only_terminals.is_empty());
+    assert_eq!(preview.preview_terminal, None);
+    assert_eq!(preview.focus_terminal.as_deref(), Some("terminal-pane_1"));
+    acknowledge(&mut state, &preview, Some("pane_1"));
+    assert!(!state.handle_input_bytes(b"writable").requests.is_empty());
+    assert_eq!(state.focused_tab_count(), 0);
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    state.compose(100, 24).unwrap();
+    let restore = state.hits.restore_pane;
+    assert!(!restore.is_empty());
+    click(&mut state, restore);
     let restored = request(&mut state);
     assert!(restored.hidden_terminals.is_empty());
-    assert_eq!(restored.preview_terminal, None);
     assert_eq!(restored.focus_terminal.as_deref(), Some("terminal-pane_1"));
     acknowledge(&mut state, &restored, Some("pane_1"));
-    assert!(!state.handle_input_bytes(b"writable").requests.is_empty());
+    assert!(!state.has_parking_preview());
     assert_eq!(state.focused_tab_count(), 1);
+}
+
+#[test]
+fn parked_peek_accepts_paste_mouse_and_images_then_dismisses_without_closing() {
+    for close in 0..5 {
+        let mut state = parked_with_active_shell(false, true);
+        state.open_parked();
+        state.handle_input_bytes(b"pane_1\r");
+        let peek = request(&mut state);
+        assert_eq!(
+            peek.hidden_terminals,
+            ["terminal-pane_2", "terminal-pane_3"]
+        );
+        assert!(state.clipboard_image_target().is_none());
+        acknowledge(&mut state, &peek, Some("pane_1"));
+        state.pane_surface.as_mut().unwrap().panes[0].mouse_reporting = true;
+        let frame = state.compose(100, 24).unwrap();
+        assert!(frame.cursor.is_some());
+        let header = frame_rows(&frame).join("\n");
+        assert!(header.contains("restore   dismiss"));
+        assert_eq!(
+            state.clipboard_image_target(),
+            Some(crate::protocol::ClientClipboardImageTarget::Pane(
+                "pane_1".into()
+            ))
+        );
+        let paste = state.handle_raw_events(vec![RawInputEvent::Paste("reply".into())]);
+        assert!(paste.requests.iter().any(|message| matches!(message,
+            ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" && events.iter().any(|event| matches!(event, ClientPaneInputEvent::Paste(text) if text == "reply"))
+        )));
+        let pane = state.hits.panes[0].inner_rect;
+        assert!(!click(&mut state, pane).requests.is_empty());
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: pane.x,
+            row: pane.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        let dismissed = match close {
+            0 => state.handle_input_bytes(b"\x1b"),
+            1 => {
+                let dismiss = state.hits.dismiss_parking_preview;
+                click(&mut state, dismiss)
+            }
+            2 => binding(&mut state, crate::input::KeybindAction::ClosePane),
+            3 => binding(&mut state, crate::input::KeybindAction::CloseTab),
+            _ => binding(&mut state, crate::input::KeybindAction::CloseWorkspace),
+        };
+        assert!(!state.has_parking_preview(), "close action {close}");
+        assert!(dismissed.actions.iter().all(|action| matches!(action,
+            ClientShellAction::Endpoint { request, .. } if matches!(request.method, crate::api::schema::Method::WorkspaceFocus(_))
+        )));
+        assert!(state.handle_input_bytes(b"must wait").requests.is_empty());
+        let dismissed = request(&mut state);
+        assert_eq!(dismissed.hidden_terminals, ["terminal-pane_1"]);
+        acknowledge(&mut state, &dismissed, Some("pane_2"));
+        assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+        assert!(!state
+            .handle_input_bytes(b"back in shell")
+            .requests
+            .is_empty());
+    }
 }
 
 #[test]
@@ -684,7 +762,7 @@ fn patch(state: &ClientShellState) -> crate::protocol::PaneSurfacePatch {
 }
 
 #[test]
-fn retained_updates_obey_pending_policy_and_keep_preview_cursor_and_mouse_read_only() {
+fn retained_updates_obey_pending_policy_and_keep_peek_cursor_and_mouse_interactive() {
     let mut state = state();
     state.compose(100, 24).unwrap();
     binding(&mut state, crate::input::KeybindAction::ParkPane);
@@ -712,9 +790,14 @@ fn retained_updates_obey_pending_policy_and_keep_preview_cursor_and_mouse_read_o
     else {
         panic!("preview retains the update fast path")
     };
-    assert!(composed.cursor.is_none());
-    assert!(!state.hits.panes[0].mouse_reporting);
-    assert!(state.handle_input_bytes(b"unsafe").requests.is_empty());
+    assert!(composed.cursor.is_some());
+    assert!(state.hits.panes[0].mouse_reporting);
+    assert!(!state.handle_input_bytes(b"reply").requests.is_empty());
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    assert!(
+        tick(&mut state).actions.is_empty(),
+        "acknowledged peek stays settled"
+    );
 }
 
 #[test]
@@ -754,7 +837,7 @@ fn preview_releases_held_input_in_other_visible_panes_before_hiding_them() {
         &mut ClientShellInput::default(),
     );
     let preview = tick(&mut state);
-    assert!(preview.actions.iter().any(|action| matches!(action, ClientShellAction::PanePresentation { request, releases, .. } if request.preview_terminal.as_deref() == Some("terminal-pane_2") && releases.iter().any(|message| matches!(message, ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" && events.iter().any(|event| matches!(event, ClientPaneInputEvent::Key { kind: crate::protocol::ClientKeyKind::Release, .. })))))));
+    assert!(preview.actions.iter().any(|action| matches!(action, ClientShellAction::PanePresentation { request, releases, .. } if request.preview_terminal.is_none() && request.focus_terminal.as_deref() == Some("terminal-pane_2") && releases.iter().any(|message| matches!(message, ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" && events.iter().any(|event| matches!(event, ClientPaneInputEvent::Key { kind: crate::protocol::ClientKeyKind::Release, .. })))))));
     assert!(state
         .handle_input_bytes(b"\x1b[97;5:3u")
         .requests
@@ -2155,15 +2238,18 @@ fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
             continue;
         }
         assert!(opened.actions.is_empty());
-        let restored = request(&mut state);
-        assert_eq!(restored.preview_terminal, None);
-        assert_eq!(restored.focus_terminal.as_deref(), Some("terminal-pane_1"));
-        assert!(!restored
-            .hidden_terminals
-            .contains(&"terminal-pane_1".to_owned()));
-        assert!(restored
-            .hidden_terminals
-            .contains(&"terminal-pane_3".to_owned()));
+        let preview = request(&mut state);
+        assert_eq!(preview.preview_terminal, None);
+        assert_eq!(preview.focus_terminal.as_deref(), Some("terminal-pane_1"));
+        assert_eq!(
+            preview.hidden_terminals,
+            ["terminal-pane_2", "terminal-pane_3"]
+        );
+        acknowledge(&mut state, &preview, Some("pane_1"));
+        assert!(state.has_parking_preview());
+        assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+        assert!(state.active_parking().unwrap().hides_pane("pane_3"));
+        assert!(!state.active_parking().unwrap().hides_pane("pane_2"));
     }
 }
 
