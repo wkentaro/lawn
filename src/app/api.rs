@@ -7,6 +7,7 @@ mod env;
 mod integrations;
 mod layouts;
 mod panes;
+mod parking;
 pub(crate) mod plugins;
 pub(super) mod responses;
 mod session;
@@ -672,7 +673,9 @@ impl App {
                 workspace_id: self.public_workspace_id(ws_idx),
             },
         });
-        if let Some(tab_id) = self.public_tab_id(ws_idx, self.state.workspaces[ws_idx].active_tab) {
+        if let Some(tab_id) =
+            self.public_tab_id(ws_idx, self.state.workspaces[ws_idx].active_tab_index())
+        {
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::TabFocused,
                 data: crate::api::schema::EventData::TabFocused {
@@ -969,6 +972,8 @@ impl App {
             Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
+            Method::PanePark(target) => return self.handle_pane_park(request.id, target),
+            Method::PaneUnpark(params) => return self.handle_pane_unpark(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
             Method::PaneProcessInfo(params) => {

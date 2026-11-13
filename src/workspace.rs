@@ -152,10 +152,11 @@ impl DerefMut for Workspace {
 
 impl Workspace {
     fn adjust_active_tab_after_removal(&mut self, removed_idx: usize) {
-        if self.tabs.is_empty() {
+        let visible = self.visible_tab_count();
+        if visible == 0 {
             self.active_tab = 0;
-        } else if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
+        } else if self.active_tab >= visible {
+            self.active_tab = visible - 1;
         } else if removed_idx <= self.active_tab && self.active_tab > 0 {
             self.active_tab -= 1;
         }
@@ -337,16 +338,63 @@ impl Workspace {
         ))
     }
 
+    /// The tab users see as active. None when every tab is parked.
     pub fn active_tab(&self) -> Option<&Tab> {
-        self.tabs.get(self.active_tab)
+        self.tabs
+            .get(self.active_tab)
+            .filter(|tab| tab.parked_from.is_none())
     }
 
+    /// The active tab's index, or `tabs.len()` when no tab is visible.
     pub fn active_tab_index(&self) -> usize {
-        self.active_tab
+        if self.active_tab().is_some() {
+            self.active_tab
+        } else {
+            self.tabs.len()
+        }
     }
 
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
-        self.tabs.get_mut(self.active_tab)
+        self.tabs
+            .get_mut(self.active_tab)
+            .filter(|tab| tab.parked_from.is_none())
+    }
+
+    /// How many tabs users see. Parked tabs follow them in `tabs`.
+    pub(crate) fn visible_tab_count(&self) -> usize {
+        self.tabs
+            .iter()
+            .take_while(|tab| tab.parked_from.is_none())
+            .count()
+    }
+
+    /// The tabs users see.
+    pub(crate) fn visible_tabs(&self) -> &[Tab] {
+        &self.tabs[..self.visible_tab_count()]
+    }
+
+    /// The hidden tabs holding parked panes, one pane each.
+    pub(crate) fn parked_tabs(&self) -> &[Tab] {
+        &self.tabs[self.visible_tab_count()..]
+    }
+
+    /// Adds a tab after the visible tabs, before any parked ones.
+    fn push_visible_tab(&mut self, tab: Tab) -> usize {
+        self.insert_visible_tab(self.visible_tab_count(), tab)
+    }
+
+    /// Inserts a tab among the visible tabs, keeping the active tab.
+    fn insert_visible_tab(&mut self, idx: usize, tab: Tab) -> usize {
+        let visible = self.visible_tab_count();
+        let idx = idx.min(visible);
+        if visible == 0 {
+            // The active index pointed at a parked tab.
+            self.active_tab = idx;
+        } else if idx <= self.active_tab {
+            self.active_tab += 1;
+        }
+        self.tabs.insert(idx, tab);
+        idx
     }
 
     pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
@@ -359,7 +407,7 @@ impl Workspace {
     }
 
     pub fn switch_tab(&mut self, idx: usize) {
-        if idx < self.tabs.len() {
+        if idx < self.visible_tab_count() {
             self.active_tab = idx;
             if let Some(tab) = self.tabs.get_mut(idx) {
                 for pane in tab.panes.values_mut() {
@@ -472,8 +520,7 @@ impl Workspace {
             )?
         };
         self.register_new_pane_with_number(tab.root_pane, pane_number);
-        self.tabs.push(tab);
-        Ok((self.tabs.len() - 1, terminal, runtime))
+        Ok((self.push_visible_tab(tab), terminal, runtime))
     }
 
     pub fn close_tab(&mut self, idx: usize) -> bool {
@@ -484,7 +531,8 @@ impl Workspace {
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
-        if source_idx >= self.tabs.len() || insert_idx > self.tabs.len() {
+        let visible = self.visible_tab_count();
+        if source_idx >= visible || insert_idx > visible {
             return false;
         }
 
@@ -493,7 +541,7 @@ impl Workspace {
         } else {
             insert_idx
         }
-        .min(self.tabs.len().saturating_sub(1));
+        .min(visible.saturating_sub(1));
 
         if source_idx == target_idx {
             return false;
@@ -698,7 +746,10 @@ impl Workspace {
         focus_new_pane: bool,
         argv: Option<&[String]>,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        // A parked tab holds exactly one pane.
+        let tab_idx = self
+            .find_tab_index_for_pane(pane_id)
+            .filter(|&idx| self.tabs[idx].parked_from.is_none())?;
         let pane_number = self.next_public_pane_number;
         let tab_number = self.tabs[tab_idx].number;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
@@ -819,7 +870,11 @@ impl Workspace {
         focus: bool,
     ) -> Result<PaneId, MovedPane> {
         let pane_id = moved.pane_id;
-        let Some(tab) = self.tabs.get_mut(tab_idx) else {
+        let Some(tab) = self
+            .tabs
+            .get_mut(tab_idx)
+            .filter(|tab| tab.parked_from.is_none())
+        else {
             return Err(moved);
         };
         tab.insert_existing_pane(target_pane_id, moved, direction, ratio, focus)?;
@@ -835,17 +890,24 @@ impl Workspace {
         label: Option<String>,
         channels: TabChannels,
     ) -> usize {
-        let number = self.next_public_tab_number;
-        self.next_public_tab_number += 1;
         let pane_id = moved.pane_id;
-        let (events, render_notify, render_dirty) = channels;
-        let tab =
-            Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty);
+        let tab = self.new_tab_from_moved(moved, label, channels);
         if !self.public_pane_numbers.contains_key(&pane_id) {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
-        self.tabs.push(tab);
-        self.tabs.len() - 1
+        self.push_visible_tab(tab)
+    }
+
+    fn new_tab_from_moved(
+        &mut self,
+        moved: MovedPane,
+        label: Option<String>,
+        channels: TabChannels,
+    ) -> Tab {
+        let number = self.next_public_tab_number;
+        self.next_public_tab_number += 1;
+        let (events, render_notify, render_dirty) = channels;
+        Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty)
     }
 
     /// Detaches a tab and releases its pane numbers. The caller removes the
@@ -870,12 +932,7 @@ impl Workspace {
         for pane_id in tab.layout.pane_ids() {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
-        let idx = insert_index.unwrap_or(self.tabs.len()).min(self.tabs.len());
-        if idx <= self.active_tab && !self.tabs.is_empty() {
-            self.active_tab += 1;
-        }
-        self.tabs.insert(idx, tab);
-        idx
+        self.insert_visible_tab(insert_index.unwrap_or(usize::MAX), tab)
     }
 
     pub(crate) fn unregister_moved_pane(&mut self, pane_id: PaneId) {
@@ -963,6 +1020,66 @@ impl Workspace {
         self.resolved_identity_cwd_from(terminals, terminal_runtimes)
             .map(|cwd| derive_label_from_cwd(&cwd))
             .unwrap_or_else(|| "workspace".into())
+    }
+
+    /// Hides a pane in a parked tab of its own. Its terminal keeps running,
+    /// and it keeps its pane id and a tab id, so every lookup still finds it.
+    pub(crate) fn park_pane(&mut self, pane_id: PaneId, channels: TabChannels) -> Option<()> {
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let origin = &self.tabs[tab_idx];
+        if origin.parked_from.is_some() {
+            return None;
+        }
+        let origin_number = origin.number;
+        let mut tab = if origin.layout.pane_count() == 1 {
+            let tab = self.tabs.remove(tab_idx);
+            self.adjust_active_tab_after_removal(tab_idx);
+            tab
+        } else {
+            let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
+            self.new_tab_from_moved(moved, None, channels)
+        };
+        tab.parked_from = Some(origin_number);
+        self.tabs.push(tab);
+        Some(())
+    }
+
+    /// Returns a parked pane to the tab it left, else shows its parked tab.
+    pub(crate) fn unpark_pane(&mut self, pane_id: PaneId, focus: bool) -> Option<()> {
+        let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        let origin_number = self.tabs[tab_idx].parked_from?;
+        let mut tab = self.tabs.remove(tab_idx);
+        self.adjust_active_tab_after_removal(tab_idx);
+        let origin_idx = self.tabs[..self.visible_tab_count()]
+            .iter()
+            .position(|tab| tab.number == origin_number);
+        if let Some(origin_idx) = origin_idx {
+            let moved = tab.take_pane_for_move(pane_id)?;
+            let target = self.tabs[origin_idx].layout.focused();
+            match self.insert_moved_pane_into_tab(
+                origin_idx,
+                target,
+                moved,
+                Direction::Horizontal,
+                0.5,
+                focus,
+            ) {
+                Ok(_) => return Some(()),
+                Err(moved) => {
+                    tab = Tab::from_existing_pane(
+                        tab.number,
+                        tab.custom_name,
+                        moved,
+                        tab.events,
+                        tab.render_notify,
+                        tab.render_dirty,
+                    );
+                }
+            }
+        }
+        tab.parked_from = None;
+        self.push_visible_tab(tab);
+        Some(())
     }
 
     pub fn find_tab_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
@@ -1065,6 +1182,7 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
+            parked_from: None,
             events,
             render_notify,
             render_dirty,
@@ -1114,14 +1232,14 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
+            parked_from: None,
             events,
             render_notify,
             render_dirty,
         };
         self.next_public_tab_number += 1;
         self.register_new_pane(root_id);
-        self.tabs.push(tab);
-        self.tabs.len() - 1
+        self.push_visible_tab(tab)
     }
 
     pub(crate) fn test_adversarial_identity_state() -> Self {
@@ -1165,6 +1283,20 @@ impl Workspace {
             self.id,
             self.active_tab,
             self.tabs.len()
+        );
+        let visible = self.visible_tab_count();
+        assert!(
+            self.tabs[visible..]
+                .iter()
+                .all(|tab| tab.parked_from.is_some()),
+            "workspace {} has a visible tab after a parked tab",
+            self.id
+        );
+        assert!(
+            visible == 0 || self.active_tab < visible,
+            "workspace {} active tab {} is parked",
+            self.id,
+            self.active_tab
         );
 
         let mut tab_numbers = std::collections::HashSet::new();

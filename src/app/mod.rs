@@ -19,6 +19,7 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
 mod custom_commands;
 mod ids;
+mod parking;
 mod popup;
 mod runtime;
 mod session;

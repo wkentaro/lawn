@@ -20,4 +20,8 @@ pub struct SessionSnapshot {
     pub panes: Vec<PaneInfo>,
     pub layouts: Vec<PaneLayoutSnapshot>,
     pub agents: Vec<AgentInfo>,
+    /// Parked panes, grouped by workspace. Each sits in a hidden tab, so its
+    /// `tab_id` names no tab in `tabs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked_panes: Vec<PaneInfo>,
 }

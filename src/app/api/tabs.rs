@@ -21,7 +21,7 @@ impl App {
         } else {
             let mut tabs = Vec::new();
             for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-                for tab_idx in 0..ws.tabs.len() {
+                for tab_idx in 0..ws.visible_tab_count() {
                     if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                         tabs.push(tab);
                     }
@@ -180,7 +180,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return tab_not_found(id, &params.tab_id);
         };
-        if params.insert_index > ws.tabs.len() {
+        if params.insert_index > ws.visible_tab_count() {
             return encode_error(
                 id,
                 "tab_move_failed",
@@ -383,7 +383,7 @@ impl App {
             .workspaces
             .get(ws_idx)
             .map(|ws| {
-                (0..ws.tabs.len())
+                (0..ws.visible_tab_count())
                     .filter_map(|idx| self.tab_info(ws_idx, idx))
                     .collect()
             })

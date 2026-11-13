@@ -92,6 +92,9 @@ pub struct TabSnapshot {
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+    /// The number of the tab a parked pane left. Set only on parked tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parked_from: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -160,6 +163,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
+            parked_from: None,
         };
 
         Self {
@@ -394,6 +398,7 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+        parked_from: tab.parked_from,
     }
 }
 
@@ -759,6 +764,7 @@ mod tests {
                     },
                     panes,
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(0),
                     root_pane: Some(0),
                 }],
@@ -1440,6 +1446,7 @@ mod tests {
                     },
                     panes,
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(0),
                     root_pane: Some(0),
                 }],

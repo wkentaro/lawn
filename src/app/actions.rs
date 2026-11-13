@@ -381,7 +381,7 @@ impl AppState {
         }
         self.workspaces[ws_idx]
             .find_tab_index_for_pane(pane_id)
-            .is_some_and(|tab_idx| tab_idx == self.workspaces[ws_idx].active_tab)
+            .is_some_and(|tab_idx| tab_idx == self.workspaces[ws_idx].active_tab_index())
     }
 
     pub fn switch_workspace(&mut self, idx: usize) {
@@ -410,7 +410,7 @@ impl AppState {
         if self
             .workspaces
             .get(ws_idx)
-            .is_none_or(|ws| tab_idx >= ws.tabs.len())
+            .is_none_or(|ws| tab_idx >= ws.visible_tab_count())
         {
             return false;
         }

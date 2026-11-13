@@ -1530,7 +1530,9 @@ impl App {
             _ => terminal.clear_manual_label(),
         }
         self.state.mark_session_dirty();
-        let pane = self.pane_info(ws_idx, pane_id).unwrap();
+        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }

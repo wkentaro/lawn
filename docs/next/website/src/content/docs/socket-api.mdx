@@ -103,7 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.ensure_active`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` (always return `unsupported`) |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.move_to_workspace`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.park`, `pane.unpark`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -314,6 +314,24 @@ workspace:
 public ids in the destination workspace, and the old pane ids remain aliases.
 Moving a workspace's last tab closes that workspace. Subscribers see
 `tab.closed`, `workspace.closed` when the source closes, then `tab.created`.
+
+`pane.park` takes a pane out of its tab and keeps its terminal running:
+
+```json
+{"id":"req_park","method":"pane.park","params":{"pane_id":"w1:p2"}}
+{"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
+```
+
+The pane moves to a hidden tab in the same workspace and keeps its pane id, so
+pane and agent requests such as `pane.read`, `pane.report_agent`, and
+`agent.send_keys` still reach it. Tab requests and the `tabs` list in
+`session.snapshot` skip hidden tabs, and `pane.split` refuses to split a parked
+pane. A workspace with parked panes stays open when its last visible tab closes
+or moves away. `session.snapshot` lists parked panes under `parked_panes`.
+Closing the workspace closes its parked panes too.
+`pane.unpark` returns the pane to the tab it left, or to a new tab when that tab
+is gone. The response is `type: "pane_info"`. Park and unpark emit no events
+yet.
 
 `pane.zoom` toggles, enables, or disables zoom for the target pane's tab:
 

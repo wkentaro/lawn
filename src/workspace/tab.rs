@@ -46,6 +46,9 @@ pub struct Tab {
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
     pub zoomed: bool,
+    /// Set while the tab holds a parked pane: the number of the tab it left.
+    /// Parked tabs are hidden from users and sit after every visible tab.
+    pub parked_from: Option<usize>,
     pub events: mpsc::Sender<AppEvent>,
     pub(crate) render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<RenderSignal>,
@@ -188,6 +191,7 @@ impl Tab {
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: false,
+                parked_from: None,
                 events,
                 render_notify,
                 render_dirty,
@@ -451,6 +455,7 @@ impl Tab {
             #[cfg(test)]
             runtimes: HashMap::new(),
             zoomed: false,
+            parked_from: None,
             events,
             render_notify,
             render_dirty,

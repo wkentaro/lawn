@@ -776,6 +776,7 @@ fn restore_tab(
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: snap.zoomed,
+                parked_from: snap.parked_from,
                 events: runtime_context.events.clone(),
                 render_notify: runtime_context.render_notify.clone(),
                 render_dirty: runtime_context.render_dirty.clone(),
@@ -1444,6 +1445,7 @@ mod tests {
                         },
                     )]),
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(0),
                     root_pane: Some(0),
                 }],
@@ -1538,6 +1540,7 @@ mod tests {
                         ),
                     ]),
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(10),
                     root_pane: Some(10),
                 }],
@@ -1611,6 +1614,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_parked_tab_restores_parked_with_its_public_numbers() {
+        let mut workspace = crate::workspace::Workspace::test_new("parked");
+        let parked = workspace.test_split(Direction::Horizontal);
+        let (events, _event_rx) = mpsc::channel(4);
+        workspace
+            .park_pane(
+                parked,
+                (
+                    events.clone(),
+                    Arc::new(Notify::new()),
+                    Arc::new(RenderSignal::new()),
+                ),
+            )
+            .expect("pane parks");
+        let pane_number = workspace.public_pane_number(parked);
+        let tab_number = workspace.tabs[1].number;
+        let snapshot = super::super::snapshot::capture(
+            std::slice::from_ref(&workspace),
+            &HashMap::new(),
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Some(0),
+            0,
+        );
+
+        let (workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let [restored] = workspaces.as_slice() else {
+            panic!("expected one workspace, got {}", workspaces.len());
+        };
+        assert_eq!(restored.visible_tab_count(), 1);
+        let hidden = &restored.tabs[1];
+        assert_eq!(hidden.parked_from, Some(restored.tabs[0].number));
+        assert_eq!(hidden.number, tab_number);
+        assert_eq!(restored.public_pane_number(hidden.root_pane), pane_number);
+        assert_eq!(terminals.len(), 2);
+        restored.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
     async fn cold_restore_with_gapped_public_tab_numbers_drops_unmanaged_agent_name() {
         let cwd = std::env::current_dir().unwrap();
         let pane_snap = |id: &str| {
@@ -1657,6 +1711,7 @@ mod tests {
                         layout: LayoutSnapshot::Pane(10),
                         panes: HashMap::from([pane_snap("10")]),
                         zoomed: false,
+                        parked_from: None,
                         focused: Some(10),
                         root_pane: Some(10),
                     },
@@ -1665,6 +1720,7 @@ mod tests {
                         layout: LayoutSnapshot::Pane(11),
                         panes: HashMap::from([pane_snap("11")]),
                         zoomed: false,
+                        parked_from: None,
                         focused: Some(11),
                         root_pane: Some(11),
                     },
@@ -1673,6 +1729,7 @@ mod tests {
                         layout: LayoutSnapshot::Pane(12),
                         panes: HashMap::from([pane_snap("12")]),
                         zoomed: false,
+                        parked_from: None,
                         focused: Some(12),
                         root_pane: Some(12),
                     },
@@ -1681,6 +1738,7 @@ mod tests {
                         layout: LayoutSnapshot::Pane(13),
                         panes: HashMap::from([(13, final_pane)]),
                         zoomed: false,
+                        parked_from: None,
                         focused: Some(13),
                         root_pane: Some(13),
                     },
@@ -1743,6 +1801,7 @@ mod tests {
                 },
                 panes: HashMap::new(),
                 zoomed: false,
+                parked_from: None,
                 focused: Some(10),
                 root_pane: Some(10),
             }],
@@ -1792,6 +1851,7 @@ mod tests {
                         },
                     )]),
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(0),
                     root_pane: Some(0),
                 }],
@@ -2263,6 +2323,7 @@ mod tests {
                     layout: LayoutSnapshot::Pane(0),
                     panes,
                     zoomed: false,
+                    parked_from: None,
                     focused: Some(0),
                     root_pane: Some(0),
                 }],

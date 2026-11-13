@@ -119,7 +119,7 @@ pub(super) fn snapshot_with_completions(
             app.state
                 .workspaces
                 .iter()
-                .flat_map(|workspace| workspace.tabs.iter()),
+                .flat_map(|workspace| workspace.visible_tabs()),
         )
         .map(|(tab, state)| {
             let tab_id = tab.tab_id;
