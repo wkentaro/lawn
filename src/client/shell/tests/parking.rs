@@ -1289,9 +1289,9 @@ fn close_recovery_handles_focus_and_shell_exit_in_the_same_snapshot() {
 }
 
 #[test]
-fn close_recovery_falls_back_only_to_online_machines() {
+fn close_recovery_opens_one_focused_home_workspace_on_the_same_machine() {
     for remove_workspace in [false, true] {
-        for online in [false, true] {
+        for (online, supported) in [(false, true), (true, true), (true, false)] {
             let mut state = if remove_workspace {
                 state()
             } else {
@@ -1349,19 +1349,64 @@ fn close_recovery_falls_back_only_to_online_machines() {
                 focus_terminal: None,
             };
             acknowledge(&mut state, &policy, None);
-            let focused = tick(&mut state);
-            if online {
-                assert!(
-                    matches!(focused.actions.as_slice(),
-                        [ClientShellAction::ActivateEndpoint { endpoint_id, target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)) }]
-                            if endpoint_id == &remote && workspace_id == "ws_1"
-                    ),
-                    "remove_workspace={remove_workspace}: {:?}",
-                    focused.actions
-                );
-            } else {
-                assert!(focused.actions.is_empty());
+            state.mode = ClientShellMode::Navigate;
+            if !supported {
+                state.set_endpoint_methods(Some(vec!["workspace.create".into()]));
             }
+            let focused = tick(&mut state);
+            if !supported {
+                assert!(focused.actions.is_empty());
+                let notice = state.visible_endpoint_notice.as_ref().unwrap();
+                assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Unsupported);
+                assert_eq!(notice.key.code, "workspace.ensure_active");
+                assert!(state.endpoint_error.is_none());
+                assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+                assert!(tick(&mut state).actions.is_empty());
+                continue;
+            }
+            assert!(
+                matches!(focused.actions.as_slice(),
+                    [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
+                        if matches!(&request.method, crate::api::schema::Method::WorkspaceEnsureActive(params)
+                            if params.excluded_terminal_ids == if remove_workspace { vec![] } else { vec!["terminal-pane_1".to_owned()] })
+                ),
+                "remove_workspace={remove_workspace}, online={online}: {:?}",
+                focused.actions
+            );
+            assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+            assert_eq!(state.mode, ClientShellMode::Terminal);
+            assert!(tick(&mut state).actions.is_empty());
+
+            let mut home = snapshot();
+            home.revision = state.snapshot.as_ref().unwrap().revision + 1;
+            home.focused_workspace_id = Some("ws_home".into());
+            home.focused_tab_id = Some("tab_home".into());
+            home.focused_pane_id = Some("pane_home".into());
+            home.workspaces[0].workspace_id = "ws_home".into();
+            home.workspaces[0].active_tab_id = "tab_home".into();
+            home.tabs[0].workspace_id = "ws_home".into();
+            home.tabs[0].tab_id = "tab_home".into();
+            home.panes[0].workspace_id = "ws_home".into();
+            home.panes[0].tab_id = "tab_home".into();
+            home.panes[0].pane_id = "pane_home".into();
+            if !remove_workspace {
+                let mut parked = state.snapshot.as_deref().unwrap().clone();
+                parked.workspaces[0].focused = false;
+                parked.tabs[0].focused = false;
+                parked.panes[0].focused = false;
+                home.workspaces.extend(parked.workspaces);
+                home.tabs.extend(parked.tabs);
+                home.panes.extend(parked.panes);
+            }
+            state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(home));
+            acknowledge(&mut state, &policy, Some("pane_home"));
+            let mut frame = surface();
+            frame.projection_revision = state.snapshot.as_ref().unwrap().revision;
+            frame.panes[0].pane_id = "pane_home".into();
+            state.set_pane_surface(frame);
+            assert!(state.handle_input_bytes(b"pwd\r").requests.iter().any(|request| {
+                matches!(request, ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "pane_home")
+            }));
             assert!(tick(&mut state).actions.is_empty());
         }
     }
