@@ -53,7 +53,7 @@ impl ClientContextMenuOverlay {
                 item("Move to...", Action::Move),
             ],
             ClientContextMenuTarget::ParkedPane { .. } => {
-                vec![item("Unpark", Action::RestorePane)]
+                vec![item("Restore", Action::RestorePane)]
             }
             ClientContextMenuTarget::Pane {
                 can_park,

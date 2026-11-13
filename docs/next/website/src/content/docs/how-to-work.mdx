@@ -32,17 +32,18 @@ running.
 
 Open Parked from the sidebar or your configured `open_parked` shortcut. On mobile,
 use Parked in the switcher's menu. Its switcher lists terminals by workspace.
-Search across names,
-machines, and paths, or filter by agent state. Select a terminal to
-preview it without unparking it.
+Search across names, machines, and paths. Select a terminal for a read-only
+preview, then press Enter or click Open for an interactive peek. You can type,
+paste, or respond while the terminal stays parked. Restore in the top-right
+returns it to its original workspace and tab. Dismiss, Escape, or a close shortcut
+closes only the peek and returns to the workspace you were using.
 
 Closing the last active shell hides an all-parked workspace from Spaces and normal
 workspace switching. Lawn focuses the nearest open workspace in sidebar order on
 the same machine, preferring the following workspace when equally close. If none
 remain, it switches to an open workspace on another connected machine. The empty
 view remains only when no open workspaces are available. Parked sessions stay
-parked. Unpark brings back the original workspace and terminal; Dismiss or Escape
-closes a read-only preview.
+parked until you explicitly choose Restore.
 
 Closing a workspace or mixed tab through Lawn's UI closes only its active panes
 and retains parked sessions. The explicit socket API close methods still stop

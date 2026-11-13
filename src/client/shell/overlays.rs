@@ -1179,12 +1179,6 @@ pub(crate) fn render_navigator_overlay(
             Some(ClientNavigatorTarget::NewWorkspace) => " New workspace Enter",
             _ => " Split right Enter",
         }
-    } else if selected_row.is_some_and(|row| row.parked) {
-        if i.width >= 38 {
-            " Unpark & open Enter"
-        } else {
-            " Unpark Enter"
-        }
     } else {
         " Open Enter"
     };

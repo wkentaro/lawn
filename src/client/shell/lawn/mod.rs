@@ -153,8 +153,6 @@ impl ClientShellState {
 #[derive(Clone, Copy)]
 pub(super) enum ParkingAction {
     Park,
-    // Exercise retained full-pane presentation policy in compatibility tests.
-    #[cfg(test)]
     Preview,
     Restore,
 }
@@ -168,9 +166,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let previous_size = self.parking_size();
-        #[cfg(test)]
         let same_endpoint = endpoint_id == self.active_endpoint_id;
-        #[cfg(test)]
         let preview_return = matches!(action, ParkingAction::Preview)
             .then(|| {
                 self.active_parking()
@@ -220,7 +216,6 @@ impl ClientShellState {
                     .to_owned();
                 match action {
                     ParkingAction::Park => endpoint.parking.park(&pane),
-                    #[cfg(test)]
                     ParkingAction::Preview => {
                         let continuing = same_endpoint && endpoint.parking.preview_pane().is_some();
                         endpoint.parking.preview(&terminal)?;
@@ -370,7 +365,7 @@ impl ClientShellState {
                 button.x,
                 button.y,
                 button.width,
-                " unpark    dismiss ",
+                " restore   dismiss ",
                 Style::default().fg(p.accent),
             );
             self.hits.restore_pane = Rect::new(button.x, button.y, button.width.min(10), 1);

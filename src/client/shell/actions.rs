@@ -50,7 +50,15 @@ impl ClientShellState {
                         crate::input::KeybindAction::ClosePane
                             | crate::input::KeybindAction::CloseTab
                             | crate::input::KeybindAction::CloseWorkspace
-                            | crate::input::KeybindAction::ClearPane
+                    )
+                {
+                    self.dismiss_parking_preview(outcome);
+                    return;
+                }
+                if self.has_parking_preview()
+                    && matches!(
+                        action,
+                        crate::input::KeybindAction::ClearPane
                             | crate::input::KeybindAction::SplitVertical
                             | crate::input::KeybindAction::SplitHorizontal
                             | crate::input::KeybindAction::Zoom
@@ -66,7 +74,9 @@ impl ClientShellState {
                             | crate::input::KeybindAction::MovePane
                     )
                 {
-                    self.receive_endpoint_unavailable("Unpark this pane before changing it".into());
+                    self.receive_endpoint_unavailable(
+                        "Restore this pane before changing its layout".into(),
+                    );
                     outcome.repaint = true;
                     return;
                 }

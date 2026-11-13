@@ -112,7 +112,11 @@ impl PaneParking {
     }
 
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
-        self.ready() && self.preview.is_none() && !self.hides_pane(pane)
+        self.ready()
+            && match self.preview_pane() {
+                Some(preview) => preview == pane,
+                None => !self.hides_pane(pane),
+            }
     }
 
     pub(in crate::client::shell) fn preview_pane(&self) -> Option<&str> {
@@ -294,8 +298,8 @@ impl PaneParking {
             .as_ref()
             .and_then(|pane| ids.pane_terminals.get(pane));
         if let Some(request) = &self.request {
-            if request.preview_terminal.is_some()
-                && self.preview.as_ref() == request.preview_terminal.as_ref()
+            if self.preview.is_some()
+                && self.preview.as_ref() == request.focus_terminal.as_ref()
                 && focused_terminal != self.preview.as_ref()
             {
                 self.preview = None;
@@ -303,19 +307,28 @@ impl PaneParking {
             if self.focus.as_ref() == request.focus_terminal.as_ref() {
                 self.focus = None;
             }
+        }
+        if let Some(request) = &self.request {
+            let hidden = |id: &String| {
+                Some(id) != self.preview.as_ref()
+                    && (self.store.terminals.contains(id)
+                        || self.protected.contains(id)
+                        || (self.preview.is_some() && live.contains(id)))
+            };
             let added = self
                 .store
                 .terminals
                 .iter()
                 .chain(&self.protected)
-                .any(|id| request.hidden_terminals.binary_search(id).is_err());
-            let restored = live.iter().any(|id| {
-                request.hidden_terminals.binary_search(id).is_ok()
-                    && !self.store.terminals.contains(id)
-                    && !self.protected.contains(id)
-            });
-            if added || restored || request.preview_terminal != self.preview || self.focus.is_some()
-            {
+                .chain(live.iter().filter(|_| self.preview.is_some()))
+                .any(|id| hidden(id) && request.hidden_terminals.binary_search(id).is_err());
+            let removed = request.hidden_terminals.iter().any(|id| !hidden(id));
+            let read_only_changed = self
+                .protected
+                .iter()
+                .filter(|id| Some(*id) != self.preview.as_ref())
+                .ne(request.read_only_terminals.iter());
+            if added || removed || read_only_changed || self.focus.is_some() {
                 self.dirty = true;
             }
         }
@@ -381,20 +394,36 @@ impl PaneParking {
         }
         let boot_id = self.boot_id.clone()?;
         self.sequence = self.sequence.checked_add(1)?;
-        let hidden: BTreeSet<_> = self
+        let mut hidden: BTreeSet<_> = self
             .store
             .terminals
             .union(&self.protected)
             .cloned()
             .collect();
+        if let Some(preview) = &self.preview {
+            // The v1 server preview is read-only. An ordinary focused presentation
+            // exposes only this terminal without changing the saved parked set.
+            hidden.extend(self.terminal_panes.keys().cloned());
+            hidden.remove(preview);
+        }
         let known = |id: &&String| self.terminal_panes.contains_key(*id);
         let request = SetPanePresentation {
             boot_id,
             sequence: self.sequence,
             hidden_terminals: hidden.into_iter().collect(),
-            read_only_terminals: self.protected.iter().cloned().collect(),
-            preview_terminal: self.preview.as_ref().filter(known).cloned(),
-            focus_terminal: self.focus.as_ref().filter(known).cloned(),
+            read_only_terminals: self
+                .protected
+                .iter()
+                .filter(|id| Some(*id) != self.preview.as_ref())
+                .cloned()
+                .collect(),
+            preview_terminal: None,
+            focus_terminal: self
+                .preview
+                .as_ref()
+                .or(self.focus.as_ref())
+                .filter(known)
+                .cloned(),
         };
         self.prune_candidates = self.store.terminals.clone();
         self.request = Some(request.clone());
@@ -455,7 +484,6 @@ impl PaneParking {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(in crate::client::shell) fn preview(&mut self, terminal: &str) -> Result<(), String> {
         if !self.available() || !self.terminal_panes.contains_key(terminal) {
             return Err("This pane is no longer available".into());
@@ -617,7 +645,43 @@ mod tests {
     }
 
     #[test]
-    fn another_window_restoring_the_record_does_not_make_a_preview_writable() {
+    fn interactive_peek_never_changes_the_saved_parked_set() {
+        let path = path();
+        let (mut model, mut snapshot, now) = connected(Some(path.clone()));
+        model.park("pane_1").unwrap();
+        let parked = model.poll(now).unwrap();
+        acknowledgement(&mut model, &mut snapshot, parked.sequence, None);
+        for _ in 0..2 {
+            model.preview("terminal-one").unwrap();
+            assert!(!model.accepts_input("pane_1"));
+            let peek = model.poll(now).unwrap();
+            assert!(peek.preview_terminal.is_none());
+            assert_eq!(peek.focus_terminal.as_deref(), Some("terminal-one"));
+            assert!(peek.hidden_terminals.is_empty());
+            assert!(peek.read_only_terminals.is_empty());
+            acknowledgement(&mut model, &mut snapshot, peek.sequence, Some("pane_1"));
+            assert!(model.accepts_input("pane_1"));
+            assert!(model.poll(now).is_none());
+            let mut saved = ParkingStore::new(Some(path.clone()));
+            saved.reload().unwrap();
+            assert_eq!(saved.terminals, BTreeSet::from(["terminal-one".into()]));
+            model.leave_preview();
+            assert!(!model.accepts_input("pane_1"));
+            let dismissed = model.poll(now).unwrap();
+            assert_eq!(dismissed.hidden_terminals, ["terminal-one"]);
+            assert!(dismissed.focus_terminal.is_none());
+            acknowledgement(&mut model, &mut snapshot, dismissed.sequence, None);
+            assert!(!model.accepts_input("pane_1"));
+            assert_eq!(model.parked_terminals().count(), 1);
+        }
+        let (reopened, _, _) = connected(Some(path.clone()));
+        assert!(reopened.hides_pane("pane_1"));
+        assert!(!reopened.accepts_input("pane_1"));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn another_window_restoring_the_record_keeps_the_peek_interactive_and_locally_parked() {
         let path = path();
         let (mut model, mut snapshot, now) = connected(Some(path.clone()));
         model.park("pane_1").unwrap();
@@ -625,17 +689,20 @@ mod tests {
         acknowledgement(&mut model, &mut snapshot, request.sequence, None);
         model.preview("terminal-one").unwrap();
         let request = model.poll(now).unwrap();
-        assert_eq!(request.preview_terminal.as_deref(), Some("terminal-one"));
+        assert!(request.preview_terminal.is_none());
+        assert_eq!(request.focus_terminal.as_deref(), Some("terminal-one"));
+        assert!(request.hidden_terminals.is_empty());
+        assert!(request.read_only_terminals.is_empty());
         acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
         ParkingStore::new(Some(path.clone()))
             .restore("terminal-one")
             .unwrap();
         let request = model.poll(now + Duration::from_millis(500)).unwrap();
-        assert_eq!(request.read_only_terminals, ["terminal-one"]);
+        assert!(request.read_only_terminals.is_empty());
         acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
         assert_eq!(model.preview_pane(), Some("pane_1"));
         assert_eq!(model.parked_terminals().count(), 1);
-        assert!(!model.accepts_input("pane_1"));
+        assert!(model.accepts_input("pane_1"));
         assert!(!model.accepts_input("another-visible-pane"));
         model.restore("terminal-one").unwrap();
         let request = model.poll(now + Duration::from_millis(500)).unwrap();

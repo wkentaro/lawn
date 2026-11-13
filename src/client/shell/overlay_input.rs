@@ -474,7 +474,7 @@ impl ClientShellState {
         if self.endpoints.iter().any(|endpoint| {
             endpoint.endpoint_id == endpoint_id && endpoint.parking.hides_pane(&pane_id)
         }) {
-            if self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Restore, outcome) {
+            if self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Preview, outcome) {
                 self.overlay = None;
             }
             return;

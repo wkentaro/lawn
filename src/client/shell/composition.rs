@@ -273,7 +273,6 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
-        let preview = self.has_parking_preview();
         self.hits.panes = surface
             .panes
             .iter()
@@ -307,7 +306,7 @@ impl ClientShellState {
                 }),
                 pane_id: pane.pane_id.clone(),
                 popup: false,
-                mouse_reporting: pane.mouse_reporting && !preview,
+                mouse_reporting: pane.mouse_reporting,
                 sgr_pixel_mouse: pane.sgr_pixel_mouse,
                 pixel_width: pane.pixel_width,
                 pixel_height: pane.pixel_height,
@@ -387,9 +386,6 @@ impl ClientShellState {
         });
         if !empty_parked_workspace {
             blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-        }
-        if preview {
-            frame.cursor = None;
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
