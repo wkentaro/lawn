@@ -74,6 +74,7 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
+        let channels = self.tab_channels();
         let result = self
             .state
             .workspaces
@@ -89,6 +90,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    channels,
                 )
             });
         match result {

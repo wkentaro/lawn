@@ -208,6 +208,7 @@ impl App {
             };
         let (rows, cols) = self.state.new_pane_size(crate::ui::NewPanePlacement::Alone);
         let host_terminal_appearance = self.pane_host_terminal_appearance();
+        let channels = self.tab_channels();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
@@ -220,6 +221,7 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             host_terminal_appearance,
+            channels,
         ) {
             Ok(result) => result,
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),

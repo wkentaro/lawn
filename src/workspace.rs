@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -206,6 +207,12 @@ pub struct Workspace {
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
 
+/// Channels every new tab reports to.
+pub(crate) type TabChannels = (mpsc::Sender<AppEvent>, Arc<Notify>, Arc<RenderSignal>);
+
+// Production code reads tabs through `active_tab()` because a workspace may
+// have none.
+#[cfg(test)]
 impl Deref for Workspace {
     type Target = Tab;
 
@@ -215,6 +222,7 @@ impl Deref for Workspace {
     }
 }
 
+#[cfg(test)]
 impl DerefMut for Workspace {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.active_tab_mut()
@@ -469,6 +477,7 @@ impl Workspace {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
+        channels: TabChannels,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
@@ -480,6 +489,7 @@ impl Workspace {
             shell_config,
             None,
             extra_env,
+            channels,
         )
     }
 
@@ -493,6 +503,7 @@ impl Workspace {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        channels: TabChannels,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
@@ -504,6 +515,7 @@ impl Workspace {
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
             Some(argv),
             extra_env,
+            channels,
         )
     }
 
@@ -518,23 +530,13 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
+        channels: TabChannels,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_number = self.next_public_pane_number;
         let launch_env = self.launch_env_for_new_pane(number, pane_number, extra_env);
-        let events = self
-            .active_tab()
-            .map(|tab| tab.events.clone())
-            .expect("workspace must always have at least one tab");
-        let render_notify = self
-            .active_tab()
-            .map(|tab| tab.render_notify.clone())
-            .expect("workspace must always have at least one tab");
-        let render_dirty = self
-            .active_tab()
-            .map(|tab| tab.render_dirty.clone())
-            .expect("workspace must always have at least one tab");
+        let (events, render_notify, render_dirty) = channels;
 
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
@@ -626,11 +628,11 @@ impl Workspace {
         let tab_number = self
             .active_tab()
             .map(|tab| tab.number)
-            .expect("workspace must always have at least one tab");
+            .ok_or_else(|| std::io::Error::other("workspace has no tabs"))?;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
         let new_pane = self
             .active_tab_mut()
-            .expect("workspace must always have at least one tab")
+            .ok_or_else(|| std::io::Error::other("workspace has no tabs"))?
             .split_focused_command(
                 direction,
                 rows,
@@ -929,27 +931,12 @@ impl Workspace {
         &mut self,
         moved: MovedPane,
         label: Option<String>,
-        fallback_events: mpsc::Sender<AppEvent>,
-        fallback_render_notify: Arc<Notify>,
-        fallback_render_dirty: Arc<RenderSignal>,
+        channels: TabChannels,
     ) -> usize {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
         let pane_id = moved.pane_id;
-        let (events, render_notify, render_dirty) = self
-            .active_tab()
-            .map(|tab| {
-                (
-                    tab.events.clone(),
-                    tab.render_notify.clone(),
-                    tab.render_dirty.clone(),
-                )
-            })
-            .unwrap_or((
-                fallback_events,
-                fallback_render_notify,
-                fallback_render_dirty,
-            ));
+        let (events, render_notify, render_dirty) = channels;
         let tab =
             Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty);
         if !self.public_pane_numbers.contains_key(&pane_id) {
@@ -1307,12 +1294,7 @@ impl Workspace {
 
     pub(crate) fn assert_invariants_for_test(&self) {
         assert!(
-            !self.tabs.is_empty(),
-            "workspace {} must contain at least one tab",
-            self.id
-        );
-        assert!(
-            self.active_tab < self.tabs.len(),
+            self.active_tab < self.tabs.len().max(1),
             "workspace {} active_tab {} out of bounds for {} tabs",
             self.id,
             self.active_tab,
