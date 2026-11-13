@@ -97,6 +97,8 @@ operations::define_operations! {
     PaneSplit(PaneSplitParams) => "pane.split", true, true;
     PaneSwap(PaneSwapParams) => "pane.swap", true, true;
     PaneMove(PaneMoveParams) => "pane.move", true, true;
+    PanePark(PaneTarget) => "pane.park", true, true;
+    PaneUnpark(PaneUnparkParams) => "pane.unpark", true, true;
     PaneZoom(PaneZoomParams) => "pane.zoom", true, true;
     PaneLayout(PaneLayoutParams) => "pane.layout", false, false;
     PaneProcessInfo(PaneProcessInfoParams) => "pane.process_info", false, false;

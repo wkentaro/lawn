@@ -72,8 +72,7 @@ impl App {
             let (ws_raw, tab_raw) = rest.rsplit_once('_')?;
             let ws_idx = self.parse_workspace_id(ws_raw)?;
             let tab_idx = tab_raw.parse::<usize>().ok()?.checked_sub(1)?;
-            self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-            return Some((ws_idx, tab_idx));
+            return self.visible_tab(ws_idx, tab_idx);
         }
 
         let (ws_raw, tab_raw) = id.rsplit_once(':')?;
@@ -89,8 +88,13 @@ impl App {
         } else {
             tab_raw.parse::<usize>().ok()?.checked_sub(1)?
         };
-        self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-        Some((ws_idx, tab_idx))
+        self.visible_tab(ws_idx, tab_idx)
+    }
+
+    /// Tab ids name visible tabs only; parked tabs are not addressable.
+    fn visible_tab(&self, ws_idx: usize, tab_idx: usize) -> Option<(usize, usize)> {
+        (tab_idx < self.state.workspaces.get(ws_idx)?.visible_tab_count())
+            .then_some((ws_idx, tab_idx))
     }
 
     fn resolve_raw_pane_id(&self, raw: u32) -> Option<crate::layout::PaneId> {

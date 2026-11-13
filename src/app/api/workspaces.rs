@@ -103,7 +103,8 @@ impl App {
             .chain(0..self.state.workspaces.len());
         let target = workspace_order.find_map(|ws_idx| {
             let ws = self.state.workspaces.get(ws_idx)?;
-            let mut tab_order = std::iter::once(ws.active_tab).chain(0..ws.tabs.len());
+            let mut tab_order =
+                std::iter::once(ws.active_tab_index()).chain(0..ws.visible_tab_count());
             tab_order.find_map(|tab_idx| {
                 let tab = ws.tabs.get(tab_idx)?;
                 std::iter::once(tab.layout.focused())

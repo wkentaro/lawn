@@ -104,7 +104,7 @@ impl HeadlessServer {
             {
                 active_tab_ids.insert(workspace_id.clone(), tab_id);
             }
-            for tab_index in 0..workspace.tabs.len() {
+            for tab_index in 0..workspace.visible_tab_count() {
                 if let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) {
                     tab_workspace_ids.insert(tab_id, workspace_id.clone());
                 }
@@ -249,7 +249,9 @@ impl HeadlessServer {
                 | Method::PaneClose(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneMove(_)
+                | Method::PanePark(_)
                 | Method::PaneSplit(_)
+                | Method::PaneUnpark(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabMoveToWorkspace(_)
@@ -277,12 +279,14 @@ impl HeadlessServer {
                 | Method::PaneLinkActivate(_)
                 | Method::PaneLinkResolve(_)
                 | Method::PaneMove(_)
+                | Method::PanePark(_)
                 | Method::PaneRename(_)
                 | Method::PaneResize(_)
                 | Method::PaneScroll(_)
                 | Method::PaneClear(_)
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
+                | Method::PaneUnpark(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
@@ -313,8 +317,10 @@ impl HeadlessServer {
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneResize(_)
+                | Method::PanePark(_)
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
+                | Method::PaneUnpark(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
@@ -865,6 +871,10 @@ impl HeadlessServer {
             &msg.request.method,
             api::schema::Method::TabMoveToWorkspace(params) if params.focus
         );
+        let inspect_unpark = matches!(
+            &msg.request.method,
+            api::schema::Method::PaneUnpark(params) if params.focus
+        );
         let ensure_active_requested = matches!(
             &msg.request.method,
             api::schema::Method::WorkspaceEnsureActive(_)
@@ -872,6 +882,7 @@ impl HeadlessServer {
         let response_proxy = (agent_focus_target.is_some()
             || inspect_pane_move
             || inspect_tab_move
+            || inspect_unpark
             || ensure_active_requested)
             .then(|| {
                 let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
@@ -888,7 +899,7 @@ impl HeadlessServer {
                 &proxied_result,
                 Some(api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
             ))
-            || (inspect_tab_move && proxied_request_succeeded);
+            || ((inspect_tab_move || inspect_unpark) && proxied_request_succeeded);
         let successful_agent_focus_target = proxied_request_succeeded
             .then(|| {
                 agent_focus_target.as_deref().and_then(|target| {

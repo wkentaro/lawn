@@ -14,7 +14,9 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        self.session_snapshot_with_pane_info(Self::pane_info)
+        let mut snapshot = self.session_snapshot_with_pane_info(Self::pane_info);
+        snapshot.parked_panes = self.parked_pane_infos();
+        snapshot
     }
 
     pub(crate) fn session_metadata_snapshot(&self) -> SessionSnapshot {
@@ -31,7 +33,7 @@ impl App {
             .map(|ws_idx| self.public_workspace_id(ws_idx));
         let focused_tab_id = self.state.active.and_then(|ws_idx| {
             let ws = self.state.workspaces.get(ws_idx)?;
-            self.public_tab_id(ws_idx, ws.active_tab)
+            self.public_tab_id(ws_idx, ws.active_tab_index())
         });
         let focused_pane_id = self.state.active.and_then(|ws_idx| {
             let ws = self.state.workspaces.get(ws_idx)?;
@@ -44,7 +46,7 @@ impl App {
         let mut panes = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.push(self.workspace_info(ws_idx));
-            for tab_idx in 0..ws.tabs.len() {
+            for tab_idx in 0..ws.visible_tab_count() {
                 if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                     tabs.push(tab);
                 }
@@ -72,6 +74,9 @@ impl App {
             panes,
             layouts,
             agents: self.collect_agent_infos(),
+            // Only session.snapshot lists parked panes; the per-frame
+            // metadata snapshot skips them.
+            parked_panes: Vec::new(),
         }
     }
 }

@@ -175,7 +175,7 @@ impl ClientPanePresentation {
             return target;
         };
         let visible = |index: usize| {
-            workspace.tabs.get(index).is_some_and(|tab| {
+            workspace.visible_tabs().get(index).is_some_and(|tab| {
                 tab.layout
                     .first_matching_pane(|id| self.presents(id))
                     .is_some()
@@ -184,7 +184,7 @@ impl ClientPanePresentation {
         if visible(target.tab_index) {
             return target;
         }
-        (target.tab_index.saturating_add(1)..workspace.tabs.len())
+        (target.tab_index.saturating_add(1)..workspace.visible_tab_count())
             .chain((0..target.tab_index).rev())
             .find(|&index| visible(index))
             .map_or(target, |tab_index| TabSurfaceTarget {

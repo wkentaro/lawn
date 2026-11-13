@@ -93,7 +93,7 @@ fn evaluation_context(app: &AppState) -> EvaluationContext {
         scope: 0,
         workspace_id: workspace.map(|workspace| workspace.id.clone()),
         tab_id: workspace.and_then(|workspace| {
-            let number = workspace.public_tab_number(workspace.active_tab)?;
+            let number = workspace.public_tab_number(workspace.active_tab_index())?;
             Some(crate::workspace::public_tab_id_for_number(
                 &workspace.id,
                 number,

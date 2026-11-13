@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove`（始终返回 `unsupported`） |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
-| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.park`、`pane.unpark`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -233,6 +233,15 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 ```
 
 `insert_index` 可选，省略时追加到末尾。响应是 `type: "tab_info"`,包含标签页的新记录。标签页及其窗格会在目标工作区获得新的公开 id,旧的窗格 id 保留为别名。移动工作区的最后一个标签页会关闭该工作区。订阅者依次收到 `tab.closed`、源工作区关闭时的 `workspace.closed`,然后是 `tab.created`。
+
+`pane.park` 把窗格从标签页中取出，并让其终端继续运行：
+
+```json
+{"id":"req_park","method":"pane.park","params":{"pane_id":"w1:p2"}}
+{"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
+```
+
+窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。暂存和恢复目前还不会发送事件。
 
 `pane.zoom` 切换、启用或禁用目标窗格所在标签页的缩放:
 

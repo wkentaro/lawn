@@ -3485,6 +3485,21 @@
           ],
           "type": "object"
         },
+        "PaneUnparkParams": {
+          "properties": {
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneWaitForOutputParams": {
           "properties": {
             "lines": {
@@ -5790,6 +5805,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.park",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.unpark",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUnparkParams"
             }
           },
           "required": [
@@ -11302,6 +11349,13 @@
               "type": "array"
             },
             "panes": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/PaneInfo"
+              },
+              "type": "array"
+            },
+            "parked_panes": {
+              "description": "Parked panes, grouped by workspace. Each sits in a hidden tab, so its\n`tab_id` names no tab in `tabs`.",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/PaneInfo"
               },

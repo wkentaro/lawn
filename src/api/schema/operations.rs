@@ -185,6 +185,8 @@ mod tests {
             "pane.split",
             "pane.swap",
             "pane.move",
+            "pane.park",
+            "pane.unpark",
             "pane.zoom",
             "pane.focus_direction",
             "pane.resize",

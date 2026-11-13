@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove`（常に `unsupported` を返す） |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
-| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.park`、`pane.unpark`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -233,6 +233,15 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 ```
 
 `insert_index` は任意で、省略すると末尾に追加します。レスポンスは `type: "tab_info"` で、移動後のタブのレコードを返します。タブとペインには移動先ワークスペースで新しい公開 id が割り当てられ、以前のペイン id は別名として残ります。ワークスペースの最後のタブを移動すると、そのワークスペースは閉じます。購読者には `tab.closed`、移動元が閉じた場合は `workspace.closed`、その後に `tab.created` が届きます。
+
+`pane.park` はペインをタブから外し、ターミナルを実行したまま保持します。
+
+```json
+{"id":"req_park","method":"pane.park","params":{"pane_id":"w1:p2"}}
+{"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
+```
+
+ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割しません。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。保留と復帰はまだイベントを送信しません。
 
 `pane.zoom` は、対象ペインのタブのズームをトグル、有効化、無効化します:
 
