@@ -895,6 +895,36 @@ impl AppState {
         self.session_dirty = true;
     }
 
+    /// Points workspace-scoped references to panes that moved into another
+    /// workspace at that workspace, including a `pending_focus` the caller
+    /// captured before the move.
+    pub(crate) fn retarget_moved_panes(
+        &mut self,
+        pane_ids: &[PaneId],
+        workspace_id: &str,
+        pending_focus: &mut Option<PaneFocusTarget>,
+    ) {
+        let moved = |pane_id: &PaneId| pane_ids.contains(pane_id);
+        for focus in [&mut self.previous_pane_focus, pending_focus] {
+            if let Some(focus) = focus.as_mut().filter(|focus| moved(&focus.pane_id)) {
+                focus.workspace_id = workspace_id.to_string();
+            }
+        }
+        if let Some(target) = self
+            .toast
+            .as_mut()
+            .and_then(|toast| toast.target.as_mut())
+            .filter(|target| moved(&target.pane_id))
+        {
+            target.workspace_id = workspace_id.to_string();
+        }
+        for notification in self.pending_agent_notifications.values_mut() {
+            if moved(&notification.pane_id) {
+                notification.workspace_id = workspace_id.to_string();
+            }
+        }
+    }
+
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
