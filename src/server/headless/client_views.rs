@@ -893,6 +893,8 @@ impl HeadlessServer {
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
             api::schema::Method::TabCreate(params) => params.focus,
+            // A focused tab move always lands on a new server target.
+            api::schema::Method::TabMoveToWorkspace(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(

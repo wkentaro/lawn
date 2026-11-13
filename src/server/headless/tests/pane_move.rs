@@ -233,3 +233,47 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
         shutdown_test_runtimes(&mut server);
     }
 }
+
+#[tokio::test]
+async fn public_tab_move_focus_follows_the_moved_tab() {
+    let mut server = pane_move_server();
+    let tab_id = server.app.public_tab_id(0, 1).unwrap();
+    let destination_id = server.app.public_workspace_id(1);
+    let (control_rx, _render_rx) = connect_test_shell(&mut server, 9, 80, 23);
+    let _ = client_shell_snapshot(&control_rx);
+
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
+        request: crate::api::schema::Request {
+            id: "move-tab".into(),
+            method: crate::api::schema::Method::TabMoveToWorkspace(
+                crate::api::schema::TabMoveToWorkspaceParams {
+                    tab_id,
+                    workspace_id: destination_id.clone(),
+                    insert_index: None,
+                    focus: true,
+                },
+            ),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+    let response = response_rx.recv().expect("tab move response");
+    let Ok(SuccessResponse {
+        result: ResponseResult::TabInfo { tab },
+        ..
+    }) = serde_json::from_str::<SuccessResponse>(&response)
+    else {
+        panic!("expected tab info, got {response}");
+    };
+
+    assert_eq!(server.app.state.workspaces[0].tabs.len(), 1);
+    let location = server.clients[&9].shell_location.as_ref().unwrap();
+    assert_eq!(
+        location.focused_workspace_id.as_deref(),
+        Some(destination_id.as_str()),
+        "a focused public tab move must move the attached client"
+    );
+    assert_eq!(location.focused_tab_id(), Some(tab.tab_id.as_str()));
+    shutdown_test_runtimes(&mut server);
+}
