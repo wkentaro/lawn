@@ -323,6 +323,7 @@ impl HeadlessServer {
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabFocus(_)
+                | Method::TabMoveToWorkspace(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceFocus(_)
@@ -893,29 +894,35 @@ impl HeadlessServer {
         let create_focus_requested = match &msg.request.method {
             api::schema::Method::WorkspaceCreate(params) => params.focus,
             api::schema::Method::TabCreate(params) => params.focus,
-            // A focused tab move always lands on a new server target.
-            api::schema::Method::TabMoveToWorkspace(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(
             &msg.request.method,
             api::schema::Method::PaneMove(params) if params.focus
         );
-        let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
-            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
-            let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
-            (original, proxy_rx)
-        });
+        // A moved tab can land on the same workspace and tab indexes, so
+        // success comes from the response, not a target change.
+        let inspect_tab_move = matches!(
+            &msg.request.method,
+            api::schema::Method::TabMoveToWorkspace(params) if params.focus
+        );
+        let response_proxy =
+            (agent_focus_target.is_some() || inspect_pane_move || inspect_tab_move).then(|| {
+                let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
+                let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
+                (original, proxy_rx)
+            });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false, None);
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
-        let pane_move_focus_succeeded = inspect_pane_move
+        let move_focus_succeeded = (inspect_pane_move
             && matches!(
                 &proxied_result,
                 Some(api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
-            );
+            ))
+            || (inspect_tab_move && proxied_request_succeeded);
         let successful_agent_focus_target = proxied_request_succeeded
             .then(|| {
                 agent_focus_target.as_deref().and_then(|target| {
@@ -934,13 +941,13 @@ impl HeadlessServer {
             .is_some_and(|target| self.default_shell_target() == Some(target));
         let public_focus_succeeded = explicit_focus_succeeded
             || (create_focus_requested && target_changed)
-            || pane_move_focus_succeeded;
+            || move_focus_succeeded;
         if public_focus_succeeded {
             self.focus_all_shell_clients_on_default_target();
         }
         if reconcile
             || target_changed
-            || pane_move_focus_succeeded
+            || move_focus_succeeded
             || self.app.state.popup_pane.is_some() != popup_before
         {
             self.reconcile_client_shell_locations();
