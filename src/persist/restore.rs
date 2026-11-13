@@ -405,7 +405,8 @@ fn restore_workspace(
         tabs.push(tab);
     }
 
-    if tabs.is_empty() {
+    // A workspace saved without tabs stays empty; one whose tabs all failed is dropped.
+    if tabs.is_empty() && !snap.tabs.is_empty() {
         return (None, failed_imports);
     }
 
@@ -1689,6 +1690,42 @@ mod tests {
         assert_eq!(workspace.next_public_pane_number, 4);
         assert_eq!(workspace.tabs[0].number, 5);
         assert_eq!(workspace.next_public_tab_number, 6);
+    }
+
+    #[tokio::test]
+    async fn a_workspace_saved_without_tabs_restores_empty() {
+        let mut workspace = crate::workspace::Workspace::test_new("empty");
+        while workspace.take_tab(0).is_some() {}
+        let snapshot = super::super::snapshot::capture(
+            std::slice::from_ref(&workspace),
+            &HashMap::new(),
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Some(0),
+            0,
+        );
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let [restored] = workspaces.as_slice() else {
+            panic!("expected one workspace, got {}", workspaces.len());
+        };
+        assert_eq!(restored.id, workspace.id);
+        assert!(restored.tabs.is_empty());
+        assert!(terminals.is_empty());
+        restored.assert_invariants_for_test();
     }
 
     #[tokio::test]

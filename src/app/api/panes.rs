@@ -1258,14 +1258,9 @@ impl App {
                     return encode_error(id, "pane_move_failed", "target workspace disappeared");
                 };
                 let moved_pane_id = moved.pane_id;
+                let channels = self.tab_channels();
                 let target_tab_idx = self.state.workspaces[target_ws_idx]
-                    .create_tab_from_existing_pane(
-                        moved,
-                        label,
-                        self.event_tx.clone(),
-                        self.render_notify.clone(),
-                        self.render_dirty.clone(),
-                    );
+                    .create_tab_from_existing_pane(moved, label, channels);
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
@@ -1406,12 +1401,11 @@ impl App {
         moved: crate::workspace::MovedPane,
     ) {
         if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
+            let channels = self.tab_channels();
             self.state.workspaces[ws_idx].create_tab_from_existing_pane(
                 moved,
                 context.previous_tab_label,
-                self.event_tx.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                channels,
             );
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(

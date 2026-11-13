@@ -8840,3 +8840,30 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[tokio::test]
+async fn a_shell_renders_a_focused_workspace_without_tabs() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![
+        crate::workspace::Workspace::test_new("empty"),
+        crate::workspace::Workspace::test_new("other"),
+    ];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    while server.app.state.workspaces[0].take_tab(0).is_some() {}
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    server.render_and_stream();
+    let snapshot = client_shell_snapshot(&control);
+    let workspace_id = server.app.public_workspace_id(0);
+    assert_eq!(
+        snapshot.focused_workspace_id.as_deref(),
+        Some(workspace_id.as_str())
+    );
+    assert!(snapshot
+        .tabs
+        .iter()
+        .all(|tab| tab.workspace_id != workspace_id));
+    server.app.state.assert_invariants_for_test();
+    shutdown_test_runtimes(&mut server);
+}

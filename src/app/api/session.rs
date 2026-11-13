@@ -98,6 +98,71 @@ mod tests {
         app
     }
 
+    #[tokio::test]
+    async fn a_workspace_without_tabs_answers_every_read_and_accepts_a_new_tab() {
+        let mut app = app_with_two_tabs();
+        while app.state.workspaces[0].take_tab(0).is_some() {}
+        app.state.workspaces.push(Workspace::test_new("other"));
+        app.state.ensure_test_terminals();
+        app.state.assert_invariants_for_test();
+        let workspace_id = app.public_workspace_id(0);
+        let request = |app: &mut crate::app::App, method: &str, params: serde_json::Value| {
+            let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+                "id": "req",
+                "method": method,
+                "params": params,
+            }))
+            .unwrap_or_else(|error| panic!("{method}: {error}"));
+            let response: serde_json::Value =
+                serde_json::from_str(&app.handle_api_request(request)).unwrap();
+            response
+        };
+        for (method, params) in [
+            ("session.snapshot", serde_json::json!({})),
+            ("workspace.list", serde_json::json!({})),
+            (
+                "workspace.get",
+                serde_json::json!({ "workspace_id": workspace_id }),
+            ),
+            (
+                "tab.list",
+                serde_json::json!({ "workspace_id": workspace_id }),
+            ),
+            (
+                "pane.list",
+                serde_json::json!({ "workspace_id": workspace_id }),
+            ),
+            ("agent.list", serde_json::json!({})),
+            ("background.summary", serde_json::json!({})),
+            (
+                "workspace.focus",
+                serde_json::json!({ "workspace_id": workspace_id }),
+            ),
+            ("layout.export", serde_json::json!({})),
+        ] {
+            let response = request(&mut app, method, params);
+            assert!(
+                response.get("result").is_some() || response["error"]["code"].as_str().is_some(),
+                "{method}: {response}"
+            );
+        }
+        let response = request(
+            &mut app,
+            "tab.create",
+            serde_json::json!({ "workspace_id": workspace_id }),
+        );
+        assert!(response.get("result").is_some(), "{response}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        app.state.assert_invariants_for_test();
+        let response = request(
+            &mut app,
+            "workspace.close",
+            serde_json::json!({ "workspace_id": workspace_id }),
+        );
+        assert!(response.get("result").is_some(), "{response}");
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
     #[test]
     fn session_snapshot_bootstraps_runtime_resources() {
         let mut app = app_with_two_tabs();

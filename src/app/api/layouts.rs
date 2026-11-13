@@ -109,6 +109,7 @@ impl App {
             Err(message) => return encode_error(id, "invalid_layout", message),
         };
 
+        let channels = self.tab_channels();
         let created = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return encode_error(id, "workspace_not_found", "workspace not found");
@@ -123,6 +124,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
+                    channels,
                 )
             } else {
                 ws.create_tab(
@@ -134,6 +136,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    channels,
                 )
             }
         };
