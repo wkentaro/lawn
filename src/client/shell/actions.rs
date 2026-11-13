@@ -20,12 +20,22 @@ impl ClientShellState {
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);
             }
-            crate::input::KeybindMatch::Action(action) => {
-                if action == crate::input::KeybindAction::OpenParked {
+            crate::input::KeybindMatch::Action(
+                action @ (crate::input::KeybindAction::OpenNavigator
+                | crate::input::KeybindAction::OpenParked),
+            ) => {
+                let parked = action == crate::input::KeybindAction::OpenParked;
+                if matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.parked == parked)
+                {
+                    self.overlay = None;
+                } else if parked {
                     self.open_parked();
-                    outcome.repaint = true;
-                    return;
+                } else {
+                    self.open_navigator_overlay();
                 }
+                outcome.repaint = true;
+            }
+            crate::input::KeybindMatch::Action(action) => {
                 if action == crate::input::KeybindAction::ParkPane {
                     self.focused_parking_action(lawn::ParkingAction::Park, outcome);
                     return;
@@ -81,11 +91,6 @@ impl ClientShellState {
                         | crate::input::KeybindAction::RemoveWorktree
                 ) {
                     self.begin_worktree_action(action, outcome);
-                    return;
-                }
-                if action == crate::input::KeybindAction::OpenNavigator {
-                    self.open_navigator_overlay();
-                    outcome.repaint = true;
                     return;
                 }
                 if action == crate::input::KeybindAction::Help {

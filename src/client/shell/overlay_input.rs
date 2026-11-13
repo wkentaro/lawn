@@ -1,5 +1,6 @@
 // Modified for Lawn.
 use super::*;
+use crossterm::event::KeyEventKind;
 
 impl ClientShellState {
     pub(super) fn dismiss_product_announcement(&mut self, outcome: &mut ClientShellInput) {
@@ -200,6 +201,7 @@ impl ClientShellState {
     pub(super) fn open_navigator_overlay(&mut self) {
         self.clear_navigator_preview();
         let mut navigator = ClientNavigatorOverlay {
+            prefix_pending: false,
             query: TextEditor::default(),
             selected: None,
             scroll: None,
@@ -614,7 +616,38 @@ impl ClientShellState {
         if self.route_worktree_overlay_key(key, outcome) {
             return;
         }
-        if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+            if matches!(key.code, KeyCode::Modifier(_))
+                || (key.kind == KeyEventKind::Repeat
+                    && (navigator.prefix_pending || self.config.keybinds.matches_prefix(key)))
+            {
+                return;
+            }
+            let prefix_pending = std::mem::take(&mut navigator.prefix_pending);
+            let binding = if prefix_pending {
+                crate::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
+            } else {
+                crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
+            };
+            if let Some(
+                binding @ crate::input::KeybindMatch::Action(
+                    crate::input::KeybindAction::OpenNavigator
+                    | crate::input::KeybindAction::OpenParked,
+                ),
+            ) = binding
+            {
+                if key.kind == KeyEventKind::Press {
+                    self.record_binding(binding, outcome);
+                }
+                return;
+            }
+            if prefix_pending && key.code != KeyCode::Esc {
+                return;
+            }
+            if self.config.keybinds.matches_prefix(key) {
+                navigator.prefix_pending = true;
+                return;
+            }
             let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
             if code == KeyCode::Esc {
                 self.overlay = None;
