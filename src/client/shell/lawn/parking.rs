@@ -23,6 +23,7 @@ pub(in crate::client::shell) struct PaneParking {
     focused_workspace: Option<String>,
     all_tabs: HashSet<String>,
     all_workspaces: HashSet<String>,
+    server_parked: HashSet<String>,
     pub(super) hidden_panes: HashSet<String>,
     visible_tabs: HashSet<String>,
     visible_workspaces: HashSet<String>,
@@ -259,6 +260,11 @@ impl PaneParking {
             .map(|pane| (pane.pane_id.clone(), pane.tab_id.clone()))
             .collect();
         self.all_tabs = snapshot.tabs.iter().map(|tab| tab.tab_id.clone()).collect();
+        self.server_parked = snapshot
+            .parked_panes
+            .iter()
+            .map(|pane| pane.pane_id.clone())
+            .collect();
         self.recompute_visibility();
         let matches = self
             .pending_identities
@@ -340,7 +346,7 @@ impl PaneParking {
     }
 
     fn recompute_visibility(&mut self) {
-        self.hidden_panes.clear();
+        self.hidden_panes.clone_from(&self.server_parked);
         self.terminal_panes.clear();
         if let Some((_, ids)) = &self.identities {
             for (pane, terminal) in &ids.pane_terminals {

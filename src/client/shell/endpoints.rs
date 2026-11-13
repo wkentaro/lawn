@@ -566,6 +566,13 @@ impl ClientShellState {
         snapshot
             .commands
             .retain(|command| command.action != crate::protocol::ClientShellCommandAction::Unknown);
+        // A parked pane is still a pane: lookups by id find it, and views
+        // that list panes skip it through `PaneParking::hides_pane`.
+        let parked = &snapshot.parked_panes;
+        snapshot
+            .panes
+            .retain(|pane| !parked.iter().any(|item| item.pane_id == pane.pane_id));
+        snapshot.panes.extend(snapshot.parked_panes.iter().cloned());
         let Some(index) = self
             .endpoints
             .iter()

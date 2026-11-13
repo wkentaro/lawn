@@ -887,6 +887,31 @@ fn tabbed_snapshot() -> ClientShellSnapshot {
     projected
 }
 
+#[test]
+fn server_parked_panes_stay_in_the_pane_list_but_hidden() {
+    let mut projected = tabbed_snapshot();
+    let parked = projected.panes.pop().unwrap();
+    projected.tabs.retain(|tab| tab.tab_id != parked.tab_id);
+    projected.parked_panes.push(parked);
+    let mut state = state_with_snapshot(projected);
+    // A snapshot that already holds its parked panes keeps one copy of each.
+    let mut replayed = (**state.snapshot.as_ref().unwrap()).clone();
+    replayed.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(replayed));
+    let snapshot = state.snapshot.as_deref().unwrap();
+    assert_eq!(
+        snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.pane_id == "pane_3")
+            .count(),
+        1
+    );
+    let parking = state.active_parking().unwrap();
+    assert!(parking.hides_pane("pane_3"));
+    assert!(!parking.hides_pane("pane_2"));
+}
+
 fn parked_with_active_shell(mixed_tab: bool) -> ClientShellState {
     let mut projected = tabbed_snapshot();
     let mut other = projected.workspaces[0].clone();
