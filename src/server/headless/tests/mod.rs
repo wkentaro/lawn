@@ -2563,6 +2563,70 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 }
 
 #[tokio::test]
+async fn client_shell_pane_move_reapplies_controller_geometry() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("move-geometry");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    let terminal_ids =
+        [first_pane, second_pane].map(|pane| workspace.tabs[0].terminal_id(pane).unwrap().clone());
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    // Registry runtimes follow the terminal, unlike workspace-local test runtimes.
+    for terminal_id in &terminal_ids {
+        server.app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let second_pane_id = server.app.public_pane_id(0, second_pane).unwrap();
+
+    let (control, _) = connect_test_shell(&mut server, 67, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    let split = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_ids[1])
+        .unwrap()
+        .current_size();
+
+    let (respond_to, _response_rx) = std::sync::mpsc::channel();
+    server.handle_client_shell_api_request(
+        67,
+        crate::api::ApiRequestMessage {
+            request: crate::api::schema::Request {
+                id: "move-geometry".into(),
+                method: crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+                    pane_id: second_pane_id,
+                    destination: crate::api::schema::PaneMoveDestination::NewWorkspace {
+                        label: None,
+                        tab_label: None,
+                    },
+                    focus: true,
+                }),
+            },
+            respond_to,
+            response_write_complete: None,
+        },
+    );
+
+    let moved = server
+        .app
+        .terminal_runtimes
+        .get(&terminal_ids[1])
+        .unwrap()
+        .current_size();
+    assert!(
+        moved.1 > split.1,
+        "the moved pane fills its new tab: {split:?} -> {moved:?}"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn public_close_reapplies_controller_geometry() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("public-close-geometry");
