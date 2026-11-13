@@ -79,6 +79,7 @@ operations::define_operations! {
     TabFocus(TabTarget) => "tab.focus", true, true;
     TabRename(TabRenameParams) => "tab.rename", true, true;
     TabMove(TabMoveParams) => "tab.move", true, true;
+    TabMoveToWorkspace(TabMoveToWorkspaceParams) => "tab.move_to_workspace", true, true;
     TabClose(TabTarget) => "tab.close", true, true;
     AgentList(EmptyParams) => "agent.list", false, false;
     AgentGet(AgentTarget) => "agent.get", false, false;

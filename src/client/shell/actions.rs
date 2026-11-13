@@ -83,7 +83,7 @@ impl ClientShellState {
                         .as_deref()
                         .and_then(|snapshot| snapshot.focused_pane_id.clone())
                     {
-                        self.open_move_overlay(pane_id);
+                        self.open_move_overlay(ClientMoveSource::Pane(pane_id));
                     }
                     outcome.repaint = true;
                     return;

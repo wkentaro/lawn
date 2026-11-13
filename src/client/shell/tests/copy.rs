@@ -2407,7 +2407,7 @@ fn move_picker_sends_each_destination_as_a_pane_move() {
     state.set_pane_surface(surface());
 
     let send = |state: &mut ClientShellState, select: Option<ClientNavigatorTarget>| {
-        state.open_move_overlay("pane_1".into());
+        state.open_move_overlay(ClientMoveSource::Pane("pane_1".into()));
         if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
             if select.is_some() {
                 navigator.selected = select;
@@ -2425,7 +2425,7 @@ fn move_picker_sends_each_destination_as_a_pane_move() {
         Some(params.destination.clone())
     };
 
-    state.open_move_overlay("pane_1".into());
+    state.open_move_overlay(ClientMoveSource::Pane("pane_1".into()));
     let frame = state.compose(106, 30).expect("move frame");
     let text = frame
         .cells
@@ -2481,7 +2481,7 @@ fn move_picker_sends_each_destination_as_a_pane_move() {
         "the refusal reason is visible"
     );
 
-    state.open_move_overlay("pane_1".into());
+    state.open_move_overlay(ClientMoveSource::Pane("pane_1".into()));
     state.handle_input_bytes(b"pane_3");
     let outcome = state.handle_input_bytes(b"\r");
     assert!(
@@ -2538,6 +2538,68 @@ fn move_picker_sends_each_destination_as_a_pane_move() {
 }
 
 #[test]
+fn tab_move_picker_offers_only_other_workspaces() {
+    use crate::api::schema::Method;
+
+    let mut projected = snapshot();
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.label = "docs".into();
+    other.focused = false;
+    projected.workspaces.push(other);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let endpoint_id = state.active_endpoint_id.clone();
+    let workspace = |workspace_id: &str| ClientNavigatorTarget::Workspace {
+        endpoint_id: endpoint_id.clone(),
+        workspace_id: workspace_id.into(),
+    };
+
+    state.open_move_overlay(ClientMoveSource::Tab {
+        tab_id: "tab_1".into(),
+        workspace_id: "ws_1".into(),
+    });
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("tab move picker");
+    };
+    assert_eq!(navigator.selected, Some(workspace("ws_1")));
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    assert!(!rows
+        .iter()
+        .any(|row| row.target == ClientNavigatorTarget::NewWorkspace));
+    assert!(rows
+        .iter()
+        .filter(|row| navigator.selectable(&row.target))
+        .all(|row| matches!(row.target, ClientNavigatorTarget::Workspace { .. })));
+
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(outcome.actions.is_empty(), "its own workspace is refused");
+    assert!(state.overlay.is_none());
+
+    state.open_move_overlay(ClientMoveSource::Tab {
+        tab_id: "tab_1".into(),
+        workspace_id: "ws_1".into(),
+    });
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(workspace("ws_2"));
+    }
+    let outcome = state.handle_input_bytes(b"\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("expected one request, got {:?}", outcome.actions);
+    };
+    let Method::TabMoveToWorkspace(params) = &request.method else {
+        panic!("expected tab.move_to_workspace, got {:?}", request.method);
+    };
+    assert_eq!(
+        (params.tab_id.as_str(), params.workspace_id.as_str()),
+        ("tab_1", "ws_2")
+    );
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn move_pane_binding_toggles_the_move_picker() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
@@ -2545,7 +2607,7 @@ fn move_pane_binding_toggles_the_move_picker() {
     state.handle_input_bytes(b"\x02m");
     assert!(matches!(
         state.overlay,
-        Some(ClientShellOverlay::Navigator(ref n)) if n.moving.as_ref().is_some_and(|m| m.pane_id == "pane_1")
+        Some(ClientShellOverlay::Navigator(ref n)) if n.moving.as_ref().is_some_and(|m| m.source == ClientMoveSource::Pane("pane_1".into()))
     ));
     state.handle_input_bytes(b"\x02m");
     assert!(state.overlay.is_none());

@@ -283,6 +283,10 @@ mod tests {
             Some("eaed63cf205db2dc043ecce9e1a79cdca7f6e2521b364226bbf3121affadce7c")
         );
         assert_eq!(
+            actual.remove("tab.move_to_workspace").as_deref(),
+            Some("e3c8307c45b93a855e74cd0ced58ec7d43a8e66a2289cb801268ddd3a2272f4d")
+        );
+        assert_eq!(
             actual.remove("pane.snapshot").as_deref(),
             Some("a6ace65cfe47d808c5d86a6104cb4b471480e7f7c27cbbd3dc2e1ad0ce5b0cd7")
         );
@@ -336,6 +340,15 @@ mod tests {
 
     #[test]
     fn client_shell_lane_excludes_api_front_door_and_lifecycle_methods() {
+        // The TUI move picker sends tab.move_to_workspace for tabs.
+        assert!(supports_client_shell_method(&Method::TabMoveToWorkspace(
+            crate::api::schema::TabMoveToWorkspaceParams {
+                tab_id: "w1:1".into(),
+                workspace_id: "w2".into(),
+                insert_index: None,
+                focus: true,
+            }
+        )));
         // The TUI move picker sends pane.move.
         assert!(supports_client_shell_method(&Method::PaneMove(
             crate::api::schema::PaneMoveParams {
