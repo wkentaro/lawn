@@ -523,9 +523,14 @@ pub(super) fn navigator_selected_index(
             .iter()
             .position(|row| row.target == *target && navigator.selectable(&row.target)),
         None if navigator.scroll.is_some() => None,
+        // Workspace headers stay as ancestors of matching panes, so prefer the first pane.
         None => rows
             .iter()
-            .position(|row| navigator.selectable(&row.target)),
+            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .or_else(|| {
+                rows.iter()
+                    .position(|row| navigator.selectable(&row.target))
+            }),
     }
 }
 

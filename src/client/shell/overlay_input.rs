@@ -308,6 +308,8 @@ impl ClientShellState {
         let destination = match destination {
             Ok(destination) => destination,
             Err(reason) => {
+                // Close the picker so it does not cover the notice.
+                self.overlay = None;
                 self.receive_endpoint_unavailable(reason.into());
                 outcome.repaint = true;
                 return;

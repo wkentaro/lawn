@@ -2469,9 +2469,33 @@ fn move_picker_sends_each_destination_as_a_pane_move() {
         None,
         "same-tab moves are refused"
     );
+    assert!(state.overlay.is_none(), "a refused move closes the picker");
+    let frame = state.compose(80, 24).expect("notice frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
     assert!(
-        state.overlay.is_some(),
-        "a refused move keeps the picker open"
+        text.contains("Pick a pane in another tab"),
+        "the refusal reason is visible"
+    );
+
+    state.open_move_overlay("pane_1".into());
+    state.handle_input_bytes(b"pane_3");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(
+        matches!(
+            &outcome.actions[..],
+            [ClientShellAction::Endpoint { request, .. }] if matches!(
+                &request.method,
+                Method::PaneMove(params) if matches!(
+                    &params.destination,
+                    PaneMoveDestination::Tab { target_pane_id: Some(target), .. } if target == "pane_3"
+                )
+            )
+        ),
+        "a pane search moves beside the matching pane, not into its workspace"
     );
     assert_eq!(
         send(&mut state, pane("pane_3")),
