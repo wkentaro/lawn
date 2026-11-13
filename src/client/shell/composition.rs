@@ -56,7 +56,7 @@ impl ClientShellState {
                     == Some(ClientEndpointStatus::Online)
         });
         let mut render_state = render::ShellRenderState {
-            parked_height: lawn::parked_height(sidebar, false),
+            navigation_height: lawn::navigation_height(sidebar, false),
             machine_diagnostics: &self.machine_diagnostics,
             endpoints: &self.endpoints,
             active_endpoint_id: &self.active_endpoint_id,
@@ -98,10 +98,10 @@ impl ClientShellState {
                 &mut self.hits,
             );
         }
-        lawn::render_parked(
+        lawn::render_navigation(
             &mut buffer,
             sidebar,
-            render_state.parked_height,
+            render_state.navigation_height,
             &self.endpoints,
             &self.config,
             &mut self.hits,
@@ -249,7 +249,7 @@ impl ClientShellState {
             snapshot,
             &self.config,
             render::ShellRenderState {
-                parked_height: lawn::parked_height(layout.sidebar, self.sidebar_collapsed),
+                navigation_height: lawn::navigation_height(layout.sidebar, self.sidebar_collapsed),
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,

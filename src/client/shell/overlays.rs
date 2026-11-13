@@ -735,7 +735,7 @@ pub(crate) fn render_navigator_overlay(
         q.x + 2,
         q.y,
         q.width.saturating_sub(4),
-        if n.parked { " parked " } else { " Go to " },
+        if n.parked { " parked " } else { " active " },
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
     if height < minimum_height {

@@ -234,7 +234,7 @@ pub(super) fn render_mode_bar(
 }
 
 pub(super) struct ShellRenderState<'a> {
-    pub(super) parked_height: u16,
+    pub(super) navigation_height: u16,
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
@@ -323,10 +323,10 @@ pub(super) fn render_shell(
             );
         }
     }
-    lawn::render_parked(
+    lawn::render_navigation(
         buffer,
         layout.sidebar,
-        state.parked_height,
+        state.navigation_height,
         state.endpoints,
         config,
         &mut hits,
