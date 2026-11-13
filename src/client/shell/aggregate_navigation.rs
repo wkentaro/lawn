@@ -298,11 +298,16 @@ pub(super) fn navigator_rows(
         words.iter().all(|word| value.contains(word))
     };
     let filtering = parked || !query.is_empty();
-    let federated = endpoints.len() > 1;
+    let moving = navigator.moving.is_some();
+    // A pane only moves within its own machine.
+    let federated = endpoints.len() > 1 && !moving;
     let depth_offset = u8::from(federated);
     let mut rows = Vec::new();
 
     for endpoint in endpoints {
+        if moving && endpoint.endpoint_id != *active_endpoint_id {
+            continue;
+        }
         let stale = endpoint.status != ClientEndpointStatus::Online;
         let endpoint_query_matches = !query.is_empty() && text(&endpoint.label);
         let mut endpoint_rows = Vec::new();
@@ -336,13 +341,8 @@ pub(super) fn navigator_rows(
                 if !parked && !endpoint.parking.shows_workspace(&workspace.workspace_id) {
                     continue;
                 }
-                let workspace_matches = words.is_empty()
-                    || text(&format!(
-                        "{} {} {}",
-                        endpoint.label,
-                        workspace.label,
-                        workspace.branch.as_deref().unwrap_or_default()
-                    ));
+                let workspace_matches =
+                    words.is_empty() || text(&format!("{} {}", endpoint.label, workspace.label));
                 let mut children = Vec::new();
                 let workspace_tabs = tabs_by_workspace
                     .get(workspace.workspace_id.as_str())
@@ -400,10 +400,9 @@ pub(super) fn navigator_rows(
                             .unwrap_or_default();
                         if tab_matches
                             || text(&format!(
-                                "{} {} {} {} {} {} {} {} {} {} {}",
+                                "{} {} {} {} {} {} {} {} {} {}",
                                 endpoint.label,
                                 workspace.label,
-                                workspace.branch.as_deref().unwrap_or_default(),
                                 tab.label,
                                 label,
                                 meta,
@@ -445,7 +444,7 @@ pub(super) fn navigator_rows(
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
                         label: workspace.label.clone(),
-                        meta: workspace.branch.clone().unwrap_or_default(),
+                        meta: String::new(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,
                         status: None,
@@ -481,7 +480,38 @@ pub(super) fn navigator_rows(
             rows.extend(endpoint_rows);
         }
     }
+    if moving {
+        rows.push(ClientNavigatorRow {
+            depth: 0,
+            label: "+ New workspace".into(),
+            meta: String::new(),
+            detail: String::new(),
+            agent: None,
+            status: None,
+            stale: false,
+            current: false,
+            parked: false,
+            target: ClientNavigatorTarget::NewWorkspace,
+        });
+    }
     rows
+}
+
+impl ClientNavigatorOverlay {
+    pub(super) fn selectable(&self, target: &ClientNavigatorTarget) -> bool {
+        match target {
+            ClientNavigatorTarget::Pane { .. } => true,
+            ClientNavigatorTarget::Workspace { .. } | ClientNavigatorTarget::NewWorkspace => {
+                self.moving.is_some()
+            }
+            ClientNavigatorTarget::Machine { .. } => false,
+        }
+    }
+
+    pub(super) fn moves(&self, target: &ClientNavigatorTarget) -> bool {
+        matches!(target, ClientNavigatorTarget::Pane { pane_id, .. }
+            if self.moving.as_ref().is_some_and(|moving| moving.pane_id == *pane_id))
+    }
 }
 
 pub(super) fn navigator_selected_index(
@@ -489,13 +519,18 @@ pub(super) fn navigator_selected_index(
     navigator: &ClientNavigatorOverlay,
 ) -> Option<usize> {
     match navigator.selected.as_ref() {
-        Some(target) => rows.iter().position(|row| {
-            row.target == *target && matches!(row.target, ClientNavigatorTarget::Pane { .. })
-        }),
+        Some(target) => rows
+            .iter()
+            .position(|row| row.target == *target && navigator.selectable(&row.target)),
         None if navigator.scroll.is_some() => None,
+        // Workspace headers stay as ancestors of matching panes, so prefer the first pane.
         None => rows
             .iter()
-            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. })),
+            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .or_else(|| {
+                rows.iter()
+                    .position(|row| navigator.selectable(&row.target))
+            }),
     }
 }
 

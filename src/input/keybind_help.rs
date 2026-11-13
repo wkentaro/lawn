@@ -172,6 +172,7 @@ pub(crate) fn keybind_help_groups(
                 entry(binding_label(&keybinds.close_pane), "close pane"),
                 entry(binding_label(&keybinds.rename_pane), "rename pane"),
                 entry(binding_label(&keybinds.park_pane), "park pane"),
+                entry(binding_label(&keybinds.move_pane), "move pane"),
                 entry(binding_label(&keybinds.restore_pane), "unpark pane"),
                 entry(binding_label(&keybinds.open_parked), "open parked"),
                 entry(binding_label(&keybinds.edit_scrollback), "edit scrollback"),

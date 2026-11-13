@@ -1210,7 +1210,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         ("", vec!["pane_1", "pane_2"]),
         ("review", vec!["pane_1", "pane_2"]),
         ("client-shell", vec!["pane_1", "pane_2"]),
-        ("main", vec!["pane_1", "pane_2"]),
+        ("main", vec![]),
         ("claude", vec!["pane_2"]),
         ("checking navigation", vec!["pane_2"]),
         ("/repo/subproject", vec!["pane_2"]),
@@ -1343,6 +1343,32 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
 }
 
 #[test]
+fn navigator_rows_hide_branches_and_end_at_the_agent_name() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+    let mut checked_narrow = false;
+    for width in [60, 80, 106] {
+        let frame = state.compose(width, 30).expect("navigator frame");
+        for (rect, _) in &state.hits.navigator_rows {
+            let row = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
+                .iter()
+                .take(rect.width as usize)
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>();
+            assert!(!row.contains("main"), "{row:?} shows the branch");
+            let pane_row = row.contains("├─") || row.contains("└─");
+            if pane_row && (36..64).contains(&rect.width) {
+                checked_narrow = true;
+                assert_eq!(row.trim_end(), row, "blank cells follow the agent name");
+            }
+        }
+    }
+    assert!(checked_narrow, "no width produced the narrow agent column");
+}
+
+#[test]
 fn navigator_keeps_empty_workspaces_searchable() {
     let mut projected = snapshot();
     projected.tabs.clear();
@@ -1353,7 +1379,7 @@ fn navigator_keeps_empty_workspaces_searchable() {
     for (query, expected) in [
         ("", true),
         ("client-shell", true),
-        ("main", true),
+        ("main", false),
         ("missing", false),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -2352,4 +2378,175 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             Some(19)
         );
     }
+}
+
+#[test]
+fn move_picker_sends_each_destination_as_a_pane_move() {
+    use crate::api::schema::{Method, PaneMoveDestination, SplitDirection};
+
+    let mut projected = snapshot();
+    let mut sibling = projected.panes[0].clone();
+    sibling.pane_id = "pane_2".into();
+    sibling.label = Some("reviewer".into());
+    sibling.focused = false;
+    projected.panes.push(sibling.clone());
+    sibling.pane_id = "pane_3".into();
+    sibling.tab_id = "tab_2".into();
+    projected.panes.push(sibling);
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.focused = false;
+    projected.tabs.push(tab);
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.label = "docs".into();
+    other.focused = false;
+    projected.workspaces.push(other);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let send = |state: &mut ClientShellState, select: Option<ClientNavigatorTarget>| {
+        state.open_move_overlay("pane_1".into());
+        if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+            if select.is_some() {
+                navigator.selected = select;
+            }
+        }
+        let outcome = state.handle_input_bytes(b"\r");
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            return None;
+        };
+        let Method::PaneMove(params) = &request.method else {
+            panic!("move sends pane.move, got {:?}", request.method);
+        };
+        assert_eq!(params.pane_id, "pane_1");
+        assert!(state.overlay.is_none(), "a sent move closes the picker");
+        Some(params.destination.clone())
+    };
+
+    state.open_move_overlay("pane_1".into());
+    let frame = state.compose(106, 30).expect("move frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    assert!(
+        text.contains(" move terminal · 1 "),
+        "title names the moving pane"
+    );
+    assert!(text.contains("moving"), "the source row is tagged");
+    assert!(text.contains("+ New workspace"));
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("move picker");
+    };
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let selectable = rows
+        .iter()
+        .filter(|row| navigator.selectable(&row.target))
+        .count();
+    assert_eq!(selectable, rows.len(), "every row is a destination");
+
+    assert_eq!(
+        send(&mut state, None),
+        None,
+        "the source pane is not a destination"
+    );
+    assert!(state.overlay.is_some());
+    state.overlay = None;
+
+    let endpoint_id = state.active_endpoint_id.clone();
+    let pane = |pane_id: &str| {
+        Some(ClientNavigatorTarget::Pane {
+            endpoint_id: endpoint_id.clone(),
+            pane_id: pane_id.into(),
+        })
+    };
+    assert_eq!(
+        send(&mut state, pane("pane_2")),
+        None,
+        "same-tab moves are refused"
+    );
+    assert!(state.overlay.is_none(), "a refused move closes the picker");
+    let frame = state.compose(80, 24).expect("notice frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    assert!(
+        text.contains("Pick a pane in another tab"),
+        "the refusal reason is visible"
+    );
+
+    state.open_move_overlay("pane_1".into());
+    state.handle_input_bytes(b"pane_3");
+    let outcome = state.handle_input_bytes(b"\r");
+    assert!(
+        matches!(
+            &outcome.actions[..],
+            [ClientShellAction::Endpoint { request, .. }] if matches!(
+                &request.method,
+                Method::PaneMove(params) if matches!(
+                    &params.destination,
+                    PaneMoveDestination::Tab { target_pane_id: Some(target), .. } if target == "pane_3"
+                )
+            )
+        ),
+        "a pane search moves beside the matching pane, not into its workspace"
+    );
+    assert_eq!(
+        send(&mut state, pane("pane_3")),
+        Some(PaneMoveDestination::Tab {
+            tab_id: "tab_2".into(),
+            target_pane_id: Some("pane_3".into()),
+            split: SplitDirection::Right,
+            ratio: None,
+        })
+    );
+    assert_eq!(
+        send(
+            &mut state,
+            Some(ClientNavigatorTarget::Workspace {
+                endpoint_id: endpoint_id.clone(),
+                workspace_id: "ws_2".into()
+            })
+        ),
+        Some(PaneMoveDestination::NewTab {
+            workspace_id: Some("ws_2".into()),
+            label: None,
+        })
+    );
+    assert_eq!(
+        send(&mut state, Some(ClientNavigatorTarget::NewWorkspace)),
+        Some(PaneMoveDestination::NewWorkspace {
+            label: None,
+            tab_label: None,
+        })
+    );
+
+    let mut zoomed = state.snapshot.as_deref().expect("snapshot").clone();
+    zoomed.tabs[0].zoomed = true;
+    state.set_snapshot(Box::new(zoomed));
+    assert_eq!(
+        send(&mut state, Some(ClientNavigatorTarget::NewWorkspace)),
+        None,
+        "a pane in a zoomed tab is not moved"
+    );
+}
+
+#[test]
+fn move_pane_binding_toggles_the_move_picker() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.handle_input_bytes(b"\x02m");
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(ref n)) if n.moving.as_ref().is_some_and(|m| m.pane_id == "pane_1")
+    ));
+    state.handle_input_bytes(b"\x02m");
+    assert!(state.overlay.is_none());
 }

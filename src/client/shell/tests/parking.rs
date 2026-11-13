@@ -2436,7 +2436,6 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     projected.panes[0].label = Some("Build logs".into());
     projected.panes[0].cwd = Some("/projects/alpha".into());
     projected.panes[0].foreground_cwd = Some("/projects/alpha".into());
-    projected.workspaces[0].branch = Some("feature/branch".into());
     projected.tabs[0].label = "review".into();
     projected.tabs[0].custom_label = true;
     let mut parked_agent = agent("pane_1", AgentStatus::Blocked);
@@ -2449,7 +2448,7 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     acknowledge(&mut state, &policy, Some("pane_2"));
     state.open_parked();
     state.handle_raw_events(vec![RawInputEvent::Paste(
-        "build client-shell alpha codex branch review repair operator".into(),
+        "build client-shell alpha codex review repair operator".into(),
     )]);
     let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
         panic!("parked switcher")
@@ -2471,7 +2470,7 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     };
     assert_eq!(
         n.query.as_str(),
-        "build client-shell alpha codex branch review repair operatorb/"
+        "build client-shell alpha codex review repair operatorb/"
     );
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Char('u'),

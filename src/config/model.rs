@@ -410,6 +410,8 @@ pub struct KeysConfig {
     pub rename_pane: BindingConfig,
     /// Park the focused workspace pane in Lawn. Unset by default.
     pub park_pane: BindingConfig,
+    /// Pick a destination for the focused pane. Default: "prefix+m".
+    pub move_pane: BindingConfig,
     /// Unpark the current parked pane preview. Unset by default.
     pub restore_pane: BindingConfig,
     /// Open the Parked picker. Unset by default.
@@ -553,6 +555,7 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_pane: Option<BindingConfig>,
     park_pane: Option<BindingConfig>,
+    move_pane: Option<BindingConfig>,
     restore_pane: Option<BindingConfig>,
     #[serde(alias = "open_later")]
     open_parked: Option<BindingConfig>,
@@ -693,6 +696,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_tab);
         apply_field!(rename_pane);
         apply_field!(park_pane);
+        apply_field!(move_pane);
         apply_field!(restore_pane);
         apply_field!(open_parked);
 
@@ -802,6 +806,7 @@ impl KeysConfig {
         copy_effective_action_field!(close_tab, keybinds.close_tab);
         copy_effective_action_field!(rename_pane, keybinds.rename_pane);
         copy_effective_action_field!(park_pane, keybinds.park_pane);
+        copy_effective_action_field!(move_pane, keybinds.move_pane);
         copy_effective_action_field!(restore_pane, keybinds.restore_pane);
         copy_effective_action_field!(open_parked, keybinds.open_parked);
 
@@ -1178,6 +1183,7 @@ impl Default for KeysConfig {
             close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             park_pane: BindingConfig::empty(),
+            move_pane: BindingConfig::one("prefix+m"),
             restore_pane: BindingConfig::empty(),
             open_parked: BindingConfig::empty(),
 

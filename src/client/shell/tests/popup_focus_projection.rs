@@ -84,6 +84,7 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
         selected: None,
         scroll: None,
         parked: false,
+        moving: None,
     }));
     assert!(state.modal_paste_target_active());
 

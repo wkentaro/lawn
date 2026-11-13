@@ -2462,6 +2462,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
         ClientNavigatorTarget::Pane { .. } =>
             row.depth == 2 && (row.status.is_some() == row.agent.is_some()),
+        ClientNavigatorTarget::NewWorkspace => false,
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
 
@@ -2471,6 +2472,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
             ClientNavigatorTarget::Machine { .. } => " ",
             ClientNavigatorTarget::Workspace { .. } => "   ",
             ClientNavigatorTarget::Pane { .. } => "   └─ ",
+            ClientNavigatorTarget::NewWorkspace => unreachable!("only the move picker adds it"),
         };
         let prefix = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
             .iter()
@@ -2509,7 +2511,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     assert!(rows.iter().all(|row| match row.target {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 0,
         ClientNavigatorTarget::Pane { .. } => row.depth == 1,
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::NewWorkspace => false,
     }));
 }
 
@@ -2576,7 +2578,7 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
             && row.stale
     }));
     assert!(!rows.iter().any(|row| match &row.target {
-        ClientNavigatorTarget::Machine { .. } => false,
+        ClientNavigatorTarget::Machine { .. } | ClientNavigatorTarget::NewWorkspace => false,
         ClientNavigatorTarget::Workspace {
             endpoint_id: target,
             ..
@@ -2932,7 +2934,7 @@ fn navigator_keeps_search_focused_while_browsing_across_machines() {
     let (mut state, endpoint_id) = state_with_remote();
     state.open_navigator_overlay();
     let original_focus = state.snapshot.as_ref().unwrap().focused_pane_id.clone();
-    state.handle_input_bytes(b"main");
+    state.handle_input_bytes(b"repo");
     let selected = match &state.overlay {
         Some(ClientShellOverlay::Navigator(navigator)) => navigator.selected.clone(),
         _ => panic!("navigator"),
@@ -2941,14 +2943,14 @@ fn navigator_keeps_search_focused_while_browsing_across_machines() {
     assert!(outcome.actions.is_empty());
     assert!(
         matches!(&state.overlay, Some(ClientShellOverlay::Navigator(navigator))
-        if navigator.query.as_str() == "main" && navigator.selected == selected)
+        if navigator.query.as_str() == "repo" && navigator.selected == selected)
     );
     state.handle_input_bytes(b"\x7f");
     assert!(
         matches!(&state.overlay, Some(ClientShellOverlay::Navigator(navigator))
-        if navigator.query.as_str() == "man")
+        if navigator.query.as_str() == "reo")
     );
-    state.handle_input_bytes(b"i");
+    state.handle_input_bytes(b"p");
     let mut outcome = ClientShellInput::default();
     for _ in 0..8 {
         let next = state.handle_input_bytes(b"\x1b[B");

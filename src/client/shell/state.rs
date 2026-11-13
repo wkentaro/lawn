@@ -358,6 +358,7 @@ pub(super) enum ClientNavigatorTarget {
         endpoint_id: ClientEndpointId,
         pane_id: String,
     },
+    NewWorkspace,
 }
 
 #[derive(Clone, Debug)]
@@ -382,6 +383,14 @@ pub(super) struct ClientNavigatorOverlay {
     // None uses the initial selection; Some preserves an explicitly scrolled viewport.
     pub(super) scroll: Option<usize>,
     pub(super) parked: bool,
+    // Some turns the picker into a destination list for this active-endpoint pane.
+    pub(super) moving: Option<ClientPaneMove>,
+}
+
+#[derive(Debug)]
+pub(super) struct ClientPaneMove {
+    pub(super) pane_id: String,
+    pub(super) label: String,
 }
 
 #[derive(Debug)]
@@ -542,6 +551,7 @@ pub(super) enum ClientContextMenuAction {
     ClosePane,
     ParkPane,
     RestorePane,
+    MovePane,
 }
 
 #[derive(Debug)]

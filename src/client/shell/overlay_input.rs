@@ -206,6 +206,7 @@ impl ClientShellState {
             selected: None,
             scroll: None,
             parked: false,
+            moving: None,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -214,6 +215,116 @@ impl ClientShellState {
             .find(|row| row.current)
             .map(|row| row.target.clone());
         self.overlay = Some(ClientShellOverlay::Navigator(navigator));
+    }
+
+    pub(super) fn open_move_overlay(&mut self, pane_id: String) {
+        self.open_navigator_overlay();
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        let source = ClientNavigatorTarget::Pane {
+            endpoint_id: self.active_endpoint_id.clone(),
+            pane_id: pane_id.clone(),
+        };
+        // Parked and unknown panes have no row, so they cannot be moved from here.
+        let Some(label) =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator)
+                .into_iter()
+                .find(|row| row.target == source)
+                .map(|row| row.label)
+        else {
+            self.overlay = None;
+            return;
+        };
+        navigator.selected = Some(source);
+        navigator.moving = Some(ClientPaneMove { pane_id, label });
+    }
+
+    fn accept_move_selection(
+        &mut self,
+        pane_id: String,
+        target: ClientNavigatorTarget,
+        outcome: &mut ClientShellInput,
+    ) {
+        use crate::api::schema::{Method, PaneMoveDestination, PaneMoveParams, SplitDirection};
+
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let tab_of = |pane_id: &str| {
+            snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == pane_id)
+                .map(|pane| pane.tab_id.clone())
+        };
+        let zoomed = |tab_id: &str| {
+            snapshot
+                .tabs
+                .iter()
+                .any(|tab| tab.tab_id == tab_id && tab.zoomed)
+        };
+        let Some(source_tab_id) = tab_of(&pane_id) else {
+            return;
+        };
+        // The server answers these moves with an unchanged result, so explain them here.
+        let destination = if zoomed(&source_tab_id) {
+            Err("Unzoom this tab before moving its pane")
+        } else {
+            match target {
+                ClientNavigatorTarget::Pane {
+                    pane_id: target_pane_id,
+                    ..
+                } if target_pane_id != pane_id => match tab_of(&target_pane_id) {
+                    None => return,
+                    Some(tab_id) if tab_id == source_tab_id => Err("Pick a pane in another tab"),
+                    Some(tab_id) if zoomed(&tab_id) => {
+                        Err("Unzoom that tab before moving a pane into it")
+                    }
+                    Some(tab_id) => Ok(PaneMoveDestination::Tab {
+                        tab_id,
+                        target_pane_id: Some(target_pane_id),
+                        split: SplitDirection::Right,
+                        ratio: None,
+                    }),
+                },
+                ClientNavigatorTarget::Workspace { workspace_id, .. } => {
+                    Ok(PaneMoveDestination::NewTab {
+                        workspace_id: Some(workspace_id),
+                        label: None,
+                    })
+                }
+                ClientNavigatorTarget::NewWorkspace => Ok(PaneMoveDestination::NewWorkspace {
+                    label: snapshot
+                        .panes
+                        .iter()
+                        .find(|pane| pane.pane_id == pane_id)
+                        .and_then(|pane| pane.label.clone()),
+                    tab_label: None,
+                }),
+                _ => return,
+            }
+        };
+        let destination = match destination {
+            Ok(destination) => destination,
+            Err(reason) => {
+                // Close the picker so it does not cover the notice.
+                self.overlay = None;
+                self.receive_endpoint_unavailable(reason.into());
+                outcome.repaint = true;
+                return;
+            }
+        };
+        self.push_endpoint_method(
+            Method::PaneMove(PaneMoveParams {
+                pane_id,
+                destination,
+                focus: true,
+            }),
+            outcome,
+        );
+        self.overlay = None;
+        outcome.repaint = true;
     }
 
     pub(super) fn move_navigator_selection(&mut self, delta: isize) {
@@ -226,7 +337,7 @@ impl ClientShellState {
         let panes = rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .filter(|(_, row)| navigator.selectable(&row.target))
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         let next = panes
@@ -259,24 +370,25 @@ impl ClientShellState {
             .filter(|(index, row)| {
                 *index >= scroll
                     && *index < scroll + viewport_rows
-                    && matches!(row.target, ClientNavigatorTarget::Pane { .. })
+                    && navigator.selectable(&row.target)
             })
             .min_by_key(|(index, _)| index.abs_diff(selected))
             .map(|(_, row)| row.target.clone());
     }
 
     pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
-        let target = self.overlay.as_ref().and_then(|overlay| match overlay {
-            ClientShellOverlay::Navigator(navigator) => {
-                let rows = render::client_navigator_rows(
-                    &self.endpoints,
-                    &self.active_endpoint_id,
-                    navigator,
-                );
-                super::aggregate_navigation::selected_navigator_target(&rows, navigator)
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
+            return;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let target = super::aggregate_navigation::selected_navigator_target(&rows, navigator);
+        if let Some(moving) = navigator.moving.as_ref() {
+            if let Some(target) = target {
+                self.accept_move_selection(moving.pane_id.clone(), target, outcome);
             }
-            _ => None,
-        });
+            return;
+        }
         let Some(ClientNavigatorTarget::Pane {
             endpoint_id,
             pane_id,
@@ -632,7 +744,8 @@ impl ClientShellState {
             if let Some(
                 binding @ crate::input::KeybindMatch::Action(
                     crate::input::KeybindAction::OpenNavigator
-                    | crate::input::KeybindAction::OpenParked,
+                    | crate::input::KeybindAction::OpenParked
+                    | crate::input::KeybindAction::MovePane,
                 ),
             ) = binding
             {

@@ -63,9 +63,28 @@ impl ClientShellState {
                             | crate::input::KeybindAction::SwapPaneRight
                             | crate::input::KeybindAction::SwapPaneUp
                             | crate::input::KeybindAction::SwapPaneDown
+                            | crate::input::KeybindAction::MovePane
                     )
                 {
                     self.receive_endpoint_unavailable("Unpark this pane before changing it".into());
+                    outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::MovePane {
+                    if matches!(self.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.moving.is_some())
+                    {
+                        self.overlay = None;
+                    } else if self.popup_terminal_id.is_some() {
+                        self.receive_endpoint_unavailable(
+                            "Select a workspace pane to move it".into(),
+                        );
+                    } else if let Some(pane_id) = self
+                        .snapshot
+                        .as_deref()
+                        .and_then(|snapshot| snapshot.focused_pane_id.clone())
+                    {
+                        self.open_move_overlay(pane_id);
+                    }
                     outcome.repaint = true;
                     return;
                 }

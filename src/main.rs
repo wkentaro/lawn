@@ -175,6 +175,7 @@ const DEFAULT_CONFIG: &str = r##"# lawn configuration
 # close_tab = "prefix+shift+x"
 # rename_pane = "prefix+shift+p"
 # park_pane = []
+# move_pane = "prefix+m"
 # restore_pane = []
 # open_parked = []      # legacy alias: open_later
 # edit_scrollback = "prefix+e"
