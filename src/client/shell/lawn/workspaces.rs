@@ -78,7 +78,7 @@ impl ClientShellState {
         let active: Vec<_> = panes
             .iter()
             .filter(|pane| !parking.hides_pane(&pane.pane_id))
-            .map(|pane| pane.pane_id.clone())
+            .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
             .collect();
         if let Method::WorkspaceClose(target) = method {
             // Closing keeps parked terminals, so it leaves the workspace instead.
@@ -88,10 +88,6 @@ impl ClientShellState {
                 .clone()
                 .filter(|focused| panes.iter().any(|pane| &pane.workspace_id == focused))
                 .unwrap_or_else(|| target.workspace_id.clone());
-            // Other group members may keep active panes; only the left one matters.
-            let idle = !panes
-                .iter()
-                .any(|pane| pane.workspace_id == left && !parking.hides_pane(&pane.pane_id));
             if let Some(endpoint) = self
                 .endpoints
                 .iter_mut()
@@ -99,11 +95,11 @@ impl ClientShellState {
             {
                 endpoint
                     .parking
-                    .leave_workspace(&left, focused_workspace, idle);
+                    .leave_workspace(&left, focused_workspace, active.iter().cloned());
             }
             outcome.repaint = true;
         }
-        for pane_id in active {
+        for (pane_id, _) in active {
             self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome);
         }
         Some(true)

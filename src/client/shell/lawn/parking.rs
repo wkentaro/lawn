@@ -29,8 +29,9 @@ pub(in crate::client::shell) struct PaneParking {
     /// Focused workspace whose last visible terminal was parked or closed.
     /// It stays in navigation until the user leaves it.
     kept_workspace: Option<String>,
-    /// Workspace the user closed; it must not be kept while focus moves away.
-    left_workspace: Option<String>,
+    /// Active panes the user closed, with their workspaces. A workspace that
+    /// loses its last active terminal to these closes is not kept.
+    closing_panes: HashMap<String, String>,
     /// Focused workspace that had a visible terminal at the last recompute.
     visible_focus: Option<String>,
     pub(in crate::client::shell) departed_workspace: Option<WorkspaceDeparture>,
@@ -83,7 +84,7 @@ impl PaneParking {
                 self.visible_tabs.clear();
                 self.visible_workspaces.clear();
                 self.kept_workspace = None;
-                self.left_workspace = None;
+                self.closing_panes.clear();
                 self.visible_focus = None;
                 self.terminal_panes.clear();
             }
@@ -125,25 +126,30 @@ impl PaneParking {
             || self.visible_workspaces.contains(workspace)
     }
 
-    /// Removes a closed workspace from navigation. With no active terminal left
-    /// to close, record the departure now so focus moves to a neighbor.
+    fn is_closing(&self, workspace: &str) -> bool {
+        self.closing_panes.values().any(|owner| owner == workspace)
+    }
+
+    /// Removes a closed workspace from navigation while `closing` panes close.
+    /// With no active terminal of its own left to close, record the departure
+    /// now so focus moves to a neighbor.
     pub(in crate::client::shell) fn leave_workspace(
         &mut self,
         workspace: &str,
         focused_workspace: Option<String>,
-        idle: bool,
+        closing: impl IntoIterator<Item = (String, String)>,
     ) {
         if self.kept_workspace.as_deref() == Some(workspace) {
             self.kept_workspace = None;
         }
-        if idle {
+        self.closing_panes.extend(closing);
+        if !self.is_closing(workspace) {
             self.departed_workspace = Some(WorkspaceDeparture {
                 workspace_id: workspace.to_owned(),
                 focused_workspace,
                 origin: None,
             });
         }
-        self.left_workspace = Some(workspace.to_owned());
         self.repaint = true;
     }
 
@@ -236,7 +242,7 @@ impl PaneParking {
             self.visible_tabs.clear();
             self.visible_workspaces.clear();
             self.kept_workspace = None;
-            self.left_workspace = None;
+            self.closing_panes.clear();
             self.visible_focus = None;
             self.pane_workspaces.clear();
             self.focused_workspace = None;
@@ -393,22 +399,18 @@ impl PaneParking {
                 .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
                 .map(|(_, workspace)| workspace.clone()),
         );
-        // A closed workspace that gains active terminals again was reopened. Panes
-        // still active since the last recompute are only waiting to close.
-        if self.left_workspace != self.focused_workspace
-            || self.left_workspace.as_ref().is_some_and(|workspace| {
-                self.has_active_terminals(workspace) && was_visible.as_ref() != Some(workspace)
-            })
-        {
-            self.left_workspace = None;
-        }
         if let Some(workspace) = was_visible.filter(|workspace| {
             self.focused_workspace.as_ref() == Some(workspace)
                 && !self.has_active_terminals(workspace)
-                && self.left_workspace.as_ref() != Some(workspace)
+                && !self.is_closing(workspace)
         }) {
             self.kept_workspace = Some(workspace);
         }
+        // ponytail: a rejected close keeps its pane recorded until the pane goes
+        // away; drop entries on close errors if that ever matters.
+        let panes = &self.pane_workspaces;
+        self.closing_panes
+            .retain(|pane, _| panes.contains_key(pane));
         if self.kept_workspace.as_ref().is_some_and(|workspace| {
             Some(workspace) != self.focused_workspace.as_ref()
                 || self.has_active_terminals(workspace)

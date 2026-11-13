@@ -1144,6 +1144,32 @@ fn exiting_the_last_active_shell_keeps_the_empty_workspace() {
 }
 
 #[test]
+fn closing_another_workspace_before_the_first_close_lands_keeps_both_closed() {
+    let mut state = parked_with_active_shell(false, false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_3".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    let parked = request(&mut state);
+    acknowledge(&mut state, &parked, Some("pane_2"));
+    assert_eq!(
+        closed_panes(&close_workspace(&mut state, "ws_1")),
+        ["pane_2"]
+    );
+    assert!(closed_panes(&close_workspace(&mut state, "ws_2")).is_empty());
+    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    projected.panes.retain(|pane| pane.pane_id != "pane_2");
+    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
+    projected.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    acknowledge(&mut state, &parked, None);
+    state.compose(100, 24).unwrap();
+    assert!(state.hits.workspaces.is_empty());
+}
+
+#[test]
 fn closing_the_workspace_hides_it_and_focuses_another_once() {
     let mut state = parked_with_active_shell(false, false);
     assert!(tick(&mut state).actions.is_empty());
