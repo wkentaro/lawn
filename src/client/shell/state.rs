@@ -376,6 +376,7 @@ pub(super) struct ClientNavigatorRow {
 
 #[derive(Debug)]
 pub(super) struct ClientNavigatorOverlay {
+    pub(super) prefix_pending: bool,
     pub(super) query: TextEditor,
     pub(super) selected: Option<ClientNavigatorTarget>,
     // None uses the initial selection; Some preserves an explicitly scrolled viewport.

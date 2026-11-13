@@ -1,5 +1,6 @@
 use super::*;
 use crate::protocol::endpoint::pane_presentation::{PaneIdentities, SetPanePresentation};
+use crossterm::event::KeyEventKind;
 use std::time::Instant;
 
 fn tick(state: &mut ClientShellState) -> ClientShellInput {
@@ -1930,6 +1931,105 @@ fn parked_headings_do_not_change_selection_or_toggle_scopes() {
     let close = state.hits.navigator_close;
     click(&mut state, close);
     assert!(state.overlay.is_none());
+}
+
+#[test]
+fn picker_shortcuts_toggle_active_and_parked() {
+    for (active, parked) in [("ctrl+g", "ctrl+e"), ("prefix+g", "prefix+e")] {
+        let config: Config = toml::from_str(&format!(
+            "[keys]\ngoto = '{active}'\nopen_parked = '{parked}'\n"
+        ))
+        .unwrap();
+        for (shortcut, is_parked) in [(active, false), (parked, true)] {
+            let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+            state.set_snapshot(Box::new(snapshot()));
+            let bytes: &[u8] = match shortcut {
+                "ctrl+g" => b"\x07",
+                "ctrl+e" => b"\x05",
+                "prefix+g" => b"\x02g",
+                _ => b"\x02e",
+            };
+            let opened = state.handle_input_bytes(bytes);
+            assert!(opened.repaint);
+            assert!(
+                matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.parked == is_parked)
+            );
+            state.handle_input_bytes(b"query");
+            let closed = state.handle_input_bytes(bytes);
+            assert!(
+                state.overlay.is_none(),
+                "{shortcut} should close its picker"
+            );
+            assert!(closed.repaint);
+            assert!(closed.actions.is_empty());
+            assert!(closed.requests.is_empty());
+            assert_eq!(state.mode, ClientShellMode::Terminal);
+        }
+    }
+}
+
+#[test]
+fn picker_shortcuts_switch_between_active_and_parked() {
+    for (active, parked, active_bytes, parked_bytes) in [
+        ("ctrl+g", "ctrl+e", &b"\x07"[..], &b"\x05"[..]),
+        ("prefix+g", "prefix+e", &b"\x02g"[..], &b"\x02e"[..]),
+    ] {
+        let config: Config = toml::from_str(&format!(
+            "[keys]\ngoto = '{active}'\nopen_parked = '{parked}'\n"
+        ))
+        .unwrap();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(snapshot()));
+        for (bytes, is_parked) in [
+            (active_bytes, false),
+            (parked_bytes, true),
+            (active_bytes, false),
+        ] {
+            let switched = state.handle_input_bytes(bytes);
+            assert!(
+                matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.parked == is_parked),
+                "{active} / {parked} should switch pickers"
+            );
+            assert!(switched.repaint);
+            assert!(switched.actions.is_empty());
+            assert!(switched.requests.is_empty());
+            state.handle_input_bytes(b"ge");
+            assert!(
+                matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.query.as_str() == "ge")
+            );
+        }
+    }
+}
+
+#[test]
+fn picker_shortcuts_keep_prefix_local_and_ignore_held_keys() {
+    let config: Config = toml::from_str(
+        "[keys]\ngoto = ['ctrl+g', 'prefix+g']\nopen_parked = ['ctrl+e', 'prefix+e']\n",
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.handle_input_bytes(b"\x07\x05");
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        crate::input::TerminalKey::new(KeyCode::Char('e'), KeyModifiers::CONTROL)
+            .with_kind(KeyEventKind::Repeat),
+    )]);
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.parked));
+    state.handle_input_bytes(b"\x02");
+    state.handle_raw_events(vec![RawInputEvent::Key(
+        crate::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL)
+            .with_kind(KeyEventKind::Repeat),
+    )]);
+    state.handle_input_bytes(b"g");
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if !n.parked));
+    let ignored = state.handle_input_bytes(b"\x02q");
+    assert!(!ignored.detach);
+    assert!(
+        matches!(state.overlay, Some(ClientShellOverlay::Navigator(ref n)) if n.query.is_empty())
+    );
+    state.handle_input_bytes(b"\x02\x1b");
+    assert!(state.overlay.is_none());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
 }
 
 #[test]
