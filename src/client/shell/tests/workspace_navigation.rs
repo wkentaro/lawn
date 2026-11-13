@@ -252,7 +252,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     );
     assert!(
         matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.method, crate::api::schema::Method::WorkspaceCreate(params) if params.source_workspace_id.as_deref() == Some("ws_1")))
+        if matches!(&request.method, crate::api::schema::Method::WorkspaceCreate(params) if params.source_workspace_id.is_none() && params.cwd.is_none()))
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());

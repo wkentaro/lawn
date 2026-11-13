@@ -91,7 +91,7 @@ shell_mode = "auto"
 new_cwd = "follow"
 ```
 
-`new_cwd = "follow"` 保持默认行为，并继承来源窗格或工作区。没有来源工作区时，Herdr 从 `$HOME` 启动。使用 `"home"` 可始终从 `$HOME` 启动，使用 `"current"` 可采用 Herdr 的进程目录，也可以指定 `"~/Projects"` 这样的固定路径。CLI 或 socket API 显式提供的 `--cwd` 值仍然优先。
+`new_cwd = "follow"` 是默认设置。新工作区从 `$HOME` 启动，新标签页和拆分窗格继承来源窗格的目录。socket API 可显式提供 `source_workspace_id`，改为继承该工作区中焦点窗格的目录。使用 `"home"` 可始终从 `$HOME` 启动，使用 `"current"` 可采用 Herdr 的进程目录，也可以指定 `"~/Projects"` 这样的固定路径。CLI 或 socket API 显式提供的 `--cwd` 值仍然优先。
 
 ## 远程连接
 

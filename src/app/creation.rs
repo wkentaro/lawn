@@ -13,11 +13,10 @@ pub(crate) fn resolve_new_terminal_cwd(
 ) -> PathBuf {
     match policy {
         NewTerminalCwdConfig::Follow => follow_cwd
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .or_else(std::env::home_dir)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Home => std::env::var_os("HOME")
-            .map(PathBuf::from)
+        NewTerminalCwdConfig::Home => std::env::home_dir()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("/")),
         NewTerminalCwdConfig::Current => {
@@ -98,21 +97,6 @@ impl App {
             .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
             .or_else(|| self.seed_cwd_from_workspace(ws_idx));
         self.resolve_new_terminal_cwd(follow_cwd)
-    }
-
-    pub(super) fn workspace_creation_source(&self) -> Option<usize> {
-        if self.state.mode == Mode::Navigate
-            && self.state.workspaces.get(self.state.selected).is_some()
-        {
-            return Some(self.state.selected);
-        }
-
-        self.state.active.or_else(|| {
-            self.state
-                .workspaces
-                .get(self.state.selected)
-                .map(|_| self.state.selected)
-        })
     }
 
     pub(crate) fn create_workspace_with_options(

@@ -459,7 +459,7 @@ fn mobile_switcher_create_and_menu_rows_reuse_client_actions() {
     assert!(matches!(
         state.overlay,
         Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-            target: ClientRenameTarget::NewWorkspace { .. },
+            target: ClientRenameTarget::NewWorkspace,
             ..
         }))
     ));

@@ -52,7 +52,7 @@ impl App {
                     Some(index) => Some(index),
                     None => return workspace_not_found(id, workspace_id),
                 },
-                None => self.workspace_creation_source(),
+                None => None,
             }
         };
         let cwd = params.cwd.map(PathBuf::from).unwrap_or_else(|| {
@@ -480,11 +480,8 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
-    // `new_cwd = follow` must anchor on the focused pane for every creation
-    // surface. Splits and tabs already do; a new workspace must follow the
-    // focused pane too, not the source workspace's first-tab root pane.
     #[tokio::test]
-    async fn workspace_create_follows_focused_pane_cwd_not_first_tab_root() {
+    async fn workspace_create_defaults_to_home_but_preserves_explicit_source() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
         use crate::config::ShellModeConfig;
 
@@ -528,37 +525,47 @@ mod tests {
         ));
         std::fs::create_dir_all(&focused_cwd).unwrap();
         let ws = &app.state.workspaces[0];
-        let root_cwd = ws.identity_cwd.clone();
         let focused_pane = ws.focused_pane_id().unwrap();
         assert_ne!(focused_pane, ws.tabs[0].root_pane);
         let terminal_id = ws.terminal_id(focused_pane).cloned().unwrap();
         app.state.terminals.get_mut(&terminal_id).unwrap().cwd = focused_cwd.clone();
 
-        let response = app.handle_workspace_create(
-            "req".into(),
-            WorkspaceCreateParams {
-                source_workspace_id: None,
-                cwd: None,
-                focus: false,
-                label: None,
-                env: Default::default(),
-            },
+        let home = crate::app::creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Home,
+            None,
         );
+        for (source_workspace_id, expected_cwd, mode) in [
+            (None, home.clone(), crate::app::Mode::Terminal),
+            (None, home, crate::app::Mode::Navigate),
+            (
+                Some(app.public_workspace_id(0)),
+                focused_cwd.clone(),
+                crate::app::Mode::Terminal,
+            ),
+        ] {
+            app.state.mode = mode;
+            let response = app.handle_workspace_create(
+                "req".into(),
+                WorkspaceCreateParams {
+                    source_workspace_id,
+                    cwd: None,
+                    focus: false,
+                    label: None,
+                    env: Default::default(),
+                },
+            );
 
-        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
-        assert!(matches!(
-            success.result,
-            ResponseResult::WorkspaceCreated { .. }
-        ));
-        let created_cwd = &app.state.workspaces[1].identity_cwd;
-        assert_eq!(
-            super::super::test_support::canonical_or_original(created_cwd),
-            super::super::test_support::canonical_or_original(&focused_cwd)
-        );
-        assert_ne!(
-            super::super::test_support::canonical_or_original(created_cwd),
-            super::super::test_support::canonical_or_original(&root_cwd)
-        );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            assert!(matches!(
+                success.result,
+                ResponseResult::WorkspaceCreated { .. }
+            ));
+            let created_cwd = &app.state.workspaces.last().unwrap().identity_cwd;
+            assert_eq!(
+                super::super::test_support::canonical_or_original(created_cwd),
+                super::super::test_support::canonical_or_original(&expected_cwd)
+            );
+        }
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&focused_cwd);
     }
