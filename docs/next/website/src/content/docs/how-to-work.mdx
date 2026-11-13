@@ -43,6 +43,10 @@ With no open workspace left, the view shows New workspace and Open parked. Parke
 sessions stay parked. Unpark brings back the original workspace and terminal;
 Dismiss or Escape closes a read-only preview.
 
+Closing the last workspace with nothing parked leaves the machine empty. Lawn
+shows Home with New workspace instead of opening a default workspace. Attaching a
+client to an empty machine still opens one.
+
 Closing a workspace or mixed tab through Lawn's UI closes only its active panes
 and retains parked sessions. The explicit socket API close methods still stop
 their targets. If closing a worktree group's root would also remove parked
