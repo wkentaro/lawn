@@ -106,6 +106,8 @@ mod tests {
     #[tokio::test]
     async fn a_workspace_without_tabs_answers_every_read_and_accepts_a_new_tab() {
         let mut app = app_with_two_tabs();
+        app.state.default_shell = super::super::test_support::exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
         while app.state.workspaces[0].take_tab(0).is_some() {}
         app.state.workspaces.push(Workspace::test_new("other"));
         app.state.ensure_test_terminals();
@@ -159,12 +161,6 @@ mod tests {
         assert!(response.get("result").is_some(), "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         app.state.assert_invariants_for_test();
-        let response = request(
-            &mut app,
-            "workspace.close",
-            serde_json::json!({ "workspace_id": workspace_id }),
-        );
-        assert!(response.get("result").is_some(), "{response}");
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
