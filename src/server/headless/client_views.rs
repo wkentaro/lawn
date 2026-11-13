@@ -255,6 +255,7 @@ impl HeadlessServer {
                 | Method::TabMoveToWorkspace(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceEnsureActive(_)
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
                 | Method::WorktreeRemove(_)
@@ -294,6 +295,7 @@ impl HeadlessServer {
                 | Method::TabRename(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceEnsureActive(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorkspaceMove(_)
                 | Method::WorkspaceMoveBlock(_)
@@ -326,6 +328,7 @@ impl HeadlessServer {
                 | Method::TabMoveToWorkspace(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
+                | Method::WorkspaceEnsureActive(_)
                 | Method::WorkspaceFocus(_)
                 | Method::WorktreeCreate(_)
                 | Method::WorktreeOpen(_)
@@ -906,8 +909,15 @@ impl HeadlessServer {
             &msg.request.method,
             api::schema::Method::TabMoveToWorkspace(params) if params.focus
         );
-        let response_proxy =
-            (agent_focus_target.is_some() || inspect_pane_move || inspect_tab_move).then(|| {
+        let ensure_active_requested = matches!(
+            &msg.request.method,
+            api::schema::Method::WorkspaceEnsureActive(_)
+        );
+        let response_proxy = (agent_focus_target.is_some()
+            || inspect_pane_move
+            || inspect_tab_move
+            || ensure_active_requested)
+            .then(|| {
                 let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
                 let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
                 (original, proxy_rx)
@@ -941,6 +951,7 @@ impl HeadlessServer {
             .is_some_and(|target| self.default_shell_target() == Some(target));
         let public_focus_succeeded = explicit_focus_succeeded
             || (create_focus_requested && target_changed)
+            || (ensure_active_requested && proxied_request_succeeded)
             || move_focus_succeeded;
         if public_focus_succeeded {
             self.focus_all_shell_clients_on_default_target();

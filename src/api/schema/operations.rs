@@ -157,6 +157,7 @@ mod tests {
             "release_notes.dismiss",
             "command.invoke",
             "workspace.create",
+            "workspace.ensure_active",
             "workspace.focus",
             "workspace.rename",
             "workspace.move",

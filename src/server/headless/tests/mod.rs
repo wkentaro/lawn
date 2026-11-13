@@ -3021,6 +3021,53 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
 }
 
 #[tokio::test]
+async fn public_workspace_ensure_active_focuses_clients_when_the_server_target_is_unchanged() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("reused");
+    let other_tab = workspace.test_add_tab(Some("other"));
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let reused_tab = server.app.public_tab_id(0, 0).unwrap();
+    let other_tab = server.app.public_tab_id(0, other_tab).unwrap();
+    let (first_control, _) = connect_test_shell(&mut server, 41, 80, 24);
+    let (second_control, _) = connect_test_shell(&mut server, 42, 80, 24);
+    let _ = client_shell_snapshot(&first_control);
+    let _ = client_shell_snapshot(&second_control);
+    assert!(server.focus_shell_client_on_tab(41, &other_tab));
+    assert!(server.focus_shell_client_on_tab(42, &other_tab));
+    let before = server.default_shell_target();
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
+        request: crate::api::schema::Request {
+            id: "ensure-active".into(),
+            method: crate::api::schema::Method::WorkspaceEnsureActive(
+                crate::api::schema::WorkspaceEnsureActiveParams {
+                    excluded_terminal_ids: Vec::new(),
+                },
+            ),
+        },
+        respond_to,
+        response_write_complete: None,
+    });
+    let response: crate::api::schema::SuccessResponse =
+        serde_json::from_str(&response_rx.recv().unwrap()).unwrap();
+    assert!(matches!(
+        response.result,
+        crate::api::schema::ResponseResult::WorkspaceInfo { .. }
+    ));
+    assert_eq!(server.default_shell_target(), before);
+    for client_id in [41, 42] {
+        assert_eq!(
+            server.shell_tab_id_for_client(client_id).as_deref(),
+            Some(reused_tab.as_str())
+        );
+    }
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn public_api_focus_replaces_every_client_shell_projection() {
     let mut server = test_headless_server();
     let first = crate::workspace::Workspace::test_new("first");

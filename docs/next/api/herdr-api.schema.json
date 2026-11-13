@@ -4686,6 +4686,19 @@
           },
           "type": "object"
         },
+        "WorkspaceEnsureActiveParams": {
+          "description": "Focuses a workspace with a pane outside `excluded_terminal_ids`, or\nopens a new one at the server's home directory when none exists.",
+          "properties": {
+            "excluded_terminal_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "WorkspaceMoveBlockParams": {
           "properties": {
             "before_workspace_id": {
@@ -5201,6 +5214,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.ensure_active",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceEnsureActiveParams"
             }
           },
           "required": [
