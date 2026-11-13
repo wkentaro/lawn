@@ -98,7 +98,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 会话 | `session.snapshot` |
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
+| 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
@@ -225,6 +225,14 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 移动到已有标签页需要 `split: "right" | "down"`。`target_pane_id` 可选,默认是目标标签页的聚焦窗格。同一标签页内的布局变化仍然用 `pane.swap`;移动到来源标签页返回 `changed: false` 和 `reason: "same_tab"`。涉及缩放状态的来源或目标标签页的移动返回 `changed: false` 和 `reason: "zoomed_tab"`。
 
 响应是 `type: "pane_move"`,带 `changed`、可选的 `reason`、`previous_pane_id`、`previous_workspace_id`、`previous_tab_id`、被移动的 `pane`、可选的 `source_layout`、`target_layout`、可选的新建工作区或标签页记录、可选的已关闭工作区或标签页 id,以及 `focused_pane_id`。跨工作区移动保持内部窗格和终端存活,但在目标工作区分配新的公开窗格 id。订阅者可以监听 `pane.moved`;Herdr 不会为被移动的终端进程发出假的窗格关闭/创建事件。
+
+`tab.move_to_workspace` 把整个标签页连同其中所有窗格移动到另一个工作区：
+
+```json
+{"id":"req_move_tab_ws","method":"tab.move_to_workspace","params":{"tab_id":"w1:t2","workspace_id":"w2","insert_index":0,"focus":true}}
+```
+
+`insert_index` 可选，省略时追加到末尾。响应是 `type: "tab_info"`,包含标签页的新记录。标签页及其窗格会在目标工作区获得新的公开 id,旧的窗格 id 保留为别名。移动工作区的最后一个标签页会关闭该工作区。订阅者依次收到 `tab.closed`、源工作区关闭时的 `workspace.closed`,然后是 `tab.created`。
 
 `pane.zoom` 切换、启用或禁用目标窗格所在标签页的缩放:
 

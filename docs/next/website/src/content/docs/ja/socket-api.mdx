@@ -98,7 +98,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | セッション | `session.snapshot` |
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
-| タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
+| タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
@@ -225,6 +225,14 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 既存タブへの移動には `split: "right" | "down"` が必要です。`target_pane_id` は任意で、デフォルトは移動先タブのフォーカス中ペインです。同じタブ内のレイアウト変更は引き続き `pane.swap` です。元のタブへの移動は `reason: "same_tab"` 付きで `changed: false` を返します。ズームされた移動元/移動先タブを含む移動は `reason: "zoomed_tab"` 付きで `changed: false` を返します。
 
 レスポンスは `type: "pane_move"` で、`changed`、任意の `reason`、`previous_pane_id`、`previous_workspace_id`、`previous_tab_id`、移動された `pane`、任意の `source_layout`、`target_layout`、任意の作成されたワークスペース/タブのレコード、任意の閉じられたワークスペース/タブの id、`focused_pane_id` を含みます。ワークスペースをまたぐ移動では、内部のペインとターミナルは生きたまま、移動先ワークスペースで新しい公開ペイン id が割り当てられます。購読者は `pane.moved` を購読できます。Herdr は移動されたターミナルプロセスについて偽のペインの close/create イベントを発行しません。
+
+`tab.move_to_workspace` は、タブを中のペインごと別のワークスペースへ移動します。
+
+```json
+{"id":"req_move_tab_ws","method":"tab.move_to_workspace","params":{"tab_id":"w1:t2","workspace_id":"w2","insert_index":0,"focus":true}}
+```
+
+`insert_index` は任意で、省略すると末尾に追加します。レスポンスは `type: "tab_info"` で、移動後のタブのレコードを返します。タブとペインには移動先ワークスペースで新しい公開 id が割り当てられ、以前のペイン id は別名として残ります。ワークスペースの最後のタブを移動すると、そのワークスペースは閉じます。購読者には `tab.closed`、移動元が閉じた場合は `workspace.closed`、その後に `tab.created` が届きます。
 
 `pane.zoom` は、対象ペインのタブのズームをトグル、有効化、無効化します:
 
