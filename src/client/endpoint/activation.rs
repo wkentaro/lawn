@@ -1199,7 +1199,10 @@ impl PendingEndpointActivation {
                         .iter()
                         .any(|pane| pane.focused && &pane.pane_id == pane_id)
             }
-            Some(crate::client::shell::ClientEndpointFocusTarget::Pane(pane_id)) => {
+            Some(
+                crate::client::shell::ClientEndpointFocusTarget::Pane(pane_id)
+                | crate::client::shell::ClientEndpointFocusTarget::UnparkPane(pane_id),
+            ) => {
                 evidence.focused_pane_id.as_deref() == Some(pane_id)
                     && surface
                         .panes

@@ -553,6 +553,12 @@ impl ClientShellState {
             ClientEndpointFocusTarget::Pane(pane_id) => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
             }
+            ClientEndpointFocusTarget::UnparkPane(pane_id) => {
+                crate::api::schema::Method::PaneUnpark(crate::api::schema::PaneUnparkParams {
+                    pane_id,
+                    focus: true,
+                })
+            }
             #[cfg(windows)]
             ClientEndpointFocusTarget::Notification { pane_id, .. } => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
@@ -718,6 +724,23 @@ impl ClientShellState {
                         (true, Vec::new())
                     }
                 };
+            }
+            PendingEndpointKind::PanePark { pane_id } => {
+                let active = self.active_endpoint_id.clone();
+                let parking = self
+                    .endpoints
+                    .iter_mut()
+                    .find(|endpoint| endpoint.endpoint_id == active)
+                    .map(|endpoint| &mut endpoint.parking);
+                if result.is_err() {
+                    if let Some(parking) = parking {
+                        parking.cancel_park(&pane_id);
+                    }
+                    return (true, Vec::new());
+                }
+                if let Some(parking) = parking {
+                    parking.finish_park(&pane_id);
+                }
             }
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
                 let mut outcome = ClientShellInput::default();
@@ -1040,11 +1063,7 @@ impl ClientShellState {
                     .tabs
                     .iter()
                     .filter(|tab| tab.workspace_id == focused_workspace)
-                    .nth(index)
-                    .filter(|tab| {
-                        self.active_parking()
-                            .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-                    })?;
+                    .nth(index)?;
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tab.tab_id.clone(),
                 }))
@@ -1053,12 +1072,7 @@ impl ClientShellState {
                 let tabs = snapshot
                     .tabs
                     .iter()
-                    .filter(|tab| {
-                        tab.workspace_id == focused_workspace
-                            && self
-                                .active_parking()
-                                .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-                    })
+                    .filter(|tab| tab.workspace_id == focused_workspace)
                     .collect::<Vec<_>>();
                 if tabs.is_empty() {
                     return None;
@@ -1079,34 +1093,26 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
-                let all_tabs = snapshot
+                let tabs = snapshot
                     .tabs
                     .iter()
                     .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                let tabs = all_tabs
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, tab)| {
-                        self.active_parking()
-                            .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-                    })
                     .collect::<Vec<_>>();
                 if tabs.len() <= 1 {
                     return None;
                 }
                 let focused_tab = focused_tab?;
-                let source = tabs.iter().position(|(_, tab)| tab.tab_id == focused_tab)?;
+                let source = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
                 let insert_index = if action == KeybindAction::MoveTabNext {
                     if source + 1 >= tabs.len() {
                         0
                     } else {
-                        tabs[source + 1].0 + 1
+                        source + 2
                     }
                 } else if source == 0 {
-                    all_tabs.len()
+                    tabs.len()
                 } else {
-                    tabs[source - 1].0
+                    source - 1
                 };
                 Some(Method::TabMove(TabMoveParams {
                     tab_id: focused_tab,

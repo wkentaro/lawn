@@ -7,7 +7,10 @@ pub(super) fn focus_result_matches(
 ) -> bool {
     match (focus, result) {
         (
-            Some(crate::client::shell::ClientEndpointFocusTarget::Pane(expected)),
+            Some(
+                crate::client::shell::ClientEndpointFocusTarget::Pane(expected)
+                | crate::client::shell::ClientEndpointFocusTarget::UnparkPane(expected),
+            ),
             crate::api::schema::ResponseResult::PaneInfo { pane },
         ) => pane.focused && &pane.pane_id == expected,
         #[cfg(windows)]
@@ -197,6 +200,12 @@ pub(super) fn focus_request(
         crate::client::shell::ClientEndpointFocusTarget::Pane(pane_id) => {
             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                 pane_id: pane_id.clone(),
+            })
+        }
+        crate::client::shell::ClientEndpointFocusTarget::UnparkPane(pane_id) => {
+            crate::api::schema::Method::PaneUnpark(crate::api::schema::PaneUnparkParams {
+                pane_id: pane_id.clone(),
+                focus: true,
             })
         }
         crate::client::shell::ClientEndpointFocusTarget::Tab(tab_id) => {

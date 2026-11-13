@@ -4,25 +4,76 @@ use crossterm::event::KeyEventKind;
 use std::time::Instant;
 
 fn tick(state: &mut ClientShellState) -> ClientShellInput {
-    let mut outcome = state.tick_parking(Instant::now());
+    let mut outcome = state.tick_parking();
     state.focus_after_parked_close(&mut outcome);
     outcome
 }
 
+/// The policy to acknowledge next: a new one, or the standing one when only
+/// session topology (a park or restore) changed.
 fn request(state: &mut ClientShellState) -> SetPanePresentation {
     state
-        .tick_parking(Instant::now())
+        .tick_parking()
         .actions
         .into_iter()
         .find_map(|action| match action {
             ClientShellAction::PanePresentation { request, .. } => Some(request),
             _ => None,
         })
+        .or_else(|| {
+            state
+                .active_parking()
+                .and_then(|parking| parking.current_request().cloned())
+        })
         .expect("presentation request")
+}
+
+/// Applies the client's parks and restores the way the server would: parked
+/// panes move to `parked_panes`, and a tab left without panes is hidden.
+fn serve_parking(state: &ClientShellState, projected: &mut ClientShellSnapshot) {
+    let Some(endpoint) = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id == ClientEndpointId::Local)
+    else {
+        return;
+    };
+    let hidden = &endpoint.parking.hidden_panes;
+    // The client's snapshot already lists parked panes in `panes`.
+    (projected.parked_panes, projected.panes) = std::mem::take(&mut projected.panes)
+        .into_iter()
+        .partition(|pane| hidden.contains(&pane.pane_id));
+    projected.tabs.retain(|tab| {
+        projected.panes.iter().any(|pane| pane.tab_id == tab.tab_id)
+            || !projected
+                .parked_panes
+                .iter()
+                .any(|pane| pane.tab_id == tab.tab_id)
+    });
+    for pane in &projected.panes {
+        if !projected.tabs.iter().any(|tab| tab.tab_id == pane.tab_id) {
+            let mut tab = snapshot().tabs[0].clone();
+            tab.tab_id = pane.tab_id.clone();
+            tab.workspace_id = pane.workspace_id.clone();
+            tab.focused = false;
+            projected.tabs.push(tab);
+        }
+    }
 }
 
 fn acknowledge(state: &mut ClientShellState, request: &SetPanePresentation, focused: Option<&str>) {
     let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    serve_parking(state, &mut projected);
+    acknowledge_presentation(state, request, focused, projected);
+}
+
+/// Acknowledges the presentation while any park is still queued.
+fn acknowledge_presentation(
+    state: &mut ClientShellState,
+    request: &SetPanePresentation,
+    focused: Option<&str>,
+    mut projected: ClientShellSnapshot,
+) {
     projected.revision += 1;
     projected.focused_pane_id = focused.map(str::to_owned);
     state.set_endpoint_pane_identities(
@@ -35,6 +86,7 @@ fn acknowledge(state: &mut ClientShellState, request: &SetPanePresentation, focu
             pane_terminals: projected
                 .panes
                 .iter()
+                .chain(&projected.parked_panes)
                 .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
                 .collect(),
         },
@@ -47,6 +99,27 @@ fn acknowledge(state: &mut ClientShellState, request: &SetPanePresentation, focu
         frame.panes.clear();
     }
     state.set_pane_surface(frame);
+}
+
+fn methods(outcome: &ClientShellInput) -> Vec<&crate::api::schema::Method> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect()
+}
+
+fn parks(outcome: &ClientShellInput) -> Vec<&str> {
+    methods(outcome)
+        .into_iter()
+        .filter_map(|method| match method {
+            crate::api::schema::Method::PanePark(target) => Some(target.pane_id.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn state() -> ClientShellState {
@@ -126,8 +199,9 @@ fn parking_last_active_pane_opens_one_shell_in_its_current_directory() {
 fn parking_with_another_active_pane_does_not_create_a_shell() {
     let mut state = state_with_snapshot(tabbed_snapshot());
     let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
-    assert!(parked.actions.is_empty());
-    assert_eq!(request(&mut state).hidden_terminals, ["terminal-pane_1"]);
+    assert_eq!(parks(&parked), ["pane_1"]);
+    assert_eq!(methods(&parked).len(), 1);
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
 }
 
 #[test]
@@ -208,8 +282,8 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     let mut outcome = ClientShellInput::default();
     state.activate_context_menu_item(park, &mut outcome);
     assert!(outcome.requests.is_empty());
+    assert_eq!(parks(&outcome), ["pane_1"]);
     let parked = request(&mut state);
-    assert_eq!(parked.hidden_terminals, ["terminal-pane_1"]);
     assert!(state
         .handle_input_bytes(b"should not type")
         .requests
@@ -283,10 +357,8 @@ fn parked_peek_accepts_paste_mouse_and_images_then_dismisses_without_closing() {
         state.open_parked();
         state.handle_input_bytes(b"pane_1\r");
         let peek = request(&mut state);
-        assert_eq!(
-            peek.hidden_terminals,
-            ["terminal-pane_2", "terminal-pane_3"]
-        );
+        assert!(peek.hidden_terminals.is_empty());
+        assert_eq!(peek.focus_terminal.as_deref(), Some("terminal-pane_1"));
         assert!(state.clipboard_image_target().is_none());
         acknowledge(&mut state, &peek, Some("pane_1"));
         state.pane_surface.as_mut().unwrap().panes[0].mouse_reporting = true;
@@ -328,7 +400,7 @@ fn parked_peek_accepts_paste_mouse_and_images_then_dismisses_without_closing() {
         )));
         assert!(state.handle_input_bytes(b"must wait").requests.is_empty());
         let dismissed = request(&mut state);
-        assert_eq!(dismissed.hidden_terminals, ["terminal-pane_1"]);
+        assert!(dismissed.focus_terminal.is_none());
         acknowledge(&mut state, &dismissed, Some("pane_2"));
         assert!(state.active_parking().unwrap().hides_pane("pane_1"));
         assert!(!state
@@ -490,49 +562,27 @@ fn parked_launcher_counts_cached_terminals_across_machines() {
     assert!(rows[row].contains("parked"));
     assert!(rows[row].contains("0 "));
 
-    let root = std::env::temp_dir().join(format!(
-        "lawn-parked-launcher-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    for (index, endpoint) in state.endpoints.iter_mut().enumerate() {
-        let path = root.join(format!("{index}.json"));
-        std::fs::write(
-            &path,
-            format!(r#"{{"version":1,"terminals":["terminal-{index}"]}}"#),
-        )
-        .unwrap();
-        endpoint.parking.set_path(Some(path));
-        endpoint.parking.set_supported(true);
-        endpoint.parking.poll(Instant::now());
+    // The remote machine is offline; its last snapshot still counts.
+    for endpoint in &mut state.endpoints {
+        let mut cached = snapshot();
+        cached.parked_panes = cached.panes.clone();
+        endpoint.snapshot = Some(Box::new(cached));
     }
     let frame = state.compose(100, 24).unwrap();
     assert!(frame_rows(&frame)[row].contains("2 "));
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn policy_carries_held_key_release_before_hiding_its_terminal() {
     let mut state = state();
     assert!(!state.handle_input_bytes(b"\x1b[97;5u").requests.is_empty());
-    binding(&mut state, crate::input::KeybindAction::ParkPane);
-    let outcome = tick(&mut state);
-    let (releases, hidden) = outcome
-        .actions
-        .iter()
-        .find_map(|action| match action {
-            ClientShellAction::PanePresentation {
-                releases, request, ..
-            } => Some((releases, &request.hidden_terminals)),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(hidden, &["terminal-pane_1"]);
+    let outcome = binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let releases = match outcome.actions.first() {
+        Some(ClientShellAction::PanePresentation { releases, .. }) => releases,
+        other => panic!("releases must precede the park: {other:?}"),
+    };
     assert!(releases.iter().any(|message| matches!(message, ClientMessage::ClientShellPaneInput { pane_id, events } if pane_id == "pane_1" && events.iter().any(|event| matches!(event, ClientPaneInputEvent::Key { kind: crate::protocol::ClientKeyKind::Release, .. })))));
+    assert_eq!(parks(&outcome), ["pane_1"]);
     assert!(
         outcome.requests.is_empty(),
         "release travels in order with policy, exactly once"
@@ -556,8 +606,9 @@ fn parking_shortcuts_are_unbound_until_configured() {
     let first = request(&mut state);
     acknowledge(&mut state, &first, Some("pane_1"));
     state.handle_input_bytes(&[2]);
-    assert!(state.handle_input_bytes(b"f").requests.is_empty());
-    assert_eq!(request(&mut state).hidden_terminals, ["terminal-pane_1"]);
+    let parked = state.handle_input_bytes(b"f");
+    assert!(parked.requests.is_empty());
+    assert_eq!(parks(&parked), ["pane_1"]);
 }
 
 fn agent(pane: &str, status: AgentStatus) -> ClientShellAgent {
@@ -709,7 +760,7 @@ fn tab_status_prefers_blocked_then_working_then_idle_and_excludes_parked_agents(
 }
 
 #[test]
-fn tab_navigation_skips_parked_tabs_and_reordering_uses_server_positions() {
+fn tab_navigation_and_reordering_use_visible_positions() {
     let mut projected = snapshot();
     for number in [2, 3] {
         let mut tab = projected.tabs[0].clone();
@@ -737,7 +788,7 @@ fn tab_navigation_skips_parked_tabs_and_reordering_uses_server_positions() {
     let parked = request(&mut state);
     acknowledge(&mut state, &parked, Some("pane_1"));
     for action in [
-        crate::input::KeybindAction::SwitchTab(2),
+        crate::input::KeybindAction::SwitchTab(1),
         crate::input::KeybindAction::NextTab,
         crate::input::KeybindAction::PreviousTab,
     ] {
@@ -745,7 +796,7 @@ fn tab_navigation_skips_parked_tabs_and_reordering_uses_server_positions() {
         assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_3"))));
     }
     let outcome = binding(&mut state, crate::input::KeybindAction::MoveTabNext);
-    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::TabMove(target) if target.tab_id == "tab_1" && target.insert_index == 3))));
+    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::TabMove(target) if target.tab_id == "tab_1" && target.insert_index == 2))));
 }
 
 fn patch(state: &ClientShellState) -> crate::protocol::PaneSurfacePatch {
@@ -815,21 +866,8 @@ fn preview_releases_held_input_in_other_visible_panes_before_hiding_them() {
         lawn::ParkingAction::Park,
         &mut ClientShellInput::default(),
     );
-    let parked = tick(&mut state);
-    let request = parked
-        .actions
-        .into_iter()
-        .find_map(|action| match action {
-            ClientShellAction::PanePresentation {
-                request, releases, ..
-            } => {
-                assert!(releases.is_empty());
-                Some(request)
-            }
-            _ => None,
-        })
-        .unwrap();
-    acknowledge(&mut state, &request, Some("pane_1"));
+    let parked = request(&mut state);
+    acknowledge(&mut state, &parked, Some("pane_1"));
     state.parking_action(
         ClientEndpointId::Local,
         "pane_2".into(),
@@ -933,16 +971,14 @@ fn parked_with_active_shell(mixed_tab: bool) -> ClientShellState {
     state
 }
 
-fn closed_panes(outcome: &ClientShellInput) -> Vec<&str> {
-    outcome
-        .actions
-        .iter()
-        .filter_map(|action| match action {
-            ClientShellAction::Endpoint { request, .. } => match &request.method {
-                crate::api::schema::Method::PaneClose(target) => Some(target.pane_id.as_str()),
-                other => panic!("unexpected destructive or focus request: {other:?}"),
-            },
-            _ => None,
+/// Pane and tab ids the outcome closes; any other endpoint method fails.
+fn closed(outcome: &ClientShellInput) -> Vec<&str> {
+    methods(outcome)
+        .into_iter()
+        .map(|method| match method {
+            crate::api::schema::Method::PaneClose(target) => target.pane_id.as_str(),
+            crate::api::schema::Method::TabClose(target) => target.tab_id.as_str(),
+            other => panic!("unexpected destructive or focus request: {other:?}"),
         })
         .collect()
 }
@@ -958,66 +994,9 @@ fn workspace_close_preserves_parked_panes() {
             assert!(outcome.actions.is_empty());
             state.accept_close_confirmation(&mut outcome);
         }
-        assert_eq!(closed_panes(&outcome), ["pane_2"]);
+        assert_eq!(closed(&outcome), ["tab_2"]);
         assert!(state.active_parking().unwrap().hides_pane("pane_1"));
     }
-}
-
-#[test]
-fn legacy_group_root_close_is_blocked_when_only_linked_workspaces_have_parked_sessions() {
-    let mut state = parked_with_active_shell(false);
-    state.parking_action(
-        ClientEndpointId::Local,
-        "pane_1".into(),
-        lawn::ParkingAction::Restore,
-        &mut ClientShellInput::default(),
-    );
-    let restored = request(&mut state);
-    acknowledge(&mut state, &restored, Some("pane_2"));
-    state.parking_action(
-        ClientEndpointId::Local,
-        "pane_3".into(),
-        lawn::ParkingAction::Park,
-        &mut ClientShellInput::default(),
-    );
-    let parked = request(&mut state);
-    // An older server still reports ws_1 as the root of a worktree group
-    // that contains ws_2.
-    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
-    for (workspace, is_linked_worktree) in projected.workspaces.iter_mut().zip([false, true]) {
-        workspace.worktree = Some(crate::protocol::ClientShellWorktree {
-            key: "repo".into(),
-            label: "repo".into(),
-            is_linked_worktree,
-        });
-    }
-    projected.panes.retain(|pane| pane.pane_id != "pane_1");
-    projected.tabs.retain(|tab| tab.tab_id != "tab_1");
-    projected.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
-    acknowledge(&mut state, &parked, Some("pane_2"));
-    state.config.confirm_close = false;
-    for method in [
-        crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
-            workspace_id: "ws_1".into(),
-            close_group: false,
-        }),
-        crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
-            tab_id: "tab_2".into(),
-        }),
-        crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
-            pane_id: "pane_2".into(),
-        }),
-    ] {
-        let mut outcome = ClientShellInput::default();
-        assert!(!state.push_endpoint_method_with_kind(
-            method,
-            PendingEndpointKind::Generic,
-            &mut outcome
-        ));
-        assert!(outcome.actions.is_empty());
-    }
-    assert!(state.active_parking().unwrap().hides_pane("pane_3"));
 }
 
 #[test]
@@ -1030,7 +1009,7 @@ fn mixed_tab_and_stale_pane_closes_preserve_parked_panes() {
         if matches!(state.overlay, Some(ClientShellOverlay::ConfirmClose(_))) {
             state.accept_close_confirmation(&mut outcome);
         }
-        assert_eq!(closed_panes(&outcome), ["pane_2"]);
+        assert_eq!(closed(&outcome), ["tab_1"]);
         let mut stale = ClientShellInput::default();
         state.request_pane_close("pane_1".into(), &mut stale);
         assert!(stale.actions.is_empty());
@@ -1060,7 +1039,7 @@ fn permanent_parking_errors_allow_safe_closes_and_keep_known_parked_panes() {
         let mut outcome = ClientShellInput::default();
         state.request_workspace_close("ws_1".into(), &mut outcome);
         if parked {
-            assert_eq!(closed_panes(&outcome), ["pane_2"]);
+            assert_eq!(closed(&outcome), ["tab_2"]);
         } else {
             assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(request.method, crate::api::schema::Method::WorkspaceClose(_)))));
         }
@@ -1177,11 +1156,11 @@ fn close_recovery_uses_the_nearest_workspace_in_sidebar_order() {
         neighbor.workspace_id = "ws_3".into();
         neighbor.active_tab_id = "tab_4".into();
         projected.workspaces.push(neighbor);
-        let mut tab = projected.tabs[2].clone();
+        let mut tab = projected.tabs.last().unwrap().clone();
         tab.workspace_id = "ws_3".into();
         tab.tab_id = "tab_4".into();
         projected.tabs.push(tab);
-        let mut pane = projected.panes[2].clone();
+        let mut pane = projected.panes.last().unwrap().clone();
         pane.workspace_id = "ws_3".into();
         pane.tab_id = "tab_4".into();
         pane.pane_id = "pane_4".into();
@@ -1237,16 +1216,17 @@ fn close_recovery_skips_a_parked_neighbor_selected_by_the_server() {
         &mut ClientShellInput::default(),
     );
     let policy = request(&mut state);
+    acknowledge(&mut state, &policy, None);
     let mut projected = state.snapshot.as_deref().unwrap().clone();
     let mut neighbor = projected.workspaces[1].clone();
     neighbor.workspace_id = "ws_3".into();
     neighbor.active_tab_id = "tab_4".into();
     projected.workspaces.push(neighbor);
-    let mut tab = projected.tabs[2].clone();
+    let mut tab = projected.tabs.last().unwrap().clone();
     tab.workspace_id = "ws_3".into();
     tab.tab_id = "tab_4".into();
     projected.tabs.push(tab);
-    let mut pane = projected.panes[2].clone();
+    let mut pane = projected.panes.last().unwrap().clone();
     pane.workspace_id = "ws_3".into();
     pane.tab_id = "tab_4".into();
     pane.pane_id = "pane_4".into();
@@ -1393,7 +1373,7 @@ fn close_recovery_opens_one_focused_home_workspace_on_the_same_machine() {
                 matches!(focused.actions.as_slice(),
                     [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
                         if matches!(&request.method, crate::api::schema::Method::WorkspaceEnsureActive(params)
-                            if params.excluded_terminal_ids == if remove_workspace { vec![] } else { vec!["terminal-pane_1".to_owned()] })
+                            if params.excluded_terminal_ids.is_empty())
                 ),
                 "remove_workspace={remove_workspace}, online={online}: {:?}",
                 focused.actions
@@ -1417,11 +1397,8 @@ fn close_recovery_opens_one_focused_home_workspace_on_the_same_machine() {
             if !remove_workspace {
                 let mut parked = state.snapshot.as_deref().unwrap().clone();
                 parked.workspaces[0].focused = false;
-                parked.tabs[0].focused = false;
-                parked.panes[0].focused = false;
                 home.workspaces.extend(parked.workspaces);
-                home.tabs.extend(parked.tabs);
-                home.panes.extend(parked.panes);
+                home.parked_panes = parked.parked_panes;
             }
             state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(home));
             acknowledge(&mut state, &policy, Some("pane_home"));
@@ -1527,66 +1504,6 @@ fn closing_an_empty_parked_view_does_not_close_a_hidden_tab() {
 }
 
 #[test]
-fn numbered_tab_shortcuts_keep_the_numbers_shown_in_the_tab_bar() {
-    let mut projected = tabbed_snapshot();
-    for tab in &mut projected.tabs {
-        tab.label = tab.number.to_string();
-    }
-    let mut state = state_with_snapshot(projected);
-    state.parking_action(
-        ClientEndpointId::Local,
-        "pane_2".into(),
-        lawn::ParkingAction::Park,
-        &mut ClientShellInput::default(),
-    );
-    let policy = request(&mut state);
-    acknowledge(&mut state, &policy, Some("pane_1"));
-    let frame = state.compose(100, 24).unwrap();
-    let row = &frame_rows(&frame)[usize::from(state.hits.tabs[0].0.y)];
-    assert!(row.contains(" 1 ") && row.contains(" 3 "));
-    for (index, expected) in [(0, Some("tab_1")), (1, None), (2, Some("tab_3"))] {
-        let action = crate::input::KeybindAction::SwitchTab(index);
-        assert_eq!(
-            state.indexed_navigation_target_exists(&crate::input::KeybindMatch::Action(action)),
-            expected.is_some()
-        );
-        let outcome = binding(&mut state, action);
-        let focused = outcome.actions.iter().find_map(|action| match action {
-            ClientShellAction::Endpoint { request, .. } => match &request.method {
-                crate::api::schema::Method::TabFocus(target) => Some(target.tab_id.as_str()),
-                _ => None,
-            },
-            _ => None,
-        });
-        assert_eq!(focused, expected);
-    }
-}
-
-#[test]
-fn narrow_switcher_numbers_custom_tabs_before_filtering_parked_tabs() {
-    let mut projected = tabbed_snapshot();
-    projected.tabs[2].number = 9;
-    projected.tabs[2].label = "logs".into();
-    projected.tabs[2].custom_label = true;
-    let mut state = state_with_snapshot(projected);
-    state.parking_action(
-        ClientEndpointId::Local,
-        "pane_2".into(),
-        lawn::ParkingAction::Park,
-        &mut ClientShellInput::default(),
-    );
-    let policy = request(&mut state);
-    acknowledge(&mut state, &policy, Some("pane_1"));
-    state.mode = ClientShellMode::Navigate;
-    let frame = state.compose(44, 30).unwrap();
-    let text = frame_rows(&frame).join("\n");
-    assert!(text.contains("3 · logs"), "{text}");
-    assert!(!text.contains("2 · logs") && !text.contains("9 · logs"));
-    let outcome = binding(&mut state, crate::input::KeybindAction::SwitchTab(2));
-    assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::TabFocus(target) if target.tab_id == "tab_3"))));
-}
-
-#[test]
 fn parking_and_restoring_resize_when_the_tab_bar_appears_or_disappears() {
     let mut projected = tabbed_snapshot();
     projected.tabs.pop();
@@ -1595,63 +1512,24 @@ fn parking_and_restoring_resize_when_the_tab_bar_appears_or_disappears() {
     state.config.hide_tab_bar_when_single_tab = true;
     state.compose(100, 24).unwrap();
     let initial = state.surface_size(100, 24);
-    let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
-    assert!(parked.resize);
-    assert_eq!(state.surface_size(100, 24).rows, initial.rows + 1);
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
     let policy = request(&mut state);
     acknowledge(&mut state, &policy, Some("pane_2"));
-    let mut restored = ClientShellInput::default();
+    assert_eq!(state.surface_size(100, 24).rows, initial.rows + 1);
     state.parking_action(
         ClientEndpointId::Local,
         "pane_1".into(),
         lawn::ParkingAction::Restore,
-        &mut restored,
+        &mut ClientShellInput::default(),
     );
-    assert!(restored.resize);
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_1"));
     assert_eq!(state.surface_size(100, 24), initial);
 }
 
 #[test]
-fn shared_parking_file_changes_resize_the_active_workspace() {
-    let mut projected = tabbed_snapshot();
-    projected.tabs.pop();
-    projected.panes.pop();
-    let root = std::env::temp_dir().join(format!(
-        "lawn-parking-resize-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let preferences = root.join("chrome.json");
-    let mut state = ClientShellState::new(
-        ClientShellConfig::from_config(&Config::default())
-            .with_preferences_path(preferences.clone()),
-    );
-    state.config.hide_tab_bar_when_single_tab = true;
-    state.set_endpoint_parking_supported(&ClientEndpointId::Local, true);
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
-    let initial_policy = request(&mut state);
-    acknowledge(&mut state, &initial_policy, Some("pane_1"));
-    state.compose(100, 24).unwrap();
-    let initial = state.surface_size(100, 24);
-    std::fs::write(
-        preferences.with_extension("parking.json"),
-        r#"{"version":1,"terminals":["terminal-pane_1"]}"#,
-    )
-    .unwrap();
-    let changed = state.tick_parking(Instant::now() + std::time::Duration::from_secs(1));
-    assert!(changed.resize);
-    assert_eq!(state.surface_size(100, 24).rows, initial.rows + 1);
-    assert!(changed.actions.iter().any(|action| matches!(action, ClientShellAction::PanePresentation { request, .. } if request.hidden_terminals == ["terminal-pane_1"])));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn tab_drag_edges_follow_scroll_controls_and_preserve_hidden_tab_positions() {
-    for (parked_pane, expected_index) in [("pane_3", 0), ("pane_1", 1)] {
+fn tab_drag_edges_follow_scroll_controls_with_parked_tabs() {
+    for parked_pane in ["pane_3", "pane_1"] {
         let mut state = state_with_snapshot(tabbed_snapshot());
         state.parking_action(
             ClientEndpointId::Local,
@@ -1690,10 +1568,7 @@ fn tab_drag_edges_follow_scroll_controls_and_preserve_hidden_tab_positions() {
                 }
             }
         }
-        assert_eq!(
-            moved.expect("drag must request a tab move").insert_index,
-            expected_index
-        );
+        assert_eq!(moved.expect("drag must request a tab move").insert_index, 0);
     }
 }
 
@@ -1740,7 +1615,7 @@ fn dismiss_after_switching_machines_returns_to_current_preview_origin() {
         &mut ClientShellInput::default()
     ));
     let policy = state
-        .tick_parking(Instant::now())
+        .tick_parking()
         .actions
         .into_iter()
         .find_map(|action| match action {
@@ -1765,6 +1640,7 @@ fn dismiss_after_switching_machines_returns_to_current_preview_origin() {
             pane_terminals: projected
                 .panes
                 .iter()
+                .chain(&projected.parked_panes)
                 .map(|p| (p.pane_id.clone(), format!("terminal-{}", p.pane_id)))
                 .collect(),
         },
@@ -2113,10 +1989,6 @@ fn picker_row_click_survives_pointer_motion_until_open_is_clicked() {
         let preview = request(&mut state);
         assert_eq!(preview.preview_terminal, None);
         assert_eq!(preview.focus_terminal.as_deref(), Some("terminal-pane_1"));
-        assert_eq!(
-            preview.hidden_terminals,
-            ["terminal-pane_2", "terminal-pane_3"]
-        );
         acknowledge(&mut state, &preview, Some("pane_1"));
         assert!(state.has_parking_preview());
         assert!(state.active_parking().unwrap().hides_pane("pane_1"));
@@ -2205,7 +2077,7 @@ fn parked_switcher_render_scale_profile() {
                     .collect::<Vec<_>>();
                 let mut state = state_with_snapshot(projected);
                 for pane in panes {
-                    state.endpoints[0].parking.park(&pane).unwrap();
+                    state.endpoints[0].parking.park(&pane);
                     let policy = request(&mut state);
                     acknowledge(&mut state, &policy, None);
                 }
@@ -2394,8 +2266,6 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     projected.panes[0].label = Some("Build logs".into());
     projected.panes[0].cwd = Some("/projects/alpha".into());
     projected.panes[0].foreground_cwd = Some("/projects/alpha".into());
-    projected.tabs[0].label = "review".into();
-    projected.tabs[0].custom_label = true;
     let mut parked_agent = agent("pane_1", AgentStatus::Blocked);
     parked_agent.title = Some("Repair title".into());
     parked_agent.display_agent = Some("Operator".into());
@@ -2406,7 +2276,7 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     acknowledge(&mut state, &policy, Some("pane_2"));
     state.open_parked();
     state.handle_raw_events(vec![RawInputEvent::Paste(
-        "build client-shell alpha codex review repair operator".into(),
+        "build client-shell alpha codex repair operator".into(),
     )]);
     let ClientShellOverlay::Navigator(n) = state.overlay.as_ref().unwrap() else {
         panic!("parked switcher")
@@ -2428,7 +2298,7 @@ fn parked_search_matches_context_across_fields_without_changing_preview_target()
     };
     assert_eq!(
         n.query.as_str(),
-        "build client-shell alpha codex review repair operatorb/"
+        "build client-shell alpha codex repair operatorb/"
     );
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Char('u'),
@@ -2455,4 +2325,239 @@ fn empty_parked_picker_immediately_shows_select_terminal_without_polling() {
         !tick.repaint,
         "an empty picker must render its final state immediately"
     );
+}
+
+#[test]
+fn restoring_a_parked_pane_on_another_machine_activates_it_first() {
+    let mut state = parked_with_active_shell(false);
+    let profile = crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    let mut remote_endpoint = state.endpoints[0].clone();
+    remote_endpoint.endpoint_id = remote.clone();
+    state.endpoints[1] = remote_endpoint;
+
+    let mut outcome = ClientShellInput::default();
+    assert!(state.parking_action(
+        remote.clone(),
+        "pane_1".into(),
+        lawn::ParkingAction::Restore,
+        &mut outcome,
+    ));
+    assert!(methods(&outcome).is_empty());
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::ActivateEndpoint {
+            endpoint_id,
+            target: Some(ClientEndpointFocusTarget::UnparkPane(pane)),
+        } if *endpoint_id == remote && pane == "pane_1"
+    )));
+}
+
+#[test]
+fn workspace_close_keeps_a_pane_whose_park_is_still_in_flight() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    state.config.confirm_close = false;
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let mut outcome = ClientShellInput::default();
+    state.request_workspace_close("ws_1".into(), &mut outcome);
+    assert_eq!(closed(&outcome), ["tab_1", "tab_2", "tab_3"]);
+}
+
+#[test]
+fn workspace_close_keeps_a_migrating_pane_whose_park_is_still_in_flight() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    state.config.confirm_close = false;
+    let dir = std::env::temp_dir().join(format!(
+        "lawn-parking-migration-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("parking.json");
+    std::fs::write(&path, r#"{"version":1,"terminals":["terminal-pane_2"]}"#).unwrap();
+    state.endpoints[0].parking.set_path(Some(path));
+    assert_eq!(parks(&state.tick_parking()), ["pane_2"]);
+    let mut outcome = ClientShellInput::default();
+    state.request_workspace_close("ws_1".into(), &mut outcome);
+    assert_eq!(closed(&outcome), ["tab_1", "tab_2", "tab_3"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn parking_the_last_pane_behind_pending_parks_opens_a_replacement_shell() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    let mut creates = Vec::new();
+    for pane in ["pane_2", "pane_3", "pane_1"] {
+        let mut outcome = ClientShellInput::default();
+        assert!(state.parking_action(
+            ClientEndpointId::Local,
+            pane.into(),
+            crate::client::shell::lawn::ParkingAction::Park,
+            &mut outcome,
+        ));
+        creates.extend(
+            methods(&outcome)
+                .into_iter()
+                .filter_map(|method| match method {
+                    crate::api::schema::Method::TabCreate(params) => params.workspace_id.clone(),
+                    _ => None,
+                }),
+        );
+        let request = request(&mut state);
+        let projected = (**state.snapshot.as_ref().unwrap()).clone();
+        acknowledge_presentation(&mut state, &request, Some("pane_1"), projected);
+    }
+    assert_eq!(creates, ["ws_1"]);
+}
+
+#[test]
+fn server_without_park_methods_disables_parking() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_endpoint_methods(Some(vec!["pane.split".into()]));
+    state.set_endpoint_parking_supported(&ClientEndpointId::Local, true);
+    assert!(!state.active_parking().unwrap().supported);
+}
+
+#[test]
+fn losing_parking_support_shows_previously_parked_panes() {
+    let mut state = parked_with_active_shell(false);
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    state.set_endpoint_parking_supported(&ClientEndpointId::Local, false);
+    assert!(!state.active_parking().unwrap().hides_pane("pane_1"));
+}
+
+#[test]
+fn a_pending_park_survives_older_snapshots_until_the_server_rejects_it() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    state.config.confirm_close = false;
+    let outcome = binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let (boot_id, request_id) = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint {
+                boot_id, request, ..
+            } if matches!(request.method, crate::api::schema::Method::PanePark(_)) => {
+                Some((boot_id.clone(), request.id.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    let mut stale = (**state.snapshot.as_ref().unwrap()).clone();
+    stale.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(stale));
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    let mut close = ClientShellInput::default();
+    state.request_workspace_close("ws_1".into(), &mut close);
+    assert_eq!(closed(&close), ["tab_1", "tab_2", "tab_3"]);
+
+    state.handle_endpoint_result(
+        &boot_id,
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("pane_not_found".into()),
+            message: "gone".into(),
+        }),
+    );
+    assert!(!state.active_parking().unwrap().hides_pane("pane_1"));
+}
+
+#[test]
+fn a_confirmed_park_follows_the_next_snapshot_after_another_client_unparks() {
+    let mut state = state_with_snapshot(tabbed_snapshot());
+    let outcome = binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let (boot_id, request_id) = outcome
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            ClientShellAction::Endpoint {
+                boot_id, request, ..
+            } if matches!(request.method, crate::api::schema::Method::PanePark(_)) => {
+                Some((boot_id.clone(), request.id.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    state.handle_endpoint_result(
+        &boot_id,
+        &request_id,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    // Another client unparked the pane before this client saw it parked.
+    let mut unparked = (**state.snapshot.as_ref().unwrap()).clone();
+    unparked.revision += 1;
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(unparked));
+    assert!(!state.active_parking().unwrap().hides_pane("pane_1"));
+}
+
+#[test]
+fn right_clicking_a_peeked_parked_pane_opens_its_menu() {
+    let mut state = parked_with_active_shell(false);
+    state.open_pane_context_menu("pane_1".into(), 40, 3);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::ContextMenu(_))
+    ));
+}
+
+#[test]
+fn a_peeked_parked_pane_keeps_its_right_click_passthrough() {
+    let mut state = parked_with_active_shell(false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Preview,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    serve_parking(&state, &mut projected);
+    for pane in projected.parked_panes.iter_mut() {
+        pane.right_click_passthrough = true;
+    }
+    acknowledge_presentation(&mut state, &policy, Some("pane_1"), projected);
+    let mut frame = surface();
+    frame.projection_revision = state.snapshot.as_ref().unwrap().revision;
+    frame.panes[0].mouse_reporting = true;
+    state.set_pane_surface(frame);
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].clone();
+    assert_eq!(pane.pane_id, "pane_1");
+    let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.inner_rect.x + 1,
+        row: pane.inner_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.overlay.is_none());
+    assert!(down.requests.iter().any(|request| matches!(
+        request,
+        ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "pane_1"
+    )));
+}
+
+#[test]
+fn renaming_a_peeked_parked_pane_opens_the_rename_overlay() {
+    let mut state = parked_with_active_shell(false);
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Preview,
+        &mut ClientShellInput::default(),
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, Some("pane_1"));
+    state.open_rename_pane_overlay();
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Rename(_))));
 }

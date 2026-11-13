@@ -313,6 +313,12 @@ impl ClientShellState {
                         pane_id,
                     })
                 }
+                ClientEndpointFocusTarget::UnparkPane(pane_id) => {
+                    crate::api::schema::Method::PaneUnpark(crate::api::schema::PaneUnparkParams {
+                        pane_id,
+                        focus: true,
+                    })
+                }
                 #[cfg(windows)]
                 ClientEndpointFocusTarget::Notification { pane_id, .. } => {
                     crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {

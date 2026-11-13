@@ -1,12 +1,17 @@
-use super::parking_store::ParkingStore;
+use super::parking_store;
 use super::*;
-use std::{collections::BTreeSet, time::Duration};
+use std::collections::BTreeSet;
 
+/// Client view of server-owned parking: which panes are parked, and the
+/// presentation policy this client uses to peek at one of them.
 #[derive(Clone, Debug, Default)]
 pub(in crate::client::shell) struct PaneParking {
     pub(in crate::client::shell) supported: bool,
-    store: ParkingStore,
-    protected: BTreeSet<String>,
+    /// Pre-server `parking.json`. It is removed once a snapshot shows all
+    /// of its live terminals parked; until then each connection retries.
+    legacy_path: Option<PathBuf>,
+    legacy_terminals: Option<BTreeSet<String>>,
+    migration_sent: bool,
     preview: Option<String>,
     pub(super) preview_return: Option<WorkspaceNavigationTarget>,
     focus: Option<String>,
@@ -17,21 +22,17 @@ pub(in crate::client::shell) struct PaneParking {
     request: Option<SetPanePresentation>,
     identities: Option<(Option<u64>, PaneIdentities)>,
     pending_identities: Option<(Option<u64>, PaneIdentities)>,
-    prune_candidates: BTreeSet<String>,
-    pane_tabs: HashMap<String, String>,
     pane_workspaces: HashMap<String, String>,
     focused_workspace: Option<String>,
-    all_tabs: HashSet<String>,
-    all_workspaces: HashSet<String>,
-    server_parked: HashSet<String>,
-    pub(super) hidden_panes: HashSet<String>,
-    visible_tabs: HashSet<String>,
-    visible_workspaces: HashSet<String>,
+    /// Workspaces whose every pane is parked.
+    parked_workspaces: HashSet<String>,
+    pub(in crate::client::shell) hidden_panes: HashSet<String>,
+    /// Parks sent to the server but not yet in a snapshot's `parked_panes`.
+    pending_parks: HashSet<String>,
     pub(in crate::client::shell) departed_workspace: Option<WorkspaceDeparture>,
     terminal_panes: HashMap<String, String>,
     dirty: bool,
     failed: bool,
-    last_poll: Option<Instant>,
     last_error: Option<String>,
     notice: Option<String>,
     repaint: bool,
@@ -45,16 +46,11 @@ pub(in crate::client::shell) struct WorkspaceDeparture {
 }
 
 impl PaneParking {
-    pub(in crate::client::shell) fn new(path: Option<PathBuf>) -> Self {
-        Self {
-            store: ParkingStore::new(path),
-            ..Self::default()
-        }
-    }
-
     pub(in crate::client::shell) fn set_path(&mut self, path: Option<PathBuf>) {
-        if self.store.path != path {
-            *self = Self::new(path);
+        if self.legacy_path != path {
+            self.legacy_path = path;
+            self.legacy_terminals = None;
+            self.migration_sent = false;
         }
     }
 
@@ -72,11 +68,10 @@ impl PaneParking {
                 self.preview = None;
                 self.preview_return = None;
                 self.focus = None;
-                self.protected.clear();
-                self.hidden_panes.clear();
-                self.visible_tabs.clear();
-                self.visible_workspaces.clear();
                 self.terminal_panes.clear();
+                self.hidden_panes.clear();
+                self.pending_parks.clear();
+                self.parked_workspaces.clear();
             }
         }
     }
@@ -99,17 +94,11 @@ impl PaneParking {
     }
 
     pub(in crate::client::shell) fn hides_pane(&self, pane: &str) -> bool {
-        self.supported && self.hidden_panes.contains(pane)
-    }
-
-    pub(in crate::client::shell) fn shows_tab(&self, tab: &str) -> bool {
-        !self.supported || self.visible_tabs.contains(tab)
+        self.hidden_panes.contains(pane)
     }
 
     pub(in crate::client::shell) fn shows_workspace(&self, workspace: &str) -> bool {
-        !self.supported
-            || !self.all_workspaces.contains(workspace)
-            || self.visible_workspaces.contains(workspace)
+        !self.parked_workspaces.contains(workspace)
     }
 
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
@@ -125,14 +114,6 @@ impl PaneParking {
             .as_ref()
             .and_then(|id| self.terminal_panes.get(id))
             .map(String::as_str)
-    }
-
-    pub(in crate::client::shell) fn parked_terminals(&self) -> impl Iterator<Item = &String> {
-        self.store.terminals.iter().chain(
-            self.protected
-                .iter()
-                .filter(|id| !self.store.terminals.contains(*id)),
-        )
     }
 
     pub(in crate::client::shell) fn terminal_for_pane(&self, pane: &str) -> Option<&str> {
@@ -157,6 +138,62 @@ impl PaneParking {
 
     pub(in crate::client::shell) fn take_repaint(&mut self) -> bool {
         std::mem::take(&mut self.repaint)
+    }
+
+    /// Panes from the legacy `parking.json` to park on the server, once per
+    /// connection.
+    pub(in crate::client::shell) fn take_migration(&mut self) -> Vec<String> {
+        if self.migration_sent || !self.available() {
+            return Vec::new();
+        }
+        let Some(path) = self.legacy_path.as_deref() else {
+            return Vec::new();
+        };
+        self.migration_sent = true;
+        let terminals = match parking_store::read(path) {
+            Ok(terminals) if terminals.is_empty() => {
+                self.legacy_path = None;
+                return Vec::new();
+            }
+            Ok(terminals) => terminals,
+            Err(error) => {
+                self.record_error(error);
+                return Vec::new();
+            }
+        };
+        let panes = self
+            .identities
+            .iter()
+            .flat_map(|(_, ids)| &ids.pane_terminals)
+            .filter(|(pane, terminal)| {
+                terminals.contains(*terminal) && !self.hidden_panes.contains(*pane)
+            })
+            .map(|(pane, _)| pane.clone())
+            .collect();
+        self.legacy_terminals = Some(terminals);
+        panes
+    }
+
+    fn finish_migration(&mut self, snapshot: &ClientShellSnapshot) {
+        let (Some(terminals), Some((_, ids))) = (&self.legacy_terminals, &self.identities) else {
+            return;
+        };
+        let unparked = ids.pane_terminals.iter().any(|(pane, terminal)| {
+            terminals.contains(terminal)
+                && !snapshot
+                    .parked_panes
+                    .iter()
+                    .any(|parked| &parked.pane_id == pane)
+        });
+        if unparked {
+            return;
+        }
+        self.legacy_terminals = None;
+        if let Some(path) = self.legacy_path.take() {
+            if let Err(error) = parking_store::remove(&path) {
+                self.record_error(error);
+            }
+        }
     }
 
     pub(in crate::client::shell) fn receive_identities(
@@ -201,23 +238,48 @@ impl PaneParking {
             self.request = None;
             self.identities = None;
             self.terminal_panes.clear();
-            self.hidden_panes.clear();
-            self.visible_tabs.clear();
-            self.visible_workspaces.clear();
             self.pane_workspaces.clear();
             self.focused_workspace = None;
             self.departed_workspace = None;
             self.preview_return = None;
-            self.last_poll = None;
-            self.prune_candidates.clear();
+            self.pending_parks.clear();
+            self.migration_sent = false;
             self.failed = false;
             self.dirty = true;
         }
         self.revision = snapshot.revision;
+        let parked: HashSet<&str> = snapshot
+            .parked_panes
+            .iter()
+            .map(|pane| pane.pane_id.as_str())
+            .collect();
+        // A pending park ends once the server parks or closes its pane.
+        self.pending_parks.retain(|pending| {
+            !parked.contains(pending.as_str())
+                && snapshot.panes.iter().any(|pane| &pane.pane_id == pending)
+        });
+        self.hidden_panes = parked
+            .iter()
+            .map(|pane| (*pane).to_owned())
+            .chain(self.pending_parks.iter().cloned())
+            .collect();
+        self.finish_migration(snapshot);
         let pane_workspaces: HashMap<_, _> = snapshot
             .panes
             .iter()
             .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
+            .collect();
+        let occupied: HashSet<&str> = snapshot
+            .panes
+            .iter()
+            .filter(|pane| !parked.contains(pane.pane_id.as_str()))
+            .map(|pane| pane.workspace_id.as_str())
+            .collect();
+        self.parked_workspaces = snapshot
+            .parked_panes
+            .iter()
+            .filter(|pane| !occupied.contains(pane.workspace_id.as_str()))
+            .map(|pane| pane.workspace_id.clone())
             .collect();
         let removed_workspace = self.focused_workspace.as_ref().filter(|workspace| {
             snapshot.focused_workspace_id.as_ref() != Some(*workspace)
@@ -249,23 +311,6 @@ impl PaneParking {
         }
         self.focused_workspace = snapshot.focused_workspace_id.clone();
         self.pane_workspaces = pane_workspaces;
-        self.all_workspaces = snapshot
-            .workspaces
-            .iter()
-            .map(|workspace| workspace.workspace_id.clone())
-            .collect();
-        self.pane_tabs = snapshot
-            .panes
-            .iter()
-            .map(|pane| (pane.pane_id.clone(), pane.tab_id.clone()))
-            .collect();
-        self.all_tabs = snapshot.tabs.iter().map(|tab| tab.tab_id.clone()).collect();
-        self.server_parked = snapshot
-            .parked_panes
-            .iter()
-            .map(|pane| pane.pane_id.clone())
-            .collect();
-        self.recompute_visibility();
         let matches = self
             .pending_identities
             .as_ref()
@@ -279,26 +324,26 @@ impl PaneParking {
         if !matches {
             return;
         }
-        let (_, ids) = self.pending_identities.take().expect("matched identities");
+        let Some((_, ids)) = self.pending_identities.take() else {
+            return;
+        };
         self.repaint = true;
-        let live: BTreeSet<String> = ids.pane_terminals.values().cloned().collect();
-        let closed: BTreeSet<String> = self
-            .identities
+        self.terminal_panes = ids
+            .pane_terminals
             .iter()
-            .flat_map(|(_, previous)| previous.pane_terminals.values())
-            .chain(self.prune_candidates.iter())
-            .filter(|id| self.store.terminals.contains(*id) && !live.contains(*id))
-            .cloned()
+            .map(|(pane, terminal)| (terminal.clone(), pane.clone()))
             .collect();
-        self.prune_candidates.clear();
-        if !closed.is_empty() {
-            if let Err(error) = self.store.prune(&closed, &live) {
-                self.record_error(error);
-            }
-        }
-        self.protected.retain(|id| live.contains(id));
-        self.preview = self.preview.take().filter(|id| live.contains(id));
-        self.focus = self.focus.take().filter(|id| live.contains(id));
+        // A peek ends once its pane is gone or restored by any client.
+        let parked = |id: &String| {
+            self.terminal_panes
+                .get(id)
+                .is_some_and(|pane| self.hidden_panes.contains(pane))
+        };
+        self.preview = self.preview.take().filter(parked);
+        self.focus = self
+            .focus
+            .take()
+            .filter(|id| self.terminal_panes.contains_key(id));
         let focused_terminal = snapshot
             .focused_pane_id
             .as_ref()
@@ -313,125 +358,43 @@ impl PaneParking {
             if self.focus.as_ref() == request.focus_terminal.as_ref() {
                 self.focus = None;
             }
-        }
-        if let Some(request) = &self.request {
-            let hidden = |id: &String| {
-                Some(id) != self.preview.as_ref()
-                    && (self.store.terminals.contains(id)
-                        || self.protected.contains(id)
-                        || (self.preview.is_some() && live.contains(id)))
+            // A settled restore may keep its focus; a stale peek must not.
+            let stale = match &self.preview {
+                Some(preview) => request.focus_terminal.as_ref() != Some(preview),
+                None => request.focus_terminal.as_ref().is_some_and(parked),
             };
-            let added = self
-                .store
-                .terminals
-                .iter()
-                .chain(&self.protected)
-                .chain(live.iter().filter(|_| self.preview.is_some()))
-                .any(|id| hidden(id) && request.hidden_terminals.binary_search(id).is_err());
-            let removed = request.hidden_terminals.iter().any(|id| !hidden(id));
-            let read_only_changed = self
-                .protected
-                .iter()
-                .filter(|id| Some(*id) != self.preview.as_ref())
-                .ne(request.read_only_terminals.iter());
-            if added || removed || read_only_changed || self.focus.is_some() {
+            if stale || self.focus.is_some() {
                 self.dirty = true;
             }
         }
-        self.identities = Some((generation, ids));
         if self.preview.is_none() {
             self.preview_return = None;
         }
-        self.recompute_visibility();
+        self.identities = Some((generation, ids));
     }
 
-    fn recompute_visibility(&mut self) {
-        self.hidden_panes.clone_from(&self.server_parked);
-        self.terminal_panes.clear();
-        if let Some((_, ids)) = &self.identities {
-            for (pane, terminal) in &ids.pane_terminals {
-                self.terminal_panes.insert(terminal.clone(), pane.clone());
-                if self.store.terminals.contains(terminal) || self.protected.contains(terminal) {
-                    self.hidden_panes.insert(pane.clone());
-                }
-            }
-        }
-        let occupied: HashSet<_> = self.pane_tabs.values().cloned().collect();
-        self.visible_tabs = self.all_tabs.difference(&occupied).cloned().collect();
-        self.visible_tabs.extend(
-            self.pane_tabs
-                .iter()
-                .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
-                .map(|(_, tab)| tab.clone()),
-        );
-        let occupied: HashSet<_> = self.pane_workspaces.values().cloned().collect();
-        self.visible_workspaces = self.all_workspaces.difference(&occupied).cloned().collect();
-        self.visible_workspaces.extend(
-            self.pane_workspaces
-                .iter()
-                .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
-                .map(|(_, workspace)| workspace.clone()),
-        );
+    fn wanted_focus(&self) -> Option<String> {
+        self.preview
+            .as_ref()
+            .or(self.focus.as_ref())
+            .filter(|id| self.terminal_panes.contains_key(*id))
+            .cloned()
     }
 
-    pub(in crate::client::shell) fn poll(&mut self, now: Instant) -> Option<SetPanePresentation> {
-        if !self.supported || self.failed {
-            return None;
-        }
-        if self
-            .last_poll
-            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(500))
-        {
-            self.last_poll = Some(now);
-            match self.store.reload() {
-                Ok(changed) => {
-                    self.dirty |= changed;
-                    self.last_error = None;
-                    if changed {
-                        self.repaint = true;
-                        self.recompute_visibility();
-                    }
-                }
-                Err(error) => self.record_error(error),
-            }
-        }
-        if !self.dirty {
+    pub(in crate::client::shell) fn poll(&mut self) -> Option<SetPanePresentation> {
+        if !self.supported || self.failed || !self.dirty {
             return None;
         }
         let boot_id = self.boot_id.clone()?;
         self.sequence = self.sequence.checked_add(1)?;
-        let mut hidden: BTreeSet<_> = self
-            .store
-            .terminals
-            .union(&self.protected)
-            .cloned()
-            .collect();
-        if let Some(preview) = &self.preview {
-            // The v1 server preview is read-only. An ordinary focused presentation
-            // exposes only this terminal without changing the saved parked set.
-            hidden.extend(self.terminal_panes.keys().cloned());
-            hidden.remove(preview);
-        }
-        let known = |id: &&String| self.terminal_panes.contains_key(*id);
         let request = SetPanePresentation {
             boot_id,
             sequence: self.sequence,
-            hidden_terminals: hidden.into_iter().collect(),
-            read_only_terminals: self
-                .protected
-                .iter()
-                .filter(|id| Some(*id) != self.preview.as_ref())
-                .cloned()
-                .collect(),
+            hidden_terminals: Vec::new(),
+            read_only_terminals: Vec::new(),
             preview_terminal: None,
-            focus_terminal: self
-                .preview
-                .as_ref()
-                .or(self.focus.as_ref())
-                .filter(known)
-                .cloned(),
+            focus_terminal: self.wanted_focus(),
         };
-        self.prune_candidates = self.store.terminals.clone();
         self.request = Some(request.clone());
         self.dirty = false;
         Some(request)
@@ -473,47 +436,59 @@ impl PaneParking {
         }
     }
 
-    pub(in crate::client::shell) fn park(&mut self, pane: &str) -> Result<(), String> {
-        if !self.available() {
-            return Err("Parking is unavailable on this server".into());
-        }
-        let terminal = self
-            .terminal_for_pane(pane)
-            .ok_or("This pane is no longer available")?
-            .to_owned();
-        self.store.park(&terminal)?;
+    /// Hides the pane until the server confirms it parked.
+    pub(in crate::client::shell) fn park(&mut self, pane: &str) {
+        self.hidden_panes.insert(pane.to_owned());
+        self.pending_parks.insert(pane.to_owned());
         self.preview = None;
         self.preview_return = None;
         self.focus = None;
         self.dirty = true;
-        self.recompute_visibility();
-        Ok(())
+    }
+
+    /// The server parked the pane. It stays hidden until the next snapshot,
+    /// which already reflects the park or any later unpark.
+    pub(in crate::client::shell) fn finish_park(&mut self, pane: &str) {
+        self.pending_parks.remove(pane);
+    }
+
+    /// The server rejected a park, so the pane stays visible.
+    pub(in crate::client::shell) fn cancel_park(&mut self, pane: &str) {
+        if self.pending_parks.remove(pane) {
+            self.hidden_panes.remove(pane);
+            self.dirty = true;
+            self.repaint = true;
+        }
     }
 
     pub(in crate::client::shell) fn preview(&mut self, terminal: &str) -> Result<(), String> {
         if !self.available() || !self.terminal_panes.contains_key(terminal) {
             return Err("This pane is no longer available".into());
         }
-        self.protected.insert(terminal.into());
         self.preview = Some(terminal.into());
         self.focus = None;
         self.dirty = true;
-        self.recompute_visibility();
         Ok(())
     }
 
     pub(in crate::client::shell) fn restore(&mut self, terminal: &str) -> Result<(), String> {
-        if !self.available() || !self.terminal_panes.contains_key(terminal) {
-            return Err("This pane is no longer available".into());
-        }
-        self.store.restore(terminal)?;
-        self.protected.remove(terminal);
+        let pane = self
+            .terminal_panes
+            .get(terminal)
+            .filter(|_| self.available())
+            .ok_or("This pane is no longer available")?
+            .clone();
+        self.hidden_panes.remove(&pane);
         self.preview = None;
         self.preview_return = None;
         self.focus = Some(terminal.into());
         self.dirty = true;
-        self.recompute_visibility();
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::client::shell) fn current_request(&self) -> Option<&SetPanePresentation> {
+        self.request.as_ref()
     }
 
     pub(in crate::client::shell) fn leave_preview(&mut self) {
@@ -528,78 +503,96 @@ impl PaneParking {
 mod tests {
     use super::*;
 
-    fn acknowledgement(
+    fn pane(id: &str) -> crate::protocol::ClientShellPane {
+        let mut pane = crate::client::shell::tests::snapshot().panes[0].clone();
+        pane.pane_id = id.into();
+        pane.focused = false;
+        pane
+    }
+
+    /// Mirrors what the client receives: every pane stays in `panes`, and
+    /// `parked_panes` names the parked ones.
+    fn acknowledge(
         model: &mut PaneParking,
         snapshot: &mut ClientShellSnapshot,
         sequence: u64,
+        parked: &[&str],
         focused: Option<&str>,
     ) {
         snapshot.revision += 1;
         snapshot.focused_pane_id = focused.map(str::to_owned);
+        snapshot.parked_panes = snapshot
+            .panes
+            .iter()
+            .filter(|pane| parked.contains(&pane.pane_id.as_str()))
+            .cloned()
+            .collect();
         model.receive_identities(
             Some(7),
             PaneIdentities {
                 boot_id: snapshot.boot_id.clone(),
                 revision: snapshot.revision,
                 sequence,
-                pane_terminals: [("pane_1".into(), "terminal-one".into())]
-                    .into_iter()
+                pane_terminals: snapshot
+                    .panes
+                    .iter()
+                    .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
                     .collect(),
             },
         );
         model.observe_snapshot(Some(7), snapshot);
     }
 
-    fn connected(path: Option<PathBuf>) -> (PaneParking, ClientShellSnapshot, Instant) {
-        let mut model = PaneParking::new(path);
+    fn connected(legacy: Option<PathBuf>) -> (PaneParking, ClientShellSnapshot) {
+        let mut model = PaneParking::default();
+        model.set_path(legacy);
         let mut snapshot = crate::client::shell::tests::snapshot();
-        let now = Instant::now();
+        snapshot.panes.push(pane("pane_2"));
         model.set_supported(true);
         model.observe_snapshot(Some(7), &snapshot);
-        let request = model.poll(now).unwrap();
-        acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
-        (model, snapshot, now)
-    }
-
-    fn path() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "lawn-parking-model-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("parking.json")
+        let request = model.poll().unwrap();
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            request.sequence,
+            &[],
+            Some("pane_1"),
+        );
+        (model, snapshot)
     }
 
     #[test]
-    fn unsupported_server_keeps_normal_input_and_rejects_only_parking() {
+    fn unsupported_server_keeps_normal_input() {
         let mut model = PaneParking::default();
         assert!(model.ready());
+        assert!(!model.available());
         assert!(model.accepts_input("pane_1"));
-        assert!(model.shows_tab("tab_1"));
-        assert!(model.park("pane_1").is_err());
-        assert!(model.poll(Instant::now()).is_none());
+        assert!(model.shows_workspace("ws_1"));
+        assert!(model.poll().is_none());
     }
 
     #[test]
-    fn visibility_and_input_wait_for_the_requested_generation_boot_revision_and_sequence() {
-        let (mut model, mut snapshot, now) = connected(None);
+    fn input_waits_for_the_requested_generation_boot_revision_and_sequence() {
+        let (mut model, mut snapshot) = connected(None);
+        let sequence = model.sequence;
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            sequence,
+            &["pane_1"],
+            Some("pane_2"),
+        );
         assert!(model.available());
-        model.park("pane_1").unwrap();
+        model.preview("terminal-pane_1").unwrap();
         assert!(!model.ready());
-        assert!(!model.accepts_input("pane_1"));
-        assert!(!model.shows_tab("tab_1"));
-        let request = model.poll(now).unwrap();
-        assert_eq!(request.hidden_terminals, ["terminal-one"]);
+        let request = model.poll().unwrap();
         snapshot.revision += 1;
+        snapshot.focused_pane_id = Some("pane_1".into());
         let valid = PaneIdentities {
             boot_id: snapshot.boot_id.clone(),
             revision: snapshot.revision,
             sequence: request.sequence,
-            pane_terminals: [("pane_1".into(), "terminal-one".into())]
+            pane_terminals: [("pane_1".into(), "terminal-pane_1".into())]
                 .into_iter()
                 .collect(),
         };
@@ -623,188 +616,142 @@ mod tests {
         );
         model.observe_snapshot(Some(7), &snapshot);
         assert!(model.ready());
-        assert!(!model.accepts_input("pane_1"));
-        assert!(!model.shows_tab("tab_1"));
     }
 
     #[test]
-    fn parked_terminals_survive_a_replacement_server_boot() {
-        let path = path();
-        let (mut model, mut snapshot, now) = connected(Some(path.clone()));
-        model.park("pane_1").unwrap();
-        let request = model.poll(now).unwrap();
-        acknowledgement(&mut model, &mut snapshot, request.sequence, None);
-
-        snapshot.boot_id = "replacement-server".into();
-        model.observe_snapshot(Some(7), &snapshot);
-        let request = model.poll(now).unwrap();
-        assert_eq!(request.hidden_terminals, ["terminal-one"]);
-        acknowledgement(&mut model, &mut snapshot, request.sequence, None);
-
-        assert!(model.available());
+    fn server_parked_panes_hide_their_workspace_only_when_nothing_else_is_visible() {
+        let (mut model, mut snapshot) = connected(None);
+        model.park("pane_1");
         assert!(model.hides_pane("pane_1"));
-        assert_eq!(model.parked_terminals().count(), 1);
-        let mut saved = ParkingStore::new(Some(path.clone()));
-        saved.reload().unwrap();
-        assert!(saved.terminals.contains("terminal-one"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn interactive_peek_never_changes_the_saved_parked_set() {
-        let path = path();
-        let (mut model, mut snapshot, now) = connected(Some(path.clone()));
-        model.park("pane_1").unwrap();
-        let parked = model.poll(now).unwrap();
-        acknowledgement(&mut model, &mut snapshot, parked.sequence, None);
-        for _ in 0..2 {
-            model.preview("terminal-one").unwrap();
-            assert!(!model.accepts_input("pane_1"));
-            let peek = model.poll(now).unwrap();
-            assert!(peek.preview_terminal.is_none());
-            assert_eq!(peek.focus_terminal.as_deref(), Some("terminal-one"));
-            assert!(peek.hidden_terminals.is_empty());
-            assert!(peek.read_only_terminals.is_empty());
-            acknowledgement(&mut model, &mut snapshot, peek.sequence, Some("pane_1"));
-            assert!(model.accepts_input("pane_1"));
-            assert!(model.poll(now).is_none());
-            let mut saved = ParkingStore::new(Some(path.clone()));
-            saved.reload().unwrap();
-            assert_eq!(saved.terminals, BTreeSet::from(["terminal-one".into()]));
-            model.leave_preview();
-            assert!(!model.accepts_input("pane_1"));
-            let dismissed = model.poll(now).unwrap();
-            assert_eq!(dismissed.hidden_terminals, ["terminal-one"]);
-            assert!(dismissed.focus_terminal.is_none());
-            acknowledgement(&mut model, &mut snapshot, dismissed.sequence, None);
-            assert!(!model.accepts_input("pane_1"));
-            assert_eq!(model.parked_terminals().count(), 1);
-        }
-        let (reopened, _, _) = connected(Some(path.clone()));
-        assert!(reopened.hides_pane("pane_1"));
-        assert!(!reopened.accepts_input("pane_1"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn another_window_restoring_the_record_keeps_the_peek_interactive_and_locally_parked() {
-        let path = path();
-        let (mut model, mut snapshot, now) = connected(Some(path.clone()));
-        model.park("pane_1").unwrap();
-        let request = model.poll(now).unwrap();
-        acknowledgement(&mut model, &mut snapshot, request.sequence, None);
-        model.preview("terminal-one").unwrap();
-        let request = model.poll(now).unwrap();
-        assert!(request.preview_terminal.is_none());
-        assert_eq!(request.focus_terminal.as_deref(), Some("terminal-one"));
-        assert!(request.hidden_terminals.is_empty());
-        assert!(request.read_only_terminals.is_empty());
-        acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
-        ParkingStore::new(Some(path.clone()))
-            .restore("terminal-one")
-            .unwrap();
-        let request = model.poll(now + Duration::from_millis(500)).unwrap();
-        assert!(request.read_only_terminals.is_empty());
-        acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
-        assert_eq!(model.preview_pane(), Some("pane_1"));
-        assert_eq!(model.parked_terminals().count(), 1);
-        assert!(model.accepts_input("pane_1"));
-        assert!(!model.accepts_input("another-visible-pane"));
-        model.restore("terminal-one").unwrap();
-        let request = model.poll(now + Duration::from_millis(500)).unwrap();
-        assert!(request.hidden_terminals.is_empty());
-        assert!(request.read_only_terminals.is_empty());
-        assert_eq!(request.focus_terminal.as_deref(), Some("terminal-one"));
-        acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
-        assert!(model.accepts_input("pane_1"));
-        assert!(model.shows_tab("tab_1"));
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn pruning_waits_for_a_fresh_policy_ack_and_preserves_newer_file_additions() {
-        let path = path();
-        ParkingStore::new(Some(path.clone()))
-            .park("closed-terminal")
-            .unwrap();
-        let mut model = PaneParking::new(Some(path.clone()));
-        let mut snapshot = crate::client::shell::tests::snapshot();
-        let now = Instant::now();
-        model.set_supported(true);
-        model.observe_snapshot(Some(7), &snapshot);
-        let request = model.poll(now).unwrap();
-        assert!(model.store.terminals.contains("closed-terminal"));
-        ParkingStore::new(Some(path.clone()))
-            .park("later-addition")
-            .unwrap();
-        acknowledgement(&mut model, &mut snapshot, request.sequence, Some("pane_1"));
-        assert!(!model.store.terminals.contains("closed-terminal"));
-        assert!(model.store.terminals.contains("later-addition"));
-        let refreshed = model
-            .poll(now)
-            .expect("newer additions require a newer authoritative map");
-        assert_eq!(refreshed.hidden_terminals, ["later-addition"]);
-        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
-    }
-
-    #[test]
-    fn closing_a_previewed_terminal_sends_a_clearing_policy_before_input_resumes() {
-        let (mut model, mut snapshot, now) = connected(None);
-        let mut second = snapshot.panes[0].clone();
-        second.pane_id = "pane_2".into();
-        second.focused = false;
-        snapshot.panes.push(second);
-        let reply = |model: &mut PaneParking,
-                     snapshot: &mut ClientShellSnapshot,
-                     sequence,
-                     focused: Option<&str>| {
-            snapshot.revision += 1;
-            snapshot.focused_pane_id = focused.map(str::to_owned);
-            model.receive_identities(
-                Some(7),
-                PaneIdentities {
-                    boot_id: snapshot.boot_id.clone(),
-                    revision: snapshot.revision,
-                    sequence,
-                    pane_terminals: snapshot
-                        .panes
-                        .iter()
-                        .map(|pane| {
-                            (
-                                pane.pane_id.clone(),
-                                if pane.pane_id == "pane_1" {
-                                    "terminal-one".into()
-                                } else {
-                                    "terminal-two".into()
-                                },
-                            )
-                        })
-                        .collect(),
-                },
-            );
-            model.observe_snapshot(Some(7), snapshot);
-        };
-        model.park("pane_1").unwrap();
-        let parked = model.poll(now).unwrap();
-        reply(&mut model, &mut snapshot, parked.sequence, Some("pane_2"));
-        model.preview("terminal-one").unwrap();
-        let preview = model.poll(now).unwrap();
-        reply(&mut model, &mut snapshot, preview.sequence, Some("pane_1"));
-        assert!(!model.accepts_input("pane_2"));
-
-        snapshot.panes.retain(|pane| pane.pane_id != "pane_1");
-        reply(&mut model, &mut snapshot, preview.sequence, None);
-        assert!(!model.ready());
-        assert!(!model.accepts_input("pane_2"));
-        let cleared = model
-            .poll(now)
-            .expect("the deleted preview must be cleared on the server");
-        assert!(cleared.preview_terminal.is_none());
-        assert!(cleared.hidden_terminals.is_empty());
-        assert!(cleared.read_only_terminals.is_empty());
-        reply(&mut model, &mut snapshot, cleared.sequence, Some("pane_2"));
-        assert!(model.available());
-        assert!(model.shows_tab("tab_1"));
+        assert!(!model.accepts_input("pane_1"));
+        let sequence = model.poll().unwrap().sequence;
+        acknowledge(&mut model, &mut snapshot, sequence, &["pane_1"], None);
+        assert!(model.hides_pane("pane_1"));
+        assert!(!model.accepts_input("pane_1"));
         assert!(model.accepts_input("pane_2"));
+        assert!(model.shows_workspace("ws_1"));
+        let sequence = model.sequence;
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            sequence,
+            &["pane_1", "pane_2"],
+            None,
+        );
+        assert!(!model.shows_workspace("ws_1"));
+    }
+
+    #[test]
+    fn a_peek_focuses_the_parked_terminal_and_ends_when_any_client_restores_it() {
+        let (mut model, mut snapshot) = connected(None);
+        let sequence = model.sequence;
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            sequence,
+            &["pane_1"],
+            Some("pane_2"),
+        );
+        model.preview("terminal-pane_1").unwrap();
+        let peek = model.poll().unwrap();
+        assert_eq!(peek.focus_terminal.as_deref(), Some("terminal-pane_1"));
+        assert!(peek.hidden_terminals.is_empty());
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            peek.sequence,
+            &["pane_1"],
+            Some("pane_1"),
+        );
+        assert_eq!(model.preview_pane(), Some("pane_1"));
+        assert!(model.accepts_input("pane_1"));
+        assert!(!model.accepts_input("pane_2"));
+        assert!(model.poll().is_none());
+
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            peek.sequence,
+            &[],
+            Some("pane_1"),
+        );
+        assert_eq!(model.preview_pane(), None);
+        assert!(model.poll().is_none(), "the restored pane keeps its focus");
+        assert!(model.available());
+        assert!(model.accepts_input("pane_1"));
+        assert!(model.accepts_input("pane_2"));
+    }
+
+    #[test]
+    fn restoring_focuses_the_terminal_once_the_server_unparks_it() {
+        let (mut model, mut snapshot) = connected(None);
+        let sequence = model.sequence;
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            sequence,
+            &["pane_1"],
+            Some("pane_2"),
+        );
+        model.restore("terminal-pane_1").unwrap();
+        assert!(!model.hides_pane("pane_1"));
+        let focus = model.poll().unwrap();
+        assert_eq!(focus.focus_terminal.as_deref(), Some("terminal-pane_1"));
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            focus.sequence,
+            &[],
+            Some("pane_1"),
+        );
+        assert!(model.accepts_input("pane_1"));
+        assert!(model.poll().is_none(), "focus is requested once");
+    }
+
+    #[test]
+    fn legacy_parking_file_is_kept_until_the_server_holds_its_parks() {
+        let dir = std::env::temp_dir().join(format!(
+            "lawn-parking-model-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("parking.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"terminals":["terminal-pane_2","closed-terminal"]}"#,
+        )
+        .unwrap();
+        let (mut model, mut snapshot) = connected(Some(path.clone()));
+        assert_eq!(model.take_migration(), ["pane_2"]);
+        assert!(model.take_migration().is_empty());
+
+        // The park never landed: a new connection retries it.
+        assert!(path.exists());
+        snapshot.boot_id = "restarted".into();
+        model.observe_snapshot(Some(7), &snapshot);
+        let request = model.poll().unwrap();
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            request.sequence,
+            &[],
+            Some("pane_1"),
+        );
+        assert_eq!(model.take_migration(), ["pane_2"]);
+
+        // The file goes once the server holds the park.
+        acknowledge(
+            &mut model,
+            &mut snapshot,
+            request.sequence,
+            &["pane_2"],
+            Some("pane_1"),
+        );
+        assert!(!path.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

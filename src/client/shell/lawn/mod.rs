@@ -2,7 +2,7 @@ use super::*;
 use crate::protocol::endpoint::pane_presentation::{
     PaneIdentities, PanePresentationError, SetPanePresentation,
 };
-use std::{path::PathBuf, time::Instant};
+use std::path::PathBuf;
 
 mod parked;
 mod parking_store;
@@ -23,7 +23,11 @@ impl ClientShellState {
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
-            endpoint.parking.set_supported(supported);
+            // Peeking needs presentation; parking itself needs the methods.
+            let methods = endpoint.methods.as_ref().is_none_or(|methods| {
+                methods.contains("pane.park") && methods.contains("pane.unpark")
+            });
+            endpoint.parking.set_supported(supported && methods);
         }
         self.update_parking_size(previous_size);
     }
@@ -69,15 +73,16 @@ impl ClientShellState {
         self.update_parking_size(previous_size);
     }
 
-    pub(crate) fn tick_parking(&mut self, now: Instant) -> ClientShellInput {
+    pub(crate) fn tick_parking(&mut self) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
         let previous_size = self.parking_size();
         let mut notice = None;
+        let mut migration = Vec::new();
         for endpoint in &mut self.endpoints {
             if endpoint.status != ClientEndpointStatus::Online {
                 continue;
             }
-            if let Some(request) = endpoint.parking.poll(now) {
+            if let Some(request) = endpoint.parking.poll() {
                 outcome.actions.push(ClientShellAction::PanePresentation {
                     endpoint_id: endpoint.endpoint_id.clone(),
                     generation: endpoint.snapshot_generation,
@@ -89,7 +94,11 @@ impl ClientShellState {
             outcome.repaint |= endpoint.parking.take_repaint();
             if endpoint.endpoint_id == self.active_endpoint_id {
                 notice = endpoint.parking.take_notice();
+                migration = endpoint.parking.take_migration();
             }
+        }
+        for pane_id in migration {
+            self.push_park(pane_id, &mut outcome);
         }
         for action in &mut outcome.actions {
             let ClientShellAction::PanePresentation {
@@ -108,7 +117,7 @@ impl ClientShellState {
                 let mut release = ClientShellInput::default();
                 let targets = (!self.has_parking_preview()).then_some(&hidden);
                 self.release_input_leases(&mut release, targets);
-                *releases = release.requests;
+                releases.extend(release.requests);
             }
         }
         self.update_parking_size(previous_size);
@@ -131,6 +140,41 @@ impl ClientShellState {
             self.parked.resize_pending = true;
             self.invalidate_pane_surface();
         }
+    }
+
+    /// Every park hides its pane and releases its input before the request
+    /// leaves, so nothing acts on the pane while the park is in flight.
+    /// Endpoint methods dispatch ahead of plain requests, so the releases
+    /// travel in a presentation action queued before the park.
+    fn push_park(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        let mut release = ClientShellInput::default();
+        self.release_input_leases(&mut release, Some(&HashSet::from([pane_id.clone()])));
+        let presentation = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| {
+                endpoint.parking.park(&pane_id);
+                let request = endpoint.parking.poll()?;
+                Some((endpoint.snapshot_generation, request))
+            });
+        if let Some((generation, request)) = presentation {
+            outcome.actions.push(ClientShellAction::PanePresentation {
+                endpoint_id: self.active_endpoint_id.clone(),
+                generation,
+                request,
+                releases: release.requests,
+            });
+        } else {
+            outcome.requests.extend(release.requests);
+        }
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::PanePark(crate::api::schema::PaneTarget {
+                pane_id: pane_id.clone(),
+            }),
+            PendingEndpointKind::PanePark { pane_id },
+            outcome,
+        );
     }
 
     pub(super) fn active_parking(&self) -> Option<&PaneParking> {
@@ -182,19 +226,22 @@ impl ClientShellState {
                     .find(|endpoint| endpoint.endpoint_id == endpoint_id)?;
                 let snapshot = endpoint.snapshot.as_deref()?;
                 let source = snapshot.panes.iter().find(|item| item.pane_id == pane)?;
-                (!endpoint.parking.hides_pane(&pane)
-                    && snapshot.panes.iter().all(|item| {
+                // A sibling whose park is still in flight no longer counts.
+                snapshot
+                    .panes
+                    .iter()
+                    .all(|item| {
                         item.workspace_id != source.workspace_id
                             || item.pane_id == pane
                             || endpoint.parking.hides_pane(&item.pane_id)
-                    }))
-                .then(|| crate::api::schema::TabCreateParams {
-                    workspace_id: Some(source.workspace_id.clone()),
-                    cwd: source.foreground_cwd.clone().or_else(|| source.cwd.clone()),
-                    focus: true,
-                    label: None,
-                    env: Default::default(),
-                })
+                    })
+                    .then(|| crate::api::schema::TabCreateParams {
+                        workspace_id: Some(source.workspace_id.clone()),
+                        cwd: source.foreground_cwd.clone().or_else(|| source.cwd.clone()),
+                        focus: true,
+                        label: None,
+                        env: Default::default(),
+                    })
             })
             .flatten();
         let result = self
@@ -215,7 +262,10 @@ impl ClientShellState {
                     .ok_or("This pane is no longer available")?
                     .to_owned();
                 match action {
-                    ParkingAction::Park => endpoint.parking.park(&pane),
+                    ParkingAction::Park if endpoint.parking.hides_pane(&pane) => {
+                        Err("This pane is already parked".into())
+                    }
+                    ParkingAction::Park => Ok(()),
                     ParkingAction::Preview => {
                         let continuing = same_endpoint && endpoint.parking.preview_pane().is_some();
                         endpoint.parking.preview(&terminal)?;
@@ -232,11 +282,28 @@ impl ClientShellState {
             self.receive_endpoint_unavailable(message);
             return false;
         }
-        if !matches!(action, ParkingAction::Park) {
-            self.activate_endpoint(endpoint_id, outcome);
-        }
-        if let Some(replacement) = replacement {
-            self.push_endpoint_method(crate::api::schema::Method::TabCreate(replacement), outcome);
+        match action {
+            // Parking acts on the focused machine's own panes.
+            ParkingAction::Park => {
+                self.push_park(pane, outcome);
+                if let Some(replacement) = replacement {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::TabCreate(replacement),
+                        outcome,
+                    );
+                }
+            }
+            // Another machine's pane restores once that machine is active.
+            ParkingAction::Restore => {
+                self.focus_or_activate(
+                    endpoint_id,
+                    ClientEndpointFocusTarget::UnparkPane(pane),
+                    outcome,
+                );
+            }
+            ParkingAction::Preview => {
+                self.activate_endpoint(endpoint_id, outcome);
+            }
         }
         self.selection = None;
         self.copy_mode = None;
@@ -335,7 +402,7 @@ impl ClientShellState {
             .filter(|pane| Some(*pane) == snapshot.focused_pane_id.as_deref())
         {
             let title = snapshot
-                .panes
+                .parked_panes
                 .iter()
                 .find(|pane| pane.pane_id == pane_id)
                 .and_then(|pane| pane.label.as_deref())

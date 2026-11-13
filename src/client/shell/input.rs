@@ -1036,10 +1036,7 @@ impl ClientShellState {
                         .filter(|tab| tab.workspace_id == workspace_id)
                         .nth(*index)
                 })
-                .is_some_and(|tab| {
-                    self.active_parking()
-                        .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-                }),
+                .is_some(),
             KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {
                 super::aggregate_navigation::online_agent_targets(
                     &self.endpoints,
