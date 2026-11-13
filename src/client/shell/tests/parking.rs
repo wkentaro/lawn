@@ -243,6 +243,36 @@ fn empty_actions(state: &ClientShellState) -> Vec<crate::input::KeybindAction> {
 }
 
 #[test]
+fn restoring_into_a_closed_workspace_reopens_it() {
+    let mut state = state();
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let parked = request(&mut state);
+    acknowledge(&mut state, &parked, None);
+    close_workspace(&mut state, "ws_1");
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Restore,
+        &mut ClientShellInput::default(),
+    );
+    let restored = request(&mut state);
+    acknowledge(&mut state, &restored, Some("pane_1"));
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let parked = request(&mut state);
+    acknowledge(&mut state, &parked, None);
+    state.compose(100, 24).unwrap();
+    assert_eq!(state.hits.workspaces.len(), 1);
+    assert_eq!(
+        empty_actions(&state),
+        [
+            crate::input::KeybindAction::NewTab,
+            crate::input::KeybindAction::OpenParked,
+            crate::input::KeybindAction::CloseWorkspace,
+        ]
+    );
+}
+
+#[test]
 fn closing_an_empty_workspace_leaves_it_without_closing_parked_terminals() {
     let mut state = state();
     state.config.confirm_close = false;

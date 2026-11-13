@@ -393,7 +393,13 @@ impl PaneParking {
                 .filter(|(pane, _)| !self.hidden_panes.contains(*pane))
                 .map(|(_, workspace)| workspace.clone()),
         );
-        if self.left_workspace != self.focused_workspace {
+        // A closed workspace that gains active terminals again was reopened. Panes
+        // still active since the last recompute are only waiting to close.
+        if self.left_workspace != self.focused_workspace
+            || self.left_workspace.as_ref().is_some_and(|workspace| {
+                self.has_active_terminals(workspace) && was_visible.as_ref() != Some(workspace)
+            })
+        {
             self.left_workspace = None;
         }
         if let Some(workspace) = was_visible.filter(|workspace| {
