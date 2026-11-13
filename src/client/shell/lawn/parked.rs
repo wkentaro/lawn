@@ -41,7 +41,8 @@ pub(in crate::client::shell) fn render(
         .sum();
     let parked_count: usize = endpoints
         .iter()
-        .map(|endpoint| endpoint.parking.parked_terminals().count())
+        .filter_map(|endpoint| endpoint.snapshot.as_deref())
+        .map(|snapshot| snapshot.parked_panes.len())
         .sum();
     let p = &config.palette;
     for (offset, label, count) in [(3, " active", active_count), (2, " parked", parked_count)] {

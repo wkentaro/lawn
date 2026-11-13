@@ -102,7 +102,7 @@ fn render_header_status(
         );
         return;
     };
-    let tab_status = compact_tab_status(snapshot, workspace, parking);
+    let tab_status = compact_tab_status(snapshot, workspace);
     let tab_width = display_width(&tab_status).saturating_add(1).min(area.width);
     let name_width = area.width.saturating_sub(tab_width);
     put_text(
@@ -216,18 +216,11 @@ fn mobile_endpoint_state(status: ClientEndpointStatus) -> &'static str {
     }
 }
 
-fn compact_tab_status(
-    snapshot: &ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
-    parking: Option<&lawn::PaneParking>,
-) -> String {
+fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> String {
     let tabs = snapshot
         .tabs
         .iter()
-        .filter(|tab| {
-            tab.workspace_id == workspace.workspace_id
-                && parking.is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-        })
+        .filter(|tab| tab.workspace_id == workspace.workspace_id)
         .collect::<Vec<_>>();
     let active = tabs
         .iter()
@@ -850,11 +843,7 @@ fn mobile_items(
                         crate::ui::truncate_end(
                             &format!(
                                 "  {}{stale_detail}",
-                                compact_tab_status(
-                                    endpoint.snapshot,
-                                    workspace,
-                                    Some(endpoint.parking)
-                                )
+                                compact_tab_status(endpoint.snapshot, workspace)
                             ),
                             usize::from(content_width),
                         ),
@@ -885,12 +874,6 @@ fn mobile_items(
             .iter()
             .filter(|tab| tab.workspace_id == workspace_id)
             .enumerate()
-            .filter(|(_, tab)| {
-                endpoints
-                    .iter()
-                    .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
-                    .is_none_or(|endpoint| endpoint.parking.shows_tab(&tab.tab_id))
-            })
         {
             let background = if tab.focused {
                 palette.surface_dim

@@ -320,16 +320,37 @@ pub(super) fn navigator_rows(
             // Build endpoint-local indexes once. Walk each bucket in snapshot
             // order so interleaved input and overlapping IDs on other endpoints
             // retain their existing navigation order and targets.
+            // Each parked pane sits alone in a hidden tab without a label.
+            let parked_tabs: Vec<_> = snapshot
+                .parked_panes
+                .iter()
+                .filter(|_| parked)
+                .map(|pane| crate::protocol::ClientShellTab {
+                    tab_id: pane.tab_id.clone(),
+                    workspace_id: pane.workspace_id.clone(),
+                    number: 0,
+                    label: String::new(),
+                    custom_label: false,
+                    focused: false,
+                    zoomed: false,
+                    agent_status: crate::api::schema::AgentStatus::Unknown,
+                })
+                .collect();
+            let (tabs, panes) = if parked {
+                (&parked_tabs, &snapshot.parked_panes)
+            } else {
+                (&snapshot.tabs, &snapshot.panes)
+            };
             let mut tabs_by_workspace = HashMap::new();
-            for tab in &snapshot.tabs {
+            for tab in tabs {
                 tabs_by_workspace
                     .entry(tab.workspace_id.as_str())
                     .or_insert_with(Vec::new)
                     .push(tab);
             }
             let mut panes_by_tab = HashMap::new();
-            for pane in &snapshot.panes {
-                if endpoint.parking.hides_pane(&pane.pane_id) != parked {
+            for pane in panes {
+                if !parked && endpoint.parking.hides_pane(&pane.pane_id) {
                     continue;
                 }
                 panes_by_tab
@@ -348,7 +369,7 @@ pub(super) fn navigator_rows(
                     .get(workspace.workspace_id.as_str())
                     .map(Vec::as_slice)
                     .unwrap_or_default();
-                let multiple_tabs = workspace_tabs.len() > 1;
+                let multiple_tabs = !parked && workspace_tabs.len() > 1;
                 for tab in workspace_tabs {
                     let tab_matches = workspace_matches || text(&tab.label);
                     let tab_panes = panes_by_tab
@@ -375,7 +396,8 @@ pub(super) fn navigator_rows(
                                 .or(agent.terminal_title_stripped.as_deref())
                         });
                         let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())
-                            .then_some(tab.label.as_str());
+                            .then_some(tab.label.as_str())
+                            .filter(|name| !name.is_empty());
                         let label = if tab_panes.len() == 1 {
                             match name.or(tab_name).or(title) {
                                 Some(label) => label.to_owned(),
@@ -419,10 +441,12 @@ pub(super) fn navigator_rows(
                                 depth: 1 + depth_offset,
                                 label,
                                 meta: meta.to_owned(),
-                                detail: format!(
-                                    "{} / {} / {}",
-                                    workspace.label, tab.label, pane.pane_id
-                                ),
+                                detail: [&workspace.label, &tab.label, &pane.pane_id]
+                                    .into_iter()
+                                    .filter(|part| !part.is_empty())
+                                    .map(String::as_str)
+                                    .collect::<Vec<_>>()
+                                    .join(" / "),
                                 agent: agent_kind.map(str::to_owned),
                                 status: agent_kind.map(|_| status),
                                 stale,

@@ -22,10 +22,7 @@ pub(crate) fn render_tab_bar(
     let tabs = snapshot
         .tabs
         .iter()
-        .filter(|tab| {
-            Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
-                && parking.is_none_or(|parking| parking.shows_tab(&tab.tab_id))
-        })
+        .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
         .collect::<Vec<_>>();
     let statuses = if online {
         tab_statuses(snapshot, parking)

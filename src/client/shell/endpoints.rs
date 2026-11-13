@@ -38,6 +38,8 @@ pub(crate) enum ClientEndpointFocusTarget {
     Workspace(String),
     Tab(String),
     Pane(String),
+    /// Restore a parked pane and focus it.
+    UnparkPane(String),
     #[cfg(windows)]
     Notification {
         pane_id: String,
@@ -520,9 +522,6 @@ impl ClientShellState {
             .iter()
             .filter(|tab| {
                 Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
-                    && self
-                        .active_parking()
-                        .is_none_or(|parking| parking.shows_tab(&tab.tab_id))
             })
             .count()
     }

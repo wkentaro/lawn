@@ -562,6 +562,9 @@ pub(super) enum PendingEndpointKind {
         pane_id: String,
         serial: u64,
     },
+    PanePark {
+        pane_id: String,
+    },
     WordSelection {
         pane_id: String,
         absolute_row: u32,

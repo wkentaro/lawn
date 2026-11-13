@@ -2390,7 +2390,7 @@ async fn run_client_loop(
                         let preview = shell.tick_navigator_preview(now);
                         outcome.repaint |= preview.repaint;
                         outcome.actions.extend(preview.actions);
-                        let parking = shell.tick_parking(now);
+                        let parking = shell.tick_parking();
                         outcome.repaint |= parking.repaint;
                         outcome.resize |= parking.resize;
                         outcome.actions.extend(parking.actions);

@@ -678,7 +678,7 @@ fn print_pane_presentation_profiles() {
                     pipeline.presentation = Some(super::pane_presentation::ClientPanePresentation::new(request, &locations));
                     let (snapshot, _, identities) = super::client_shell::snapshot_with_completions(&pipeline.app, "bench-boot", 1, None, None, pipeline.presentation.as_ref());
                     pipeline.client.set_endpoint_snapshot_for_generation(&endpoint, 7, Box::new(snapshot));
-                    black_box(pipeline.client.tick_parking(Instant::now()));
+                    black_box(pipeline.client.tick_parking());
                     pipeline.client.set_endpoint_pane_identities(&endpoint, 7, identities.unwrap());
                     std::fs::remove_dir_all(root).unwrap();
                     if policy == "later" {
