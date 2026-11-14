@@ -378,4 +378,88 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 1);
         app.state.assert_invariants_for_test();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parked_pane_stays_parked_across_live_handoff() {
+        let (mut source, parked) = split_app();
+        let tab_id = source.public_tab_id(0, 0).unwrap();
+        let pane_id = park(&mut source, parked);
+        let terminal_id = source.session_snapshot().parked_panes[0]
+            .terminal_id
+            .clone();
+
+        // Capture the way the old server does before handing off.
+        let mut snapshot = crate::persist::capture(
+            &source.state.workspaces,
+            &source.state.terminals,
+            &source.terminal_runtimes,
+            source.state.active,
+            source.state.selected,
+        );
+        // A missing cwd keeps the import from spawning shells for the panes.
+        let missing = std::env::temp_dir().join("__lawn_missing_parked_handoff_directory__");
+        assert!(!missing.exists());
+        for pane in snapshot
+            .workspaces
+            .iter_mut()
+            .flat_map(|ws| &mut ws.tabs)
+            .flat_map(|tab| tab.panes.values_mut())
+        {
+            pane.cwd = missing.clone();
+        }
+        let mut manifest =
+            crate::server::handoff::manifest_for(snapshot, Vec::new(), None, None, None, None);
+        manifest.terminal_ids = source
+            .state
+            .workspaces
+            .iter()
+            .flat_map(|ws| &ws.tabs)
+            .flat_map(|tab| &tab.panes)
+            .map(|(pane, state)| (pane.raw(), state.attached_terminal_id.clone()))
+            .collect();
+        let manifest: crate::server::handoff::HandoffManifest =
+            serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        // Import the way `App::new_from_handoff` does, minus its plugin and
+        // persistence side effects.
+        let mut target = app(Vec::new());
+        let (workspaces, terminals, runtimes) = crate::persist::restore_handoff(
+            &manifest.snapshot,
+            &manifest.terminal_ids,
+            0,
+            "/bin/sh",
+            crate::config::ShellModeConfig::NonLogin,
+            &mut std::collections::HashMap::new(),
+            target.event_tx.clone(),
+            target.render_notify.clone(),
+            target.render_dirty.clone(),
+        )
+        .unwrap();
+        assert!(runtimes.is_empty());
+        target.state.pane_id_aliases =
+            crate::persist::handoff_pane_aliases(&manifest.snapshot, &workspaces);
+        target.state.workspaces = workspaces;
+        target.state.terminals = terminals;
+        target.state.active = manifest.snapshot.active;
+        target.state.selected = manifest.snapshot.selected;
+        target.state.assert_invariants_for_test();
+
+        let snapshot = target.session_snapshot();
+        let [still_parked] = snapshot.parked_panes.as_slice() else {
+            panic!("expected one parked pane, got {:?}", snapshot.parked_panes);
+        };
+        assert_eq!(still_parked.pane_id, pane_id);
+        assert_eq!(still_parked.terminal_id, terminal_id);
+        assert!(snapshot.panes.iter().all(|pane| pane.pane_id != pane_id));
+        assert_eq!(target.state.workspaces[0].visible_tab_count(), 1);
+        assert_eq!(target.state.workspaces[0].tabs[0].panes.len(), 1);
+        assert!(target.parse_pane_id(&pane_id).is_some());
+
+        let response = unpark(&mut target, &pane_id, true);
+        assert_eq!(response["result"]["pane"]["pane_id"], pane_id, "{response}");
+        assert_eq!(response["result"]["pane"]["tab_id"], tab_id, "{response}");
+        assert_eq!(target.state.workspaces[0].tabs[0].panes.len(), 2);
+        assert!(target.session_snapshot().parked_panes.is_empty());
+    }
 }
