@@ -857,11 +857,10 @@ impl ClientShellState {
                 (KeyCode::Char(digit), KeyModifiers::empty()),
             )
         }) {
-            let valid = self.snapshot.as_deref().is_some_and(|snapshot| {
-                self.navigation_workspace_entries(snapshot)
-                    .get(index)
-                    .is_some()
-            });
+            let valid = self
+                .snapshot
+                .as_deref()
+                .is_some_and(|snapshot| render::workspace_entries(snapshot).get(index).is_some());
             if valid {
                 self.mode = ClientShellMode::Terminal;
                 self.navigate_workspace_id = None;
@@ -1018,13 +1017,10 @@ impl ClientShellState {
         use crate::input::{KeybindAction, KeybindMatch};
 
         match binding {
-            KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => {
-                self.snapshot.as_deref().is_some_and(|snapshot| {
-                    self.navigation_workspace_entries(snapshot)
-                        .get(*index)
-                        .is_some()
-                })
-            }
+            KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => self
+                .snapshot
+                .as_deref()
+                .is_some_and(|snapshot| render::workspace_entries(snapshot).get(*index).is_some()),
             KeybindMatch::Action(KeybindAction::SwitchTab(index)) => self
                 .snapshot
                 .as_deref()

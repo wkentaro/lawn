@@ -90,16 +90,17 @@ impl ClientShellState {
         let point = (mouse.column, mouse.row);
         if contains(self.hits.dismiss_parking_preview, point) {
             self.dismiss_parking_preview(outcome);
-        } else if contains(self.hits.new_workspace_empty, point) {
-            self.record_binding(
-                crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
-                outcome,
-            );
+        } else if let Some(action) = self
+            .hits
+            .empty_workspace
+            .iter()
+            .find(|(rect, _)| contains(*rect, point))
+            .map(|(_, action)| *action)
+        {
+            self.empty_workspace_action(action, outcome);
         } else if contains(self.hits.restore_pane, point) {
             self.focused_parking_action(ParkingAction::Restore, outcome);
-        } else if contains(self.hits.open_parked, point)
-            || contains(self.hits.parked_launcher, point)
-        {
+        } else if contains(self.hits.parked_launcher, point) {
             self.open_parked();
             outcome.repaint = true;
         } else {

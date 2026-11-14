@@ -118,8 +118,7 @@ pub(super) struct ShellHitMap {
     pub(super) parked_launcher: Rect,
     pub(super) restore_pane: Rect,
     pub(super) dismiss_parking_preview: Rect,
-    pub(super) new_workspace_empty: Rect,
-    pub(super) open_parked: Rect,
+    pub(super) empty_workspace: Vec<(Rect, super::lawn::EmptyWorkspaceAction)>,
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
@@ -1067,13 +1066,6 @@ impl ClientShellState {
             .is_some_and(|(cols, rows)| !self.layout(cols, rows).mobile_header.is_empty())
     }
 
-    pub(super) fn navigation_workspace_entries(
-        &self,
-        snapshot: &ClientShellSnapshot,
-    ) -> Vec<WorkspaceEntry> {
-        render::workspace_entries(snapshot, self.active_parking())
-    }
-
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
         if self
             .hits
@@ -1084,7 +1076,7 @@ impl ClientShellState {
             return;
         }
         let target = self.snapshot.as_deref().and_then(|snapshot| {
-            self.navigation_workspace_entries(snapshot)
+            render::workspace_entries(snapshot)
                 .iter()
                 .position(|entry| snapshot.workspaces[entry.index].workspace_id == workspace_id)
         });

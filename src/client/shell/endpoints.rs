@@ -248,8 +248,6 @@ impl ClientShellState {
         let switching_endpoint = endpoint_id != &self.active_endpoint_id;
         let agent_scroll = self.agent_scroll;
         if switching_endpoint {
-            // A background close must not undo an explicit machine selection.
-            endpoint.parking.departed_workspace = None;
             self.active_endpoint_id = endpoint_id.clone();
             self.pane_surface = None;
             self.pending_pane_surface = None;
@@ -642,15 +640,6 @@ impl ClientShellState {
         });
         let endpoint = &mut self.endpoints[index];
         endpoint.parking.observe_snapshot(generation, &snapshot);
-        if let Some(departure) = endpoint
-            .parking
-            .departed_workspace
-            .as_mut()
-            .filter(|departure| departure.origin.is_none())
-        {
-            // Move the pre-close order into the event, before replacing the projection.
-            departure.origin = endpoint.snapshot.take();
-        }
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);

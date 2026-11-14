@@ -4,9 +4,7 @@ use crossterm::event::KeyEventKind;
 use std::time::Instant;
 
 fn tick(state: &mut ClientShellState) -> ClientShellInput {
-    let mut outcome = state.tick_parking();
-    state.focus_after_parked_close(&mut outcome);
-    outcome
+    state.tick_parking()
 }
 
 /// The policy to acknowledge next: a new one, or the standing one when only
@@ -142,6 +140,16 @@ fn binding(state: &mut ClientShellState, action: crate::input::KeybindAction) ->
     outcome
 }
 
+fn empty_action(state: &ClientShellState, action: lawn::EmptyWorkspaceAction) -> Rect {
+    state
+        .hits
+        .empty_workspace
+        .iter()
+        .find(|(_, candidate)| *candidate == action)
+        .map(|(rect, _)| *rect)
+        .expect("empty workspace action")
+}
+
 fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
     state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -152,60 +160,33 @@ fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
 }
 
 #[test]
-fn parking_last_active_pane_opens_one_shell_in_its_current_directory() {
-    for (foreground, cwd, expected) in [
-        (Some("/repo/subdir"), Some("/repo"), Some("/repo/subdir")),
-        (None, Some("/repo"), Some("/repo")),
-        (None, None, None),
-    ] {
-        let mut projected = snapshot();
-        projected.panes[0].foreground_cwd = foreground.map(str::to_owned);
-        projected.panes[0].cwd = cwd.map(str::to_owned);
-        let mut state = state_with_snapshot(projected);
-        let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
-        let creates = parked
-            .actions
-            .iter()
-            .filter_map(|action| match action {
-                ClientShellAction::Endpoint { request, .. } => match &request.method {
-                    crate::api::schema::Method::TabCreate(params) => Some(params),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(creates.len(), 1);
-        assert_eq!(creates[0].workspace_id.as_deref(), Some("ws_1"));
-        assert_eq!(creates[0].cwd.as_deref(), expected);
-        assert!(creates[0].focus);
-        let policy = request(&mut state);
-        acknowledge(&mut state, &policy, None);
-        assert!(tick(&mut state).actions.is_empty());
-        let mut repeated = ClientShellInput::default();
-        state.parking_action(
-            ClientEndpointId::Local,
-            "pane_1".into(),
-            lawn::ParkingAction::Park,
-            &mut repeated,
-        );
-        assert!(
-            repeated.actions.is_empty(),
-            "already parked panes never create another shell"
-        );
-    }
-}
-
-#[test]
-fn parking_with_another_active_pane_does_not_create_a_shell() {
-    let mut state = state_with_snapshot(tabbed_snapshot());
+fn parking_the_last_active_pane_keeps_its_workspace_without_a_new_shell() {
+    let mut state = state();
     let parked = binding(&mut state, crate::input::KeybindAction::ParkPane);
     assert_eq!(parks(&parked), ["pane_1"]);
-    assert_eq!(methods(&parked).len(), 1);
-    assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+    assert!(
+        !methods(&parked)
+            .iter()
+            .any(|method| matches!(method, crate::api::schema::Method::TabCreate(_))),
+        "{:?}",
+        parked.actions
+    );
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, None);
+    let outcome = tick(&mut state);
+    assert!(methods(&outcome).is_empty(), "{:?}", outcome.actions);
+    state.compose(100, 24).unwrap();
+    let new_tab = empty_action(&state, lawn::EmptyWorkspaceAction::NewTab);
+    state.config.prompt_new_tab_name = false;
+    let created = click(&mut state, new_tab);
+    assert!(matches!(
+        methods(&created)[..],
+        [crate::api::schema::Method::TabCreate(ref params)] if params.workspace_id.as_deref() == Some("ws_1")
+    ));
 }
 
 #[test]
-fn relative_navigation_from_a_hidden_preview_uses_adjacent_visible_workspaces() {
+fn workspace_navigation_from_a_parked_peek_cycles_neighbors() {
     for multiple in [false, true] {
         for (hidden, next, previous) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)] {
             let mut projected = tabbed_snapshot();
@@ -302,16 +283,13 @@ fn parking_the_last_terminal_keeps_workspace_and_parked_accessible() {
     assert_eq!(state.focused_tab_count(), 0);
     assert!(state.hits.tabs.is_empty());
     assert!(state.hits.panes.is_empty());
-    assert!(state.hits.workspaces.is_empty());
-    assert!(
-        binding(&mut state, crate::input::KeybindAction::NextWorkspace)
-            .actions
-            .is_empty()
-    );
-    assert!(!state.hits.new_workspace_empty.is_empty());
-    assert!(frame_rows(&frame).join("\n").contains("open parked"));
-    let open = state.hits.open_parked;
-    assert!(!open.is_empty());
+    // The workspace stays listed with its parked work.
+    assert_eq!(state.hits.workspaces.len(), 1);
+    let screen = frame_rows(&frame).join("\n");
+    for label in ["New tab", "Open parked", "Close workspace"] {
+        assert!(screen.contains(label), "{label}: {screen}");
+    }
+    let open = empty_action(&state, lawn::EmptyWorkspaceAction::OpenParked);
     click(&mut state, open);
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("Parked")
@@ -425,8 +403,10 @@ fn parked_launcher_includes_parked_terminal_and_goto_excludes_it() {
         let active =
             render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
         assert!(
-            active.is_empty(),
-            "parked-only workspace appears for {query:?}"
+            active
+                .iter()
+                .all(|row| !matches!(row.target, ClientNavigatorTarget::Pane { .. })),
+            "parked terminal appears for {query:?}"
         );
     }
     state.open_parked();
@@ -984,7 +964,32 @@ fn closed(outcome: &ClientShellInput) -> Vec<&str> {
 }
 
 #[test]
-fn workspace_close_preserves_parked_panes() {
+fn exiting_the_last_active_shell_keeps_the_workspace_with_its_parked_pane() {
+    let mut state = parked_with_active_shell(false);
+    let mut exited = state.snapshot.as_deref().unwrap().clone();
+    exited.panes.retain(|pane| pane.pane_id != "pane_2");
+    exited.tabs.retain(|tab| tab.tab_id != "tab_2");
+    serve_parking(&state, &mut exited);
+    let policy = state
+        .active_parking()
+        .unwrap()
+        .current_request()
+        .unwrap()
+        .clone();
+    acknowledge_presentation(&mut state, &policy, None, exited);
+    let outcome = tick(&mut state);
+    assert!(methods(&outcome).is_empty(), "{:?}", outcome.actions);
+    state.compose(100, 24).unwrap();
+    assert_eq!(state.hits.empty_workspace.len(), 3);
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.workspace_id == "ws_1"));
+}
+
+#[test]
+fn workspace_close_closes_parked_panes_too() {
     for confirm in [false, true] {
         let mut state = parked_with_active_shell(false);
         state.config.confirm_close = confirm;
@@ -992,11 +997,42 @@ fn workspace_close_preserves_parked_panes() {
         state.request_workspace_close("ws_1".into(), &mut outcome);
         if confirm {
             assert!(outcome.actions.is_empty());
+            let Some(ClientShellOverlay::ConfirmClose(confirm)) = &state.overlay else {
+                panic!("close confirmation")
+            };
+            assert!(
+                confirm.detail.ends_with("2 panes, 1 parked"),
+                "{}",
+                confirm.detail
+            );
             state.accept_close_confirmation(&mut outcome);
         }
-        assert_eq!(closed(&outcome), ["tab_2"]);
-        assert!(state.active_parking().unwrap().hides_pane("pane_1"));
+        assert!(matches!(
+            methods(&outcome)[..],
+            [crate::api::schema::Method::WorkspaceClose(ref target)] if target.workspace_id == "ws_1"
+        ));
     }
+}
+
+#[test]
+fn closing_an_empty_workspace_from_its_screen_closes_the_workspace_on_screen() {
+    let mut state = state();
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, None);
+    state.compose(100, 24).unwrap();
+    let close = empty_action(&state, lawn::EmptyWorkspaceAction::Close);
+    let outcome = click(&mut state, close);
+    assert!(outcome.repaint);
+    let Some(ClientShellOverlay::ConfirmClose(confirm)) = &state.overlay else {
+        panic!("close confirmation")
+    };
+    assert_eq!(confirm.workspace_id, "ws_1");
+    assert!(
+        confirm.detail.ends_with("1 parked pane"),
+        "{}",
+        confirm.detail
+    );
 }
 
 #[test]
@@ -1017,7 +1053,7 @@ fn mixed_tab_and_stale_pane_closes_preserve_parked_panes() {
 }
 
 #[test]
-fn permanent_parking_errors_allow_safe_closes_and_keep_known_parked_panes() {
+fn permanent_parking_errors_still_allow_workspace_close() {
     for parked in [false, true] {
         let mut state = if parked {
             parked_with_active_shell(false)
@@ -1038,11 +1074,7 @@ fn permanent_parking_errors_allow_safe_closes_and_keep_known_parked_panes() {
         state.config.confirm_close = false;
         let mut outcome = ClientShellInput::default();
         state.request_workspace_close("ws_1".into(), &mut outcome);
-        if parked {
-            assert_eq!(closed(&outcome), ["tab_2"]);
-        } else {
-            assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(request.method, crate::api::schema::Method::WorkspaceClose(_)))));
-        }
+        assert!(outcome.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(request.method, crate::api::schema::Method::WorkspaceClose(_)))));
     }
 }
 
@@ -1074,382 +1106,15 @@ fn collapsed_machine_workspace_numbers_match_visible_workspace_shortcuts() {
         .unwrap();
     assert_eq!(
         frame.to_ratatui_buffer().unwrap()[(hit.rect.x + 1, hit.rect.y)].symbol(),
-        "1"
+        "2"
     );
-    let selected = binding(&mut state, crate::input::KeybindAction::SwitchWorkspace(0));
+    let selected = binding(&mut state, crate::input::KeybindAction::SwitchWorkspace(1));
     assert!(selected.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. } if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_2"))));
     assert!(
         !state.indexed_navigation_target_exists(&crate::input::KeybindMatch::Action(
-            crate::input::KeybindAction::SwitchWorkspace(1),
+            crate::input::KeybindAction::SwitchWorkspace(2),
         ))
     );
-}
-
-#[test]
-fn closing_the_active_shell_hides_workspace_and_focuses_another_once() {
-    let mut state = parked_with_active_shell(false);
-    assert!(tick(&mut state).actions.is_empty());
-    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
-    projected.panes.retain(|pane| pane.pane_id != "pane_2");
-    projected.tabs.retain(|tab| tab.tab_id != "tab_2");
-    let policy = SetPanePresentation {
-        boot_id: projected.boot_id.clone(),
-        sequence: 2,
-        hidden_terminals: vec!["terminal-pane_1".into()],
-        read_only_terminals: vec![],
-        preview_terminal: None,
-        focus_terminal: None,
-    };
-    projected.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
-    acknowledge(&mut state, &policy, None);
-    let focused = tick(&mut state);
-    assert!(focused.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
-        if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_2"))));
-    assert!(tick(&mut state).actions.is_empty());
-    for collapsed in [false, true] {
-        state.sidebar_collapsed = collapsed;
-        state.compose(100, 24).unwrap();
-        assert!(!state
-            .hits
-            .workspaces
-            .iter()
-            .any(|hit| hit.workspace_id == "ws_1"));
-        assert!(state
-            .hits
-            .workspaces
-            .iter()
-            .any(|hit| hit.workspace_id == "ws_2"));
-    }
-    state.open_navigator_overlay();
-    let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-        panic!("Jump")
-    };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
-    let workspaces = rows
-        .iter()
-        .filter_map(|row| match &row.target {
-            ClientNavigatorTarget::Workspace { workspace_id, .. } => Some(workspace_id.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(workspaces, ["ws_2"]);
-    assert!(state
-        .navigation_workspace_entries(state.snapshot.as_deref().unwrap())
-        .iter()
-        .all(
-            |entry| state.snapshot.as_ref().unwrap().workspaces[entry.index].workspace_id != "ws_1"
-        ));
-}
-
-#[test]
-fn close_recovery_uses_the_nearest_workspace_in_sidebar_order() {
-    for (order, expected) in [
-        (["ws_2", "ws_1", "ws_3"], "ws_3"),
-        (["ws_2", "ws_3", "ws_1"], "ws_3"),
-        (["ws_1", "ws_2", "ws_3"], "ws_2"),
-    ] {
-        let mut state = parked_with_active_shell(false);
-        let mut projected = state.snapshot.as_deref().unwrap().clone();
-        let mut neighbor = projected.workspaces[1].clone();
-        neighbor.workspace_id = "ws_3".into();
-        neighbor.active_tab_id = "tab_4".into();
-        projected.workspaces.push(neighbor);
-        let mut tab = projected.tabs.last().unwrap().clone();
-        tab.workspace_id = "ws_3".into();
-        tab.tab_id = "tab_4".into();
-        projected.tabs.push(tab);
-        let mut pane = projected.panes.last().unwrap().clone();
-        pane.workspace_id = "ws_3".into();
-        pane.tab_id = "tab_4".into();
-        pane.pane_id = "pane_4".into();
-        projected.panes.push(pane);
-        projected.workspaces.sort_by_key(|workspace| {
-            order
-                .iter()
-                .position(|id| *id == workspace.workspace_id)
-                .unwrap()
-        });
-        projected.revision += 1;
-        state.set_endpoint_snapshot_for_generation(
-            &ClientEndpointId::Local,
-            7,
-            Box::new(projected),
-        );
-        let policy = SetPanePresentation {
-            boot_id: "boot-1".into(),
-            sequence: 2,
-            hidden_terminals: vec!["terminal-pane_1".into()],
-            read_only_terminals: vec![],
-            preview_terminal: None,
-            focus_terminal: None,
-        };
-        acknowledge(&mut state, &policy, Some("pane_2"));
-        let mut closed = state.snapshot.as_deref().unwrap().clone();
-        closed.panes.retain(|pane| pane.pane_id != "pane_2");
-        closed.tabs.retain(|tab| tab.tab_id != "tab_2");
-        closed.revision += 1;
-        state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
-        acknowledge(&mut state, &policy, None);
-        let focused = tick(&mut state);
-        assert!(
-            focused.actions.iter().any(|action| matches!(action,
-                ClientShellAction::Endpoint { request, .. }
-                    if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
-                        if target.workspace_id == expected)
-            )),
-            "order={order:?}, expected={expected}: {:?}",
-            focused.actions
-        );
-        assert!(tick(&mut state).actions.is_empty());
-    }
-}
-
-#[test]
-fn close_recovery_skips_a_parked_neighbor_selected_by_the_server() {
-    let mut state = parked_with_active_shell(false);
-    state.parking_action(
-        ClientEndpointId::Local,
-        "pane_2".into(),
-        lawn::ParkingAction::Park,
-        &mut ClientShellInput::default(),
-    );
-    let policy = request(&mut state);
-    acknowledge(&mut state, &policy, None);
-    let mut projected = state.snapshot.as_deref().unwrap().clone();
-    let mut neighbor = projected.workspaces[1].clone();
-    neighbor.workspace_id = "ws_3".into();
-    neighbor.active_tab_id = "tab_4".into();
-    projected.workspaces.push(neighbor);
-    let mut tab = projected.tabs.last().unwrap().clone();
-    tab.workspace_id = "ws_3".into();
-    tab.tab_id = "tab_4".into();
-    projected.tabs.push(tab);
-    let mut pane = projected.panes.last().unwrap().clone();
-    pane.workspace_id = "ws_3".into();
-    pane.tab_id = "tab_4".into();
-    pane.pane_id = "pane_4".into();
-    projected.panes.push(pane);
-    projected.focused_workspace_id = Some("ws_2".into());
-    projected.focused_tab_id = Some("tab_3".into());
-    projected.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
-    acknowledge(&mut state, &policy, Some("pane_3"));
-    assert!(tick(&mut state).actions.is_empty());
-
-    let mut closed = state.snapshot.as_deref().unwrap().clone();
-    closed
-        .workspaces
-        .retain(|workspace| workspace.workspace_id != "ws_2");
-    closed.tabs.retain(|tab| tab.tab_id != "tab_3");
-    closed.panes.retain(|pane| pane.pane_id != "pane_3");
-    closed.focused_workspace_id = Some("ws_1".into());
-    closed.focused_tab_id = Some("tab_1".into());
-    closed.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
-    acknowledge(&mut state, &policy, None);
-    let focused = tick(&mut state);
-    assert!(focused.actions.iter().any(|action| matches!(action,
-        ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
-                if target.workspace_id == "ws_3")
-    )));
-    assert!(tick(&mut state).actions.is_empty());
-}
-
-#[test]
-fn close_recovery_handles_focus_and_shell_exit_in_the_same_snapshot() {
-    let mut state = parked_with_active_shell(false);
-    let policy = SetPanePresentation {
-        boot_id: "boot-1".into(),
-        sequence: 2,
-        hidden_terminals: vec!["terminal-pane_1".into()],
-        read_only_terminals: vec![],
-        preview_terminal: None,
-        focus_terminal: None,
-    };
-    let mut projected = state.snapshot.as_deref().unwrap().clone();
-    projected.focused_workspace_id = Some("ws_2".into());
-    projected.focused_tab_id = Some("tab_3".into());
-    projected.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
-    acknowledge(&mut state, &policy, Some("pane_3"));
-
-    let mut closed = state.snapshot.as_deref().unwrap().clone();
-    closed.focused_workspace_id = Some("ws_1".into());
-    closed.focused_tab_id = Some("tab_1".into());
-    closed.panes.retain(|pane| pane.pane_id != "pane_2");
-    closed.tabs.retain(|tab| tab.tab_id != "tab_2");
-    closed.revision += 1;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(closed));
-    acknowledge(&mut state, &policy, None);
-    let focused = tick(&mut state);
-    assert!(focused.actions.iter().any(|action| matches!(action,
-        ClientShellAction::Endpoint { request, .. }
-            if matches!(&request.method, crate::api::schema::Method::WorkspaceFocus(target)
-                if target.workspace_id == "ws_2")
-    )));
-    assert!(tick(&mut state).actions.is_empty());
-}
-
-#[test]
-fn close_recovery_opens_one_focused_home_workspace_on_the_same_machine() {
-    for remove_workspace in [false, true] {
-        for (online, supported) in [(false, true), (true, true), (true, false)] {
-            let mut state = if remove_workspace {
-                state()
-            } else {
-                parked_with_active_shell(false)
-            };
-            let profile = crate::client::endpoint::SavedSshEndpoint {
-                id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
-                    .unwrap(),
-                label: "Build".into(),
-                target: "dev@build.example".into(),
-                session: "agents".into(),
-                enabled: true,
-            };
-            let remote = ClientEndpointId::Ssh(profile.id.clone());
-            state.set_endpoint_catalog(&[profile]);
-            let mut remote_endpoint = self::state().endpoints[0].clone();
-            remote_endpoint.endpoint_id = remote.clone();
-            remote_endpoint.label = "Build".into();
-            remote_endpoint.status = if online {
-                ClientEndpointStatus::Online
-            } else {
-                ClientEndpointStatus::Reconnecting
-            };
-            state.endpoints[1] = remote_endpoint;
-            let mut closed = state.snapshot.as_deref().unwrap().clone();
-            if remove_workspace {
-                closed.workspaces.clear();
-                closed.tabs.clear();
-                closed.panes.clear();
-                closed.focused_workspace_id = None;
-                closed.focused_tab_id = None;
-            } else {
-                closed
-                    .workspaces
-                    .retain(|workspace| workspace.workspace_id == "ws_1");
-                closed.tabs.retain(|tab| tab.tab_id == "tab_1");
-                closed.panes.retain(|pane| pane.pane_id == "pane_1");
-            }
-            closed.revision += 1;
-            state.set_endpoint_snapshot_for_generation(
-                &ClientEndpointId::Local,
-                7,
-                Box::new(closed),
-            );
-            let policy = SetPanePresentation {
-                boot_id: "boot-1".into(),
-                sequence: if remove_workspace { 1 } else { 2 },
-                hidden_terminals: if remove_workspace {
-                    vec![]
-                } else {
-                    vec!["terminal-pane_1".into()]
-                },
-                read_only_terminals: vec![],
-                preview_terminal: None,
-                focus_terminal: None,
-            };
-            acknowledge(&mut state, &policy, None);
-            state.mode = ClientShellMode::Navigate;
-            if !supported {
-                state.set_endpoint_methods(Some(vec!["workspace.create".into()]));
-            }
-            let focused = tick(&mut state);
-            if !supported {
-                assert!(focused.actions.is_empty());
-                let notice = state.visible_endpoint_notice.as_ref().unwrap();
-                assert_eq!(notice.key.kind, ClientEndpointNoticeKind::Unsupported);
-                assert_eq!(notice.key.code, "workspace.ensure_active");
-                assert!(state.endpoint_error.is_none());
-                assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-                assert!(tick(&mut state).actions.is_empty());
-                continue;
-            }
-            assert!(
-                matches!(focused.actions.as_slice(),
-                    [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-                        if matches!(&request.method, crate::api::schema::Method::WorkspaceEnsureActive(params)
-                            if params.excluded_terminal_ids.is_empty())
-                ),
-                "remove_workspace={remove_workspace}, online={online}: {:?}",
-                focused.actions
-            );
-            assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-            assert_eq!(state.mode, ClientShellMode::Terminal);
-            assert!(tick(&mut state).actions.is_empty());
-
-            let mut home = snapshot();
-            home.revision = state.snapshot.as_ref().unwrap().revision + 1;
-            home.focused_workspace_id = Some("ws_home".into());
-            home.focused_tab_id = Some("tab_home".into());
-            home.focused_pane_id = Some("pane_home".into());
-            home.workspaces[0].workspace_id = "ws_home".into();
-            home.workspaces[0].active_tab_id = "tab_home".into();
-            home.tabs[0].workspace_id = "ws_home".into();
-            home.tabs[0].tab_id = "tab_home".into();
-            home.panes[0].workspace_id = "ws_home".into();
-            home.panes[0].tab_id = "tab_home".into();
-            home.panes[0].pane_id = "pane_home".into();
-            if !remove_workspace {
-                let mut parked = state.snapshot.as_deref().unwrap().clone();
-                parked.workspaces[0].focused = false;
-                home.workspaces.extend(parked.workspaces);
-                home.parked_panes = parked.parked_panes;
-            }
-            state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(home));
-            acknowledge(&mut state, &policy, Some("pane_home"));
-            let mut frame = surface();
-            frame.projection_revision = state.snapshot.as_ref().unwrap().revision;
-            frame.panes[0].pane_id = "pane_home".into();
-            state.set_pane_surface(frame);
-            assert!(state.handle_input_bytes(b"pwd\r").requests.iter().any(|request| {
-                matches!(request, ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "pane_home")
-            }));
-            assert!(tick(&mut state).actions.is_empty());
-        }
-    }
-}
-
-#[test]
-fn close_recovery_does_not_replay_background_departures_on_machine_selection() {
-    let mut state = parked_with_active_shell(false);
-    let profile = crate::client::endpoint::SavedSshEndpoint {
-        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
-        label: "Build".into(),
-        target: "dev@build.example".into(),
-        session: "agents".into(),
-        enabled: true,
-    };
-    let remote = ClientEndpointId::Ssh(profile.id.clone());
-    state.set_endpoint_catalog(&[profile]);
-    let mut remote_endpoint = state.endpoints[0].clone();
-    remote_endpoint.endpoint_id = remote.clone();
-    state.endpoints[1] = remote_endpoint;
-    let mut closed = state.snapshot.as_deref().unwrap().clone();
-    closed
-        .workspaces
-        .retain(|workspace| workspace.workspace_id == "ws_1");
-    closed.tabs.retain(|tab| tab.tab_id == "tab_1");
-    closed.panes.retain(|pane| pane.pane_id == "pane_1");
-    closed.focused_pane_id = None;
-    closed.revision += 1;
-    let ids = PaneIdentities {
-        boot_id: closed.boot_id.clone(),
-        revision: closed.revision,
-        sequence: 2,
-        pane_terminals: [("pane_1".into(), "terminal-pane_1".into())]
-            .into_iter()
-            .collect(),
-    };
-    state.set_endpoint_snapshot_for_generation(&remote, 7, Box::new(closed));
-    state.set_endpoint_pane_identities(&remote, 7, ids);
-    assert!(state.activate_endpoint_projection(&remote));
-    assert!(tick(&mut state).actions.is_empty());
-    assert_eq!(state.active_endpoint_id, remote);
 }
 
 #[test]
@@ -1476,7 +1141,7 @@ fn preview_dismissal_returns_to_the_original_workspace_and_restore_reveals_it() 
         lawn::ParkingAction::Restore,
         &mut ClientShellInput::default(),
     );
-    assert!(state.active_parking().unwrap().shows_workspace("ws_1"));
+    assert!(!state.active_parking().unwrap().hides_pane("pane_1"));
 }
 
 #[test]
@@ -2361,66 +2026,6 @@ fn restoring_a_parked_pane_on_another_machine_activates_it_first() {
 }
 
 #[test]
-fn workspace_close_keeps_a_pane_whose_park_is_still_in_flight() {
-    let mut state = state_with_snapshot(tabbed_snapshot());
-    state.config.confirm_close = false;
-    binding(&mut state, crate::input::KeybindAction::ParkPane);
-    let mut outcome = ClientShellInput::default();
-    state.request_workspace_close("ws_1".into(), &mut outcome);
-    assert_eq!(closed(&outcome), ["tab_1", "tab_2", "tab_3"]);
-}
-
-#[test]
-fn workspace_close_keeps_a_migrating_pane_whose_park_is_still_in_flight() {
-    let mut state = state_with_snapshot(tabbed_snapshot());
-    state.config.confirm_close = false;
-    let dir = std::env::temp_dir().join(format!(
-        "lawn-parking-migration-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("parking.json");
-    std::fs::write(&path, r#"{"version":1,"terminals":["terminal-pane_2"]}"#).unwrap();
-    state.endpoints[0].parking.set_path(Some(path));
-    assert_eq!(parks(&state.tick_parking()), ["pane_2"]);
-    let mut outcome = ClientShellInput::default();
-    state.request_workspace_close("ws_1".into(), &mut outcome);
-    assert_eq!(closed(&outcome), ["tab_1", "tab_2", "tab_3"]);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn parking_the_last_pane_behind_pending_parks_opens_a_replacement_shell() {
-    let mut state = state_with_snapshot(tabbed_snapshot());
-    let mut creates = Vec::new();
-    for pane in ["pane_2", "pane_3", "pane_1"] {
-        let mut outcome = ClientShellInput::default();
-        assert!(state.parking_action(
-            ClientEndpointId::Local,
-            pane.into(),
-            crate::client::shell::lawn::ParkingAction::Park,
-            &mut outcome,
-        ));
-        creates.extend(
-            methods(&outcome)
-                .into_iter()
-                .filter_map(|method| match method {
-                    crate::api::schema::Method::TabCreate(params) => params.workspace_id.clone(),
-                    _ => None,
-                }),
-        );
-        let request = request(&mut state);
-        let projected = (**state.snapshot.as_ref().unwrap()).clone();
-        acknowledge_presentation(&mut state, &request, Some("pane_1"), projected);
-    }
-    assert_eq!(creates, ["ws_1"]);
-}
-
-#[test]
 fn server_without_park_methods_disables_parking() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_endpoint_methods(Some(vec!["pane.split".into()]));
@@ -2457,9 +2062,6 @@ fn a_pending_park_survives_older_snapshots_until_the_server_rejects_it() {
     stale.revision += 1;
     state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(stale));
     assert!(state.active_parking().unwrap().hides_pane("pane_1"));
-    let mut close = ClientShellInput::default();
-    state.request_workspace_close("ws_1".into(), &mut close);
-    assert_eq!(closed(&close), ["tab_1", "tab_2", "tab_3"]);
 
     state.handle_endpoint_result(
         &boot_id,
