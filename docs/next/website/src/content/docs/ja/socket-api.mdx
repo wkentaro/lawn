@@ -241,7 +241,7 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 {"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
 ```
 
-ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割せず、`pane.focus` は `pane_parked` エラーを返します。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。保留と復帰はまだイベントを送信しません。
+ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割せず、`pane.focus` は `pane_parked` エラーを返します。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。購読者には `pane` を含む `pane.parked` と `pane.unparked` が届き、続いてペインが離れたタブまたは戻ったタブが表示中なら、その `layout.updated` が届きます。
 
 `pane.zoom` は、対象ペインのタブのズームをトグル、有効化、無効化します:
 
@@ -788,7 +788,7 @@ workspace の get/list 応答は結果の `tokens` マップを公開し、ス�
 
 ワークスペースのイベント購読には `workspace.created`、`workspace.updated`、`workspace.metadata_updated`、`workspace.renamed`、`workspace.moved`、`workspace.reordered`、`workspace.closed`、`workspace.focused` があります。`workspace.metadata_updated` はプラグインイベントフックを実行せずにトークン変更と TTL 失効を報告します。その他のワークスペースイベントは Herdr の UI/ランタイムのライフサイクルを記述します。`workspace.moved` は、移動した `workspace_id`、要求された `insert_index`、更新済みの順序付き `workspaces` リストを含みます。`workspace.reordered` は、アトミックに移動した `workspace_ids`、省略可能な `before_workspace_id`、サーバーが確定した順序付き `workspaces` リストを含みます。削除前に Herdr がまだ識別できる場合、`workspace.closed` は最終的な `workspace` スナップショットを含みます。
 タブのイベント購読には `tab.created`、`tab.closed`、`tab.focused`、`tab.renamed`、`tab.moved` があります。`tab.moved` は、移動した `tab_id`、`workspace_id`、要求された `insert_index`、そのワークスペースの更新済みの順序付き `tabs` リストを含みます。
-ペインのイベント購読には `pane.created`、`pane.updated`、`pane.closed`、`pane.focused`、`pane.moved`、`pane.exited`、`pane.agent_detected`、`pane.output_matched`、`pane.agent_status_changed`、`pane.scroll_changed` があります。`pane.focused` は、このサーバーに接続した任意のクライアントでの手動ペイン選択も報告します。他のクライアントの表示は移動させず、ペイロードにクライアントの識別情報は含みません。選択済みのペインを再度選んでも発行しません。ターミナルタイトルの変更は `pane.updated` を発行することがありますが、生のタイトルでスピナーだけが変化し、`terminal_title_stripped` が変わらない場合は発行しません。`pane.scroll_changed` は 1 つの `pane_id` を対象とし、Herdr がスクロールスナップショットの変化を検出するたびに `pane_id`、`workspace_id`、現在の `scroll` 情報を発行します。
+ペインのイベント購読には `pane.created`、`pane.updated`、`pane.closed`、`pane.focused`、`pane.moved`、`pane.parked`、`pane.unparked`、`pane.exited`、`pane.agent_detected`、`pane.output_matched`、`pane.agent_status_changed`、`pane.scroll_changed` があります。`pane.focused` は、このサーバーに接続した任意のクライアントでの手動ペイン選択も報告します。他のクライアントの表示は移動させず、ペイロードにクライアントの識別情報は含みません。選択済みのペインを再度選んでも発行しません。ターミナルタイトルの変更は `pane.updated` を発行することがありますが、生のタイトルでスピナーだけが変化し、`terminal_title_stripped` が変わらない場合は発行しません。`pane.scroll_changed` は 1 つの `pane_id` を対象とし、Herdr がスクロールスナップショットの変化を検出するたびに `pane_id`、`workspace_id`、現在の `scroll` 情報を発行します。
 レイアウトのイベント購読には `layout.updated` があります。このイベントは 1 つのタブについて更新済みの `PaneLayoutSnapshot` を運びます。`session.snapshot` でキャッシュを管理するクライアントは、このイベントを契機にサーバーから対象のレイアウトを再取得してください。遅れて届いたペイロードは、最新のスナップショットより古い可能性があります。
 
 ライフサイクルイベントには `events.subscribe` を使ってください。ワンショットの wait がサポートされる場合、専用の wait ヘルパーが別途ドキュメント化されます。

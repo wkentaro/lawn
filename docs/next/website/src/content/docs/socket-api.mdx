@@ -330,8 +330,9 @@ pane, and `pane.focus` rejects it with `pane_parked`. A workspace with parked
 panes stays open when its last visible tab closes or moves away. `session.snapshot` lists parked panes under `parked_panes`.
 Closing the workspace closes its parked panes too.
 `pane.unpark` returns the pane to the tab it left, or to a new tab when that tab
-is gone. The response is `type: "pane_info"`. Park and unpark emit no events
-yet.
+is gone. The response is `type: "pane_info"`. Subscribers see `pane.parked`
+and `pane.unparked`, each with the `pane`, then `layout.updated` for the tab
+the pane left or rejoined while that tab is visible.
 
 `pane.zoom` toggles, enables, or disables zoom for the target pane's tab:
 
@@ -973,7 +974,7 @@ Tab event subscriptions include `tab.created`, `tab.closed`, `tab.focused`,
 `workspace_id`, requested `insert_index`, and updated ordered `tabs` list for
 that workspace.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
-`pane.moved`, `pane.exited`, `pane.agent_detected`,
+`pane.moved`, `pane.parked`, `pane.unparked`, `pane.exited`, `pane.agent_detected`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.
 `pane.focused` also reports manual pane selection changes from any client attached
 to this server. It does not move other clients' views, and its payload does not

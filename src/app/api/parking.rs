@@ -1,4 +1,6 @@
-use crate::api::schema::{PaneInfo, PaneTarget, PaneUnparkParams, ResponseResult};
+use crate::api::schema::{
+    EventData, EventEnvelope, EventKind, PaneInfo, PaneTarget, PaneUnparkParams, ResponseResult,
+};
 use crate::app::App;
 
 use super::responses::{encode_error, encode_success};
@@ -6,14 +8,27 @@ use super::responses::{encode_error, encode_success};
 impl App {
     pub(super) fn handle_pane_park(&mut self, id: String, target: PaneTarget) -> String {
         let channels = self.tab_channels();
-        if self
+        let parked = self
             .parse_pane_id(&target.pane_id)
-            .and_then(|(ws_idx, pane_id)| self.state.park_pane(ws_idx, pane_id, channels))
-            .is_none()
-        {
+            .and_then(|(ws_idx, pane_id)| {
+                let layout_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
+                self.state.park_pane(ws_idx, pane_id, channels)?;
+                Some((ws_idx, pane_id, layout_target))
+            });
+        let Some((ws_idx, pane_id, layout_target)) = parked else {
             return encode_error(id, "pane_not_found", "pane not found or already parked");
-        }
+        };
         self.schedule_session_save();
+        if let Some(pane) = self.pane_info(ws_idx, pane_id) {
+            self.emit_event(EventEnvelope {
+                event: EventKind::PaneParked,
+                data: EventData::PaneParked { pane },
+            });
+        }
+        // The tab it left, unless the pane was its last one and the tab is now hidden.
+        if let Some((ws_idx, tab_idx)) = layout_target {
+            self.emit_layout_updated_event(ws_idx, tab_idx);
+        }
         encode_success(id, ResponseResult::Ok {})
     }
 
@@ -29,10 +44,17 @@ impl App {
             return encode_error(id, "pane_not_parked", "pane is not parked");
         }
         self.schedule_session_save();
-        match self.pane_info(ws_idx, pane_id) {
-            Some(pane) => encode_success(id, ResponseResult::PaneInfo { pane }),
-            None => encode_error(id, "pane_not_found", "unparked pane not found"),
+        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+            return encode_error(id, "pane_not_found", "unparked pane not found");
+        };
+        self.emit_event(EventEnvelope {
+            event: EventKind::PaneUnparked,
+            data: EventData::PaneUnparked { pane: pane.clone() },
+        });
+        if let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) {
+            self.emit_layout_updated_event(ws_idx, tab_idx);
         }
+        encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
     pub(super) fn parked_pane_infos(
@@ -54,7 +76,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::schema::{AgentStatus, Request};
+    use crate::api::schema::{AgentStatus, EventData, Request};
     use crate::app::App;
     use crate::config::Config;
     use crate::events::AppEvent;
@@ -156,6 +178,32 @@ mod tests {
         assert_eq!(response["result"]["pane"]["tab_id"], tab_id, "{response}");
         assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 2);
         assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), parked);
+    }
+
+    #[test]
+    fn parking_and_unparking_announce_the_pane() {
+        let (mut app, parked) = split_app();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let pane_id = park(&mut app, parked);
+        unpark(&mut app, &pane_id, false);
+
+        let events: Vec<_> = app
+            .event_hub
+            .events_after(0)
+            .into_iter()
+            .map(|(_, envelope)| envelope.data)
+            .collect();
+        let [EventData::PaneParked { pane: parked }, EventData::LayoutUpdated { layout: left }, EventData::PaneUnparked { pane: unparked }, EventData::LayoutUpdated { layout: returned }] =
+            events.as_slice()
+        else {
+            panic!("expected parked then unparked with layouts, got {events:?}");
+        };
+        assert_eq!(left.panes.len(), 1);
+        assert_eq!(returned.panes.len(), 2);
+        assert_eq!(parked.pane_id, pane_id);
+        assert_eq!(unparked.pane_id, pane_id);
+        assert_eq!(unparked.tab_id, tab_id);
     }
 
     #[test]

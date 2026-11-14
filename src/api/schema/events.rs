@@ -58,6 +58,10 @@ pub enum Subscription {
     PaneFocused {},
     #[serde(rename = "pane.moved")]
     PaneMoved {},
+    #[serde(rename = "pane.parked")]
+    PaneParked {},
+    #[serde(rename = "pane.unparked")]
+    PaneUnparked {},
     #[serde(rename = "pane.exited")]
     PaneExited {},
     #[serde(rename = "pane.agent_detected")]
@@ -213,6 +217,8 @@ pub enum EventKind {
     PaneUpdated,
     PaneFocused,
     PaneMoved,
+    PaneParked,
+    PaneUnparked,
     PaneOutputChanged,
     PaneExited,
     PaneAgentDetected,
@@ -244,6 +250,8 @@ impl EventKind {
             EventKind::PaneUpdated => "pane.updated",
             EventKind::PaneFocused => "pane.focused",
             EventKind::PaneMoved => "pane.moved",
+            EventKind::PaneParked => "pane.parked",
+            EventKind::PaneUnparked => "pane.unparked",
             EventKind::PaneOutputChanged => "pane.output_changed",
             EventKind::PaneExited => "pane.exited",
             EventKind::PaneAgentDetected => "pane.agent_detected",
@@ -276,6 +284,8 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneUpdated,
     EventKind::PaneFocused,
     EventKind::PaneMoved,
+    EventKind::PaneParked,
+    EventKind::PaneUnparked,
     EventKind::PaneOutputChanged,
     EventKind::PaneExited,
     EventKind::PaneAgentDetected,
@@ -303,6 +313,8 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneClosed,
     EventKind::PaneFocused,
     EventKind::PaneMoved,
+    EventKind::PaneParked,
+    EventKind::PaneUnparked,
     EventKind::PaneExited,
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
@@ -517,6 +529,12 @@ pub enum EventData {
         closed_workspace_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         closed_tab_id: Option<String>,
+    },
+    PaneParked {
+        pane: PaneInfo,
+    },
+    PaneUnparked {
+        pane: PaneInfo,
     },
     PaneOutputChanged {
         pane_id: String,

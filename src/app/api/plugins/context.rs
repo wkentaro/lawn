@@ -139,7 +139,10 @@ impl App {
                     context.tab_id = Some(layout.tab_id.clone());
                     context
                 }),
-            EventData::PaneCreated { pane } | EventData::PaneUpdated { pane } => {
+            EventData::PaneCreated { pane }
+            | EventData::PaneUpdated { pane }
+            | EventData::PaneParked { pane }
+            | EventData::PaneUnparked { pane } => {
                 self.plugin_context_for_pane_info(pane, correlation_id)
             }
             EventData::PaneMoved { pane, .. } => {
