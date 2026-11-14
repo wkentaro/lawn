@@ -392,6 +392,37 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_workspace_park(&mut self, id: String, target: WorkspaceTarget) -> String {
+        let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
+            return workspace_not_found(id, &target.workspace_id);
+        };
+        let channels = self.tab_channels();
+        let Some(panes) = self.state.park_workspace(index, channels) else {
+            return encode_error(
+                id,
+                "workspace_empty",
+                format!("workspace {} has no panes to park", target.workspace_id),
+            );
+        };
+        self.schedule_session_save();
+        for pane_id in panes {
+            if let Some(pane) = self.pane_info(index, pane_id) {
+                self.emit_event(EventEnvelope {
+                    event: EventKind::PaneParked,
+                    data: EventData::PaneParked { pane },
+                });
+            }
+        }
+        let workspace = self.workspace_info(index);
+        self.emit_event(EventEnvelope {
+            event: EventKind::WorkspaceUpdated,
+            data: EventData::WorkspaceUpdated {
+                workspace: workspace.clone(),
+            },
+        });
+        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
+    }
+
     fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
         self.state
             .workspaces

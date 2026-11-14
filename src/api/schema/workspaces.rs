@@ -102,6 +102,9 @@ pub struct WorkspaceInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktreeInfo>,
+    /// Put away by `workspace.park` until one of its panes comes back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

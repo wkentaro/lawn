@@ -96,7 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | 客户端 | `client.window_title.set`、`client.window_title.clear` |
 | 会话 | `session.snapshot` |
-| 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
+| 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.park`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove`（始终返回 `unsupported`） |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
 | 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.park`、`pane.unpark`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
@@ -242,6 +242,8 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 ```
 
 窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格，`pane.focus` 会返回 `pane_parked` 错误。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。订阅者会收到带有 `pane` 的 `pane.parked` 和 `pane.unparked`;如果窗格离开或返回的标签页可见，随后还会收到该标签页的 `layout.updated`。
+
+`workspace.park` 暂存工作区所有可见标签页中的窗格，并隐藏该工作区。它接受 `workspace_id`,返回带有 `parked: true` 的 `type: "workspace_info"`。没有窗格的工作区会返回 `workspace_empty` 错误。订阅者会先收到每个窗格的 `pane.parked`,然后收到 `workspace.updated`。当工作区重新有可见标签页时（例如通过 `pane.unpark` 或 `tab.create`）,或被 `workspace.focus` 选中时，它会重新显示。如果被暂存的工作区是当前工作区，下一个显示中的工作区会成为当前工作区；若没有剩余，Lawn 会打开一个新工作区。
 
 `pane.zoom` 切换、启用或禁用目标窗格所在标签页的缩放:
 

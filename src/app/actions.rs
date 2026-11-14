@@ -392,6 +392,8 @@ impl AppState {
             let previous_focus = self.current_pane_focus_target();
             self.active = Some(idx);
             self.selected = idx;
+            // Focusing a parked workspace brings it back.
+            self.workspaces[idx].parked = false;
             let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();

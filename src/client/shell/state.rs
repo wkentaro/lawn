@@ -458,6 +458,7 @@ pub(super) enum ClientContextMenuAction {
     ToggleRightClickPassthrough,
     ClosePane,
     ParkPane,
+    ParkWorkspace,
     RestorePane,
     Move,
 }
@@ -466,6 +467,7 @@ pub(super) enum ClientContextMenuAction {
 pub(super) enum ClientContextMenuTarget {
     Workspace {
         workspace_id: String,
+        can_park: bool,
     },
     Tab {
         tab_id: String,

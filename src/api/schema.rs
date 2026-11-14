@@ -70,6 +70,7 @@ operations::define_operations! {
     WorkspaceMoveBlock(WorkspaceMoveBlockParams) => "workspace.move_block", true, true;
     WorkspaceReportMetadata(WorkspaceReportMetadataParams) => "workspace.report_metadata", true, false;
     WorkspaceClose(WorkspaceCloseParams) => "workspace.close", true, true;
+    WorkspacePark(WorkspaceTarget) => "workspace.park", true, true;
     WorktreeList(WorktreeListParams) => "worktree.list", false, true;
     WorktreeCreate(WorktreeCreateParams) => "worktree.create", true, true;
     WorktreeOpen(WorktreeOpenParams) => "worktree.open", true, true;

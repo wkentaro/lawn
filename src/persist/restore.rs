@@ -421,6 +421,7 @@ fn restore_workspace(
             next_public_pane_number,
             next_public_tab_number,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+            parked: snap.parked && tabs.iter().any(|tab| tab.parked_from.is_some()),
             tabs,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
@@ -1450,6 +1451,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
@@ -1545,6 +1547,7 @@ mod tests {
                     root_pane: Some(10),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
@@ -1744,6 +1747,7 @@ mod tests {
                     },
                 ],
                 active_tab: 3,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
@@ -1806,6 +1810,7 @@ mod tests {
                 root_pane: Some(10),
             }],
             active_tab: 0,
+            parked: false,
         };
         let mut next_public_pane_number = 1;
 
@@ -1856,6 +1861,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
@@ -2328,6 +2334,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,

@@ -22,19 +22,21 @@ pub(super) fn render_collapsed(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
+            let entries = super::sidebar::workspace_entries(snapshot);
             if reveal {
                 if let Some(target) = state
                     .selected_workspace_id
                     .filter(|target| target.endpoint_id == endpoint.endpoint_id)
                 {
-                    selected_row = snapshot
-                        .workspaces
+                    selected_row = entries
                         .iter()
-                        .position(|workspace| workspace.workspace_id == target.workspace_id)
+                        .position(|entry| {
+                            snapshot.workspaces[entry.index].workspace_id == target.workspace_id
+                        })
                         .map(|index| total_rows + index);
                 }
             }
-            total_rows += snapshot.workspaces.len();
+            total_rows += entries.len();
         }
     }
     let height = usize::from(workspace_area.height);
@@ -112,7 +114,11 @@ pub(super) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        for (visible_index, workspace) in snapshot.workspaces.iter().enumerate() {
+        let entries = super::sidebar::workspace_entries(snapshot);
+        let shown = entries
+            .iter()
+            .map(|entry| &snapshot.workspaces[entry.index]);
+        for (visible_index, workspace) in shown.enumerate() {
             if skip > 0 {
                 skip -= 1;
                 continue;

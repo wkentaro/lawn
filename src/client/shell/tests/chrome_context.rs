@@ -314,6 +314,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
             .collect::<Vec<_>>(),
         [
             ClientContextMenuAction::Rename,
+            ClientContextMenuAction::ParkWorkspace,
             ClientContextMenuAction::Close
         ]
     );

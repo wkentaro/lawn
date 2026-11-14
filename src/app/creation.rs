@@ -397,6 +397,7 @@ impl App {
             tokens: ws.metadata_tokens.values(),
             // Kept for API compatibility; lawn has no git integration.
             worktree: None,
+            parked: ws.parked,
         }
     }
 }

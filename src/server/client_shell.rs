@@ -116,6 +116,7 @@ pub(super) fn snapshot_with_completions(
                 tokens,
                 worktree: None,
                 agent_status: workspace.agent_status,
+                parked: state.parked,
             }
         })
         .collect();

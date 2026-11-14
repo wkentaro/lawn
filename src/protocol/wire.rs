@@ -1035,6 +1035,9 @@ pub struct ClientShellWorkspace {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// Hidden from workspace lists; absent from older servers.
+    #[serde(default)]
+    pub parked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2833,6 +2836,7 @@ mod tests {
                 worktree: None,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                parked: false,
             }],
             tabs: vec![ClientShellTab {
                 tab_id: "w1:t1".into(),

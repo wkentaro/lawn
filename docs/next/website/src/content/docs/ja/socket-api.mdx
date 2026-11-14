@@ -96,7 +96,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 通知 | `notification.show` |
 | クライアント | `client.window_title.set`、`client.window_title.clear` |
 | セッション | `session.snapshot` |
-| ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
+| ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.park`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove`（常に `unsupported` を返す） |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.move_to_workspace`、`tab.close` |
 | ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.park`、`pane.unpark`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
@@ -242,6 +242,8 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 ```
 
 ペインは同じワークスペースの非表示タブに移り、ペイン id も変わらないため、`pane.read`、`pane.report_agent`、`agent.send_keys` などペインやエージェントへのリクエストは引き続き届きます。タブへのリクエストと `session.snapshot` の `tabs` は非表示タブを含みません。`pane.split` は保留中のペインを分割せず、`pane.focus` は `pane_parked` エラーを返します。保留中のペインがあるワークスペースは、最後の表示タブを閉じたり移動したりしても残ります。`session.snapshot` は保留中のペインを `parked_panes` に返します。ワークスペースを閉じると、保留中のペインも閉じます。`pane.unpark` はペインを元のタブへ戻し、そのタブがなければ新しいタブに戻します。レスポンスは `type: "pane_info"` です。購読者には `pane` を含む `pane.parked` と `pane.unparked` が届き、続いてペインが離れたタブまたは戻ったタブが表示中なら、その `layout.updated` が届きます。
+
+`workspace.park` はワークスペースの表示タブにあるペインをすべて保留にし、ワークスペースを非表示にします。`workspace_id` を受け取り、`parked: true` を含む `type: "workspace_info"` を返します。ペインのないワークスペースは `workspace_empty` エラーになります。購読者にはペインごとの `pane.parked` が届き、続いて `workspace.updated` が届きます。`pane.unpark` や `tab.create` で表示タブができたとき、または `workspace.focus` で対象にしたとき、ワークスペースは再び表示されます。保留にしたワークスペースがアクティブだった場合は、次に表示されているワークスペースがアクティブになります。表示中のワークスペースが残っていなければ、新しいワークスペースを開きます。
 
 `pane.zoom` は、対象ペインのタブのズームをトグル、有効化、無効化します:
 

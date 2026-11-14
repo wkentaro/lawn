@@ -7,8 +7,13 @@ impl ClientContextMenuOverlay {
 
         let item = |label, action| ClientContextMenuItem { label, action };
         match &self.target {
-            ClientContextMenuTarget::Workspace { .. } => {
-                vec![item("Rename", Action::Rename), item("Close", Action::Close)]
+            ClientContextMenuTarget::Workspace { can_park, .. } => {
+                let mut items = vec![item("Rename", Action::Rename)];
+                if *can_park {
+                    items.push(item("Park", Action::ParkWorkspace));
+                }
+                items.push(item("Close", Action::Close));
+                items
             }
             ClientContextMenuTarget::Tab { .. } => vec![
                 item("New tab", Action::NewTab),
@@ -70,8 +75,12 @@ impl ClientShellState {
         {
             return;
         }
+        let can_park = self.can_park_workspace(&workspace_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
-            target: ClientContextMenuTarget::Workspace { workspace_id },
+            target: ClientContextMenuTarget::Workspace {
+                workspace_id,
+                can_park,
+            },
             x,
             y,
             highlighted: 0,
@@ -182,7 +191,7 @@ impl ClientShellState {
             } => {
                 self.parking_action(endpoint_id, pane_id, lawn::ParkingAction::Restore, outcome);
             }
-            ClientContextMenuTarget::Workspace { workspace_id } => {
+            ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome)
             }
             ClientContextMenuTarget::Tab {
@@ -236,6 +245,7 @@ impl ClientShellState {
             ClientContextMenuAction::Close => {
                 self.request_workspace_close(workspace_id, outcome);
             }
+            ClientContextMenuAction::ParkWorkspace => self.park_workspace(workspace_id, outcome),
             _ => {}
         }
     }

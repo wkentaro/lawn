@@ -973,6 +973,7 @@ impl App {
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
             Method::PanePark(target) => return self.handle_pane_park(request.id, target),
+            Method::WorkspacePark(target) => return self.handle_workspace_park(request.id, target),
             Method::PaneUnpark(params) => return self.handle_pane_unpark(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
