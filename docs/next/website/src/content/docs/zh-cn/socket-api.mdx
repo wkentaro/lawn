@@ -241,7 +241,7 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 {"id":"req_unpark","method":"pane.unpark","params":{"pane_id":"w1:p2","focus":true}}
 ```
 
-窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格，`pane.focus` 会返回 `pane_parked` 错误。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。暂存和恢复目前还不会发送事件。
+窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格，`pane.focus` 会返回 `pane_parked` 错误。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。订阅者会收到带有 `pane` 的 `pane.parked` 和 `pane.unparked`;如果窗格离开或返回的标签页可见，随后还会收到该标签页的 `layout.updated`。
 
 `pane.zoom` 切换、启用或禁用目标窗格所在标签页的缩放:
 
@@ -782,7 +782,7 @@ workspace 的 get/list 响应会公开生成的 `tokens` 映射,空间侧边栏�
 
 工作区事件订阅包括 `workspace.created`、`workspace.updated`、`workspace.metadata_updated`、`workspace.renamed`、`workspace.moved`、`workspace.reordered`、`workspace.closed` 和 `workspace.focused`。`workspace.metadata_updated` 报告令牌变更和 TTL 到期,但不会调用插件事件钩子。其他工作区事件描述 Herdr UI/运行时的生命周期。`workspace.moved` 包含被移动的 `workspace_id`、请求的 `insert_index` 和更新后的有序 `workspaces` 列表。`workspace.reordered` 包含原子移动的 `workspace_ids`、可选的 `before_workspace_id` 和服务器确认的有序 `workspaces` 列表。在移除前 Herdr 仍能识别时,`workspace.closed` 包含最终的 `workspace` 快照。
 标签页事件订阅包括 `tab.created`、`tab.closed`、`tab.focused`、`tab.renamed` 和 `tab.moved`。`tab.moved` 包含被移动的 `tab_id`、`workspace_id`、请求的 `insert_index` 和该工作区更新后的有序 `tabs` 列表。
-窗格事件订阅包括 `pane.created`、`pane.updated`、`pane.closed`、`pane.focused`、`pane.moved`、`pane.exited`、`pane.agent_detected`、`pane.output_matched`、`pane.agent_status_changed` 和 `pane.scroll_changed`。`pane.focused` 也会上报任意连接到此服务器的客户端手动选择窗格的变化，不会移动其他客户端的视图，且载荷不包含客户端身份。重复选择已选中的窗格不会再次发出事件。终端标题变化可能发出 `pane.updated`,但如果原始标题只有旋转指示符发生变化且 `terminal_title_stripped` 不变,则不会发出。`pane.scroll_changed` 只针对一个 `pane_id`,每当 Herdr 观察到滚动快照变化时,都会发出 `pane_id`、`workspace_id` 和当前 `scroll` 指标。
+窗格事件订阅包括 `pane.created`、`pane.updated`、`pane.closed`、`pane.focused`、`pane.moved`、`pane.parked`、`pane.unparked`、`pane.exited`、`pane.agent_detected`、`pane.output_matched`、`pane.agent_status_changed` 和 `pane.scroll_changed`。`pane.focused` 也会上报任意连接到此服务器的客户端手动选择窗格的变化，不会移动其他客户端的视图，且载荷不包含客户端身份。重复选择已选中的窗格不会再次发出事件。终端标题变化可能发出 `pane.updated`,但如果原始标题只有旋转指示符发生变化且 `terminal_title_stripped` 不变,则不会发出。`pane.scroll_changed` 只针对一个 `pane_id`,每当 Herdr 观察到滚动快照变化时,都会发出 `pane_id`、`workspace_id` 和当前 `scroll` 指标。
 布局事件订阅包括 `layout.updated`。该事件携带一个标签页更新后的 `PaneLayoutSnapshot`。使用 `session.snapshot` 维护缓存的客户端应将该事件作为重新读取受影响布局的通知；延迟到达的载荷可能早于最新快照。
 
 生命周期事件用 `events.subscribe`。支持一次性等待时,专门的等待辅助命令会单独在文档中说明。
