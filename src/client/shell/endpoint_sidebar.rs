@@ -30,18 +30,11 @@ pub(super) fn render_collapsed(
                     selected_row = snapshot
                         .workspaces
                         .iter()
-                        .filter(|workspace| {
-                            endpoint.parking.shows_workspace(&workspace.workspace_id)
-                        })
                         .position(|workspace| workspace.workspace_id == target.workspace_id)
                         .map(|index| total_rows + index);
                 }
             }
-            total_rows += snapshot
-                .workspaces
-                .iter()
-                .filter(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
-                .count();
+            total_rows += snapshot.workspaces.len();
         }
     }
     let height = usize::from(workspace_area.height);
@@ -119,12 +112,7 @@ pub(super) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        for (visible_index, workspace) in snapshot
-            .workspaces
-            .iter()
-            .filter(|workspace| endpoint.parking.shows_workspace(&workspace.workspace_id))
-            .enumerate()
-        {
+        for (visible_index, workspace) in snapshot.workspaces.iter().enumerate() {
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -264,7 +252,7 @@ pub(super) fn render_expanded(
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
             rows.extend(
-                super::sidebar::workspace_entries(snapshot, Some(&endpoint.parking))
+                super::sidebar::workspace_entries(snapshot)
                     .into_iter()
                     .map(|entry| Row::Workspace {
                         endpoint: endpoint_index,

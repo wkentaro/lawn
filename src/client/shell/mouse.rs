@@ -527,7 +527,7 @@ impl ClientShellState {
             .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
-        let entries = render::workspace_entries(snapshot, self.active_parking());
+        let entries = render::workspace_entries(snapshot);
         let last_hit = self
             .hits
             .workspaces

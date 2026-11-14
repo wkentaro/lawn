@@ -48,7 +48,6 @@ pub(crate) fn render_collapsed_sidebar(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
-    parking: Option<&lawn::PaneParking>,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -60,9 +59,6 @@ pub(crate) fn render_collapsed_sidebar(
     for (index, workspace) in snapshot
         .workspaces
         .iter()
-        .filter(|workspace| {
-            parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
-        })
         .take(workspace_area.height as usize)
         .enumerate()
     {
@@ -218,14 +214,7 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(
-        snapshot,
-        state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == *state.active_endpoint_id)
-            .map(|endpoint| &endpoint.parking),
-    );
+    let entries = workspace_entries(snapshot);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -440,25 +429,9 @@ pub(crate) fn render_sidebar(
     );
 }
 
-pub(crate) fn workspace_entries(
-    snapshot: &ClientShellSnapshot,
-    parking: Option<&lawn::PaneParking>,
-) -> Vec<WorkspaceEntry> {
-    workspace_entries_matching(snapshot, |workspace| {
-        parking.is_none_or(|parking| parking.shows_workspace(&workspace.workspace_id))
-    })
-}
-
-pub(in crate::client::shell) fn workspace_entries_matching(
-    snapshot: &ClientShellSnapshot,
-    visible: impl Fn(&ClientShellWorkspace) -> bool,
-) -> Vec<WorkspaceEntry> {
-    snapshot
-        .workspaces
-        .iter()
-        .enumerate()
-        .filter(|(_, workspace)| visible(workspace))
-        .map(|(index, _)| WorkspaceEntry { index })
+pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
+    (0..snapshot.workspaces.len())
+        .map(|index| WorkspaceEntry { index })
         .collect()
 }
 

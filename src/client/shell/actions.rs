@@ -430,8 +430,8 @@ impl ClientShellState {
         kind: PendingEndpointKind,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if let Some(accepted) = self.preserve_parked_close(&method, outcome) {
-            return accepted;
+        if self.preserve_parked_close(&method) {
+            return false;
         }
         let changes_focus = match &method {
             crate::api::schema::Method::WorkspaceFocus(_)
@@ -1049,7 +1049,7 @@ impl ClientShellState {
                 Some(Method::PaneFocus(PaneTarget { pane_id }))
             }
             KeybindAction::SwitchWorkspace(index) => {
-                let entries = self.navigation_workspace_entries(snapshot);
+                let entries = render::workspace_entries(snapshot);
                 let workspace_id = snapshot
                     .workspaces
                     .get(entries.get(index)?.index)?

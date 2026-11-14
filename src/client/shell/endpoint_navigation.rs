@@ -105,19 +105,16 @@ impl ClientShellState {
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
             let multiple = self.multi_endpoint_active();
-            let targets = |include_hidden: bool| {
-                self.endpoints
-                    .iter()
-                    .filter(|endpoint| endpoint.status == ClientEndpointStatus::Online)
-                    .flat_map(|endpoint| {
-                        endpoint
-                            .snapshot
-                            .as_deref()
-                            .map_or_else(Vec::new, |snapshot| {
-                                render::workspace_entries(
-                                    snapshot,
-                                    (!include_hidden).then_some(&endpoint.parking),
-                                )
+            let workspaces = self
+                .endpoints
+                .iter()
+                .filter(|endpoint| endpoint.status == ClientEndpointStatus::Online)
+                .flat_map(|endpoint| {
+                    endpoint
+                        .snapshot
+                        .as_deref()
+                        .map_or_else(Vec::new, |snapshot| {
+                            render::workspace_entries(snapshot)
                                 .into_iter()
                                 .map(|entry| {
                                     (
@@ -126,11 +123,9 @@ impl ClientShellState {
                                     )
                                 })
                                 .collect()
-                            })
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let workspaces = targets(false);
+                        })
+                })
+                .collect::<Vec<_>>();
             if workspaces.is_empty() {
                 return true;
             }
@@ -148,22 +143,10 @@ impl ClientShellState {
                 } else {
                     (index + 1) % workspaces.len()
                 }
+            } else if previous {
+                workspaces.len() - 1
             } else {
-                let all = targets(true);
-                all.iter()
-                    .position(|(endpoint, workspace)| {
-                        endpoint == &self.active_endpoint_id && Some(workspace.as_str()) == focused
-                    })
-                    .and_then(|origin| {
-                        (1..=all.len()).find_map(|step| {
-                            let offset = if previous { all.len() - step } else { step };
-                            let candidate = &all[(origin + offset) % all.len()];
-                            workspaces
-                                .iter()
-                                .position(|workspace| workspace == candidate)
-                        })
-                    })
-                    .unwrap_or(if previous { workspaces.len() - 1 } else { 0 })
+                0
             };
             let (endpoint_id, workspace_id) = workspaces[next].clone();
             if !multiple {

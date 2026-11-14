@@ -22,27 +22,15 @@ pub(in crate::client::shell) struct PaneParking {
     request: Option<SetPanePresentation>,
     identities: Option<(Option<u64>, PaneIdentities)>,
     pending_identities: Option<(Option<u64>, PaneIdentities)>,
-    pane_workspaces: HashMap<String, String>,
-    focused_workspace: Option<String>,
-    /// Workspaces whose every pane is parked.
-    parked_workspaces: HashSet<String>,
     pub(in crate::client::shell) hidden_panes: HashSet<String>,
     /// Parks sent to the server but not yet in a snapshot's `parked_panes`.
     pending_parks: HashSet<String>,
-    pub(in crate::client::shell) departed_workspace: Option<WorkspaceDeparture>,
     terminal_panes: HashMap<String, String>,
     dirty: bool,
     failed: bool,
     last_error: Option<String>,
     notice: Option<String>,
     repaint: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::client::shell) struct WorkspaceDeparture {
-    pub(in crate::client::shell) workspace_id: String,
-    pub(in crate::client::shell) focused_workspace: Option<String>,
-    pub(in crate::client::shell) origin: Option<Box<ClientShellSnapshot>>,
 }
 
 impl PaneParking {
@@ -71,7 +59,6 @@ impl PaneParking {
                 self.terminal_panes.clear();
                 self.hidden_panes.clear();
                 self.pending_parks.clear();
-                self.parked_workspaces.clear();
             }
         }
     }
@@ -95,10 +82,6 @@ impl PaneParking {
 
     pub(in crate::client::shell) fn hides_pane(&self, pane: &str) -> bool {
         self.hidden_panes.contains(pane)
-    }
-
-    pub(in crate::client::shell) fn shows_workspace(&self, workspace: &str) -> bool {
-        !self.parked_workspaces.contains(workspace)
     }
 
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
@@ -238,9 +221,6 @@ impl PaneParking {
             self.request = None;
             self.identities = None;
             self.terminal_panes.clear();
-            self.pane_workspaces.clear();
-            self.focused_workspace = None;
-            self.departed_workspace = None;
             self.preview_return = None;
             self.pending_parks.clear();
             self.migration_sent = false;
@@ -264,53 +244,6 @@ impl PaneParking {
             .chain(self.pending_parks.iter().cloned())
             .collect();
         self.finish_migration(snapshot);
-        let pane_workspaces: HashMap<_, _> = snapshot
-            .panes
-            .iter()
-            .map(|pane| (pane.pane_id.clone(), pane.workspace_id.clone()))
-            .collect();
-        let occupied: HashSet<&str> = snapshot
-            .panes
-            .iter()
-            .filter(|pane| !parked.contains(pane.pane_id.as_str()))
-            .map(|pane| pane.workspace_id.as_str())
-            .collect();
-        self.parked_workspaces = snapshot
-            .parked_panes
-            .iter()
-            .filter(|pane| !occupied.contains(pane.workspace_id.as_str()))
-            .map(|pane| pane.workspace_id.clone())
-            .collect();
-        let removed_workspace = self.focused_workspace.as_ref().filter(|workspace| {
-            snapshot.focused_workspace_id.as_ref() != Some(*workspace)
-                && !snapshot
-                    .workspaces
-                    .iter()
-                    .any(|candidate| &candidate.workspace_id == *workspace)
-        });
-        if let Some(workspace) = snapshot
-            .focused_workspace_id
-            .as_ref()
-            .into_iter()
-            .chain(removed_workspace)
-            .find(|workspace| {
-                self.pane_workspaces.iter().any(|(pane, owner)| {
-                    owner == *workspace
-                        && !self.hides_pane(pane)
-                        && !pane_workspaces.contains_key(pane)
-                })
-            })
-        {
-            // A park changes visibility; only a vanished active pane triggers departure.
-            // The server may already have selected a parked-only neighbor after a close.
-            self.departed_workspace = Some(WorkspaceDeparture {
-                workspace_id: workspace.clone(),
-                focused_workspace: snapshot.focused_workspace_id.clone(),
-                origin: None,
-            });
-        }
-        self.focused_workspace = snapshot.focused_workspace_id.clone();
-        self.pane_workspaces = pane_workspaces;
         let matches = self
             .pending_identities
             .as_ref()
@@ -567,7 +500,6 @@ mod tests {
         assert!(model.ready());
         assert!(!model.available());
         assert!(model.accepts_input("pane_1"));
-        assert!(model.shows_workspace("ws_1"));
         assert!(model.poll().is_none());
     }
 
@@ -616,29 +548,6 @@ mod tests {
         );
         model.observe_snapshot(Some(7), &snapshot);
         assert!(model.ready());
-    }
-
-    #[test]
-    fn server_parked_panes_hide_their_workspace_only_when_nothing_else_is_visible() {
-        let (mut model, mut snapshot) = connected(None);
-        model.park("pane_1");
-        assert!(model.hides_pane("pane_1"));
-        assert!(!model.accepts_input("pane_1"));
-        let sequence = model.poll().unwrap().sequence;
-        acknowledge(&mut model, &mut snapshot, sequence, &["pane_1"], None);
-        assert!(model.hides_pane("pane_1"));
-        assert!(!model.accepts_input("pane_1"));
-        assert!(model.accepts_input("pane_2"));
-        assert!(model.shows_workspace("ws_1"));
-        let sequence = model.sequence;
-        acknowledge(
-            &mut model,
-            &mut snapshot,
-            sequence,
-            &["pane_1", "pane_2"],
-            None,
-        );
-        assert!(!model.shows_workspace("ws_1"));
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub(super) use parked::{height as navigation_height, render as render_navigation
 mod parking;
 pub(super) use parking::PaneParking;
 mod workspaces;
+pub(super) use workspaces::EmptyWorkspaceAction;
 
 impl ClientShellState {
     pub(crate) fn set_endpoint_parking_supported(
@@ -218,32 +219,6 @@ impl ClientShellState {
                     .or_else(|| self.focused_navigation_target())
             })
             .flatten();
-        let replacement = matches!(action, ParkingAction::Park)
-            .then(|| {
-                let endpoint = self
-                    .endpoints
-                    .iter()
-                    .find(|endpoint| endpoint.endpoint_id == endpoint_id)?;
-                let snapshot = endpoint.snapshot.as_deref()?;
-                let source = snapshot.panes.iter().find(|item| item.pane_id == pane)?;
-                // A sibling whose park is still in flight no longer counts.
-                snapshot
-                    .panes
-                    .iter()
-                    .all(|item| {
-                        item.workspace_id != source.workspace_id
-                            || item.pane_id == pane
-                            || endpoint.parking.hides_pane(&item.pane_id)
-                    })
-                    .then(|| crate::api::schema::TabCreateParams {
-                        workspace_id: Some(source.workspace_id.clone()),
-                        cwd: source.foreground_cwd.clone().or_else(|| source.cwd.clone()),
-                        focus: true,
-                        label: None,
-                        env: Default::default(),
-                    })
-            })
-            .flatten();
         let result = self
             .endpoints
             .iter_mut()
@@ -286,12 +261,6 @@ impl ClientShellState {
             // Parking acts on the focused machine's own panes.
             ParkingAction::Park => {
                 self.push_park(pane, outcome);
-                if let Some(replacement) = replacement {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::TabCreate(replacement),
-                        outcome,
-                    );
-                }
             }
             // Another machine's pane restores once that machine is active.
             ParkingAction::Restore => {
@@ -444,47 +413,6 @@ impl ClientShellState {
             );
             return false;
         }
-        let empty = snapshot
-            .focused_workspace_id
-            .as_deref()
-            .is_some_and(|workspace| !parking.shows_workspace(workspace));
-        if empty && !layout.pane_surface.is_empty() {
-            let area = layout.pane_surface;
-            if area.height >= 3 {
-                let new_workspace = Rect::new(
-                    area.x + area.width.saturating_sub(17) / 2,
-                    (area.y + area.height / 2).saturating_sub(1).max(area.y),
-                    area.width.min(17),
-                    1,
-                );
-                render::put_text(
-                    buffer,
-                    new_workspace.x,
-                    new_workspace.y,
-                    new_workspace.width,
-                    " New workspace ",
-                    Style::default().fg(p.accent).bg(p.surface0),
-                );
-                self.hits.new_workspace_empty = new_workspace;
-            }
-            let button = Rect::new(
-                area.x + area.width.saturating_sub(14) / 2,
-                (area.y + area.height / 2)
-                    .saturating_add(1)
-                    .min(area.bottom().saturating_sub(1)),
-                area.width.min(14),
-                1,
-            );
-            render::put_text(
-                buffer,
-                button.x,
-                button.y,
-                button.width,
-                " open parked ",
-                Style::default().fg(p.accent).bg(p.surface0),
-            );
-            self.hits.open_parked = button;
-        }
-        empty
+        self.render_empty_workspace(buffer, layout)
     }
 }
