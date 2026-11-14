@@ -291,6 +291,10 @@ mod tests {
             Some("735bd64c16735caa501615994b62c914ef85554b7bd85ceb04a33a18ef5bbded")
         );
         assert_eq!(
+            actual.remove("workspace.park").as_deref(),
+            Some("075ae5ff3a39a25652d1036cf9ff8fd551eb717f690a70500c1f18ddfeb3ecb6")
+        );
+        assert_eq!(
             actual.remove("pane.park").as_deref(),
             Some("e573b5caeaead2b26a96d43480f115156e9bbbd639d43921f10ad593a52df798")
         );

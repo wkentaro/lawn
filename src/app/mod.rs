@@ -730,7 +730,7 @@ impl App {
     }
 
     pub(crate) fn ensure_default_workspace(&mut self, after_close: bool) -> bool {
-        if !self.state.workspaces.is_empty() {
+        if self.state.workspaces.iter().any(|ws| !ws.parked) {
             return false;
         }
 

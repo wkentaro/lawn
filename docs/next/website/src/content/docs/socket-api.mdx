@@ -100,7 +100,7 @@ Raw socket method names use dot notation:
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
-| Workspace | `workspace.create`, `workspace.ensure_active`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
+| Workspace | `workspace.create`, `workspace.ensure_active`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.park`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` (always return `unsupported`) |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.move_to_workspace`, `tab.close` |
 | Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.park`, `pane.unpark`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
@@ -333,6 +333,15 @@ Closing the workspace closes its parked panes too.
 is gone. The response is `type: "pane_info"`. Subscribers see `pane.parked`
 and `pane.unparked`, each with the `pane`, then `layout.updated` for the tab
 the pane left or rejoined while that tab is visible.
+
+`workspace.park` parks every pane in a workspace's visible tabs and hides the
+workspace. It takes `workspace_id` and returns `type: "workspace_info"` with
+`parked: true`. A workspace with no panes fails with `workspace_empty`.
+Subscribers see `pane.parked` for each pane, then `workspace.updated`. The
+workspace comes back when it gains a visible tab, for example through
+`pane.unpark` or `tab.create`, or when `workspace.focus` targets it. When the
+parked workspace was active, the next shown workspace becomes active. If none
+is left, Lawn opens a new workspace.
 
 `pane.zoom` toggles, enables, or disables zoom for the target pane's tab:
 

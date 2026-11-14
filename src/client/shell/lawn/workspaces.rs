@@ -5,6 +5,7 @@ use crate::api::schema::Method;
 pub(in crate::client::shell) enum EmptyWorkspaceAction {
     NewTab,
     OpenParked,
+    Park,
     Close,
 }
 
@@ -72,6 +73,11 @@ impl ClientShellState {
                 EmptyWorkspaceAction::OpenParked,
                 Style::default().fg(p.accent),
             )),
+            self.can_park_workspace(workspace).then_some((
+                "Park workspace",
+                EmptyWorkspaceAction::Park,
+                Style::default().fg(p.overlay0),
+            )),
             Some((
                 "Close workspace",
                 EmptyWorkspaceAction::Close,
@@ -115,23 +121,55 @@ impl ClientShellState {
         action: EmptyWorkspaceAction,
         outcome: &mut ClientShellInput,
     ) {
+        // The workspace on screen, not a sidebar highlight.
+        let focused = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_workspace_id.clone());
         match action {
             EmptyWorkspaceAction::NewTab => self.record_binding(
                 crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
                 outcome,
             ),
             EmptyWorkspaceAction::OpenParked => self.open_parked(),
-            // The workspace on screen, not a sidebar highlight.
+            EmptyWorkspaceAction::Park => {
+                if let Some(workspace) = focused {
+                    self.park_workspace(workspace, outcome);
+                }
+            }
             EmptyWorkspaceAction::Close => {
-                if let Some(workspace) = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| snapshot.focused_workspace_id.clone())
-                {
+                if let Some(workspace) = focused {
                     self.request_workspace_close(workspace, outcome);
                 }
             }
         }
         outcome.repaint = true;
+    }
+
+    /// Whether the server can park the workspace, which needs a pane to keep.
+    pub(in crate::client::shell) fn can_park_workspace(&self, workspace_id: &str) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let target = crate::api::schema::WorkspaceTarget {
+            workspace_id: workspace_id.to_owned(),
+        };
+        self.supports_endpoint_method(&Method::WorkspacePark(target))
+            && snapshot
+                .panes
+                .iter()
+                .chain(&snapshot.parked_panes)
+                .any(|pane| pane.workspace_id == workspace_id)
+    }
+
+    pub(in crate::client::shell) fn park_workspace(
+        &mut self,
+        workspace_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        self.push_endpoint_method(
+            Method::WorkspacePark(crate::api::schema::WorkspaceTarget { workspace_id }),
+            outcome,
+        );
     }
 }

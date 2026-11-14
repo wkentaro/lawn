@@ -123,6 +123,9 @@ pub struct Workspace {
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
     pub active_tab: usize,
+    /// Put away with all its panes parked: hidden from workspace lists until
+    /// a pane comes back.
+    pub parked: bool,
     #[cfg(test)]
     pub(crate) test_runtimes: HashMap<PaneId, TerminalRuntime>,
 }
@@ -187,6 +190,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            parked: false,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         }
@@ -330,6 +334,7 @@ impl Workspace {
                 next_public_tab_number: 2,
                 tabs: vec![tab],
                 active_tab: 0,
+                parked: false,
                 #[cfg(test)]
                 test_runtimes: HashMap::new(),
             },
@@ -385,6 +390,8 @@ impl Workspace {
 
     /// Inserts a tab among the visible tabs, keeping the active tab.
     fn insert_visible_tab(&mut self, idx: usize, tab: Tab) -> usize {
+        // A visible tab brings a parked workspace back.
+        self.parked = false;
         let visible = self.visible_tab_count();
         let idx = idx.min(visible);
         if visible == 0 {
@@ -1200,6 +1207,7 @@ impl Workspace {
             next_public_tab_number: 2,
             tabs: vec![tab],
             active_tab: 0,
+            parked: false,
             test_runtimes: HashMap::new(),
         }
     }
@@ -1297,6 +1305,11 @@ impl Workspace {
             "workspace {} active tab {} is parked",
             self.id,
             self.active_tab
+        );
+        assert!(
+            !self.parked || (visible == 0 && !self.tabs.is_empty()),
+            "parked workspace {} must hold only parked panes",
+            self.id
         );
 
         let mut tab_numbers = std::collections::HashSet::new();

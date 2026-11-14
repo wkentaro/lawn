@@ -186,6 +186,51 @@ fn parking_the_last_active_pane_keeps_its_workspace_without_a_new_shell() {
 }
 
 #[test]
+fn the_empty_screen_parks_its_whole_workspace() {
+    let mut state = state();
+    binding(&mut state, crate::input::KeybindAction::ParkPane);
+    let policy = request(&mut state);
+    acknowledge(&mut state, &policy, None);
+    tick(&mut state);
+    state.compose(100, 24).unwrap();
+
+    let park = empty_action(&state, lawn::EmptyWorkspaceAction::Park);
+    let parked = click(&mut state, park);
+
+    assert!(matches!(
+        methods(&parked)[..],
+        [crate::api::schema::Method::WorkspacePark(ref target)] if target.workspace_id == "ws_1"
+    ));
+}
+
+#[test]
+fn a_parked_workspace_leaves_the_sidebar() {
+    let mut projected = tabbed_snapshot();
+    let mut workspace = projected.workspaces[0].clone();
+    workspace.workspace_id = "ws_2".into();
+    workspace.number = 2;
+    workspace.focused = false;
+    workspace.parked = true;
+    projected.tabs[1].workspace_id = "ws_2".into();
+    projected.panes[1].workspace_id = "ws_2".into();
+    projected.workspaces.push(workspace);
+    for collapsed in [false, true] {
+        let mut state = state_with_snapshot(projected.clone());
+        state.sidebar_collapsed = collapsed;
+
+        state.compose(100, 24).unwrap();
+
+        let shown: Vec<_> = state
+            .hits
+            .workspaces
+            .iter()
+            .map(|hit| hit.workspace_id.as_str())
+            .collect();
+        assert_eq!(shown, ["ws_1"], "collapsed: {collapsed}");
+    }
+}
+
+#[test]
 fn workspace_navigation_from_a_parked_peek_cycles_neighbors() {
     for multiple in [false, true] {
         for (hidden, next, previous) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)] {
@@ -980,7 +1025,7 @@ fn exiting_the_last_active_shell_keeps_the_workspace_with_its_parked_pane() {
     let outcome = tick(&mut state);
     assert!(methods(&outcome).is_empty(), "{:?}", outcome.actions);
     state.compose(100, 24).unwrap();
-    assert_eq!(state.hits.empty_workspace.len(), 3);
+    assert_eq!(state.hits.empty_workspace.len(), 4);
     assert!(state
         .hits
         .workspaces

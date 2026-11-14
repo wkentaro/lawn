@@ -8294,3 +8294,51 @@ async fn a_shell_renders_a_focused_workspace_without_tabs() {
     server.app.state.assert_invariants_for_test();
     shutdown_test_runtimes(&mut server);
 }
+
+#[test]
+fn a_client_viewing_a_parked_workspace_moves_to_a_shown_one() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![
+        crate::workspace::Workspace::test_new("first"),
+        crate::workspace::Workspace::test_new("second"),
+    ];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.clients.insert(
+        1,
+        ClientConnection::new(
+            (120, 40),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            None,
+        ),
+    );
+    server.reconcile_client_shell_locations();
+    let first = server.app.public_workspace_id(0);
+    let second = server.app.public_workspace_id(1);
+    let location = |server: &HeadlessServer| {
+        server.clients[&1]
+            .shell_location
+            .as_ref()
+            .and_then(|location| location.focused_workspace_id.clone())
+    };
+    server
+        .clients
+        .get_mut(&1)
+        .and_then(|client| client.shell_location.as_mut())
+        .expect("shell location")
+        .focus_workspace(second.clone());
+    assert_eq!(location(&server), Some(second));
+
+    let channels = server.app.tab_channels();
+    server
+        .app
+        .state
+        .park_workspace(1, channels)
+        .expect("parked panes");
+    server.reconcile_client_shell_locations();
+
+    assert_eq!(location(&server), Some(first));
+}

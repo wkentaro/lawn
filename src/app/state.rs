@@ -939,6 +939,7 @@ impl AppState {
         let remap = |i: usize| if i == idx { replacement } else { shift(i) };
         self.active = self.active.map(remap);
         self.selected = remap(self.selected);
+        self.keep_focus_on_shown_workspaces();
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -1251,6 +1252,13 @@ impl AppState {
             active,
             self.workspaces.len()
         );
+        if self.workspaces.iter().any(|ws| !ws.parked) {
+            assert!(
+                !self.workspaces[active].parked && !self.workspaces[self.selected].parked,
+                "focus must stay on a shown workspace (active {active}, selected {})",
+                self.selected
+            );
+        }
 
         let mut workspace_ids = std::collections::HashSet::new();
         let mut workspace_id_to_idx = std::collections::HashMap::new();

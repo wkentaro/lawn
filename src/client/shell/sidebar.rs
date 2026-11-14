@@ -56,9 +56,9 @@ pub(crate) fn render_collapsed_sidebar(
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) =
         collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
-    for (index, workspace) in snapshot
-        .workspaces
+    for (index, workspace) in workspace_entries(snapshot)
         .iter()
+        .map(|entry| &snapshot.workspaces[entry.index])
         .take(workspace_area.height as usize)
         .enumerate()
     {
@@ -429,8 +429,10 @@ pub(crate) fn render_sidebar(
     );
 }
 
+/// The workspaces lists show, skipping parked ones.
 pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
     (0..snapshot.workspaces.len())
+        .filter(|&index| !snapshot.workspaces[index].parked)
         .map(|index| WorkspaceEntry { index })
         .collect()
 }

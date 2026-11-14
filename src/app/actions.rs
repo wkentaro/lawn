@@ -392,6 +392,8 @@ impl AppState {
             let previous_focus = self.current_pane_focus_target();
             self.active = Some(idx);
             self.selected = idx;
+            // Focusing a parked workspace brings it back.
+            self.workspaces[idx].parked = false;
             let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
@@ -697,6 +699,7 @@ impl AppState {
                 self.selected = self.workspaces.len() - 1;
             }
             self.active = Some(self.selected);
+            self.keep_focus_on_shown_workspaces();
         }
     }
 }
@@ -1942,6 +1945,7 @@ impl AppState {
                 if self.selected >= self.workspaces.len() {
                     self.selected = self.workspaces.len() - 1;
                 }
+                self.keep_focus_on_shown_workspaces();
             }
         } else {
             self.remove_unattached_terminal_ids(pane_terminal_id);

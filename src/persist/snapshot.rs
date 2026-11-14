@@ -66,6 +66,8 @@ pub struct WorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default)]
     pub active_tab: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
 }
 
 #[derive(Deserialize)]
@@ -176,6 +178,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             next_public_tab_number: 0,
             tabs: vec![tab],
             active_tab: 0,
+            parked: false,
         }
     }
 }
@@ -317,6 +320,7 @@ fn capture_workspace(
         next_public_tab_number: ws.next_public_tab_number,
         tabs,
         active_tab: ws.active_tab,
+        parked: ws.parked,
     }
 }
 
@@ -769,6 +773,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
@@ -1451,6 +1456,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                parked: false,
             }],
             active: Some(0),
             selected: 0,
