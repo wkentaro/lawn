@@ -699,6 +699,7 @@ impl AppState {
                 self.selected = self.workspaces.len() - 1;
             }
             self.active = Some(self.selected);
+            self.keep_focus_on_shown_workspaces();
         }
     }
 }
@@ -1944,6 +1945,7 @@ impl AppState {
                 if self.selected >= self.workspaces.len() {
                     self.selected = self.workspaces.len() - 1;
                 }
+                self.keep_focus_on_shown_workspaces();
             }
         } else {
             self.remove_unattached_terminal_ids(pane_terminal_id);

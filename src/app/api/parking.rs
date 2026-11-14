@@ -597,6 +597,63 @@ mod tests {
     }
 
     #[test]
+    fn closing_the_active_workspace_skips_a_parked_one() {
+        for close_pane in [false, true] {
+            let mut app = app(vec![
+                Workspace::test_new("a"),
+                Workspace::test_new("b"),
+                Workspace::test_new("c"),
+            ]);
+            let [a, b, c] = [0, 1, 2].map(|idx| app.public_workspace_id(idx));
+            call(
+                &mut app,
+                "workspace.park",
+                serde_json::json!({ "workspace_id": b }),
+            );
+
+            if close_pane {
+                let pane = app.state.workspaces[0].tabs[0].root_pane;
+                let pane_id = app.public_pane_id(0, pane).unwrap();
+                call(
+                    &mut app,
+                    "pane.close",
+                    serde_json::json!({ "pane_id": pane_id }),
+                );
+            } else {
+                call(
+                    &mut app,
+                    "workspace.close",
+                    serde_json::json!({ "workspace_id": a }),
+                );
+            }
+
+            let active = app.state.active.expect("active workspace");
+            assert_eq!(
+                app.public_workspace_id(active),
+                c,
+                "close_pane: {close_pane}"
+            );
+            app.state.assert_invariants_for_test();
+        }
+    }
+
+    #[test]
+    fn parking_the_selected_workspace_moves_the_selection() {
+        let mut app = app(vec![Workspace::test_new("a"), Workspace::test_new("b")]);
+        app.state.selected = 1;
+        let b = app.public_workspace_id(1);
+
+        call(
+            &mut app,
+            "workspace.park",
+            serde_json::json!({ "workspace_id": b }),
+        );
+
+        assert_eq!((app.state.active, app.state.selected), (Some(0), 0));
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
     fn a_workspace_without_panes_cannot_be_parked() {
         let mut app = app(vec![Workspace::test_new("only")]);
         let pane = app.state.workspaces[0].tabs[0].root_pane;

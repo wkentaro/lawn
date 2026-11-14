@@ -1307,7 +1307,7 @@ impl Workspace {
             self.active_tab
         );
         assert!(
-            !self.parked || (visible == 0 && visible < self.tabs.len()),
+            !self.parked || (visible == 0 && !self.tabs.is_empty()),
             "parked workspace {} must hold only parked panes",
             self.id
         );
