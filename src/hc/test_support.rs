@@ -38,6 +38,13 @@ impl TestCore {
             state,
         })
     }
+
+    /// Makes this core the one `backend()` returns, for code that looks it up.
+    pub(crate) fn share(&self) {
+        *SHARED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(self.core.clone());
+    }
 }
 
 /// An `hc` that can't reach the user's core: its own session, state,

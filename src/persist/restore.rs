@@ -587,8 +587,8 @@ fn restore_tab(
                     runtime_context.render_dirty.clone(),
                 )
             })
-            // Only a terminal the core no longer has gets replaced; any other
-            // failure leaves the pane unavailable and keeps the address.
+            // Only a program that is gone gets replaced; any other failure
+            // leaves the pane unavailable and keeps the address.
             .filter(|result| {
                 let gone = result
                     .as_ref()
@@ -596,7 +596,7 @@ fn restore_tab(
                 if gone {
                     warn!(
                         pane_id = id.raw(),
-                        "the core terminal is gone; starting a new one"
+                        "the core terminal is gone or finished; starting a new one"
                     );
                 }
                 !gone
@@ -1507,6 +1507,77 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(pane.core_terminal.as_deref(), Some("t3"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_core_terminal_that_finished_while_lawn_was_stopped_gets_a_new_one() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        // Each nextest test runs in its own process.
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+        let finished = test
+            .core
+            .run(serde_json::json!({"argv": ["true"], "no_parent": true, "keep": true}))
+            .expect("run");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while test
+            .core
+            .call("terminal.get", serde_json::json!({"terminal": finished}))
+            .is_ok_and(|record| record["state"] != "finished")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "program never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .core_terminal = Some(finished.clone());
+        let (events, _rx) = mpsc::channel(32);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let tab = &workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap();
+        assert!(terminals[terminal_id].restore_error.is_none());
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane = captured.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        let replacement = pane.core_terminal.as_deref().expect("a new core terminal");
+        assert_ne!(replacement, finished);
     }
 
     #[tokio::test]

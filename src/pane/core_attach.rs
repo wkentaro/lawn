@@ -210,6 +210,16 @@ fn reattach_params(address: &str, rows: u16, cols: u16) -> serde_json::Value {
     serde_json::json!({"terminal": address, "cols": cols, "rows": rows, "history": u32::MAX})
 }
 
+/// `NotFound` when the saved program is gone for good: the core forgot the
+/// terminal or it finished. Anything else may pass, so the caller keeps it.
+fn reattach_error(err: crate::hc::HcError) -> std::io::Error {
+    let kind = match err.kind() {
+        Some("not_found" | "finished") => std::io::ErrorKind::NotFound,
+        _ => std::io::ErrorKind::Other,
+    };
+    std::io::Error::new(kind, err)
+}
+
 /// The hidden command a core pane starts through:
 /// `lawn pane-exec <names> <program> [args…]`, with `<names>` joined by `=`.
 /// The core adds a pane's `env` on top of its own environment, so something
@@ -355,14 +365,7 @@ impl PaneRuntime {
             .map_err(std::io::Error::other)?;
         let attached = core
             .attach(reattach_params(address, rows, cols))
-            .map_err(|err| {
-                let kind = if err.kind() == Some("not_found") {
-                    std::io::ErrorKind::NotFound
-                } else {
-                    std::io::ErrorKind::Other
-                };
-                std::io::Error::new(kind, err)
-            })?;
+            .map_err(reattach_error)?;
         Self::attach_core(
             pane_id,
             core,
@@ -931,6 +934,36 @@ mod tests {
         let history = runtime.recent_text_snapshot(200).text;
         assert!(history.lines().any(|line| line.trim() == "1"), "{history}");
         runtime.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reattaching_a_finished_or_unknown_terminal_says_it_is_gone() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let address = test
+            .core
+            .run(json!({"argv": ["true"], "no_parent": true, "keep": true}))
+            .expect("run");
+        wait_for("the program to finish", || {
+            test.core
+                .call("terminal.get", json!({"terminal": address}))
+                .is_ok_and(|record| record["state"] == "finished")
+        })
+        .await;
+        for address in [address.as_str(), "t99"] {
+            let err = test
+                .core
+                .attach(reattach_params(address, 24, 80))
+                .map(|_| ())
+                .expect_err("attach");
+            assert_eq!(
+                reattach_error(err).kind(),
+                std::io::ErrorKind::NotFound,
+                "{address}"
+            );
+        }
     }
 
     #[cfg(unix)]
