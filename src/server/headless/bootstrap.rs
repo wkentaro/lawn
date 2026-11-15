@@ -95,6 +95,7 @@ pub fn run_server() -> io::Result<()> {
         );
         print_ready_message(&api::socket_path(), &client_socket_path());
         server.app.run_plugin_startup_hooks();
+        server.app.watch_core_terminals();
 
         server.run().await
     });

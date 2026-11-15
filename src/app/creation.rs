@@ -140,6 +140,9 @@ impl App {
             self.state.switch_workspace(idx);
             self.state.mode = Mode::Terminal;
         }
+        for found in std::mem::take(&mut self.core_terminals_to_park) {
+            self.park_core_terminal(found);
+        }
         self.schedule_session_save();
         Ok(idx)
     }

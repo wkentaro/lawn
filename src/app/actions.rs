@@ -1500,6 +1500,8 @@ impl AppState {
             }
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
+            // Needs a runtime; `App` parks it.
+            AppEvent::CoreTerminalFound(_) => Vec::new(),
         }
     }
 

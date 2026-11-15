@@ -1,6 +1,116 @@
+use tracing::warn;
+
 use super::state::AppState;
+use super::App;
+use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::layout::PaneId;
-use crate::workspace::TabChannels;
+use crate::pane::{CoreTerminal, PaneState};
+use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
+use crate::workspace::{MovedPane, TabChannels};
+
+impl App {
+    /// Starts parking the core terminals no pane shows, in a core session.
+    /// Call it once the session is restored, so its panes are known.
+    pub(crate) fn watch_core_terminals(&self) {
+        let Some(core) = crate::hc::backend() else {
+            return;
+        };
+        let watching = core
+            .map_err(std::io::Error::other)
+            .and_then(|core| crate::pane::watch_core_terminals(&core, self.event_tx.clone()));
+        if let Err(err) = watching {
+            warn!(%err, "cannot watch herdr-core for terminals to park");
+        }
+    }
+
+    /// Parks a core terminal that no pane shows. It joins the workspace of
+    /// the pane whose program started it, to come back beside that pane, and
+    /// otherwise the active workspace.
+    pub(crate) fn park_core_terminal(&mut self, found: CoreTerminal) {
+        let shows = |terminal_id: &TerminalId, address: &str| {
+            self.terminal_runtimes
+                .get(terminal_id)
+                .is_some_and(|runtime| runtime.core_address() == Some(address))
+        };
+        let address = Some(found.address.as_str());
+        if self
+            .terminal_runtimes
+            .values()
+            .any(|runtime| runtime.core_address() == address)
+            || self
+                .state
+                .terminals
+                .values()
+                .any(|terminal| terminal.unattached_core_terminal.as_deref() == address)
+        {
+            return;
+        }
+        let beside_parent = found.parent.as_deref().and_then(|parent| {
+            self.state
+                .workspaces
+                .iter()
+                .enumerate()
+                .find_map(|(ws_idx, ws)| {
+                    let tab = ws.tabs.iter().find(|tab| {
+                        tab.panes
+                            .values()
+                            .any(|pane| shows(&pane.attached_terminal_id, parent))
+                    })?;
+                    Some((ws_idx, Some(tab.parked_from.unwrap_or(tab.number))))
+                })
+        });
+        let place = beside_parent.or_else(|| {
+            let ws_idx = self.state.active.unwrap_or(0);
+            let ws = self.state.workspaces.get(ws_idx)?;
+            Some((ws_idx, ws.active_tab().map(|tab| tab.number)))
+        });
+        let Some((ws_idx, origin)) = place else {
+            self.core_terminals_to_park.push(found);
+            return;
+        };
+        let pane_id = PaneId::alloc();
+        // At the terminal's own size, so the attach resizes nothing. The
+        // layout sizes it afterwards, like any pane.
+        let runtime = match TerminalRuntime::reattach_core(
+            pane_id,
+            &found.address,
+            found.rows,
+            found.cols,
+            self.state.pane_scrollback_limit_bytes,
+            self.state.host_terminal_theme,
+            self.pane_host_terminal_appearance(),
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => {
+                warn!(address = %found.address, %err, "cannot park the core terminal");
+                return;
+            }
+        };
+        let mut terminal = TerminalState::new(TerminalId::alloc(), found.cwd);
+        if let Some(name) = found.name {
+            terminal.set_manual_label(name);
+        }
+        let moved = MovedPane {
+            pane_id,
+            pane_state: PaneState::new(terminal.id.clone()),
+        };
+        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
+        self.state.terminals.insert(terminal.id.clone(), terminal);
+        let channels = self.tab_channels();
+        self.state.workspaces[ws_idx].add_parked_pane(moved, origin, channels);
+        self.state.remove_alias_shadowed_by_new_pane(pane_id);
+        self.schedule_session_save();
+        if let Some(pane) = self.pane_info(ws_idx, pane_id) {
+            self.emit_event(EventEnvelope {
+                event: EventKind::PaneParked,
+                data: EventData::PaneParked { pane },
+            });
+        }
+    }
+}
 
 impl AppState {
     /// Hides a pane in a parked tab. It stays in its workspace with its

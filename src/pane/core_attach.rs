@@ -146,7 +146,7 @@ fn follow_core_cwd(
         .subscribe(serde_json::json!({"terminal": address}))
         .map_err(std::io::Error::other)?;
     let channel = subscription.channel;
-    let mut stream = subscription.stream;
+    let stream = subscription.stream;
     let publish = move |cwd: Option<std::path::PathBuf>| {
         if let Some(cwd) = cwd {
             publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
@@ -155,28 +155,140 @@ fn follow_core_cwd(
     publish(snapshot_cwd(&subscription.snapshot));
     let reader = core.clone();
     crate::thread_spawn::spawn_named("hc-cwd", move || {
-        let mut pending = Vec::new();
-        while let Some(Stream::Data(bytes)) = stream.blocking_recv() {
-            reader.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
-            pending.extend_from_slice(&bytes);
-            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-                let line: Vec<u8> = pending.drain(..=end).collect();
-                let Ok(message) = serde_json::from_slice::<serde_json::Value>(&line) else {
-                    continue;
-                };
-                let params = &message["params"];
-                match message["method"].as_str() {
-                    Some("event") if params["type"] == "foreground" => {
-                        publish(params["data"]["cwd"].as_str().map(Into::into));
-                    }
-                    // Events were dropped; the fresh snapshot has the record.
-                    Some("missed") => publish(snapshot_cwd(params)),
-                    _ => {}
+        read_events(&reader, channel, stream, |message| {
+            let params = &message["params"];
+            match message["method"].as_str() {
+                Some("event") if params["type"] == "foreground" => {
+                    publish(params["data"]["cwd"].as_str().map(Into::into));
                 }
+                // Events were dropped; the fresh snapshot has the record.
+                Some("missed") => publish(snapshot_cwd(params)),
+                _ => {}
             }
-        }
+        });
     })?;
     Ok(channel)
+}
+
+/// Hands each message of an `events.subscribe` stream to `on_message`, until
+/// the stream ends.
+fn read_events(
+    core: &Core,
+    channel: u32,
+    mut stream: mpsc::UnboundedReceiver<Stream>,
+    mut on_message: impl FnMut(&serde_json::Value),
+) {
+    let mut pending = Vec::new();
+    while let Some(Stream::Data(bytes)) = stream.blocking_recv() {
+        core.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+        pending.extend_from_slice(&bytes);
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            if let Ok(message) = serde_json::from_slice(&line) {
+                on_message(&message);
+            }
+        }
+    }
+}
+
+/// A core terminal that no pane shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreTerminal {
+    pub address: String,
+    /// The terminal whose program started this one.
+    pub parent: Option<String>,
+    pub name: Option<String>,
+    pub cwd: std::path::PathBuf,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+/// The `lawn` label on every terminal this session starts: the session's
+/// name, which keeps one session from parking another's panes.
+fn session_label() -> String {
+    crate::session::active_name().unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.into())
+}
+
+/// The terminal in `record`, when Lawn should park it: a live one on this
+/// machine that no Lawn session started and Lawn doesn't run in. `at_start`,
+/// before this session starts any, one of its own counts too: it may have
+/// lost its pane.
+fn terminal_to_park(
+    record: &serde_json::Value,
+    session: &str,
+    own: Option<&str>,
+    at_start: bool,
+) -> Option<CoreTerminal> {
+    let text = |key: &str| record[key].as_str().filter(|text| !text.is_empty());
+    let address = text("address")?;
+    let started_by = record["labels"]["lawn"].as_str();
+    // shortcut: skips terminals of other machines (`machine/t7`), whose cwd
+    // is no folder here; list them once a pane can live on another machine.
+    if record["state"] != "live"
+        || address.contains('/')
+        || own == Some(address)
+        || !(started_by.is_none() || (at_start && started_by == Some(session)))
+    {
+        return None;
+    }
+    let size = |key: &str, default: u16| {
+        record[key]
+            .as_u64()
+            .and_then(|size| u16::try_from(size).ok())
+            .unwrap_or(default)
+    };
+    Some(CoreTerminal {
+        address: address.to_owned(),
+        parent: text("parent").map(str::to_owned),
+        name: text("name").map(str::to_owned),
+        cwd: foreground_cwd(record).or_else(|| text("cwd").map(Into::into))?,
+        rows: size("rows", 24),
+        cols: size("cols", 80),
+    })
+}
+
+/// Reports the core terminals Lawn should park: those already running, then
+/// each one started later.
+// shortcut: ends with the connection; watch again once panes survive a core
+// that restarts.
+pub(crate) fn watch_core_terminals(
+    core: &Arc<Core>,
+    events: mpsc::Sender<AppEvent>,
+) -> std::io::Result<()> {
+    let subscription = core
+        .subscribe(serde_json::json!({}))
+        .map_err(std::io::Error::other)?;
+    let session = session_label();
+    let own = std::env::var("HC_TERMINAL_ID").ok();
+    let reader = core.clone();
+    crate::thread_spawn::spawn_named("hc-terminals", move || {
+        let report = |record: &serde_json::Value, at_start: bool| {
+            if let Some(terminal) = terminal_to_park(record, &session, own.as_deref(), at_start) {
+                let _ = events.blocking_send(AppEvent::CoreTerminalFound(terminal));
+            }
+        };
+        let report_all = |snapshot: &serde_json::Value, at_start: bool| {
+            for record in snapshot["terminals"].as_array().into_iter().flatten() {
+                report(record, at_start);
+            }
+        };
+        report_all(&subscription.snapshot, true);
+        read_events(
+            &reader,
+            subscription.channel,
+            subscription.stream,
+            |message| {
+                let params = &message["params"];
+                match message["method"].as_str() {
+                    Some("event") if params["type"] == "created" => report(&params["data"], false),
+                    // Events were dropped; the fresh snapshot has every record.
+                    Some("missed") => report_all(params, false),
+                    _ => {}
+                }
+            },
+        );
+    })?;
+    Ok(())
 }
 
 /// The foreground cwd in an `events.subscribe` snapshot of one terminal.
@@ -303,7 +415,7 @@ fn run_params(
         "cwd": cmd.get_cwd().map(|cwd| cwd.to_string_lossy()),
         "env": env,
         "size": {"cols": cols, "rows": rows},
-        "labels": {"lawn": "1"},
+        "labels": {"lawn": session_label()},
         "no_parent": true,
         "no_notify": true,
         "keep": true,
@@ -573,6 +685,65 @@ mod tests {
         let keeps = |name: &str| pane_keeps(&argv[2], std::ffi::OsStr::new(name));
         assert!(keeps("LAWN_KEEP"));
         assert!(!keeps("PATH"));
+    }
+
+    #[test]
+    fn only_terminals_outside_every_lawn_session_are_parked() {
+        let record = |extra: serde_json::Value| {
+            let mut record = json!({
+                "address": "t7",
+                "state": "live",
+                "cwd": "/start",
+                "foreground": {"cwd": "/now"},
+                "parent": "t3",
+                "name": "build",
+                "cols": 120,
+                "rows": 40,
+            });
+            record
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            record
+        };
+        let park = |record: &serde_json::Value, at_start| {
+            terminal_to_park(record, "core", Some("t1"), at_start)
+        };
+        assert_eq!(
+            park(&record(json!({})), false),
+            Some(CoreTerminal {
+                address: "t7".into(),
+                parent: Some("t3".into()),
+                name: Some("build".into()),
+                cwd: "/now".into(),
+                rows: 40,
+                cols: 120,
+            })
+        );
+        let plain = park(
+            &json!({"address": "t7", "state": "live", "cwd": "/start"}),
+            false,
+        )
+        .expect("a record with nothing optional");
+        assert_eq!((plain.cwd, plain.parent), ("/start".into(), None));
+
+        for (why, extra) in [
+            ("finished", json!({"state": "finished"})),
+            ("where Lawn runs", json!({"address": "t1"})),
+            ("on another machine", json!({"address": "box/t7"})),
+            (
+                "another session's",
+                json!({"labels": {"lawn": "core-work"}}),
+            ),
+            ("a pane being made", json!({"labels": {"lawn": "core"}})),
+        ] {
+            assert_eq!(park(&record(extra), false), None, "{why}");
+        }
+        // Before this session starts any, one of its own has lost its pane.
+        let own = record(json!({"labels": {"lawn": "core"}}));
+        assert!(park(&own, true).is_some());
+        let other = record(json!({"labels": {"lawn": "core-work"}}));
+        assert_eq!(park(&other, true), None);
     }
 
     #[cfg(unix)]
