@@ -133,7 +133,7 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
 /// and environment, owned by no terminal so it outlives Lawn.
 fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
-    let mut argv: Vec<String> = if cmd.is_default_prog() {
+    let argv: Vec<String> = if cmd.is_default_prog() {
         // Lawn picked the shell; a login shell is what portable-pty would start.
         cmd.get_env("SHELL")
             .map(|shell| vec![shell.to_string_lossy().into_owned(), "-l".to_owned()])
@@ -157,9 +157,12 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
     // shortcut: only drops what Lawn's own environment has, and nothing on
     // Windows; send a clean environment once `terminal.run` takes one.
     #[cfg(unix)]
-    if !argv.is_empty() {
-        let mut removed: Vec<String> = std::env::vars()
-            .map(|(key, _)| key)
+    let argv = if argv.is_empty() {
+        argv
+    } else {
+        // Names only: a value that isn't UTF-8 must not stop the pane.
+        let mut removed: Vec<String> = std::env::vars_os()
+            .filter_map(|(key, _)| key.into_string().ok())
             .filter(|key| keep(key) && !env.contains_key(key))
             .collect();
         removed.push(crate::hc::CORE_ENV.to_owned());
@@ -170,8 +173,8 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
             wrapped.extend(["-u".to_owned(), key]);
         }
         wrapped.extend(argv);
-        argv = wrapped;
-    }
+        wrapped
+    };
     serde_json::json!({
         "argv": argv,
         "cwd": cmd.get_cwd().map(|cwd| cwd.to_string_lossy()),
@@ -216,6 +219,7 @@ impl PaneRuntime {
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
+        history_ansi: Option<&str>,
     ) -> std::io::Result<Self> {
         let Attached {
             channel,
@@ -231,14 +235,21 @@ impl PaneRuntime {
         let io =
             CoreIo::new(core.clone(), channel, address).inspect_err(|_| core.detach(channel))?;
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
-        let terminal = Arc::new(PaneTerminal::new(new_pane_terminal(
+        let pane_terminal = new_pane_terminal(
             rows,
             cols,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
             &response_tx,
-        )?));
+        )?;
+        if let Some(ansi) = history_ansi {
+            // The core's first paint clears the screen, so scroll the saved
+            // lines up into history first.
+            let scroll = "\r\n".repeat(usize::from(rows));
+            pane_terminal.seed_history_ansi(&format!("{ansi}{scroll}"));
+        }
+        let terminal = Arc::new(PaneTerminal::new(pane_terminal));
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         // The program isn't our child: no pid, so nothing here signals it.
         let child_pid = Arc::new(AtomicU32::new(0));
@@ -401,6 +412,7 @@ mod tests {
             events,
             Arc::new(Notify::new()),
             Arc::new(RenderSignal::new()),
+            None,
         )
         .expect("attach_core");
         (address, runtime)
@@ -490,6 +502,44 @@ mod tests {
         test.core
             .call("terminal.kill", json!({"terminal": address}))
             .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_shows_saved_history_before_the_program() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let address = test
+            .core
+            .run(json!({"argv": ["sh", "-c", "echo fresh; sleep 30"], "no_parent": true}))
+            .expect("run");
+        let attached = test
+            .core
+            .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+            .expect("attach");
+        let (events, _event_rx) = mpsc::channel(8);
+        let runtime = PaneRuntime::attach_core(
+            PaneId::from_raw(7),
+            test.core.clone(),
+            attached,
+            24,
+            80,
+            1 << 20,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+            Some("saved-line\r\n"),
+        )
+        .expect("attach_core");
+        wait_for("the program", || runtime.visible_text().contains("fresh")).await;
+        assert!(runtime
+            .recent_text_snapshot(100)
+            .text
+            .contains("saved-line"));
+        runtime.shutdown();
     }
 
     #[cfg(unix)]

@@ -2806,6 +2806,7 @@ impl PaneRuntime {
                 events,
                 render_notify,
                 render_dirty,
+                initial_state.history_ansi,
             );
         }
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
