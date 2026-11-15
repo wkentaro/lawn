@@ -24,6 +24,8 @@ pub(super) struct CoreIo {
     /// Keys and submissions go through one queue so a submission's pause
     /// never lets other input in between its text and its Enter.
     input: std::sync::mpsc::Sender<Input>,
+    /// The events stream that follows the program's cwd, when it opened.
+    cwd_channel: Option<u32>,
 }
 
 impl CoreIo {
@@ -56,6 +58,7 @@ impl CoreIo {
             channel,
             address,
             input,
+            cwd_channel: None,
         })
     }
 
@@ -110,7 +113,74 @@ impl CoreIo {
 impl Drop for CoreIo {
     fn drop(&mut self) {
         self.core.detach(self.channel);
+        if let Some(channel) = self.cwd_channel {
+            self.core.detach(channel);
+        }
     }
+}
+
+/// The cwd of a terminal record's foreground process.
+fn foreground_cwd(record: &serde_json::Value) -> Option<std::path::PathBuf> {
+    record
+        .pointer("/foreground/cwd")
+        .and_then(|cwd| cwd.as_str())
+        .map(std::path::PathBuf::from)
+}
+
+/// The program isn't our child, so Lawn can't read its cwd from `/proc`.
+/// The core samples the foreground process instead; publish its cwd the way
+/// an OSC 7 report would be, for shells that don't send one. Returns the
+/// events channel to close with the pane.
+fn follow_core_cwd(
+    core: &Arc<Core>,
+    address: &str,
+    pane_id: PaneId,
+    reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    events: mpsc::Sender<AppEvent>,
+) -> std::io::Result<u32> {
+    let subscription = core
+        .subscribe(serde_json::json!({"terminal": address}))
+        .map_err(std::io::Error::other)?;
+    let channel = subscription.channel;
+    let mut stream = subscription.stream;
+    let publish = move |cwd: Option<std::path::PathBuf>| {
+        if let Some(cwd) = cwd {
+            publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
+        }
+    };
+    publish(snapshot_cwd(&subscription.snapshot));
+    let reader = core.clone();
+    crate::thread_spawn::spawn_named("hc-cwd", move || {
+        let mut pending = Vec::new();
+        while let Some(Stream::Data(bytes)) = stream.blocking_recv() {
+            reader.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+            pending.extend_from_slice(&bytes);
+            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                let Ok(message) = serde_json::from_slice::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                let params = &message["params"];
+                match message["method"].as_str() {
+                    Some("event") if params["type"] == "foreground" => {
+                        publish(params["data"]["cwd"].as_str().map(Into::into));
+                    }
+                    // Events were dropped; the fresh snapshot has the record.
+                    Some("missed") => publish(snapshot_cwd(params)),
+                    _ => {}
+                }
+            }
+        }
+    })?;
+    Ok(channel)
+}
+
+/// The foreground cwd in an `events.subscribe` snapshot of one terminal.
+fn snapshot_cwd(snapshot: &serde_json::Value) -> Option<std::path::PathBuf> {
+    snapshot["terminals"]
+        .as_array()?
+        .iter()
+        .find_map(foreground_cwd)
 }
 
 /// Why the core ended a pane's stream.
@@ -175,7 +245,8 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
         );
         removed.sort();
         removed.dedup();
-        let mut wrapped = vec!["env".to_owned()];
+        // By path: the pane's own PATH may not reach `env`.
+        let mut wrapped = vec!["/usr/bin/env".to_owned()];
         for key in removed {
             wrapped.extend(["-u".to_owned(), key]);
         }
@@ -261,6 +332,18 @@ impl PaneRuntime {
         // The program isn't our child: no pid, so nothing here signals it.
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
+        let mut io = io;
+        io.cwd_channel = follow_core_cwd(
+            &core,
+            &io.address,
+            pane_id,
+            reported_cwd.clone(),
+            events.clone(),
+        )
+        .inspect_err(
+            |err| warn!(pane = pane_id.raw(), %err, "cannot follow the core terminal's cwd"),
+        )
+        .ok();
         let stream_ended = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
@@ -386,7 +469,7 @@ mod tests {
         cmd.env_remove("CLAUDECODE");
         let argv: Vec<String> =
             serde_json::from_value(run_params(&cmd, 24, 80)["argv"].clone()).unwrap();
-        assert_eq!(argv[0], "env");
+        assert_eq!(argv[0], "/usr/bin/env");
         assert_eq!(argv[argv.len() - 2..], ["/bin/fish", "-l"]);
         assert!(argv.windows(2).any(|pair| pair == ["-u", "PATH"]));
         // Dropped by every pane, so unset even when Lawn's environment lacks it.
@@ -433,6 +516,66 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    #[cfg(unix)]
+    fn attach_started(core: &Arc<Core>, cmd: &CommandBuilder) -> PaneRuntime {
+        let attached = start(core, PaneId::from_raw(7), cmd, 24, 80).expect("start");
+        let (events, _event_rx) = mpsc::channel(8);
+        PaneRuntime::attach_core(
+            PaneId::from_raw(7),
+            core.clone(),
+            attached,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+            None,
+        )
+        .expect("attach_core")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_starts_with_a_path_that_lacks_env() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "echo path-ok; read line"]);
+        cmd.env("PATH", "/nonexistent");
+        // Dropped from the pane, so the launch goes through the env wrapper.
+        cmd.env_remove("TMUX");
+        let runtime = attach_started(&test.core, &cmd);
+        wait_for("the program", || runtime.visible_text().contains("path-ok")).await;
+        runtime.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_follows_a_cd_the_shell_does_not_report() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let start_dir = std::env::current_dir().unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        // `sh` sends no OSC 7; only the core sees it change directory.
+        cmd.args(["-c", "sleep 1; cd /; exec sleep 30"]);
+        cmd.cwd(&start_dir);
+        let runtime = attach_started(&test.core, &cmd);
+        wait_for("the cd", || {
+            runtime.cwd().as_deref() == Some(std::path::Path::new("/"))
+        })
+        .await;
+        assert_eq!(
+            runtime.cwd_for_persistence().as_deref(),
+            Some(std::path::Path::new("/"))
+        );
+        runtime.shutdown();
     }
 
     #[cfg(unix)]
