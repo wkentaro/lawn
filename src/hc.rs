@@ -31,8 +31,6 @@ pub(crate) const USES: &[&str] = &[
 ];
 /// Overrides the `hc` binary, for tests and unusual installs.
 pub(crate) const HC_BIN_ENV: &str = "LAWN_HC_BIN";
-/// Set to `1` by `lawn --core` so the server runs panes in herdr-core.
-pub(crate) const CORE_ENV: &str = "LAWN_CORE";
 /// Credit granted to an event stream; events are small and must not stall.
 const EVENT_CREDIT: u32 = 1024 * 1024;
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -174,10 +172,10 @@ fn hc_bin() -> std::ffi::OsString {
 
 static SHARED: Mutex<Option<Arc<Core>>> = Mutex::new(None);
 
-/// The core panes run in, when `lawn --core` asked for one. Reconnects after
-/// the connection drops.
+/// The core panes run in, when this is a core session. Reconnects after the
+/// connection drops.
 pub(crate) fn backend() -> Option<HcResult<Arc<Core>>> {
-    if std::env::var_os(CORE_ENV).is_none_or(|value| value != "1") {
+    if !crate::session::runs_on_core(crate::session::active_name().as_deref()) {
         return None;
     }
     let mut shared = SHARED

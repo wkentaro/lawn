@@ -144,9 +144,8 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     };
-    // The core names the terminal itself, and a Lawn started in the pane
-    // picks its own backend.
-    let keep = |key: &str| !key.starts_with("HC_") && key != crate::hc::CORE_ENV;
+    // The core names the terminal itself.
+    let keep = |key: &str| !key.starts_with("HC_");
     let env: serde_json::Map<String, serde_json::Value> = cmd
         .iter_full_env_as_str()
         .filter(|(key, _)| keep(key))
@@ -166,7 +165,6 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
             .filter_map(|(key, _)| key.into_string().ok())
             .filter(|key| keep(key) && !env.contains_key(key))
             .collect();
-        removed.push(crate::hc::CORE_ENV.to_owned());
         // The core's own environment may hold these even when Lawn's doesn't.
         removed.extend(
             HOST_HANDLE_ENV
@@ -363,19 +361,13 @@ mod tests {
         cmd.arg("--resume");
         cmd.cwd("/work");
         cmd.env("HC_TERMINAL_ID", "t9");
-        cmd.env(crate::hc::CORE_ENV, "1");
         cmd.env("LAWN_KEEP", "yes");
         let params = run_params(&cmd, 24, 80);
         let argv: Vec<String> = serde_json::from_value(params["argv"].clone()).unwrap();
         assert_eq!(argv[argv.len() - 2..], ["claude", "--resume"]);
-        #[cfg(unix)]
-        assert!(argv
-            .windows(2)
-            .any(|pair| pair == ["-u", crate::hc::CORE_ENV]));
         assert_eq!(params["cwd"], "/work");
         assert_eq!(params["env"]["LAWN_KEEP"], "yes");
         assert!(params["env"].get("HC_TERMINAL_ID").is_none());
-        assert!(params["env"].get(crate::hc::CORE_ENV).is_none());
         assert_eq!(params["size"], json!({"cols": 80, "rows": 24}));
         assert_eq!(
             (params["no_parent"].clone(), params["keep"].clone()),

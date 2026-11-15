@@ -71,8 +71,7 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
             index += 2;
             continue;
         }
-        // `--core` runs panes in herdr-core. The server started for this launch
-        // inherits the switch, in its own `core` or `core-<name>` session.
+        // `--core` picks a core session, `core` or `core-<name>`.
         if arg == "--core" {
             core = true;
             index += 1;
@@ -88,15 +87,11 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
         index += 1;
     }
 
-    if core {
-        std::env::set_var(crate::hc::CORE_ENV, "1");
-    }
-    // Core sessions get their own names so `--core` never attaches to a
-    // running PTY server of the same name.
+    // The session name carries the backend, so `--core` maps to a core name.
     let requested_session = match (core, requested_session) {
-        (true, Some(name)) => Some(format!("core-{name}")),
-        (true, None) => Some("core".to_owned()),
-        (false, name) => name,
+        (true, Some(name)) if !runs_on_core(Some(&name)) => Some(format!("core-{name}")),
+        (true, None) => Some(CORE_SESSION_NAME.to_owned()),
+        (_, name) => name,
     };
     if let Some(session) = requested_session {
         apply_explicit_name(&session)?;
@@ -112,6 +107,17 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
     }
 
     Ok(cleaned)
+}
+
+const CORE_SESSION_NAME: &str = "core";
+
+/// Whether a session runs its panes in herdr-core: `core` and `core-<name>`
+/// do, whichever command started or attached them.
+pub(crate) fn runs_on_core(name: Option<&str>) -> bool {
+    name.is_some_and(|name| {
+        name.strip_prefix(CORE_SESSION_NAME)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+    })
 }
 
 pub fn active_name() -> Option<String> {
@@ -766,9 +772,15 @@ mod tests {
         for (args, session) in [
             (vec!["lawn", "--core"], "core"),
             (vec!["lawn", "--core", "--session", "work"], "core-work"),
+            (
+                vec!["lawn", "--core", "--session", "core-work"],
+                "core-work",
+            ),
+            // Attaching or naming a core session picks the core with no flag.
+            (vec!["lawn", "session", "attach", "core"], "core"),
+            (vec!["lawn", "--session", "core-work"], "core-work"),
         ] {
             std::env::remove_var(SESSION_ENV_VAR);
-            std::env::remove_var(crate::hc::CORE_ENV);
             clear_explicit_session_for_test();
             let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
 
@@ -776,11 +788,23 @@ mod tests {
 
             assert_eq!(cleaned, vec!["lawn"]);
             assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok(session));
-            assert_eq!(std::env::var(crate::hc::CORE_ENV).as_deref(), Ok("1"));
+            assert!(runs_on_core(active_name().as_deref()));
         }
         std::env::remove_var(SESSION_ENV_VAR);
-        std::env::remove_var(crate::hc::CORE_ENV);
         clear_explicit_session_for_test();
+    }
+
+    #[test]
+    fn only_core_named_sessions_run_on_core() {
+        for (name, core) in [
+            (None, false),
+            (Some("work"), false),
+            (Some("corework"), false),
+            (Some("core"), true),
+            (Some("core-work"), true),
+        ] {
+            assert_eq!(runs_on_core(name), core, "{name:?}");
+        }
     }
 
     #[test]
