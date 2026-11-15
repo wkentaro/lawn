@@ -320,7 +320,11 @@ impl HeadlessServer {
                 self.send_to_foreground_client(ServerMessage::Clipboard { data });
                 false
             }
-            AppEvent::StateChanged { pane_id, agent, .. } => {
+            AppEvent::StateChanged { pane_id, agent, .. }
+            | AppEvent::CoreStatusReported {
+                pane_id,
+                status: crate::pane::CoreStatus { agent, .. },
+            } => {
                 // Capture toast before handling.
                 let toast_before = self.app.state.toast.clone();
                 let pane_id_val = *pane_id;

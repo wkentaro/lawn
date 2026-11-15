@@ -1448,6 +1448,24 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::CoreStatusReported { pane_id, status } => {
+                // `idle` is nothing to look at; only a finished turn is.
+                let quiet = status.state == AgentState::Idle && !status.finished;
+                // The report stands in for the detector a core pane lacks.
+                self.update_terminal_state_with_completion_policy(pane_id, quiet, |terminal| {
+                    Some(terminal.set_detected_state_with_screen_signals_at(
+                        status.agent,
+                        status.state,
+                        false,
+                        false,
+                        false,
+                        false,
+                        Instant::now(),
+                    ))
+                })
+                .into_iter()
+                .collect()
+            }
             AppEvent::HookAuthorityCleared {
                 pane_id,
                 source,
@@ -2865,6 +2883,76 @@ mod tests {
         assert!(terminal.managed_agent_interactive_ready());
         assert_eq!(terminal.state, AgentState::Unknown);
         assert!(terminal.last_agent_completion_seq.is_none());
+    }
+
+    #[test]
+    fn core_status_is_the_agent_state_and_only_a_finished_turn_is_unread() {
+        // The agent's own hook names its session before or after the first
+        // report; the reports apply either way.
+        for session_first in [true, false] {
+            let mut app = app_with_workspaces(&["active", "background"]);
+            app.active = Some(0);
+            let pane_id = app.workspaces[1].tabs[0].root_pane;
+            let name_session = |app: &mut AppState| {
+                app.handle_app_event(AppEvent::HookStateReported {
+                    pane_id,
+                    source: "herdr:claude".into(),
+                    agent_label: "claude".into(),
+                    state: AgentState::Idle,
+                    message: None,
+                    seq: None,
+                    session_ref: crate::agent_resume::AgentSessionRef::id("session-1"),
+                });
+            };
+            let report = |app: &mut AppState, agent, state, finished| {
+                app.handle_app_event(AppEvent::CoreStatusReported {
+                    pane_id,
+                    status: crate::pane::CoreStatus {
+                        agent,
+                        state,
+                        finished,
+                    },
+                });
+                let pane = &app.workspaces[1].panes[&pane_id];
+                let terminal = &app.terminals[&pane.attached_terminal_id];
+                (terminal.state, pane.seen)
+            };
+            let claude = Some(Agent::Claude);
+            let (working, blocked, idle) =
+                (AgentState::Working, AgentState::Blocked, AgentState::Idle);
+            if session_first {
+                name_session(&mut app);
+            }
+            assert_eq!(report(&mut app, claude, working, false), (working, true));
+            if !session_first {
+                name_session(&mut app);
+            }
+            assert_eq!(report(&mut app, claude, blocked, false), (blocked, true));
+            assert_eq!(report(&mut app, claude, working, false), (working, true));
+            // `done`: a result to look at.
+            assert_eq!(report(&mut app, claude, idle, true), (idle, false));
+            // `idle` after it takes nothing back.
+            assert_eq!(report(&mut app, claude, idle, false), (idle, false));
+            assert_eq!(report(&mut app, claude, working, false), (working, true));
+            // `idle` straight from working: nothing to look at.
+            assert_eq!(report(&mut app, claude, idle, false), (idle, true));
+            let terminal_id = app.workspaces[1].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            assert_eq!(
+                app.terminals[&terminal_id].effective_agent_label(),
+                Some("claude")
+            );
+            // The session the hook named is still there to resume.
+            assert!(app.terminals[&terminal_id]
+                .persisted_agent_session
+                .is_some());
+
+            // The program took its report back, or ended, mid-turn.
+            assert_eq!(report(&mut app, claude, working, false), (working, true));
+            let cleared = report(&mut app, None, AgentState::Unknown, false);
+            assert_eq!(cleared, (AgentState::Unknown, true));
+        }
     }
 
     #[test]
