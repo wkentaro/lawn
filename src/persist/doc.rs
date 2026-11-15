@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use super::snapshot::{parse_snapshot, SessionSnapshot};
 
@@ -11,22 +11,27 @@ fn version() -> std::sync::MutexGuard<'static, Option<u64>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Held by the server from its first read or write of the layout until it
-/// exits. An offline edit takes it too, so it never lands under a server
-/// that already loaded an older version.
-static OWNER: OnceLock<Option<File>> = OnceLock::new();
+/// The layout lock, which the server holds from startup until it exits. An
+/// offline edit takes it too, so it lands before a server loads the layout
+/// or not at all.
+static OWNER: Mutex<Option<File>> = Mutex::new(None);
 
 fn lock_file() -> std::io::Result<File> {
     super::io::open_lock_file(&crate::session::data_dir().join("layout.lock"))
 }
 
-fn own() {
-    OWNER.get_or_init(|| {
-        lock_file()
-            .and_then(|file| file.lock().map(|()| file))
-            .inspect_err(|err| tracing::warn!(%err, "cannot lock the layout"))
-            .ok()
-    });
+/// Takes this session's layout for the server before it restores anything,
+/// waiting for an offline edit in progress.
+pub(crate) fn own() -> std::io::Result<()> {
+    let mut owner = OWNER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if owner.is_none() {
+        let file = lock_file()?;
+        file.lock()?;
+        *owner = Some(file);
+    }
+    Ok(())
 }
 
 pub(crate) fn name() -> String {
@@ -51,7 +56,6 @@ pub(super) fn load() -> Option<Option<SessionSnapshot>> {
     let core = crate::hc::backend()?
         .inspect_err(|err| tracing::warn!(%err, "cannot read the layout from herdr core"))
         .ok()?;
-    own();
     let name = name();
     let doc = core
         .doc_get(&name, None)
@@ -94,7 +98,6 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
         return Ok(());
     };
     let core = core.map_err(|err| err.to_string())?;
-    own();
     let name = name();
     let mut held = version();
     let base = match *held {
@@ -755,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_never_lands_under_a_server_that_loaded_the_layout() {
+    fn an_edit_never_lands_under_a_running_server() {
         let Some(test) = crate::hc::test_support::TestCore::start() else {
             return;
         };
@@ -773,6 +776,8 @@ mod tests {
         };
 
         assert_eq!(widen(), Ok(Some(())), "no server yet");
+        own().expect("the server starts");
+        own().expect("and keeps its lock");
         let loaded = load().expect("written").expect("not cleared");
         assert_eq!(loaded.sidebar_width, Some(40), "the server starts with it");
         assert_eq!(widen(), Ok(None), "the server owns the layout now");

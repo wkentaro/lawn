@@ -585,6 +585,11 @@ fn main() -> io::Result<()> {
             eprintln!("lawn: {err}");
             std::process::exit(1);
         }
+        // Only core panes keep the layout document; PTY servers hand off live.
+        if let Err(err) = hc::enabled().then(persist::doc::own).transpose() {
+            eprintln!("lawn: cannot lock this session's layout: {err}");
+            std::process::exit(1);
+        }
         return server::headless::run_server();
     }
 
