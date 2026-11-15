@@ -44,8 +44,8 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
+pub(crate) use self::core_attach::watch_core_terminals;
 pub use self::core_attach::CoreTerminal;
-pub(crate) use self::core_attach::{claim_core_terminal, watch_core_terminals};
 #[cfg(unix)]
 pub(crate) use self::core_attach::{pane_exec, PANE_EXEC};
 #[cfg(test)]

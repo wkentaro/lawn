@@ -210,23 +210,24 @@ fn session_label() -> String {
 }
 
 /// The terminal in `record`, when Lawn should park it: a live one on this
-/// machine that Lawn doesn't run in and no other session owns. `owner` is the
-/// session of the terminal, or of the nearest terminal above it that has one.
-/// A terminal this session started itself counts only once it `lost_pane`.
+/// machine that no Lawn session started and Lawn doesn't run in. One this
+/// session started itself counts once it `lost_pane`.
 fn terminal_to_park(
     record: &serde_json::Value,
-    owner: Option<&str>,
     session: &str,
     own: Option<&str>,
     lost_pane: bool,
 ) -> Option<CoreTerminal> {
     let text = |key: &str| record[key].as_str().filter(|text| !text.is_empty());
     let address = text("address")?;
-    let labelled = record["labels"]["lawn"].is_string();
-    let ours = owner.is_none() || (owner == Some(session) && (lost_pane || !labelled));
+    let started_by = record["labels"]["lawn"].as_str();
     // shortcut: skips terminals of other machines (`machine/t7`), whose cwd
     // is no folder here; list them once a pane can live on another machine.
-    if record["state"] != "live" || address.contains('/') || own == Some(address) || !ours {
+    if record["state"] != "live"
+        || address.contains('/')
+        || own == Some(address)
+        || !(started_by.is_none() || (lost_pane && started_by == Some(session)))
+    {
         return None;
     }
     let size = |key: &str, default: u16| {
@@ -245,98 +246,6 @@ fn terminal_to_park(
     })
 }
 
-/// Every terminal the core has: the Lawn session on its label, and its parent.
-type Lineage = std::collections::HashMap<String, (Option<String>, Option<String>)>;
-
-/// The session a terminal belongs to: its own label, else its parent's
-/// session. A helper belongs to the session whose pane started it.
-fn owner<'a>(lineage: &'a Lineage, mut address: &'a str) -> Option<&'a str> {
-    // Parents never loop; the bound is for a core that says they do.
-    for _ in 0..64 {
-        let (session, parent) = lineage.get(address)?;
-        if session.is_some() {
-            return session.as_deref();
-        }
-        address = parent.as_deref()?;
-    }
-    None
-}
-
-/// Reports the core terminals Lawn should park: those already running, then
-/// each one started later.
-// shortcut: ends with the connection; watch again once panes survive a core
-// that restarts.
-pub(crate) fn watch_core_terminals(
-    core: &Arc<Core>,
-    events: mpsc::Sender<AppEvent>,
-) -> std::io::Result<()> {
-    let subscription = core
-        .subscribe(serde_json::json!({}))
-        .map_err(std::io::Error::other)?;
-    let session = session_label();
-    let own = std::env::var("HC_TERMINAL_ID").ok();
-    let reader = core.clone();
-    crate::thread_spawn::spawn_named("hc-terminals", move || {
-        let mut lineage = Lineage::new();
-        let session_of = |labels: &serde_json::Value| labels["lawn"].as_str().map(str::to_owned);
-        let see = |lineage: &mut Lineage, records: &[serde_json::Value], lost_pane: bool| {
-            // All of them first: a snapshot may list a helper before its parent.
-            for record in records {
-                if let Some(address) = record["address"].as_str() {
-                    let parent = record["parent"].as_str().map(str::to_owned);
-                    lineage.insert(address.to_owned(), (session_of(&record["labels"]), parent));
-                }
-            }
-            for record in records {
-                let owner = record["address"]
-                    .as_str()
-                    .and_then(|address| owner(lineage, address));
-                let found = terminal_to_park(record, owner, &session, own.as_deref(), lost_pane);
-                if let Some(terminal) = found {
-                    let _ = events.blocking_send(AppEvent::CoreTerminalFound(terminal));
-                }
-            }
-        };
-        fn all(snapshot: &serde_json::Value) -> &[serde_json::Value] {
-            snapshot["terminals"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-        }
-        // Before this session starts any, one of its own has lost its pane.
-        see(&mut lineage, all(&subscription.snapshot), true);
-        read_events(
-            &reader,
-            subscription.channel,
-            subscription.stream,
-            |message| {
-                let params = &message["params"];
-                let data = &params["data"];
-                let address = params["terminal"].as_str().unwrap_or_default();
-                let one = std::slice::from_ref;
-                match (message["method"].as_str(), params["type"].as_str()) {
-                    (Some("event"), Some("created")) => see(&mut lineage, one(data), false),
-                    // A kept terminal has a program again. It has no pane
-                    // if it was found while it had none to attach to.
-                    (Some("event"), Some("restarted")) => see(&mut lineage, one(data), true),
-                    (Some("event"), Some("labels")) => {
-                        if let Some(terminal) = lineage.get_mut(address) {
-                            terminal.0 = session_of(&data["labels"]);
-                        }
-                    }
-                    (Some("event"), Some("removed")) => {
-                        lineage.remove(address);
-                    }
-                    // Events were dropped; the fresh snapshot has every record.
-                    (Some("missed"), _) => see(&mut lineage, all(params), false),
-                    _ => {}
-                }
-            },
-        );
-    })?;
-    Ok(())
-}
-
 /// A label each session adds, with its name, to a terminal it wants to park.
 const CLAIM_LABEL: &str = "lawn.claim.";
 
@@ -353,17 +262,40 @@ fn won_claim(record: &serde_json::Value, session: &str) -> bool {
     }
 }
 
-/// Takes a terminal for `session` to park, unless another session took it
-/// first. Sessions that find the same terminal each add a label of their
-/// own, and the core answers each with every label so far, so only the first
-/// sees its label alone. The others take theirs back.
-fn claim(core: &Core, address: &str, session: &str) -> crate::hc::HcResult<bool> {
+/// Whether `session` may park the terminal in `record`. A terminal belongs
+/// to the session of the nearest terminal above it that has one: a helper
+/// goes where the pane that started it is. Above a terminal with no session
+/// anywhere, the topmost one decides for all below it, and the first session
+/// to claim that one gets them.
+///
+/// Sessions that find the same terminal each add a label of their own, and
+/// the core answers each with every label so far, so only the first sees
+/// its label alone. The others take theirs back.
+// shortcut: walks up again for every terminal of a family; remember the
+// answer per snapshot once families get large.
+fn claim(core: &Core, record: &serde_json::Value, session: &str) -> crate::hc::HcResult<bool> {
+    let mut top = std::borrow::Cow::Borrowed(record);
+    // Parents never loop; the bound is for a core that says they do.
+    for _ in 0..64 {
+        if let Some(owner) = top["labels"]["lawn"].as_str() {
+            return Ok(owner == session);
+        }
+        let Some(parent) = top["parent"].as_str() else {
+            break;
+        };
+        match core.call("terminal.get", serde_json::json!({"terminal": parent})) {
+            Ok(above) => top = std::borrow::Cow::Owned(above),
+            // The core forgot it, so the one below is the topmost left.
+            Err(err) if err.kind() == Some("not_found") => break,
+            Err(err) => return Err(err),
+        }
+    }
     let label = |value: &str| {
-        let labels =
-            serde_json::Map::from_iter([(format!("{CLAIM_LABEL}{session}"), value.into())]);
+        let labels = [(format!("{CLAIM_LABEL}{session}"), value.into())];
+        let labels = serde_json::Map::from_iter(labels);
         core.call(
             "terminal.label",
-            serde_json::json!({"terminal": address, "labels": labels}),
+            serde_json::json!({"terminal": top["address"], "labels": labels}),
         )
     };
     let won = won_claim(&label("1")?, session);
@@ -373,18 +305,63 @@ fn claim(core: &Core, address: &str, session: &str) -> crate::hc::HcResult<bool>
     Ok(won)
 }
 
-/// Whether this session may park the core terminal at `address`: no other
-/// session shows it or took it first.
-pub(crate) fn claim_core_terminal(address: &str) -> std::io::Result<bool> {
-    let core = shared_core()?;
-    claim(&core, address, &session_label()).map_err(std::io::Error::other)
-}
-
-/// The core this session's panes run in.
-fn shared_core() -> std::io::Result<Arc<Core>> {
-    crate::hc::backend()
-        .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
-        .map_err(std::io::Error::other)
+/// Reports the core terminals Lawn should park: those already running, then
+/// each one started later.
+// shortcut: ends with the connection; watch again once panes survive a core
+// that restarts.
+pub(crate) fn watch_core_terminals(
+    core: &Arc<Core>,
+    events: mpsc::Sender<AppEvent>,
+) -> std::io::Result<()> {
+    let subscription = core
+        .subscribe(serde_json::json!({}))
+        .map_err(std::io::Error::other)?;
+    let session = session_label();
+    let own = std::env::var("HC_TERMINAL_ID").ok();
+    let core = core.clone();
+    crate::thread_spawn::spawn_named("hc-terminals", move || {
+        let report = |record: &serde_json::Value, lost_pane: bool| {
+            let Some(terminal) = terminal_to_park(record, &session, own.as_deref(), lost_pane)
+            else {
+                return;
+            };
+            match claim(&core, record, &session) {
+                Ok(true) => {
+                    let _ = events.blocking_send(AppEvent::CoreTerminalFound(terminal));
+                }
+                // Another session parks it.
+                Ok(false) => {}
+                Err(err) => {
+                    warn!(address = %terminal.address, %err, "cannot take the core terminal to park");
+                }
+            }
+        };
+        let report_all = |snapshot: &serde_json::Value, lost_pane: bool| {
+            for record in snapshot["terminals"].as_array().into_iter().flatten() {
+                report(record, lost_pane);
+            }
+        };
+        // Before this session starts any, one of its own has lost its pane.
+        report_all(&subscription.snapshot, true);
+        read_events(
+            &core,
+            subscription.channel,
+            subscription.stream,
+            |message| {
+                let params = &message["params"];
+                match (message["method"].as_str(), params["type"].as_str()) {
+                    (Some("event"), Some("created")) => report(&params["data"], false),
+                    // A kept terminal has a program again. It has no pane
+                    // if it was found while it had none to attach to.
+                    (Some("event"), Some("restarted")) => report(&params["data"], true),
+                    // Events were dropped; the fresh snapshot has every record.
+                    (Some("missed"), _) => report_all(params, false),
+                    _ => {}
+                }
+            },
+        );
+    })?;
+    Ok(())
 }
 
 /// Marks a terminal a pane shows again as this session's, so no other
@@ -578,7 +555,9 @@ impl PaneRuntime {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
-        let core = shared_core()?;
+        let core = crate::hc::backend()
+            .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
+            .map_err(std::io::Error::other)?;
         let attached = core
             .attach(reattach_params(address, rows, cols))
             .map_err(reattach_error)?;
@@ -814,23 +793,41 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn only_the_first_session_to_claim_a_terminal_gets_it() {
+    async fn the_first_session_to_claim_a_terminal_gets_all_below_it() {
         let Some(test) = crate::hc::test_support::TestCore::start() else {
             return;
         };
-        let address = test
-            .core
-            .run(json!({"argv": ["sleep", "30"], "no_parent": true}))
-            .expect("run");
-        // Both sessions found it before either parked it.
-        assert!(claim(&test.core, &address, "core").expect("claim"));
-        assert!(!claim(&test.core, &address, "core-work").expect("claim"));
-        assert!(claim(&test.core, &address, "core").expect("claim again"));
-        let record = test
-            .core
-            .call("terminal.get", json!({"terminal": address}))
-            .expect("terminal.get");
-        assert_eq!(record["labels"], json!({"lawn.claim.core": "1"}));
+        let run = |params: serde_json::Value| test.core.run(params).expect("run");
+        let record = |address: &str| {
+            test.core
+                .call("terminal.get", json!({"terminal": address}))
+                .expect("terminal.get")
+        };
+        let claims = |address: &str, session: &str| {
+            claim(&test.core, &record(address), session).expect("claim")
+        };
+        let top = run(json!({"argv": ["sleep", "30"], "no_parent": true}));
+        let helper = run(json!({"argv": ["sleep", "30"], "parent": top}));
+        let below = run(json!({"argv": ["sleep", "30"], "parent": helper}));
+
+        // Both sessions found all three before either parked one.
+        assert!(claims(&top, "core"));
+        assert!(!claims(&top, "core-work"));
+        assert!(!claims(&below, "core-work"), "its family is taken");
+        assert!(claims(&below, "core"));
+        assert_eq!(record(&top)["labels"], json!({"lawn.claim.core": "1"}));
+        assert_eq!(record(&below)["labels"], json!({}));
+
+        // A pane of another session in between owns what it starts.
+        test.core
+            .call(
+                "terminal.label",
+                json!({"terminal": helper, "labels": {"lawn": "core-work"}}),
+            )
+            .expect("terminal.label");
+        assert!(claims(&below, "core-work"));
+        assert!(!claims(&below, "core"));
+        assert!(claims(&top, "core"));
     }
 
     #[test]
@@ -852,11 +849,11 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             record
         };
-        let park = |record: &serde_json::Value, owner, lost_pane| {
-            terminal_to_park(record, owner, "core", Some("t1"), lost_pane)
+        let park = |record: &serde_json::Value, lost_pane| {
+            terminal_to_park(record, "core", Some("t1"), lost_pane)
         };
         assert_eq!(
-            park(&record(json!({})), None, false),
+            park(&record(json!({})), false),
             Some(CoreTerminal {
                 address: "t7".into(),
                 parent: Some("t3".into()),
@@ -868,58 +865,28 @@ mod tests {
         );
         let plain = park(
             &json!({"address": "t7", "state": "live", "cwd": "/start"}),
-            None,
             false,
         )
         .expect("a record with nothing optional");
         assert_eq!((plain.cwd, plain.parent), ("/start".into(), None));
 
-        for (why, extra, owner) in [
-            ("finished", json!({"state": "finished"}), None),
-            ("where Lawn runs", json!({"address": "t1"}), None),
-            ("on another machine", json!({"address": "box/t7"}), None),
-            ("another session's helper", json!({}), Some("core-work")),
+        for (why, extra) in [
+            ("finished", json!({"state": "finished"})),
+            ("where Lawn runs", json!({"address": "t1"})),
+            ("on another machine", json!({"address": "box/t7"})),
             (
-                "a pane being made",
-                json!({"labels": {"lawn": "core"}}),
-                Some("core"),
+                "another session's",
+                json!({"labels": {"lawn": "core-work"}}),
             ),
+            ("a pane being made", json!({"labels": {"lawn": "core"}})),
         ] {
-            assert_eq!(park(&record(extra), owner, false), None, "{why}");
+            assert_eq!(park(&record(extra), false), None, "{why}");
         }
-        // A helper of this session's pane has no label of its own.
-        assert!(park(&record(json!({})), Some("core"), false).is_some());
         // One of this session's own has lost its pane.
         let own = record(json!({"labels": {"lawn": "core"}}));
-        assert!(park(&own, Some("core"), true).is_some());
-        assert_eq!(park(&record(json!({})), Some("core-work"), true), None);
-    }
-
-    #[test]
-    fn a_terminal_belongs_to_the_session_above_it() {
-        let lineage: Lineage = [
-            ("t1", Some("core"), None),
-            ("t2", None, Some("t1")),
-            ("t3", None, Some("t2")),
-            ("t4", Some("core-work"), Some("t1")),
-            ("t5", None, None),
-            ("t6", None, Some("t9")),
-            ("t7", None, Some("t7")),
-        ]
-        .into_iter()
-        .map(
-            |(address, session, parent): (_, Option<&str>, Option<&str>)| {
-                let owned = |text: &str| text.to_owned();
-                (owned(address), (session.map(owned), parent.map(owned)))
-            },
-        )
-        .collect();
-        let owners = ["t1", "t2", "t3", "t4", "t5", "t6", "t7"].map(|t| owner(&lineage, t));
-        let core = Some("core");
-        assert_eq!(
-            owners,
-            [core, core, core, Some("core-work"), None, None, None]
-        );
+        assert!(park(&own, true).is_some());
+        let other = record(json!({"labels": {"lawn": "core-work"}}));
+        assert_eq!(park(&other, true), None);
     }
 
     #[cfg(unix)]
