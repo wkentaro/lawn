@@ -208,7 +208,10 @@ impl PaneRuntime {
                         }
                         reader_core.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
                     }
-                    // shortcut: another screen's resize isn't mirrored; the next layout resize wins.
+                    // The core sends RESIZE only to observing viewers. For a typing
+                    // viewer like this one, the core sizes the grid to whichever viewer
+                    // typed, resized or focused last, so our next keystroke or layout
+                    // resize takes it back.
                     Some(Stream::Resize { .. }) => {}
                     Some(item) => break exit_reason(&item),
                     None => break crate::platform::ChildExitReason::WaitFailed,
