@@ -69,7 +69,8 @@ pub(crate) fn start_server_with_stop_control(
 
 fn default_capabilities() -> Option<ServerCapabilities> {
     Some(ServerCapabilities {
-        live_handoff: crate::platform::capabilities().live_handoff,
+        // Core panes hold no PTY to pass on; a restart reattaches them instead.
+        live_handoff: crate::platform::capabilities().live_handoff && !crate::hc::enabled(),
         detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
         endpoint_protocol_generation: Some(crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION),
         surface_interest: true,
@@ -1209,6 +1210,24 @@ mod tests {
         assert!(result.is_err());
         assert!(!path.exists(), "bound socket must be removed");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_pty_sessions_advertise_live_handoff() {
+        let _guard = env_lock().lock().unwrap();
+        let advertised = |session: &str| {
+            std::env::set_var(crate::session::SESSION_ENV_VAR, session);
+            let capabilities = default_capabilities().expect("capabilities");
+            std::env::remove_var(crate::session::SESSION_ENV_VAR);
+            capabilities.live_handoff
+        };
+
+        assert_eq!(
+            advertised("work"),
+            crate::platform::capabilities().live_handoff
+        );
+        assert!(!advertised("core"));
+        assert!(!advertised("core-work"));
     }
 
     #[test]

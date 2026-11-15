@@ -219,6 +219,39 @@ impl TerminalRuntime {
         .map(Self)
     }
 
+    // Wrapper mirrors pane runtime construction arguments.
+    #[allow(clippy::too_many_arguments)]
+    pub fn reattach_core(
+        pane_id: PaneId,
+        address: &str,
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::reattach_core(
+            pane_id,
+            address,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events,
+            render_notify,
+            render_dirty,
+        )
+        .map(Self)
+    }
+
+    pub fn core_address(&self) -> Option<&str> {
+        self.0.core_address()
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.0.apply_host_terminal_theme(theme);
     }

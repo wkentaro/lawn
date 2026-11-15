@@ -500,7 +500,9 @@ fn restore_tab(
 
         let cwd = saved_cwd;
         let has_import = old_id.is_some_and(|old_id| imported_panes.contains_key(old_id));
-        if !has_import && !cwd.is_dir() {
+        // A running core terminal doesn't need its directory to come back.
+        let may_reattach = saved_pane.is_some_and(|pane| pane.core_terminal.is_some());
+        if !has_import && !may_reattach && !cwd.is_dir() {
             let terminal = unavailable_restored_terminal(
                 terminal_id,
                 saved_pane,
@@ -565,7 +567,42 @@ fn restore_tab(
         let handoff_agent_state = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
-        let pending_native_agent_restore = if was_imported {
+        // A pane whose core terminal is still running gets it back, program
+        // and all, instead of a new shell.
+        let core_terminal = saved_pane
+            .and_then(|pane| pane.core_terminal.as_deref())
+            .filter(|_| !was_imported);
+        let reattached = core_terminal
+            .map(|address| {
+                TerminalRuntime::reattach_core(
+                    *id,
+                    address,
+                    rows,
+                    cols,
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    None,
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
+            })
+            // Only a program that is gone gets replaced; any other failure
+            // leaves the pane unavailable and keeps the address.
+            .filter(|result| {
+                let gone = result
+                    .as_ref()
+                    .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound);
+                if gone {
+                    warn!(
+                        pane_id = id.raw(),
+                        "the core terminal is gone or finished; starting a new one"
+                    );
+                }
+                !gone
+            });
+        let kept_running = was_imported || reattached.is_some();
+        let pending_native_agent_restore = if kept_running {
             None
         } else {
             startup.restore_plan.clone()
@@ -611,7 +648,9 @@ fn restore_tab(
             continue;
         }
 
-        let runtime_result = {
+        let runtime_result = if let Some(result) = reattached {
+            result
+        } else {
             #[cfg(unix)]
             if let Some(imported) = imported_runtime {
                 TerminalRuntime::from_handoff_fd(
@@ -667,7 +706,7 @@ fn restore_tab(
         match runtime_result {
             Ok(runtime) => {
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
+                if kept_running {
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
@@ -682,11 +721,11 @@ fn restore_tab(
                     terminal.restore_reported_resume(resume);
                 }
                 match (saved_agent_name, saved_managed_agent) {
-                    (Some(agent_name), Some(agent)) if was_imported => {
+                    (Some(agent_name), Some(agent)) if kept_running => {
                         terminal.restore_managed_agent(agent_name, agent)
                     }
                     (Some(_), Some(_)) => {}
-                    (Some(agent_name), None) if was_imported => terminal.set_agent_name(agent_name),
+                    (Some(agent_name), None) if kept_running => terminal.set_agent_name(agent_name),
                     (Some(_), None) => {}
                     (None, _) => {}
                 }
@@ -729,10 +768,15 @@ fn restore_tab(
                     "failed to restore pane"
                 );
                 if !was_imported {
-                    let terminal = unavailable_restored_terminal(
-                        terminal_id, saved_pane, cwd,
-                        format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session."),
-                    );
+                    let unattached = core_terminal.filter(|_| kept_running);
+                    let reason = if unattached.is_some() {
+                        format!("Could not reattach the running program: {e}. Restart this session to try again.")
+                    } else {
+                        format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session.")
+                    };
+                    let mut terminal =
+                        unavailable_restored_terminal(terminal_id, saved_pane, cwd, reason);
+                    terminal.unattached_core_terminal = unattached.map(str::to_owned);
                     panes.insert(*id, PaneState::new(terminal.id.clone()));
                     terminals.push(terminal);
                 }
@@ -1413,6 +1457,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_core_terminal_that_cannot_reattach_keeps_its_address() {
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .core_terminal = Some("t3".into());
+        let (events, _rx) = mpsc::channel(32);
+        // No core in tests, so the attach fails without the core saying the
+        // terminal is gone.
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let tab = &workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap();
+        assert!(runtimes.get(terminal_id).is_none(), "no new shell");
+        assert!(terminals[terminal_id]
+            .restore_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("reattach")));
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane = captured.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(pane.core_terminal.as_deref(), Some("t3"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_core_terminal_that_finished_while_lawn_was_stopped_gets_a_new_one() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        // Each nextest test runs in its own process.
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+        let finished = test
+            .core
+            .run(serde_json::json!({"argv": ["true"], "no_parent": true, "keep": true}))
+            .expect("run");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while test
+            .core
+            .call("terminal.get", serde_json::json!({"terminal": finished}))
+            .is_ok_and(|record| record["state"] != "finished")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "program never finished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .core_terminal = Some(finished.clone());
+        let (events, _rx) = mpsc::channel(32);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let tab = &workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap();
+        assert!(terminals[terminal_id].restore_error.is_none());
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane = captured.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        let replacement = pane.core_terminal.as_deref().expect("a new core terminal");
+        assert_ne!(replacement, finished);
+    }
+
+    #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1431,6 +1599,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            core_terminal: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -1519,6 +1688,7 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                core_terminal: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1531,6 +1701,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                core_terminal: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1674,6 +1845,7 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    core_terminal: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1685,6 +1857,7 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            core_terminal: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -1841,6 +2014,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            core_terminal: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -2286,6 +2460,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                core_terminal: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

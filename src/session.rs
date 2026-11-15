@@ -55,6 +55,7 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
     }
 
     let mut requested_session = None;
+    let mut core = false;
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -70,6 +71,15 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
             index += 2;
             continue;
         }
+        // `--core` picks a core session, `core` or `core-<name>`.
+        if arg == "--core" {
+            if !crate::platform::capabilities().core_panes {
+                return Err("--core is not supported on this platform yet".to_string());
+            }
+            core = true;
+            index += 1;
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--session=") {
             requested_session = Some(value.to_string());
             index += 1;
@@ -80,6 +90,12 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
         index += 1;
     }
 
+    // The session name carries the backend, so `--core` maps to a core name.
+    let requested_session = match (core, requested_session) {
+        (true, Some(name)) if !runs_on_core(Some(&name)) => Some(format!("core-{name}")),
+        (true, None) => Some(CORE_SESSION_NAME.to_owned()),
+        (_, name) => name,
+    };
     if let Some(session) = requested_session {
         apply_explicit_name(&session)?;
     } else if std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_some() {
@@ -94,6 +110,18 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
     }
 
     Ok(cleaned)
+}
+
+const CORE_SESSION_NAME: &str = "core";
+
+/// Whether a session runs its panes in herdr-core: `core` and `core-<name>`
+/// do, whichever command started or attached them, where the platform can.
+pub(crate) fn runs_on_core(name: Option<&str>) -> bool {
+    crate::platform::capabilities().core_panes
+        && name.is_some_and(|name| {
+            name.strip_prefix(CORE_SESSION_NAME)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        })
 }
 
 pub fn active_name() -> Option<String> {
@@ -740,6 +768,57 @@ mod tests {
         assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn core_sessions_wait_for_a_platform_that_can_run_them() {
+        let _guard = env_lock().lock().unwrap();
+        let args = vec!["lawn".to_owned(), "--core".to_owned()];
+        assert!(configure_from_args(&args).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configure_from_args_core_flag_keeps_core_sessions_apart() {
+        let _guard = env_lock().lock().unwrap();
+        for (args, session) in [
+            (vec!["lawn", "--core"], "core"),
+            (vec!["lawn", "--core", "--session", "work"], "core-work"),
+            (
+                vec!["lawn", "--core", "--session", "core-work"],
+                "core-work",
+            ),
+            // Attaching or naming a core session picks the core with no flag.
+            (vec!["lawn", "session", "attach", "core"], "core"),
+            (vec!["lawn", "--session", "core-work"], "core-work"),
+        ] {
+            std::env::remove_var(SESSION_ENV_VAR);
+            clear_explicit_session_for_test();
+            let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+
+            let cleaned = configure_from_args(&args).unwrap();
+
+            assert_eq!(cleaned, vec!["lawn"]);
+            assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok(session));
+            assert!(runs_on_core(active_name().as_deref()));
+        }
+        std::env::remove_var(SESSION_ENV_VAR);
+        clear_explicit_session_for_test();
+    }
+
+    #[test]
+    fn only_core_named_sessions_run_on_core() {
+        for (name, core) in [
+            (None, false),
+            (Some("work"), false),
+            (Some("corework"), false),
+            (Some("core"), true),
+            (Some("core-work"), true),
+        ] {
+            let core = core && crate::platform::capabilities().core_panes;
+            assert_eq!(runs_on_core(name), core, "{name:?}");
+        }
     }
 
     #[test]

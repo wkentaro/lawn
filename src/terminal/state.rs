@@ -163,6 +163,9 @@ pub struct TerminalState {
     agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     pub restore_error: Option<String>,
+    /// The core terminal an unavailable pane could not reattach to; saved
+    /// again so a later restore can try once more.
+    pub unattached_core_terminal: Option<String>,
 }
 
 impl TerminalState {
@@ -204,6 +207,7 @@ impl TerminalState {
             agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
             restore_error: None,
+            unattached_core_terminal: None,
         }
     }
 
