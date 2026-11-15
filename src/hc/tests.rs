@@ -74,7 +74,7 @@ fn reader_routes_replies_streams_and_early_frames() {
     bytes.extend(frame::encode(9, frame::DATA, b"early"));
     bytes.extend(frame::encode(2, frame::CLOSE, br#"{"reason":"exited"}"#));
 
-    read_loop(bytes.as_slice(), &routes);
+    read_loop(bytes.as_slice(), &routes, &mpsc::channel().0);
 
     assert_eq!(reply_rx.recv().unwrap(), Ok(json!({"ok": true})));
     assert_eq!(stream_rx.try_recv().unwrap(), Stream::Data(b"out".to_vec()));
@@ -97,6 +97,33 @@ fn reader_routes_replies_streams_and_early_frames() {
 }
 
 #[test]
+fn a_late_attach_reply_closes_the_abandoned_stream() {
+    let routes = Mutex::new(Routes::default());
+    let (writer, sent) = mpsc::channel();
+    let mut bytes = frame::encode(5, frame::DATA, b"early");
+    // No caller waits for id 7 anymore; its call timed out.
+    bytes.extend(reply(7, json!({"channel": 5})));
+    bytes.extend(frame::encode(5, frame::DATA, b"late"));
+    bytes.extend(frame::encode(5, frame::CLOSE, br#"{"reason":"detached"}"#));
+    bytes.extend(frame::encode(6, frame::DATA, b"other"));
+
+    read_loop(bytes.as_slice(), &routes, &writer);
+
+    assert_eq!(
+        sent.try_recv().unwrap(),
+        frame::encode(5, frame::CLOSE, &[])
+    );
+    assert!(sent.try_recv().is_err());
+    let r = lock(&routes);
+    assert!(!r.early.contains_key(&5));
+    assert!(!r.detached.contains(&5));
+    assert_eq!(
+        r.early.get(&6),
+        Some(&vec![Stream::Data(b"other".to_vec())])
+    );
+}
+
+#[test]
 fn losing_the_core_fails_waiting_calls_and_open_streams() {
     let routes = Mutex::new(Routes::default());
     let (reply_tx, reply_rx) = mpsc::channel();
@@ -112,7 +139,7 @@ fn losing_the_core_fails_waiting_calls_and_open_streams() {
             },
         );
     }
-    read_loop(&b""[..], &routes);
+    read_loop(&b""[..], &routes, &mpsc::channel().0);
     assert!(reply_rx.recv().unwrap().is_err());
     assert_eq!(stream_rx.try_recv().unwrap(), Stream::Lost);
 }

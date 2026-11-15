@@ -345,6 +345,7 @@ impl Core {
         let (writer, frames) = mpsc::channel::<Vec<u8>>();
         let routes = Arc::new(Mutex::new(Routes::default()));
         let reader_routes = routes.clone();
+        let reader_writer = writer.clone();
         let threads = crate::thread_spawn::spawn_named("hc-writer", move || {
             while let Ok(frame) = frames.recv() {
                 if stdin
@@ -357,7 +358,9 @@ impl Core {
             }
         })
         .and_then(|_| {
-            crate::thread_spawn::spawn_named("hc-reader", move || read_loop(reader, &reader_routes))
+            crate::thread_spawn::spawn_named("hc-reader", move || {
+                read_loop(reader, &reader_routes, &reader_writer)
+            })
         });
         if let Err(error) = threads {
             let _ = child.kill();
@@ -557,16 +560,30 @@ impl Drop for Core {
     }
 }
 
-fn deliver_reply(routes: &Mutex<Routes>, payload: &[u8]) {
+fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>, payload: &[u8]) {
     let Ok(mut message) = serde_json::from_slice::<Value>(payload) else {
         return;
     };
     let Some(id) = message.get("id").and_then(Value::as_u64) else {
         return;
     };
-    let Some(tx) = lock(routes).replies.remove(&id) else {
+    let mut r = lock(routes);
+    let Some(tx) = r.replies.remove(&id) else {
+        // A call that timed out may still have opened a stream nobody will read.
+        if let Some(channel) = message
+            .pointer("/result/channel")
+            .and_then(Value::as_u64)
+            .and_then(|c| u32::try_from(c).ok())
+        {
+            let early = r.early.remove(&channel).unwrap_or_default();
+            if !early.iter().any(|item| matches!(item, Stream::Closed(_))) {
+                r.detached.insert(channel);
+                let _ = writer.send(frame::encode(channel, frame::CLOSE, &[]));
+            }
+        }
         return;
     };
+    drop(r);
     let _ = tx.send(match message.get_mut("error").map(Value::take) {
         Some(error) => Err(error),
         None => Ok(message
@@ -576,7 +593,7 @@ fn deliver_reply(routes: &Mutex<Routes>, payload: &[u8]) {
     });
 }
 
-fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>) {
+fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>) {
     loop {
         let frame = match frame::read(&mut reader) {
             Ok(Some(frame)) => frame,
@@ -587,7 +604,7 @@ fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>) {
             }
         };
         if frame.channel == 0 {
-            deliver_reply(routes, &frame.payload);
+            deliver_reply(routes, writer, &frame.payload);
             continue;
         }
         let item = match frame.kind {
