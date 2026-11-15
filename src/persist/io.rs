@@ -92,6 +92,9 @@ pub fn clear_history() {
 }
 
 pub fn load() -> Option<SessionSnapshot> {
+    if let Some(snapshot) = super::doc::load() {
+        return snapshot;
+    }
     let path = session_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,

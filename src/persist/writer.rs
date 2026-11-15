@@ -71,6 +71,7 @@ impl SessionWriter {
         if preserved {
             self.prune_recovery();
         }
+        save_doc(Some(snapshot));
         self.preserve_snapshot_history(true);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::save_history_to_path(&history_path, history) {
@@ -97,11 +98,19 @@ impl SessionWriter {
             }
         }
         self.preserve_snapshot_history(true);
+        save_doc(None);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::clear_path(&history_path) {
             crate::logging::session_clear_failed(&history_path, &err.to_string());
         }
         crate::logging::session_cleared(&self.path);
+    }
+}
+
+/// The file stays the backup; a failed document write keeps the last one.
+fn save_doc(snapshot: Option<&SessionSnapshot>) {
+    if let Err(err) = super::doc::save(snapshot) {
+        tracing::warn!(%err, "failed to save the layout to herdr core");
     }
 }
 

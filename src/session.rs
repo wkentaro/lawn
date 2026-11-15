@@ -341,6 +341,7 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
         }
     })?;
     let Some(dir) = exact_session_dir(name)? else {
+        crate::persist::doc::clear(name)?;
         return Ok(session_info(Some(name)));
     };
     let socket_path = dir.join("herdr.sock");
@@ -350,6 +351,8 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
         ));
     }
     let info = session_info(Some(name));
+    // The document wins over the files, so a failed clear keeps them too.
+    crate::persist::doc::clear(name)?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(info),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(info),

@@ -1,9 +1,11 @@
 //! Session persistence — save/restore workspaces, layouts, and working directories.
 //!
-//! Stored at `~/.config/herdr/session.json`.
+//! Stored at `~/.config/herdr/session.json` and, when panes run in herdr
+//! core, in its `lawn-layout-<session>` document, which wins once written.
 //! Optional pane screen history is stored separately at `session-history.json`.
 //! Installed plugins are persisted separately at `plugins.json`.
 
+pub(crate) mod doc;
 mod io;
 pub mod plugin_registry;
 mod restore;
