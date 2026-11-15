@@ -337,11 +337,59 @@ pub(crate) fn watch_core_terminals(
     Ok(())
 }
 
+/// A label each session adds, with its name, to a terminal it wants to park.
+const CLAIM_LABEL: &str = "lawn.claim.";
+
+/// Whether `session` may park the terminal in a `terminal.label` reply to
+/// its claim: the terminal is already its own, or no other session claims it.
+fn won_claim(record: &serde_json::Value, session: &str) -> bool {
+    let labels = &record["labels"];
+    match labels["lawn"].as_str() {
+        Some(owner) => owner == session,
+        None => labels.as_object().is_some_and(|labels| {
+            let claims = labels.keys().filter(|key| key.starts_with(CLAIM_LABEL));
+            claims.count() == 1
+        }),
+    }
+}
+
+/// Takes a terminal for `session` to park, unless another session took it
+/// first. Sessions that find the same terminal each add a label of their
+/// own, and the core answers each with every label so far, so only the first
+/// sees its label alone. The others take theirs back.
+fn claim(core: &Core, address: &str, session: &str) -> crate::hc::HcResult<bool> {
+    let label = |value: &str| {
+        let labels =
+            serde_json::Map::from_iter([(format!("{CLAIM_LABEL}{session}"), value.into())]);
+        core.call(
+            "terminal.label",
+            serde_json::json!({"terminal": address, "labels": labels}),
+        )
+    };
+    let won = won_claim(&label("1")?, session);
+    if !won {
+        label("")?;
+    }
+    Ok(won)
+}
+
+/// Whether this session may park the core terminal at `address`: no other
+/// session shows it or took it first.
+pub(crate) fn claim_core_terminal(address: &str) -> std::io::Result<bool> {
+    let core = shared_core()?;
+    claim(&core, address, &session_label()).map_err(std::io::Error::other)
+}
+
+/// The core this session's panes run in.
+fn shared_core() -> std::io::Result<Arc<Core>> {
+    crate::hc::backend()
+        .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
+        .map_err(std::io::Error::other)
+}
+
 /// Marks a terminal a pane shows again as this session's, so no other
 /// session parks it or its helpers.
-// shortcut: two sessions that both see a new terminal with no parent both
-// park it; claim with a compare-and-set once the core has one.
-fn claim(core: &Core, address: &str) {
+fn mark_ours(core: &Core, address: &str) {
     let labels = serde_json::json!({"lawn": session_label()});
     let params = serde_json::json!({"terminal": address, "labels": labels});
     if let Err(err) = core.call("terminal.label", params) {
@@ -530,13 +578,11 @@ impl PaneRuntime {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
-        let core = crate::hc::backend()
-            .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
-            .map_err(std::io::Error::other)?;
+        let core = shared_core()?;
         let attached = core
             .attach(reattach_params(address, rows, cols))
             .map_err(reattach_error)?;
-        claim(&core, address);
+        mark_ours(&core, address);
         Self::attach_core(
             pane_id,
             core,
@@ -744,6 +790,47 @@ mod tests {
         let keeps = |name: &str| pane_keeps(&argv[2], std::ffi::OsStr::new(name));
         assert!(keeps("LAWN_KEEP"));
         assert!(!keeps("PATH"));
+    }
+
+    #[test]
+    fn a_claim_is_won_alone_or_on_a_terminal_already_owned() {
+        let won = |labels: serde_json::Value| won_claim(&json!({"labels": labels}), "core");
+        assert!(won(json!({"lawn.claim.core": "1", "team": "red"})));
+        assert!(won(json!({"lawn": "core", "lawn.claim.core-work": "1"})));
+        for (why, labels) in [
+            (
+                "another session claimed first",
+                json!({"lawn.claim.core": "1", "lawn.claim.core-work": "1"}),
+            ),
+            (
+                "another session's",
+                json!({"lawn": "core-work", "lawn.claim.core": "1"}),
+            ),
+            ("no labels in the reply", json!(null)),
+        ] {
+            assert!(!won(labels), "{why}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_the_first_session_to_claim_a_terminal_gets_it() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let address = test
+            .core
+            .run(json!({"argv": ["sleep", "30"], "no_parent": true}))
+            .expect("run");
+        // Both sessions found it before either parked it.
+        assert!(claim(&test.core, &address, "core").expect("claim"));
+        assert!(!claim(&test.core, &address, "core-work").expect("claim"));
+        assert!(claim(&test.core, &address, "core").expect("claim again"));
+        let record = test
+            .core
+            .call("terminal.get", json!({"terminal": address}))
+            .expect("terminal.get");
+        assert_eq!(record["labels"], json!({"lawn.claim.core": "1"}));
     }
 
     #[test]

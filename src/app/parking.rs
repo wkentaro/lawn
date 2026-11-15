@@ -68,6 +68,15 @@ impl App {
             self.core_terminals_to_park.push(found);
             return;
         };
+        match crate::pane::claim_core_terminal(&found.address) {
+            Ok(true) => {}
+            // Another session parks it.
+            Ok(false) => return,
+            Err(err) => {
+                warn!(address = %found.address, %err, "cannot take the core terminal to park");
+                return;
+            }
+        }
         let pane_id = PaneId::alloc();
         // At the terminal's own size, so the attach resizes nothing. The
         // layout sizes it afterwards, like any pane.

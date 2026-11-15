@@ -492,6 +492,8 @@ mod tests {
         let mut helper = serde_json::json!({"parent": others});
         helper["no_parent"] = false.into();
         run(helper);
+        // Another session found this one first and is about to park it.
+        let taken = run(serde_json::json!({"labels": {"lawn.claim.core-other": "1"}}));
         let foreign = run(serde_json::json!({"name": "build"}));
         let record = |address: &str| {
             test.core
@@ -531,6 +533,11 @@ mod tests {
         let after = record(&foreign);
         assert_eq!(after["state"], "live");
         assert_eq!(after["labels"]["lawn"], "core", "no other session parks it");
+        assert_eq!(
+            record(&taken)["labels"],
+            serde_json::json!({"lawn.claim.core-other": "1"}),
+            "the other session's terminal keeps only its claim"
+        );
         assert_eq!(
             (&after["cols"], &after["rows"]),
             (&before["cols"], &before["rows"]),
