@@ -8126,6 +8126,69 @@ fn startup_idle_does_not_forward_completion() {
 }
 
 #[test]
+fn core_status_forwards_blocked_and_finished_turns_to_the_client() {
+    let mut server = test_headless_server();
+    let background = crate::workspace::Workspace::test_new("background");
+    let pane_id = background.tabs[0].root_pane;
+    let foreground = crate::workspace::Workspace::test_new("foreground");
+    server.app.state.workspaces = vec![background, foreground];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(1);
+    server.app.state.toast_config.delivery = crate::config::ToastDelivery::System;
+    server.app.state.toast_config.delay_seconds = 0;
+    server.app.state.sound.enabled = true;
+
+    let (client_tx, client_control_rx, _client_rx) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(client_tx),
+        ),
+    );
+    server.foreground_client_id = Some(1);
+    server.sync_foreground_client_state();
+
+    // A notification is several messages, which arrive one after another.
+    let drain = || {
+        while client_control_rx
+            .recv_timeout(Duration::from_millis(20))
+            .is_ok()
+        {}
+    };
+    // Whether the client heard anything about this report.
+    let mut notified = |state, finished| {
+        drain();
+        let agent = (state != Unknown).then_some(crate::detect::Agent::Claude);
+        server.handle_internal_event_with_forwarding(AppEvent::CoreStatusReported {
+            pane_id,
+            status: crate::pane::CoreStatus {
+                agent,
+                state,
+                finished,
+            },
+        });
+        client_control_rx
+            .recv_timeout(Duration::from_millis(50))
+            .is_ok()
+    };
+    use crate::detect::AgentState::{Blocked, Idle, Unknown, Working};
+    assert!(!notified(Working, false));
+    assert!(notified(Blocked, false));
+    assert!(!notified(Working, false));
+    assert!(notified(Idle, true), "`done` ends the turn");
+    assert!(!notified(Working, false));
+    assert!(!notified(Idle, false), "`idle` is nothing to look at");
+
+    // A report taken back mid-turn is no finished turn either.
+    assert!(!notified(Working, false));
+    assert!(!notified(Unknown, false));
+}
+
+#[test]
 fn stale_api_agent_report_does_not_forward_done_sound() {
     let mut server = test_headless_server();
     let background = crate::workspace::Workspace::test_new("background");

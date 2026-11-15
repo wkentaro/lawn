@@ -45,9 +45,9 @@ use self::agent_detection::{
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
 pub(crate) use self::core_attach::watch_core_terminals;
-pub use self::core_attach::CoreTerminal;
 #[cfg(unix)]
 pub(crate) use self::core_attach::{pane_exec, PANE_EXEC};
+pub use self::core_attach::{CoreStatus, CoreTerminal};
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]

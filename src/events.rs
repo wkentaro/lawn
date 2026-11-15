@@ -13,6 +13,12 @@ use crate::layout::PaneId;
 pub enum AppEvent {
     /// A core terminal that Lawn should park turned up.
     CoreTerminalFound(crate::pane::CoreTerminal),
+    /// The program in a core pane reported what it is doing, or took its
+    /// report back.
+    CoreStatusReported {
+        pane_id: PaneId,
+        status: crate::pane::CoreStatus,
+    },
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,

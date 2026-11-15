@@ -25,7 +25,7 @@ pub(super) struct CoreIo {
     /// never lets other input in between its text and its Enter.
     input: std::sync::mpsc::Sender<Input>,
     /// The events stream that follows the program's cwd, when it opened.
-    cwd_channel: Option<u32>,
+    events_channel: Option<u32>,
 }
 
 impl CoreIo {
@@ -58,7 +58,7 @@ impl CoreIo {
             channel,
             address,
             input,
-            cwd_channel: None,
+            events_channel: None,
         })
     }
 
@@ -117,7 +117,7 @@ impl CoreIo {
 impl Drop for CoreIo {
     fn drop(&mut self) {
         self.core.detach(self.channel);
-        if let Some(channel) = self.cwd_channel {
+        if let Some(channel) = self.events_channel {
             self.core.detach(channel);
         }
     }
@@ -131,11 +131,43 @@ fn foreground_cwd(record: &serde_json::Value) -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-/// The program isn't our child, so Lawn can't read its cwd from `/proc`.
-/// The core samples the foreground process instead; publish its cwd the way
-/// an OSC 7 report would be, for shells that don't send one. Returns the
-/// events channel to close with the pane.
-fn follow_core_cwd(
+/// What the program in a core terminal says it is doing (OSC 7501). A core
+/// pane has no screen detector; this stands in for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStatus {
+    /// The agent the program names itself as, when Lawn knows it.
+    pub agent: Option<Agent>,
+    pub state: AgentState,
+    /// It finished a turn, with a result or an error to look at.
+    pub finished: bool,
+}
+
+/// The status in a terminal record or a `status` event. No status, or a
+/// state Lawn does not know, is no agent.
+fn core_status(status: &serde_json::Value) -> CoreStatus {
+    let (state, finished) = match status["state"].as_str() {
+        Some("working") => (AgentState::Working, false),
+        Some("blocked") => (AgentState::Blocked, false),
+        Some("idle") => (AgentState::Idle, false),
+        Some("done" | "error") => (AgentState::Idle, true),
+        _ => (AgentState::Unknown, false),
+    };
+    let app = status["app"]
+        .as_str()
+        .filter(|_| state != AgentState::Unknown);
+    CoreStatus {
+        agent: app.and_then(crate::detect::parse_agent_label),
+        state,
+        finished,
+    }
+}
+
+/// The program isn't our child, so Lawn can't read its cwd from `/proc` or
+/// watch its screen for an agent. The core samples the foreground process
+/// and keeps the status the program reports; publish the cwd the way an
+/// OSC 7 report would be, for shells that don't send one, and the status as
+/// the pane's agent state. Returns the events channel to close with the pane.
+fn follow_core_terminal(
     core: &Arc<Core>,
     address: &str,
     pane_id: PaneId,
@@ -147,22 +179,38 @@ fn follow_core_cwd(
         .map_err(std::io::Error::other)?;
     let channel = subscription.channel;
     let stream = subscription.stream;
+    let status_events = events.clone();
     let publish = move |cwd: Option<std::path::PathBuf>| {
         if let Some(cwd) = cwd {
             publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
         }
     };
+    let publish_status = move |status: &serde_json::Value| {
+        let status = core_status(status);
+        let _ = status_events.blocking_send(AppEvent::CoreStatusReported { pane_id, status });
+    };
+    // A snapshot here holds the one terminal.
+    fn snapshot_status(snapshot: &serde_json::Value) -> &serde_json::Value {
+        &snapshot["terminals"][0]["status"]
+    }
     publish(snapshot_cwd(&subscription.snapshot));
+    let snapshot = subscription.snapshot;
     let reader = core.clone();
-    crate::thread_spawn::spawn_named("hc-cwd", move || {
+    crate::thread_spawn::spawn_named("hc-pane", move || {
+        // Sending waits for room, which the caller's thread must not do.
+        publish_status(snapshot_status(&snapshot));
         read_events(&reader, channel, stream, |message| {
             let params = &message["params"];
-            match message["method"].as_str() {
-                Some("event") if params["type"] == "foreground" => {
+            match (message["method"].as_str(), params["type"].as_str()) {
+                (Some("event"), Some("foreground")) => {
                     publish(params["data"]["cwd"].as_str().map(Into::into));
                 }
+                (Some("event"), Some("status")) => publish_status(&params["data"]["status"]),
                 // Events were dropped; the fresh snapshot has the record.
-                Some("missed") => publish(snapshot_cwd(params)),
+                (Some("missed"), _) => {
+                    publish(snapshot_cwd(params));
+                    publish_status(snapshot_status(params));
+                }
                 _ => {}
             }
         });
@@ -607,16 +655,14 @@ impl PaneRuntime {
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
         let mut io = io;
-        io.cwd_channel = follow_core_cwd(
+        io.events_channel = follow_core_terminal(
             &core,
             &io.address,
             pane_id,
             reported_cwd.clone(),
             events.clone(),
         )
-        .inspect_err(
-            |err| warn!(pane = pane_id.raw(), %err, "cannot follow the core terminal's cwd"),
-        )
+        .inspect_err(|err| warn!(pane = pane_id.raw(), %err, "cannot follow the core terminal"))
         .ok();
         let stream_ended = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
@@ -802,6 +848,59 @@ mod tests {
         assert!(claims(&below, other));
         assert!(!claims(&below, winner));
         assert!(claims(&top, winner));
+    }
+
+    #[test]
+    fn core_status_maps_the_programs_words_to_agent_states() {
+        let status = |word: &str| {
+            let status = core_status(&json!({"state": word, "app": "claude"}));
+            (status.agent, status.state, status.finished)
+        };
+        let claude = Some(Agent::Claude);
+        assert_eq!(status("working"), (claude, AgentState::Working, false));
+        assert_eq!(status("blocked"), (claude, AgentState::Blocked, false));
+        assert_eq!(status("idle"), (claude, AgentState::Idle, false));
+        assert_eq!(status("done"), (claude, AgentState::Idle, true));
+        assert_eq!(status("error"), (claude, AgentState::Idle, true));
+        // A state Lawn does not know, or no status, is no agent.
+        assert_eq!(status("napping"), (None, AgentState::Unknown, false));
+        let none = core_status(&json!(null));
+        assert_eq!((none.agent, none.state, none.finished), status("napping"));
+        // A program Lawn does not know still has a state.
+        assert_eq!(
+            core_status(&json!({"state": "working", "app": "mytool"})),
+            CoreStatus {
+                agent: None,
+                state: AgentState::Working,
+                finished: false,
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_reports_the_status_its_program_sends() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let (events, mut event_rx) = mpsc::channel(8);
+        let script = r"printf '\033]7501;state=working:app=claude\033\\'; read line; \
+            printf '\033]7501;state=done:app=claude\033\\'; sleep 30";
+        let (_address, runtime) = attach(&test.core, &["sh", "-c", script], events);
+        let mut next = async || loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), event_rx.recv());
+            match event.await.expect("a status").expect("event") {
+                AppEvent::CoreStatusReported { status, .. } => {
+                    return (status.agent, status.state, status.finished)
+                }
+                _ => continue,
+            }
+        };
+        let claude = Some(Agent::Claude);
+        assert_eq!(next().await, (claude, AgentState::Working, false));
+        runtime.try_send_bytes(Bytes::from_static(b"\r")).unwrap();
+        assert_eq!(next().await, (claude, AgentState::Idle, true));
+        runtime.shutdown();
     }
 
     #[test]
