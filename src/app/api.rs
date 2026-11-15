@@ -71,6 +71,11 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::CoreTerminalFound(found) = ev {
+            self.park_core_terminal(found);
+            return Vec::new();
+        }
+
         if let AppEvent::PluginCommandFinished {
             log_id,
             finished_unix_ms,

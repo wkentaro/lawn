@@ -120,6 +120,8 @@ pub struct App {
     pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    /// Core terminals found while no workspace could take them.
+    pub(crate) core_terminals_to_park: Vec<crate::pane::CoreTerminal>,
     pub(crate) pending_host_appearance_deadline: Option<Instant>,
     pane_host_appearance: Option<crate::terminal_theme::HostAppearance>,
     startup_per_agent_delay: Duration,
@@ -614,6 +616,7 @@ impl App {
             loaded_host_cursor: config.ui.host_cursor,
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
+            core_terminals_to_park: Vec::new(),
             pending_host_appearance_deadline: None,
             pane_host_appearance: None,
             startup_per_agent_delay: Duration::from_millis(

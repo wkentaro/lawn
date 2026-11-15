@@ -1051,6 +1051,20 @@ impl Workspace {
         Some(())
     }
 
+    /// Adds a pane from outside the workspace, already parked. Unparking it
+    /// joins the tab numbered `origin`, else shows its parked tab.
+    pub(crate) fn add_parked_pane(
+        &mut self,
+        moved: MovedPane,
+        origin: Option<usize>,
+        channels: TabChannels,
+    ) {
+        self.register_new_pane_with_number(moved.pane_id, self.next_public_pane_number);
+        let mut tab = self.new_tab_from_moved(moved, None, channels);
+        tab.parked_from = Some(origin.unwrap_or(tab.number));
+        self.tabs.push(tab);
+    }
+
     /// Returns a parked pane to the tab it left, else shows its parked tab.
     pub(crate) fn unpark_pane(&mut self, pane_id: PaneId, focus: bool) -> Option<()> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;

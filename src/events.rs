@@ -11,6 +11,8 @@ use crate::layout::PaneId;
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
+    /// A core terminal that Lawn should park turned up.
+    CoreTerminalFound(crate::pane::CoreTerminal),
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,

@@ -135,6 +135,17 @@ mod tests {
         (app(vec![workspace]), parked)
     }
 
+    fn core_terminal(address: &str) -> crate::pane::CoreTerminal {
+        crate::pane::CoreTerminal {
+            address: address.into(),
+            parent: None,
+            name: None,
+            cwd: std::env::temp_dir(),
+            rows: 24,
+            cols: 80,
+        }
+    }
+
     fn has_terminal(app: &App, terminal_id: &str) -> bool {
         app.state
             .terminals
@@ -408,6 +419,169 @@ mod tests {
         assert_eq!(app.state.workspaces[0].visible_tab_count(), 0);
         assert_eq!(app.session_snapshot().parked_panes.len(), 1);
         app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn a_pane_added_parked_comes_back_to_the_tab_it_names() {
+        let (mut app, _) = split_app();
+        let add = |app: &mut App, origin: Option<usize>| {
+            let terminal = crate::terminal::TerminalState::new(
+                crate::terminal::TerminalId::alloc(),
+                std::env::temp_dir(),
+            );
+            let pane_id = PaneId::alloc();
+            let moved = crate::workspace::MovedPane {
+                pane_id,
+                pane_state: crate::pane::PaneState::new(terminal.id.clone()),
+            };
+            app.state.terminals.insert(terminal.id.clone(), terminal);
+            let channels = app.tab_channels();
+            app.state.workspaces[0].add_parked_pane(moved, origin, channels);
+            app.state.assert_invariants_for_test();
+            app.public_pane_id(0, pane_id).unwrap()
+        };
+        let origin = app.state.workspaces[0].tabs[0].number;
+        let beside = add(&mut app, Some(origin));
+        let alone = add(&mut app, None);
+        assert_eq!(app.session_snapshot().parked_panes.len(), 2);
+
+        unpark(&mut app, &beside, true);
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 3);
+        unpark(&mut app, &alone, false);
+        assert_eq!(app.state.workspaces[0].visible_tab_count(), 2);
+        assert!(app.session_snapshot().parked_panes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_core_terminal_waits_for_a_workspace_to_park_in() {
+        let mut app = app(Vec::new());
+        app.state.active = None;
+        app.state.default_shell = super::super::test_support::exiting_test_command().into();
+
+        app.park_core_terminal(core_terminal("t9"));
+        assert_eq!(app.core_terminals_to_park.len(), 1);
+
+        // The new workspace takes it; outside a core session the attach fails.
+        app.create_workspace_with_options(std::env::temp_dir(), true)
+            .unwrap();
+        assert!(app.core_terminals_to_park.is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_terminals_outside_the_layout_are_parked() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        let run = |extra: serde_json::Value| {
+            let mut params = serde_json::json!({
+                "argv": ["/bin/sh", "-c", "echo ran; read line"],
+                "no_parent": true,
+            });
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            test.core.run(params).expect("run")
+        };
+        let lawn_runs_here = run(serde_json::json!({}));
+        let others = run(serde_json::json!({"labels": {"lawn": "core-other"}}));
+        // A helper started in another session's pane is that session's.
+        let mut helper = serde_json::json!({"parent": others});
+        helper["no_parent"] = false.into();
+        run(helper);
+        // Another session found this one first and is about to park it.
+        let taken = run(serde_json::json!({}));
+        test.core
+            .doc_set(
+                &format!("lawn-owner-{taken}"),
+                None,
+                &"core-other".into(),
+                0,
+            )
+            .expect("doc.set");
+        let foreign = run(serde_json::json!({"name": "build"}));
+        let record = |address: &str| {
+            test.core
+                .call("terminal.get", serde_json::json!({"terminal": address}))
+                .expect("terminal.get")
+        };
+        let before = record(&foreign);
+        // Each nextest test runs in its own process.
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+        std::env::set_var("HC_TERMINAL_ID", &lawn_runs_here);
+        let (mut app, _) = split_app();
+
+        app.watch_core_terminals();
+        // Everything already running is reported before the first wait ends.
+        while let Ok(Some(event)) = tokio::time::timeout(
+            std::time::Duration::from_secs(if app.session_snapshot().parked_panes.is_empty() {
+                10
+            } else {
+                1
+            }),
+            app.event_rx.recv(),
+        )
+        .await
+        {
+            app.handle_internal_event(event);
+        }
+
+        let parked = app.session_snapshot().parked_panes;
+        assert_eq!(parked.len(), 1, "{parked:?}");
+        assert_eq!(parked[0].label.as_deref(), Some("build"));
+        let shown: Vec<&str> = app
+            .terminal_runtimes
+            .values()
+            .filter_map(|runtime| runtime.core_address())
+            .collect();
+        assert_eq!(shown, [foreign.as_str()]);
+        let after = record(&foreign);
+        assert_eq!(after["state"], "live");
+        assert_eq!(after["labels"]["lawn"], "core", "no other session parks it");
+        assert_eq!(
+            (&after["cols"], &after["rows"]),
+            (&before["cols"], &before["rows"]),
+            "the attach resized the terminal"
+        );
+        app.state.assert_invariants_for_test();
+
+        // Found again, it is already shown.
+        app.park_core_terminal(core_terminal(&foreign));
+        assert_eq!(app.session_snapshot().parked_panes.len(), 1);
+
+        unpark(&mut app, &parked[0].pane_id, true);
+        assert!(app.session_snapshot().parked_panes.is_empty());
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 3);
+        assert_eq!(record(&foreign)["state"], "live");
+
+        // A kept terminal would get a new shell when its program is killed.
+        // Its pane closes with the program and ends the terminal, so none is
+        // left running without a pane.
+        test.core
+            .call(
+                "terminal.keep",
+                serde_json::json!({"terminal": foreign, "keep": true}),
+            )
+            .expect("terminal.keep");
+        let pid = record(&foreign)["pid"].as_u64().expect("pid").to_string();
+        let killed = std::process::Command::new("kill")
+            .args(["-KILL", &pid])
+            .status()
+            .expect("kill");
+        assert!(killed.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while record(&foreign)["state"] != "finished" {
+            assert!(std::time::Instant::now() < deadline, "the terminal to end");
+            let tick = std::time::Duration::from_millis(50);
+            if let Ok(Some(event)) = tokio::time::timeout(tick, app.event_rx.recv()).await {
+                app.handle_internal_event(event);
+            }
+        }
+        assert!(app.session_snapshot().parked_panes.is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[test]
