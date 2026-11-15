@@ -35,6 +35,7 @@ pub(super) fn snapshot_with_completions(
                 revision,
                 sequence: presentation.request.sequence,
                 pane_terminals: std::collections::BTreeMap::new(),
+                parked_restore_targets: snapshot.parked_restore_targets.clone(),
             },
         );
     let completions = protocol::endpoint::EndpointAgentCompletions {

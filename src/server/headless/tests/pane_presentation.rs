@@ -770,6 +770,22 @@ fn peek_at(server: &mut HeadlessServer, terminal: String) {
 }
 
 #[tokio::test]
+async fn pane_identities_carry_the_session_restore_targets() {
+    let (mut server, parked) = two_tabs_and_a_parked_pane();
+    let (control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let _ = client_shell_snapshot(&control);
+    peek_at(&mut server, parked);
+    server.render_and_stream();
+
+    let identities = identity_projection(&control);
+    let targets = server.app.session_snapshot().parked_restore_targets;
+    assert_eq!(targets.len(), 1);
+    assert!(targets[0].split.is_some());
+    assert_eq!(identities.parked_restore_targets, targets);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn clearing_a_peek_returns_to_the_shared_location() {
     let (mut server, parked) = two_tabs_and_a_parked_pane();
     let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);

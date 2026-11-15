@@ -73,6 +73,7 @@ impl App {
             layouts,
             agents: self.collect_agent_infos(),
             parked_panes: self.parked_pane_infos(pane_info),
+            parked_restore_targets: self.parked_restore_targets(),
         }
     }
 }

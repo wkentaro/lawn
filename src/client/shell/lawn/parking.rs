@@ -471,6 +471,7 @@ mod tests {
                     .iter()
                     .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
                     .collect(),
+                parked_restore_targets: Vec::new(),
             },
         );
         model.observe_snapshot(Some(7), snapshot);
@@ -527,6 +528,7 @@ mod tests {
             pane_terminals: [("pane_1".into(), "terminal-pane_1".into())]
                 .into_iter()
                 .collect(),
+            parked_restore_targets: Vec::new(),
         };
         model.receive_identities(
             Some(7),

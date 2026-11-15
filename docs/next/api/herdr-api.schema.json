@@ -9461,6 +9461,55 @@
           ],
           "type": "object"
         },
+        "ParkedRestoreSplit": {
+          "properties": {
+            "direction": {
+              "$ref": "#/schemas/success_response/$defs/SplitDirection"
+            },
+            "ratio": {
+              "format": "float",
+              "type": "number"
+            },
+            "target_pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "target_pane_id",
+            "direction",
+            "ratio"
+          ],
+          "type": "object"
+        },
+        "ParkedRestoreTarget": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "split": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ParkedRestoreSplit"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "tab_label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "tab_id",
+            "tab_label"
+          ],
+          "type": "object"
+        },
         "PluginActionContext": {
           "enum": [
             "global",
@@ -11470,6 +11519,12 @@
               "description": "Parked panes, grouped by workspace. Each sits in a hidden tab, so its\n`tab_id` names no tab in `tabs`.",
               "items": {
                 "$ref": "#/schemas/success_response/$defs/PaneInfo"
+              },
+              "type": "array"
+            },
+            "parked_restore_targets": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/ParkedRestoreTarget"
               },
               "type": "array"
             },

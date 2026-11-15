@@ -328,6 +328,10 @@ pane and agent requests such as `pane.read`, `pane.report_agent`, and
 `session.snapshot` skip hidden tabs. `pane.split` refuses to split a parked
 pane, and `pane.focus` rejects it with `pane_parked`. A workspace with parked
 panes stays open when its last visible tab closes or moves away. `session.snapshot` lists parked panes under `parked_panes`.
+The optional `parked_restore_targets` list names each parked pane's destination
+`tab_id` and `tab_label`. When the original tab remains visible, `split` also
+provides `target_pane_id`, `direction`, and `ratio`. These describe the current
+restore destination, not a reservation. The list is omitted when empty.
 Closing the workspace closes its parked panes too.
 `pane.unpark` returns the pane to the tab it left, or to a new tab when that tab
 is gone. The response is `type: "pane_info"`. Subscribers see `pane.parked`

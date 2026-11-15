@@ -1,7 +1,10 @@
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneInfo, PaneTarget, PaneUnparkParams, ResponseResult,
+    EventData, EventEnvelope, EventKind, PaneInfo, PaneTarget, PaneUnparkParams,
+    ParkedRestoreSplit, ParkedRestoreTarget, ResponseResult, SplitDirection,
 };
 use crate::app::App;
+use crate::workspace::UnparkPlan;
+use ratatui::layout::Direction;
 
 use super::responses::{encode_error, encode_success};
 
@@ -71,6 +74,56 @@ impl App {
                     .filter_map(move |tab| pane_info(self, ws_idx, tab.root_pane))
             })
             .collect()
+    }
+
+    pub(super) fn parked_restore_targets(&self) -> Vec<ParkedRestoreTarget> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(|(ws_idx, ws)| {
+                ws.parked_tabs()
+                    .iter()
+                    .filter_map(move |tab| self.parked_restore_target(ws_idx, tab.root_pane))
+            })
+            .collect()
+    }
+
+    fn parked_restore_target(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<ParkedRestoreTarget> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let plan = ws.unpark_plan(pane_id)?;
+        let tab_idx = ws
+            .tabs
+            .iter()
+            .position(|tab| tab.number == plan.tab_number())?;
+        let split = match plan {
+            UnparkPlan::Split(split) => Some(ParkedRestoreSplit {
+                target_pane_id: self.public_pane_id(ws_idx, split.anchor)?,
+                direction: match split.direction {
+                    Direction::Horizontal => SplitDirection::Right,
+                    Direction::Vertical => SplitDirection::Down,
+                },
+                ratio: split.ratio,
+            }),
+            UnparkPlan::Standalone { .. } => None,
+        };
+        let label_idx = match plan {
+            UnparkPlan::Split(_) => tab_idx,
+            UnparkPlan::Standalone { .. } => ws.visible_tab_count(),
+        };
+        Some(ParkedRestoreTarget {
+            pane_id: self.public_pane_id(ws_idx, pane_id)?,
+            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            tab_label: ws.tabs[tab_idx]
+                .custom_name
+                .clone()
+                .unwrap_or_else(|| (label_idx + 1).to_string()),
+            split,
+        })
     }
 }
 
@@ -175,6 +228,115 @@ mod tests {
         assert_eq!(response["result"]["pane"]["pane_id"], pane_id, "{response}");
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert!(app.session_snapshot().parked_panes.is_empty());
+    }
+
+    #[test]
+    fn the_session_names_where_a_split_parked_pane_restores() {
+        let (mut app, parked) = split_app();
+        let anchor = app.state.workspaces[0].tabs[0].root_pane;
+        let tab = app.tab_info(0, 0).unwrap();
+        assert!(!serde_json::to_string(&app.session_snapshot())
+            .unwrap()
+            .contains("parked_restore_targets"));
+
+        let pane_id = park(&mut app, parked);
+        let snapshot = app.session_snapshot();
+        assert_eq!(
+            snapshot.parked_restore_targets,
+            vec![crate::api::schema::ParkedRestoreTarget {
+                pane_id: pane_id.clone(),
+                tab_id: tab.tab_id.clone(),
+                tab_label: tab.label,
+                split: Some(crate::api::schema::ParkedRestoreSplit {
+                    target_pane_id: app.public_pane_id(0, anchor).unwrap(),
+                    direction: crate::api::schema::SplitDirection::Right,
+                    ratio: 0.5,
+                }),
+            }]
+        );
+        assert_eq!(
+            app.session_metadata_snapshot().parked_restore_targets,
+            snapshot.parked_restore_targets
+        );
+
+        let response = unpark(&mut app, &pane_id, false);
+        assert_eq!(
+            response["result"]["pane"]["tab_id"], tab.tab_id,
+            "{response}"
+        );
+        assert!(app.session_snapshot().parked_restore_targets.is_empty());
+    }
+
+    #[test]
+    fn the_session_names_the_own_tab_a_parked_last_pane_restores_as() {
+        let mut app = app(vec![Workspace::test_adversarial_identity_state()]);
+        let active = app.state.workspaces[0].active_tab_index();
+        let pane = app.state.workspaces[0].tabs[active].root_pane;
+
+        let pane_id = park(&mut app, pane);
+        let snapshot = app.session_snapshot();
+        let [target] = snapshot.parked_restore_targets.as_slice() else {
+            panic!("expected one restore target");
+        };
+        assert_eq!(target.pane_id, pane_id);
+        assert_eq!(target.tab_id, snapshot.parked_panes[0].tab_id);
+        assert!(target.split.is_none());
+        assert!(snapshot.tabs.iter().all(|tab| tab.tab_id != target.tab_id));
+
+        let response = unpark(&mut app, &pane_id, false);
+        assert_eq!(
+            response["result"]["pane"]["tab_id"], target.tab_id,
+            "{response}"
+        );
+        let restored = app
+            .session_snapshot()
+            .tabs
+            .into_iter()
+            .find(|tab| tab.tab_id == target.tab_id)
+            .unwrap();
+        assert_eq!(restored.label, target.tab_label);
+    }
+
+    #[test]
+    fn each_standalone_restore_target_names_the_label_its_tab_returns_with() {
+        let mut workspace = Workspace::test_adversarial_identity_state();
+        workspace.test_add_tab(Some("named"));
+        let singles: Vec<PaneId> = workspace
+            .tabs
+            .iter()
+            .filter(|tab| tab.panes.len() == 1)
+            .map(|tab| tab.root_pane)
+            .collect();
+        assert_eq!(singles.len(), 3);
+        let mut app = app(vec![workspace]);
+        let parked: Vec<String> = singles
+            .into_iter()
+            .map(|pane| park(&mut app, pane))
+            .collect();
+
+        for pane_id in parked.iter().rev() {
+            let snapshot = app.session_snapshot();
+            let target = snapshot
+                .parked_restore_targets
+                .iter()
+                .find(|target| &target.pane_id == pane_id)
+                .unwrap()
+                .clone();
+            assert!(target.split.is_none());
+            unpark(&mut app, pane_id, false);
+            let restored = app
+                .session_snapshot()
+                .tabs
+                .into_iter()
+                .find(|tab| tab.tab_id == target.tab_id)
+                .unwrap();
+            assert_eq!(restored.label, target.tab_label, "{pane_id}");
+        }
+        assert!(app
+            .session_snapshot()
+            .tabs
+            .iter()
+            .any(|tab| tab.label == "named"));
     }
 
     #[test]

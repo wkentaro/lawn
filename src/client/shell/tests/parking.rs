@@ -87,6 +87,7 @@ fn acknowledge_presentation(
                 .chain(&projected.parked_panes)
                 .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
                 .collect(),
+            parked_restore_targets: Vec::new(),
         },
     );
     let revision = projected.revision;
@@ -1404,6 +1405,7 @@ fn dismiss_after_switching_machines_returns_to_current_preview_origin() {
                 .chain(&projected.parked_panes)
                 .map(|p| (p.pane_id.clone(), format!("terminal-{}", p.pane_id)))
                 .collect(),
+            parked_restore_targets: Vec::new(),
         },
     );
     state.set_endpoint_snapshot_for_generation(&remote, 7, Box::new(projected));

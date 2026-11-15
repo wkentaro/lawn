@@ -752,6 +752,7 @@ fn session_snapshot_request_and_response_round_trip() {
         result: ResponseResult::SessionSnapshot {
             snapshot: Box::new(SessionSnapshot {
                 parked_panes: Vec::new(),
+                parked_restore_targets: Vec::new(),
                 version: "0.1.2".into(),
                 protocol: 16,
                 focused_workspace_id: None,
