@@ -200,6 +200,21 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
     }
 }
 
+/// Runs `$2…` with only the variables named in `$1`. The core adds a pane's
+/// `env` on top of its own environment, so whatever else the core holds has
+/// to go before the program starts; the core's own `HC_*` and `PWD` stay.
+/// `sh` and `env` by path: the pane's own PATH may not reach them.
+// shortcut: leaves a name `sh` can't spell (`BASH_FUNC_x%%`) and does nothing
+// on Windows; send a clean environment once `terminal.run` takes one.
+#[cfg(unix)]
+const ONLY_PANE_ENV: &str = r#"_lawn_keep=" $1 PWD "; shift; set -f
+for _lawn_word in $(/usr/bin/env 2>/dev/null); do
+  _lawn_name=${_lawn_word%%=*}
+  case $_lawn_name in ''|[0-9]*|*[!A-Za-z0-9_]*|HC_*) continue ;; esac
+  case $_lawn_keep in *" $_lawn_name "*) ;; *) command unset "$_lawn_name" 2>/dev/null ;; esac
+done
+exec "$@""#;
+
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
 /// and environment, owned by no terminal so it outlives Lawn.
 fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
@@ -214,42 +229,23 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     };
-    // The core names the terminal itself.
-    let keep = |key: &str| !key.starts_with("HC_");
     let env: serde_json::Map<String, serde_json::Value> = cmd
         .iter_full_env_as_str()
-        .filter(|(key, _)| keep(key))
+        // The core names the terminal itself.
+        .filter(|(key, _)| !key.starts_with("HC_"))
         .map(|(key, value)| (key.to_owned(), value.into()))
         .collect();
-    // The core adds `env` on top of its own environment, so anything the
-    // pane dropped has to be unset there too.
-    // shortcut: drops what Lawn's own environment has plus the names every
-    // pane drops, and nothing on Windows; send a clean environment once
-    // `terminal.run` takes one.
     #[cfg(unix)]
     let argv = if argv.is_empty() {
         argv
     } else {
-        // Names only: a value that isn't UTF-8 must not stop the pane.
-        let mut removed: Vec<String> = std::env::vars_os()
-            .filter_map(|(key, _)| key.into_string().ok())
-            .filter(|key| keep(key) && !env.contains_key(key))
-            .collect();
-        // The core's own environment may hold these even when Lawn's doesn't.
-        removed.extend(
-            HOST_HANDLE_ENV
-                .iter()
-                .chain(&CHILD_AGENT_ENV)
-                .filter(|key| !env.contains_key(**key))
-                .map(|key| (*key).to_owned()),
-        );
-        removed.sort();
-        removed.dedup();
-        // By path: the pane's own PATH may not reach `env`.
-        let mut wrapped = vec!["/usr/bin/env".to_owned()];
-        for key in removed {
-            wrapped.extend(["-u".to_owned(), key]);
-        }
+        let mut wrapped = vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            ONLY_PANE_ENV.to_owned(),
+            "lawn-pane".to_owned(),
+            env.keys().map(String::as_str).collect::<Vec<_>>().join(" "),
+        ];
         wrapped.extend(argv);
         wrapped
     };
@@ -460,21 +456,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn run_params_start_lawns_login_shell_without_dropped_env() {
+    fn run_params_start_lawns_login_shell_with_only_the_pane_env() {
         let mut cmd = CommandBuilder::new_default_prog();
         cmd.env("SHELL", "/bin/fish");
-        // PATH is in Lawn's environment, so dropping it must reach the core.
+        cmd.env("LAWN_KEEP", "yes");
         cmd.env_remove("PATH");
-        cmd.env_remove("TMUX");
-        cmd.env_remove("CLAUDECODE");
         let argv: Vec<String> =
             serde_json::from_value(run_params(&cmd, 24, 80)["argv"].clone()).unwrap();
-        assert_eq!(argv[0], "/usr/bin/env");
+        assert_eq!(argv[..2], ["/bin/sh", "-c"]);
         assert_eq!(argv[argv.len() - 2..], ["/bin/fish", "-l"]);
-        assert!(argv.windows(2).any(|pair| pair == ["-u", "PATH"]));
-        // Dropped by every pane, so unset even when Lawn's environment lacks it.
-        assert!(argv.windows(2).any(|pair| pair == ["-u", "TMUX"]));
-        assert!(argv.windows(2).any(|pair| pair == ["-u", "CLAUDECODE"]));
+        let keep: Vec<&str> = argv[4].split(' ').collect();
+        assert!(keep.contains(&"LAWN_KEEP"));
+        assert!(!keep.contains(&"PATH"));
     }
 
     #[cfg(unix)]
@@ -548,10 +541,46 @@ mod tests {
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args(["-c", "echo path-ok; read line"]);
         cmd.env("PATH", "/nonexistent");
-        // Dropped from the pane, so the launch goes through the env wrapper.
-        cmd.env_remove("TMUX");
         let runtime = attach_started(&test.core, &cmd);
         wait_for("the program", || runtime.visible_text().contains("path-ok")).await;
+        runtime.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_gets_only_the_env_lawn_built() {
+        // The core starts with these; Lawn's own environment never has them.
+        std::env::set_var("LAWN_TEST_CORE_ONLY", "/wrong/repository/.git");
+        std::env::set_var("CLAUDECODE", "1");
+        let test = crate::hc::test_support::TestCore::start();
+        std::env::remove_var("LAWN_TEST_CORE_ONLY");
+        std::env::remove_var("CLAUDECODE");
+        let Some(test) = test else {
+            return;
+        };
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "echo \"core=${LAWN_TEST_CORE_ONLY-unset} agent=${CLAUDECODE-unset} \
+             kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} pwd=${PWD:+set}\"; \
+             read line",
+        ]);
+        cmd.env("LAWN_KEEP", "yes");
+        // A value shaped like other variables must not confuse the cleanup.
+        cmd.env("LAWN_SPACED", "a LAWN_KEEP=no\nPWD=x");
+        let runtime = attach_started(&test.core, &cmd);
+        wait_for("the program", || runtime.visible_text().contains("pwd=")).await;
+        let text = runtime.visible_text();
+        for part in [
+            "core=unset",
+            "agent=unset",
+            "kept=yes",
+            "spaced=a LAWN_KEEP=no",
+            "id=set",
+            "pwd=set",
+        ] {
+            assert!(text.contains(part), "{part} missing from {text:?}");
+        }
         runtime.shutdown();
     }
 
