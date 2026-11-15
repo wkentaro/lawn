@@ -121,24 +121,36 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     {
         cmd.env(FISH_HANDLE_REFLOW_ENV_VAR, "0");
     }
-    // Host handles refer to the outer terminal, never to this pane.
-    for key in [
-        "ITERM_SESSION_ID",
-        "LC_TERMINAL",
-        "LC_TERMINAL_VERSION",
-        "WEZTERM_PANE",
-        "KITTY_WINDOW_ID",
-        "WT_SESSION",
-        "TMUX",
-        "TMUX_PANE",
-        "STY",
-        "ZELLIJ",
-        "ZELLIJ_SESSION_NAME",
-        "ZELLIJ_PANE_ID",
-    ] {
+    for key in HOST_HANDLE_ENV {
         cmd.env_remove(key);
     }
 }
+
+/// Host handles refer to the outer terminal, never to this pane.
+const HOST_HANDLE_ENV: [&str; 12] = [
+    "ITERM_SESSION_ID",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "WEZTERM_PANE",
+    "KITTY_WINDOW_ID",
+    "WT_SESSION",
+    "TMUX",
+    "TMUX_PANE",
+    "STY",
+    "ZELLIJ",
+    "ZELLIJ_SESSION_NAME",
+    "ZELLIJ_PANE_ID",
+];
+
+/// A new pane is not a child agent of the process that started the server.
+const CHILD_AGENT_ENV: [&str; 6] = [
+    "CODEX_THREAD_ID",
+    "OMPCODE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PaneLaunchEnv {
@@ -189,16 +201,8 @@ impl PaneLaunchEnv {
 fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
     #[cfg(unix)]
     crate::platform::ssh_agent::apply_pane_env(cmd);
-    // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
-    for key in [
-        "CODEX_THREAD_ID",
-        "OMPCODE",
-        "CLAUDECODE",
-        "CLAUDE_CODE_CHILD_SESSION",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_MESSAGING_TOKEN",
-    ] {
+    for key in CHILD_AGENT_ENV {
         cmd.env_remove(key);
     }
     for (key, value) in &launch_env.extra {

@@ -72,7 +72,7 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
             continue;
         }
         // `--core` runs panes in herdr-core. The server started for this launch
-        // inherits the switch, in its own `core` session unless one is named.
+        // inherits the switch, in its own `core` or `core-<name>` session.
         if arg == "--core" {
             core = true;
             index += 1;
@@ -91,7 +91,14 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
     if core {
         std::env::set_var(crate::hc::CORE_ENV, "1");
     }
-    if let Some(session) = requested_session.or_else(|| core.then(|| "core".to_owned())) {
+    // Core sessions get their own names so `--core` never attaches to a
+    // running PTY server of the same name.
+    let requested_session = match (core, requested_session) {
+        (true, Some(name)) => Some(format!("core-{name}")),
+        (true, None) => Some("core".to_owned()),
+        (false, name) => name,
+    };
+    if let Some(session) = requested_session {
         apply_explicit_name(&session)?;
     } else if std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_some() {
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
@@ -754,11 +761,11 @@ mod tests {
     }
 
     #[test]
-    fn configure_from_args_core_flag_selects_the_core_session_unless_one_is_named() {
+    fn configure_from_args_core_flag_keeps_core_sessions_apart() {
         let _guard = env_lock().lock().unwrap();
         for (args, session) in [
             (vec!["lawn", "--core"], "core"),
-            (vec!["lawn", "--core", "--session", "work"], "work"),
+            (vec!["lawn", "--core", "--session", "work"], "core-work"),
         ] {
             std::env::remove_var(SESSION_ENV_VAR);
             std::env::remove_var(crate::hc::CORE_ENV);

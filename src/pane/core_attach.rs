@@ -154,8 +154,9 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
         .collect();
     // The core adds `env` on top of its own environment, so anything the
     // pane dropped has to be unset there too.
-    // shortcut: only drops what Lawn's own environment has, and nothing on
-    // Windows; send a clean environment once `terminal.run` takes one.
+    // shortcut: drops what Lawn's own environment has plus the names every
+    // pane drops, and nothing on Windows; send a clean environment once
+    // `terminal.run` takes one.
     #[cfg(unix)]
     let argv = if argv.is_empty() {
         argv
@@ -166,6 +167,14 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
             .filter(|key| keep(key) && !env.contains_key(key))
             .collect();
         removed.push(crate::hc::CORE_ENV.to_owned());
+        // The core's own environment may hold these even when Lawn's doesn't.
+        removed.extend(
+            HOST_HANDLE_ENV
+                .iter()
+                .chain(&CHILD_AGENT_ENV)
+                .filter(|key| !env.contains_key(**key))
+                .map(|key| (*key).to_owned()),
+        );
         removed.sort();
         removed.dedup();
         let mut wrapped = vec!["env".to_owned()];
@@ -381,11 +390,16 @@ mod tests {
         cmd.env("SHELL", "/bin/fish");
         // PATH is in Lawn's environment, so dropping it must reach the core.
         cmd.env_remove("PATH");
+        cmd.env_remove("TMUX");
+        cmd.env_remove("CLAUDECODE");
         let argv: Vec<String> =
             serde_json::from_value(run_params(&cmd, 24, 80)["argv"].clone()).unwrap();
         assert_eq!(argv[0], "env");
         assert_eq!(argv[argv.len() - 2..], ["/bin/fish", "-l"]);
         assert!(argv.windows(2).any(|pair| pair == ["-u", "PATH"]));
+        // Dropped by every pane, so unset even when Lawn's environment lacks it.
+        assert!(argv.windows(2).any(|pair| pair == ["-u", "TMUX"]));
+        assert!(argv.windows(2).any(|pair| pair == ["-u", "CLAUDECODE"]));
     }
 
     #[cfg(unix)]
