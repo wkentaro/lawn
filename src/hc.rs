@@ -132,6 +132,13 @@ struct Routes {
     detached: HashSet<u32>,
 }
 
+/// The channel of a stream that had already ended when it was opened. The
+/// core never knew it, so nothing is sent on it.
+const ENDED_CHANNEL: u32 = u32::MAX;
+
+/// History shown above the last screen of a program that already ended.
+const ENDED_HISTORY_LINES: u32 = 1000;
+
 pub(crate) struct Attached {
     pub(crate) channel: u32,
     pub(crate) stream: tokio_mpsc::UnboundedReceiver<Stream>,
@@ -421,6 +428,9 @@ impl Core {
         payload: &[u8],
         mut done: Option<mpsc::Sender<()>>,
     ) -> bool {
+        if channel == ENDED_CHANNEL {
+            return false;
+        }
         let mut pieces = frame::pieces(payload).peekable();
         while let Some(piece) = pieces.next() {
             let last = pieces.peek().is_none();
@@ -509,6 +519,28 @@ impl Core {
                 .get_mut("terminal")
                 .map(Value::take)
                 .unwrap_or_default(),
+        })
+    }
+
+    /// A terminal whose program already ended, as the stream an attach would
+    /// have given: what it left on screen, then the exit. `attach` refuses
+    /// these with `finished`.
+    pub(crate) fn finished(&self, address: &str) -> HcResult<Attached> {
+        let read = self.call(
+            "terminal.read",
+            json!({"terminal": address, "lines": ENDED_HISTORY_LINES}),
+        )?;
+        let text = field("terminal.read", &read, "text", |text| {
+            text.as_str().map(str::to_owned)
+        })?
+        .replace('\n', "\r\n");
+        let (tx, stream) = tokio_mpsc::unbounded_channel();
+        let _ = tx.send(Stream::Data(text.into_bytes()));
+        let _ = tx.send(Stream::Closed(json!({"reason": "exited"})));
+        Ok(Attached {
+            channel: ENDED_CHANNEL,
+            stream,
+            terminal: json!({"address": address}),
         })
     }
 

@@ -278,8 +278,18 @@ pub(super) fn start(
         .run(run_params(cmd, rows, cols))
         .map_err(std::io::Error::other)?;
     info!(pane = pane_id.raw(), %address, "pane runs in herdr-core");
-    core.attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows}))
-        .map_err(std::io::Error::other)
+    attach_new(core, &address, rows, cols)
+}
+
+/// Attaches to a terminal `start` just made.
+fn attach_new(core: &Core, address: &str, rows: u16, cols: u16) -> std::io::Result<Attached> {
+    match core.attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows})) {
+        // A short command can end before the attach. It still ran, so the
+        // pane shows what it left and then exits like any other.
+        Err(err) if err.kind() == Some("finished") => core.finished(address),
+        attached => attached,
+    }
+    .map_err(std::io::Error::other)
 }
 
 impl PaneRuntime {
@@ -535,6 +545,55 @@ mod tests {
             None,
         )
         .expect("attach_core")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_shows_a_program_that_ended_before_the_attach() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let address = test
+            .core
+            .run(json!({"argv": ["sh", "-c", "echo done-early"], "no_parent": true}))
+            .expect("run");
+        test.core
+            .call("terminal.wait", json!({"terminal": address}))
+            .expect("wait for the exit");
+        let attached = attach_new(&test.core, &address, 24, 80).expect("attach");
+        let (events, mut event_rx) = mpsc::channel(8);
+        let runtime = PaneRuntime::attach_core(
+            PaneId::from_raw(7),
+            test.core.clone(),
+            attached,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+            None,
+        )
+        .expect("attach_core");
+        let died = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(AppEvent::PaneDied { exit_reason, .. }) = event_rx.recv().await {
+                    break exit_reason;
+                }
+            }
+        })
+        .await
+        .expect("PaneDied");
+        assert_eq!(died, crate::platform::ChildExitReason::Exited);
+        assert!(runtime.visible_text().contains("done-early"));
+        // Typing into the ended pane goes nowhere and must not upset the core.
+        runtime.try_send_bytes(Bytes::from_static(b"hi\r")).unwrap();
+        drop(runtime);
+        test.core
+            .call("terminal.read", json!({"terminal": address}))
+            .expect("the core still answers");
     }
 
     #[cfg(unix)]
