@@ -204,6 +204,12 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
     }
 }
 
+/// `terminal.attach` for a terminal Lawn shows again, with all the history
+/// the core keeps; the pane's own scrollback limit trims the rest.
+fn reattach_params(address: &str, rows: u16, cols: u16) -> serde_json::Value {
+    serde_json::json!({"terminal": address, "cols": cols, "rows": rows, "history": u32::MAX})
+}
+
 /// The hidden command a core pane starts through:
 /// `lawn pane-exec <names> <program> [args…]`, with `<names>` joined by `=`.
 /// The core adds a pane's `env` on top of its own environment, so something
@@ -348,8 +354,15 @@ impl PaneRuntime {
             .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
             .map_err(std::io::Error::other)?;
         let attached = core
-            .attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows}))
-            .map_err(std::io::Error::other)?;
+            .attach(reattach_params(address, rows, cols))
+            .map_err(|err| {
+                let kind = if err.kind() == Some("not_found") {
+                    std::io::ErrorKind::NotFound
+                } else {
+                    std::io::ErrorKind::Other
+                };
+                std::io::Error::new(kind, err)
+            })?;
         Self::attach_core(
             pane_id,
             core,
@@ -362,7 +375,7 @@ impl PaneRuntime {
             events,
             render_notify,
             render_dirty,
-            // The core keeps the history itself.
+            // The core paints its own history, asked for in the attach.
             None,
         )
     }
@@ -872,6 +885,51 @@ mod tests {
             .recent_text_snapshot(100)
             .text
             .contains("saved-line"));
+        runtime.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reattached_core_pane_shows_the_cores_history() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let address = test
+            .core
+            .run(json!({
+                "argv": ["sh", "-c", "seq 1 100; echo done; sleep 30"],
+                "no_parent": true,
+            }))
+            .expect("run");
+        wait_for("the program", || {
+            test.core
+                .call("terminal.read", json!({"terminal": address}))
+                .is_ok_and(|read| read.to_string().contains("done"))
+        })
+        .await;
+        let attached = test
+            .core
+            .attach(reattach_params(&address, 24, 80))
+            .expect("attach");
+        let (events, _event_rx) = mpsc::channel(8);
+        let runtime = PaneRuntime::attach_core(
+            PaneId::from_raw(7),
+            test.core.clone(),
+            attached,
+            24,
+            80,
+            1 << 20,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+            None,
+        )
+        .expect("attach_core");
+        wait_for("the screen", || runtime.visible_text().contains("done")).await;
+        let history = runtime.recent_text_snapshot(200).text;
+        assert!(history.lines().any(|line| line.trim() == "1"), "{history}");
         runtime.shutdown();
     }
 

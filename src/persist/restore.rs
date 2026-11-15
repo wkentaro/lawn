@@ -569,10 +569,11 @@ fn restore_tab(
             .and_then(|imported| imported.state.agent_state.clone());
         // A pane whose core terminal is still running gets it back, program
         // and all, instead of a new shell.
-        let reattached = saved_pane
+        let core_terminal = saved_pane
             .and_then(|pane| pane.core_terminal.as_deref())
-            .filter(|_| !was_imported)
-            .and_then(|address| {
+            .filter(|_| !was_imported);
+        let reattached = core_terminal
+            .map(|address| {
                 TerminalRuntime::reattach_core(
                     *id,
                     address,
@@ -585,10 +586,20 @@ fn restore_tab(
                     runtime_context.render_notify.clone(),
                     runtime_context.render_dirty.clone(),
                 )
-                .inspect_err(|err| {
-                    warn!(pane_id = id.raw(), %address, %err, "cannot reattach the core terminal; starting a new one")
-                })
-                .ok()
+            })
+            // Only a terminal the core no longer has gets replaced; any other
+            // failure leaves the pane unavailable and keeps the address.
+            .filter(|result| {
+                let gone = result
+                    .as_ref()
+                    .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound);
+                if gone {
+                    warn!(
+                        pane_id = id.raw(),
+                        "the core terminal is gone; starting a new one"
+                    );
+                }
+                !gone
             });
         let kept_running = was_imported || reattached.is_some();
         let pending_native_agent_restore = if kept_running {
@@ -637,8 +648,8 @@ fn restore_tab(
             continue;
         }
 
-        let runtime_result = if let Some(runtime) = reattached {
-            Ok(runtime)
+        let runtime_result = if let Some(result) = reattached {
+            result
         } else {
             #[cfg(unix)]
             if let Some(imported) = imported_runtime {
@@ -757,10 +768,15 @@ fn restore_tab(
                     "failed to restore pane"
                 );
                 if !was_imported {
-                    let terminal = unavailable_restored_terminal(
-                        terminal_id, saved_pane, cwd,
-                        format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session."),
-                    );
+                    let unattached = core_terminal.filter(|_| kept_running);
+                    let reason = if unattached.is_some() {
+                        format!("Could not reattach the running program: {e}. Restart this session to try again.")
+                    } else {
+                        format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session.")
+                    };
+                    let mut terminal =
+                        unavailable_restored_terminal(terminal_id, saved_pane, cwd, reason);
+                    terminal.unattached_core_terminal = unattached.map(str::to_owned);
                     panes.insert(*id, PaneState::new(terminal.id.clone()));
                     terminals.push(terminal);
                 }
@@ -1438,6 +1454,59 @@ mod tests {
             state.active = Some(0);
             state.assert_invariants_for_test();
         }
+    }
+
+    #[tokio::test]
+    async fn a_core_terminal_that_cannot_reattach_keeps_its_address() {
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&1)
+            .unwrap()
+            .core_terminal = Some("t3".into());
+        let (events, _rx) = mpsc::channel(32);
+        // No core in tests, so the attach fails without the core saying the
+        // terminal is gone.
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let tab = &workspaces[0].tabs[0];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap();
+        assert!(runtimes.get(terminal_id).is_none(), "no new shell");
+        assert!(terminals[terminal_id]
+            .restore_error
+            .as_deref()
+            .is_some_and(|reason| reason.contains("reattach")));
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let pane = captured.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(pane.core_terminal.as_deref(), Some("t3"));
     }
 
     #[tokio::test]

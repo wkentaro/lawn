@@ -390,7 +390,8 @@ fn capture_tab(
             PaneSnapshot {
                 core_terminal: terminal_id
                     .and_then(|id| terminal_runtimes.get(id))
-                    .and_then(|runtime| runtime.core_address().map(str::to_owned)),
+                    .and_then(|runtime| runtime.core_address().map(str::to_owned))
+                    .or_else(|| terminal.and_then(|t| t.unattached_core_terminal.clone())),
                 cwd,
                 label,
                 agent_name,
