@@ -200,29 +200,56 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
     }
 }
 
-/// Runs `$2…` with only the variables named in `$1`. The core adds a pane's
-/// `env` on top of its own environment, so whatever else the core holds has
-/// to go before the program starts; the core's own `HC_*` and `PWD` stay.
-/// `sh` and `env` by path: the pane's own PATH may not reach them.
-///
-/// The loop runs in a subshell and only prints `unset` lines, so the shell
-/// that starts the program never assigns a variable the pane might own.
-/// Values are split into words too, and a word may name a variable that was
-/// never listed. That only unsets something outside `$1`, which is the goal.
-// shortcut: leaves a name `sh` can't spell (`BASH_FUNC_x%%`); send a clean
-// environment once `terminal.run` takes one.
+/// The hidden command a core pane starts through:
+/// `lawn pane-exec <names> <program> [args…]`, with `<names>` joined by `=`.
+/// The core adds a pane's `env` on top of its own environment, so something
+/// has to drop the rest before the program starts.
+pub(crate) const PANE_EXEC: &str = "pane-exec";
+
+/// Whether a pane keeps `name`: Lawn listed it in `names`, or it is the
+/// core's own `HC_*` or `PWD`.
 #[cfg(unix)]
-const ONLY_PANE_ENV: &str = r#"eval "$(set -f
-for word in $(/usr/bin/env 2>/dev/null); do
-  name=${word%%=*}
-  case $name in (''|[0-9]*|*[!A-Za-z0-9_]*|HC_*) continue ;; esac
-  case " $1 PWD " in (*" $name "*) ;; (*) echo "command unset $name 2>/dev/null" ;; esac
-done)"
-shift; exec "$@""#;
+fn pane_keeps(names: &str, name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.starts_with("HC_") || name == "PWD" || names.split('=').any(|kept| kept == name)
+    })
+}
+
+/// Runs `lawn pane-exec`: becomes the pane's program, holding only the
+/// variables the pane keeps. Returns only when the program can't start.
+#[cfg(unix)]
+pub(crate) fn pane_exec(args: &[String]) -> std::io::Error {
+    let [names, program, rest @ ..] = args else {
+        return std::io::Error::other("pane-exec needs the kept names and a program");
+    };
+    let mut command = std::process::Command::new(program);
+    command
+        .args(rest)
+        .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| pane_keeps(names, name)));
+    let err = crate::platform::exec(&mut command);
+    std::io::Error::new(err.kind(), format!("cannot start {program}: {err}"))
+}
+
+/// The `lawn` whose `pane-exec` starts a pane's program.
+fn launcher() -> std::io::Result<std::path::PathBuf> {
+    #[cfg(not(test))]
+    return crate::platform::launch_executable();
+    // The test binary has no `pane-exec`; the `lawn` cargo builds beside its
+    // folder for the integration tests does.
+    #[cfg(test)]
+    Ok(std::env::current_exe()?.with_file_name("../lawn"))
+}
 
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
-/// and environment, owned by no terminal so it outlives Lawn.
-fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
+/// and environment, started through `launcher` and owned by no terminal so
+/// it outlives Lawn.
+fn run_params(
+    launcher: &std::path::Path,
+    cmd: &CommandBuilder,
+    rows: u16,
+    cols: u16,
+) -> serde_json::Value {
     let argv: Vec<String> = if cmd.is_default_prog() {
         // Lawn picked the shell; a login shell is what portable-pty would start.
         cmd.get_env("SHELL")
@@ -240,19 +267,16 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
         .filter(|(key, _)| !key.starts_with("HC_"))
         .map(|(key, value)| (key.to_owned(), value.into()))
         .collect();
-    #[cfg(unix)]
     let argv = if argv.is_empty() {
         argv
     } else {
-        let mut wrapped = vec![
-            "/bin/sh".to_owned(),
-            "-c".to_owned(),
-            ONLY_PANE_ENV.to_owned(),
-            "lawn-pane".to_owned(),
-            env.keys().map(String::as_str).collect::<Vec<_>>().join(" "),
+        let mut launched = vec![
+            launcher.to_string_lossy().into_owned(),
+            PANE_EXEC.to_owned(),
+            env.keys().map(String::as_str).collect::<Vec<_>>().join("="),
         ];
-        wrapped.extend(argv);
-        wrapped
+        launched.extend(argv);
+        launched
     };
     serde_json::json!({
         "argv": argv,
@@ -275,7 +299,7 @@ pub(super) fn start(
     cols: u16,
 ) -> std::io::Result<Attached> {
     let address = core
-        .run(run_params(cmd, rows, cols))
+        .run(run_params(&launcher()?, cmd, rows, cols))
         .map_err(std::io::Error::other)?;
     info!(pane = pane_id.raw(), %address, "pane runs in herdr-core");
     attach_new(core, &address, rows, cols)
@@ -456,9 +480,10 @@ mod tests {
         cmd.cwd("/work");
         cmd.env("HC_TERMINAL_ID", "t9");
         cmd.env("LAWN_KEEP", "yes");
-        let params = run_params(&cmd, 24, 80);
+        let params = run_params(std::path::Path::new("/bin/lawn"), &cmd, 24, 80);
         let argv: Vec<String> = serde_json::from_value(params["argv"].clone()).unwrap();
-        assert_eq!(argv[argv.len() - 2..], ["claude", "--resume"]);
+        assert_eq!(argv[..2], ["/bin/lawn", PANE_EXEC]);
+        assert_eq!(argv[3..], ["claude", "--resume"]);
         assert_eq!(params["cwd"], "/work");
         assert_eq!(params["env"]["LAWN_KEEP"], "yes");
         assert!(params["env"].get("HC_TERMINAL_ID").is_none());
@@ -476,13 +501,24 @@ mod tests {
         cmd.env("SHELL", "/bin/fish");
         cmd.env("LAWN_KEEP", "yes");
         cmd.env_remove("PATH");
-        let argv: Vec<String> =
-            serde_json::from_value(run_params(&cmd, 24, 80)["argv"].clone()).unwrap();
-        assert_eq!(argv[..2], ["/bin/sh", "-c"]);
-        assert_eq!(argv[argv.len() - 2..], ["/bin/fish", "-l"]);
-        let keep: Vec<&str> = argv[4].split(' ').collect();
-        assert!(keep.contains(&"LAWN_KEEP"));
-        assert!(!keep.contains(&"PATH"));
+        let params = run_params(std::path::Path::new("/bin/lawn"), &cmd, 24, 80);
+        let argv: Vec<String> = serde_json::from_value(params["argv"].clone()).unwrap();
+        assert_eq!(argv[3..], ["/bin/fish", "-l"]);
+        let keeps = |name: &str| pane_keeps(&argv[2], std::ffi::OsStr::new(name));
+        assert!(keeps("LAWN_KEEP"));
+        assert!(!keeps("PATH"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pane_keeps_only_what_lawn_named_and_the_cores_own() {
+        let keeps = |name: &str| pane_keeps("HOME=LAWN_KEEP", std::ffi::OsStr::new(name));
+        for name in ["HOME", "LAWN_KEEP", "HC_TERMINAL_ID", "PWD"] {
+            assert!(keeps(name), "{name}");
+        }
+        for name in ["SHELLOPTS", "HOM", "LAWN", "BASH_FUNC_x%%", ""] {
+            assert!(!keeps(name), "{name}");
+        }
     }
 
     #[cfg(unix)]
@@ -614,33 +650,28 @@ mod tests {
     #[tokio::test]
     async fn core_pane_gets_only_the_env_lawn_built() {
         // The core starts with these; Lawn's own environment never has them.
-        // Its value names the cleanup's own variables, which must survive it.
-        std::env::set_var(
-            "LAWN_TEST_CORE_ONLY",
-            "/wrong/repository/.git _lawn_keep=x _lawn_word=x _lawn_name=x",
-        );
+        std::env::set_var("LAWN_TEST_CORE_ONLY", "/wrong/repository/.git");
         std::env::set_var("CLAUDECODE", "1");
+        // A shell that inherits this stops at the first failing command, and
+        // bash won't let a script unset it.
+        std::env::set_var("SHELLOPTS", "errexit");
         let test = crate::hc::test_support::TestCore::start();
         std::env::remove_var("LAWN_TEST_CORE_ONLY");
         std::env::remove_var("CLAUDECODE");
+        std::env::remove_var("SHELLOPTS");
         let Some(test) = test else {
             return;
         };
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args([
             "-c",
-            "echo \"core=${LAWN_TEST_CORE_ONLY-unset} agent=${CLAUDECODE-unset} \
-             kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} last=$LAWN_Z_LAST \
-             own=$name,$_lawn_name \
+            "false; echo \"core=${LAWN_TEST_CORE_ONLY-unset} agent=${CLAUDECODE-unset} \
+             kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} \
              pwd=${PWD:+set}\"; \
              read line",
         ]);
         cmd.env("LAWN_KEEP", "yes");
-        cmd.env("LAWN_Z_LAST", "yes");
-        // Names the cleanup uses itself, in every version of it so far.
-        cmd.env("name", "mine");
-        cmd.env("_lawn_name", "mine-too");
-        // A value shaped like other variables must not confuse the cleanup.
+        // A value shaped like other variables arrives whole.
         cmd.env("LAWN_SPACED", "a LAWN_KEEP=no\nPWD=x");
         let runtime = attach_started(&test.core, &cmd);
         wait_for("the program", || runtime.visible_text().contains("pwd=")).await;
@@ -651,9 +682,6 @@ mod tests {
             "kept=yes",
             "spaced=a LAWN_KEEP=no",
             "id=set",
-            // Sorted after the core-only variable, so cleaned after it.
-            "last=yes",
-            "own=mine,mine-too",
             "pwd=set",
         ] {
             assert!(text.contains(part), "{part} missing from {text:?}");

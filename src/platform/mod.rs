@@ -249,6 +249,14 @@ pub(crate) fn launch_executable() -> std::io::Result<std::path::PathBuf> {
     std::env::current_exe()
 }
 
+/// Replaces this process with `command`. Returns only when that fails.
+#[cfg(unix)]
+pub(crate) fn exec(command: &mut std::process::Command) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+
+    command.exec()
+}
+
 pub(crate) fn detached_custom_command_process(command: &str) -> std::process::Command {
     let mut process = detached_custom_command_process_platform(command);
     configure_background_command(&mut process);
@@ -312,7 +320,7 @@ pub(crate) struct PlatformCapabilities {
     pub(crate) preserve_legacy_doubled_escape_input: bool,
     /// Whether panes can run in herdr-core with only the environment Lawn
     /// built. The core can't start a program from a clean environment, and
-    /// only a Unix pane can clear the rest itself.
+    /// only a Unix `lawn pane-exec` can become the program after clearing it.
     pub(crate) core_panes: bool,
 }
 

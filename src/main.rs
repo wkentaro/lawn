@@ -522,6 +522,19 @@ fn main() -> io::Result<()> {
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
     }
+    // A core pane's program starts here; what follows is its command line,
+    // not Lawn's.
+    #[cfg(unix)]
+    if raw_args.get(1).map(String::as_str) == Some(pane::PANE_EXEC) {
+        let err = pane::pane_exec(&raw_args[2..]);
+        eprintln!("error: {err}");
+        // What a shell reports for a command it can't find or can't run.
+        std::process::exit(if err.kind() == io::ErrorKind::NotFound {
+            127
+        } else {
+            126
+        });
+    }
     if let Some(outcome) = cli::maybe_run_machine(&raw_args) {
         return finish_cli(outcome);
     }
