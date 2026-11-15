@@ -21,16 +21,33 @@ fn lock_file() -> std::io::Result<File> {
 }
 
 /// Takes this session's layout for the server before it restores anything,
-/// waiting for an offline edit in progress.
+/// waiting out an offline edit in progress but not another server.
 pub(crate) fn own() -> std::io::Result<()> {
+    own_within(std::time::Duration::from_secs(5))
+}
+
+fn own_within(wait: std::time::Duration) -> std::io::Result<()> {
     let mut owner = OWNER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if owner.is_none() {
-        let file = lock_file()?;
-        file.lock()?;
-        *owner = Some(file);
+    if owner.is_some() {
+        return Ok(());
     }
+    let file = lock_file()?;
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(std::io::Error::other("another Lawn server holds it"));
+            }
+            Err(std::fs::TryLockError::Error(err)) => return Err(err),
+        }
+    }
+    *owner = Some(file);
     Ok(())
 }
 
@@ -782,5 +799,20 @@ mod tests {
         assert_eq!(loaded.sidebar_width, Some(40), "the server starts with it");
         assert_eq!(widen(), Ok(None), "the server owns the layout now");
         save(Some(&snapshot(32))).expect("the server keeps saving");
+    }
+
+    #[test]
+    fn a_second_server_gives_up_instead_of_waiting() {
+        let dir = std::env::temp_dir().join(format!("lawn-lock-{}", std::process::id()));
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let running = lock_file().expect("lock file");
+        running.lock().expect("the first server");
+
+        let err = own_within(std::time::Duration::from_millis(100)).expect_err("taken");
+        assert!(err.to_string().contains("another Lawn server"), "{err}");
+
+        drop(running);
+        own_within(std::time::Duration::ZERO).expect("free once it exits");
+        std::fs::remove_dir_all(dir).expect("clean up");
     }
 }
