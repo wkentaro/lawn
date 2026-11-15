@@ -112,7 +112,7 @@ fn a_late_attach_reply_closes_the_abandoned_stream() {
     read_loop(bytes.as_slice(), &routes, &writer);
 
     assert_eq!(
-        sent.try_recv().unwrap(),
+        sent.try_recv().unwrap().0,
         frame::encode(5, frame::CLOSE, &[])
     );
     assert!(sent.try_recv().is_err());
@@ -123,6 +123,56 @@ fn a_late_attach_reply_closes_the_abandoned_stream() {
         r.early.get(&6),
         Some(&vec![Stream::Data(b"other".to_vec())])
     );
+}
+
+/// Holds each write until the test lets it through, then fails if told to.
+struct GatedWriter {
+    gate: mpsc::Receiver<bool>,
+    out: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for GatedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.gate.recv() != Ok(true) {
+            return Err(io::Error::other("closed"));
+        }
+        self.out.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn written_input_waits_for_the_write_and_fails_with_it() {
+    let (gate, gate_rx) = mpsc::channel();
+    let out = Arc::new(Mutex::new(Vec::new()));
+    let (writer, frames) = mpsc::channel::<Outgoing>();
+    let writer_out = out.clone();
+    let thread = std::thread::spawn(move || {
+        write_loop(
+            GatedWriter {
+                gate: gate_rx,
+                out: writer_out,
+            },
+            &frames,
+        )
+    });
+    let (done, written) = mpsc::channel();
+    writer.send((b"one".to_vec(), Some(done))).unwrap();
+    // A stalled write keeps the waiter waiting.
+    assert!(written.recv_timeout(Duration::from_millis(100)).is_err());
+    gate.send(true).unwrap();
+    written.recv().unwrap();
+    assert_eq!(*out.lock().unwrap(), b"one");
+
+    let (done, written) = mpsc::channel();
+    writer.send((b"two".to_vec(), Some(done))).unwrap();
+    gate.send(false).unwrap();
+    assert!(written.recv().is_err());
+    thread.join().unwrap();
 }
 
 #[test]

@@ -152,10 +152,13 @@ pub(crate) struct Doc {
     pub(crate) version: u64,
 }
 
+/// A frame for the core, and who to tell once it's written.
+type Outgoing = (Vec<u8>, Option<mpsc::Sender<()>>);
+
 pub(crate) struct Core {
     /// The `hello` result: generation, version, methods, features.
     pub(crate) hello: Value,
-    writer: mpsc::Sender<Vec<u8>>,
+    writer: mpsc::Sender<Outgoing>,
     routes: Arc<Mutex<Routes>>,
     next_id: AtomicU64,
     child: Child,
@@ -323,7 +326,7 @@ impl Core {
                 .recv_timeout(hello_timeout)
                 .map_err(|_| HcError::Unavailable("herdr-core did not answer `hello`".to_owned())),
         };
-        let (hello, mut stdin, reader) = match shaken {
+        let (hello, stdin, reader) = match shaken {
             Ok((Ok(hello), stdin, reader)) => (hello, stdin, reader),
             Ok((Err(error), ..)) | Err(error) => {
                 let _ = child.kill();
@@ -342,26 +345,17 @@ impl Core {
         };
 
         // A core that stops reading never blocks the caller.
-        let (writer, frames) = mpsc::channel::<Vec<u8>>();
+        let (writer, frames) = mpsc::channel();
         let routes = Arc::new(Mutex::new(Routes::default()));
         let reader_routes = routes.clone();
         let reader_writer = writer.clone();
-        let threads = crate::thread_spawn::spawn_named("hc-writer", move || {
-            while let Ok(frame) = frames.recv() {
-                if stdin
-                    .write_all(&frame)
-                    .and_then(|()| stdin.flush())
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-        .and_then(|_| {
-            crate::thread_spawn::spawn_named("hc-reader", move || {
-                read_loop(reader, &reader_routes, &reader_writer)
-            })
-        });
+        let threads =
+            crate::thread_spawn::spawn_named("hc-writer", move || write_loop(stdin, &frames))
+                .and_then(|_| {
+                    crate::thread_spawn::spawn_named("hc-reader", move || {
+                        read_loop(reader, &reader_routes, &reader_writer)
+                    })
+                });
         if let Err(error) = threads {
             let _ = child.kill();
             let _ = child.wait();
@@ -387,9 +381,31 @@ impl Core {
     /// on a frame over its limit, so stream bytes go out in pieces; `call`
     /// rejects an oversized request before it gets here.
     fn send(&self, channel: u32, kind: u8, payload: &[u8]) {
-        for piece in frame::pieces(payload) {
-            let _ = self.writer.send(frame::encode(channel, kind, piece));
+        self.queue(channel, kind, payload, None);
+    }
+
+    /// Queues `payload` in pieces; `done` hears back once the last is
+    /// written. False when the writer is gone.
+    fn queue(
+        &self,
+        channel: u32,
+        kind: u8,
+        payload: &[u8],
+        mut done: Option<mpsc::Sender<()>>,
+    ) -> bool {
+        let mut pieces = frame::pieces(payload).peekable();
+        while let Some(piece) = pieces.next() {
+            let last = pieces.peek().is_none();
+            let ack = if last { done.take() } else { None };
+            if self
+                .writer
+                .send((frame::encode(channel, kind, piece), ack))
+                .is_err()
+            {
+                return false;
+            }
         }
+        true
     }
 
     pub(crate) fn call(&self, method: &str, params: Value) -> HcResult<Value> {
@@ -511,6 +527,19 @@ impl Core {
         self.send(channel, frame::DATA, bytes);
     }
 
+    /// Like `input`, but returns once the bytes are written to the core.
+    pub(crate) fn write_input(&self, channel: u32, bytes: &[u8]) -> HcResult<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let lost = || HcError::Unavailable("input: lost the core".to_owned());
+        let (done, written) = mpsc::channel();
+        if !self.queue(channel, frame::DATA, bytes, Some(done)) {
+            return Err(lost());
+        }
+        written.recv().map_err(|_| lost())
+    }
+
     /// Replies the terminal engine generated. Paths without automatic-input
     /// support get them as plain input.
     pub(crate) fn automatic_input(&self, channel: u32, bytes: &[u8]) {
@@ -593,7 +622,7 @@ fn await_reply(
     )
 }
 
-fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>, payload: &[u8]) {
+fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Outgoing>, payload: &[u8]) {
     let Ok(mut message) = serde_json::from_slice::<Value>(payload) else {
         return;
     };
@@ -611,7 +640,7 @@ fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>, payload
             let early = r.early.remove(&channel).unwrap_or_default();
             if !early.iter().any(|item| matches!(item, Stream::Closed(_))) {
                 r.detached.insert(channel);
-                let _ = writer.send(frame::encode(channel, frame::CLOSE, &[]));
+                let _ = writer.send((frame::encode(channel, frame::CLOSE, &[]), None));
             }
         }
         return;
@@ -626,7 +655,20 @@ fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>, payload
     });
 }
 
-fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>) {
+/// Writes frames in order; a frame's waiter hears back only once it's out,
+/// and a failed write drops every waiter still queued.
+fn write_loop(mut out: impl Write, frames: &mpsc::Receiver<Outgoing>) {
+    while let Ok((frame, done)) = frames.recv() {
+        if out.write_all(&frame).and_then(|()| out.flush()).is_err() {
+            break;
+        }
+        if let Some(done) = done {
+            let _ = done.send(());
+        }
+    }
+}
+
+fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>, writer: &mpsc::Sender<Outgoing>) {
     loop {
         let frame = match frame::read(&mut reader) {
             Ok(Some(frame)) => frame,

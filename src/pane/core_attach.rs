@@ -41,10 +41,13 @@ impl CoreIo {
                         delay,
                         reply,
                     } => {
-                        writer.input(channel, &text);
-                        std::thread::sleep(delay);
-                        writer.input(channel, &enter);
-                        let _ = reply.send(Ok(()));
+                        // The pause starts once the text is out, so a slow
+                        // core can't deliver text and Enter together.
+                        let sent = writer.write_input(channel, &text).and_then(|()| {
+                            std::thread::sleep(delay);
+                            writer.write_input(channel, &enter)
+                        });
+                        let _ = reply.send(sent.map_err(std::io::Error::other));
                     }
                 }
             }
