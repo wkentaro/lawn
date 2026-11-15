@@ -8,6 +8,12 @@ use crate::api::schema::{
 use crate::persist::{SessionSnapshot, WorkspaceSnapshot};
 use crate::workspace::{decode_public_number, derive_label_from_cwd, public_tab_id_for_number};
 
+/// Whether the missing server is the one this session's layout belongs to,
+/// not another machine's or one a socket override names.
+pub(super) fn owns_the_target() -> bool {
+    !super::target::is_remote() && std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_none()
+}
+
 type Answer = Option<Result<ResponseResult, ErrorBody>>;
 
 /// The answer to `request` from the layout document, or `None` when the
@@ -253,6 +259,14 @@ mod tests {
             ("project", 2)
         );
         assert_eq!(workspace.active_tab_id, "w1:t3");
+    }
+
+    #[test]
+    fn a_socket_override_names_another_server() {
+        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        assert!(owns_the_target());
+        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/other.sock");
+        assert!(!owns_the_target());
     }
 
     #[cfg(unix)]

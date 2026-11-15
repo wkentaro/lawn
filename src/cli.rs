@@ -807,7 +807,7 @@ pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Val
             .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
     });
     match sent {
-        Err(err) if server_not_running::was_reported(&err) => {
+        Err(err) if server_not_running::was_reported(&err) && offline::owns_the_target() => {
             offline::handle(request).unwrap_or(Err(err))
         }
         sent => sent,
