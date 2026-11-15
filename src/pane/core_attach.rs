@@ -205,18 +205,19 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
 /// to go before the program starts; the core's own `HC_*` and `PWD` stay.
 /// `sh` and `env` by path: the pane's own PATH may not reach them.
 ///
-/// Values are split into words too, so a word may name a variable that was
-/// never listed. That only unsets something outside `$1`, which is the goal,
-/// and the list itself stays in `$1` where no unset can reach it.
+/// The loop runs in a subshell and only prints `unset` lines, so the shell
+/// that starts the program never assigns a variable the pane might own.
+/// Values are split into words too, and a word may name a variable that was
+/// never listed. That only unsets something outside `$1`, which is the goal.
 // shortcut: leaves a name `sh` can't spell (`BASH_FUNC_x%%`); send a clean
 // environment once `terminal.run` takes one.
 #[cfg(unix)]
-const ONLY_PANE_ENV: &str = r#"set -f
-for _lawn_word in $(/usr/bin/env 2>/dev/null); do
-  _lawn_name=${_lawn_word%%=*}
-  case $_lawn_name in ''|[0-9]*|*[!A-Za-z0-9_]*|HC_*) continue ;; esac
-  case " $1 PWD " in *" $_lawn_name "*) ;; *) command unset "$_lawn_name" 2>/dev/null ;; esac
-done
+const ONLY_PANE_ENV: &str = r#"eval "$(set -f
+for word in $(/usr/bin/env 2>/dev/null); do
+  name=${word%%=*}
+  case $name in (''|[0-9]*|*[!A-Za-z0-9_]*|HC_*) continue ;; esac
+  case " $1 PWD " in (*" $name "*) ;; (*) echo "command unset $name 2>/dev/null" ;; esac
+done)"
 shift; exec "$@""#;
 
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
@@ -571,11 +572,15 @@ mod tests {
             "-c",
             "echo \"core=${LAWN_TEST_CORE_ONLY-unset} agent=${CLAUDECODE-unset} \
              kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} last=$LAWN_Z_LAST \
+             own=$name,$_lawn_name \
              pwd=${PWD:+set}\"; \
              read line",
         ]);
         cmd.env("LAWN_KEEP", "yes");
         cmd.env("LAWN_Z_LAST", "yes");
+        // Names the cleanup uses itself, in every version of it so far.
+        cmd.env("name", "mine");
+        cmd.env("_lawn_name", "mine-too");
         // A value shaped like other variables must not confuse the cleanup.
         cmd.env("LAWN_SPACED", "a LAWN_KEEP=no\nPWD=x");
         let runtime = attach_started(&test.core, &cmd);
@@ -589,6 +594,7 @@ mod tests {
             "id=set",
             // Sorted after the core-only variable, so cleaned after it.
             "last=yes",
+            "own=mine,mine-too",
             "pwd=set",
         ] {
             assert!(text.contains(part), "{part} missing from {text:?}");
