@@ -399,15 +399,12 @@ impl Core {
         }
         let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         self.send(0, frame::DATA, request.to_string().as_bytes());
-        match rx.recv_timeout(CALL_TIMEOUT) {
-            Ok(Ok(result)) => Ok(result),
-            Ok(Err(error)) => Err(HcError::rpc(method, &error)),
-            Err(_) => {
-                lock(&self.routes).replies.remove(&id);
-                Err(HcError::Unavailable(format!(
-                    "{method}: no reply from the core"
-                )))
-            }
+        match await_reply(&self.routes, id, &rx, CALL_TIMEOUT) {
+            Some(Ok(result)) => Ok(result),
+            Some(Err(error)) => Err(HcError::rpc(method, &error)),
+            None => Err(HcError::Unavailable(format!(
+                "{method}: no reply from the core"
+            ))),
         }
     }
 
@@ -558,6 +555,27 @@ impl Drop for Core {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Waits for reply `id`. None means it timed out and a late reply will find
+/// no waiter, so the reader cleans up after it.
+fn await_reply(
+    routes: &Mutex<Routes>,
+    id: u64,
+    rx: &mpsc::Receiver<Result<Value, Value>>,
+    timeout: Duration,
+) -> Option<Result<Value, Value>> {
+    if let Ok(reply) = rx.recv_timeout(timeout) {
+        return Some(reply);
+    }
+    if lock(routes).replies.remove(&id).is_some() {
+        return None;
+    }
+    // The reader took the waiter first, so its reply is on the way.
+    Some(
+        rx.recv()
+            .unwrap_or_else(|_| Err(json!({"message": "lost the core"}))),
+    )
 }
 
 fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Vec<u8>>, payload: &[u8]) {

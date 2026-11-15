@@ -124,6 +124,27 @@ fn a_late_attach_reply_closes_the_abandoned_stream() {
 }
 
 #[test]
+fn a_reply_already_taken_at_timeout_still_reaches_the_caller() {
+    let routes = Mutex::new(Routes::default());
+    let (tx, rx) = mpsc::channel();
+    // The reader removed the waiter and is about to send.
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        tx.send(Ok(json!({"channel": 5}))).unwrap();
+    });
+    assert_eq!(
+        await_reply(&routes, 1, &rx, Duration::from_millis(1)),
+        Some(Ok(json!({"channel": 5})))
+    );
+    sender.join().unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    lock(&routes).replies.insert(2, tx);
+    assert_eq!(await_reply(&routes, 2, &rx, Duration::from_millis(1)), None);
+    assert!(!lock(&routes).replies.contains_key(&2));
+}
+
+#[test]
 fn losing_the_core_fails_waiting_calls_and_open_streams() {
     let routes = Mutex::new(Routes::default());
     let (reply_tx, reply_rx) = mpsc::channel();
