@@ -11,7 +11,7 @@ pub(crate) const AUTOMATIC_INPUT: u8 = 6;
 
 const HEADER: usize = 9;
 /// The core never sends a larger payload.
-const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 
 pub(crate) fn encode(channel: u32, kind: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER + payload.len());

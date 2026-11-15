@@ -503,8 +503,9 @@ impl Core {
 
     /// Keys and pastes from a person.
     pub(crate) fn input(&self, channel: u32, bytes: &[u8]) {
-        if !bytes.is_empty() {
-            self.send(channel, frame::DATA, bytes);
+        // A frame past the core's limit would close the whole connection.
+        for chunk in bytes.chunks(frame::MAX_PAYLOAD) {
+            self.send(channel, frame::DATA, chunk);
         }
     }
 
@@ -523,7 +524,9 @@ impl Core {
         } else {
             frame::DATA
         };
-        self.send(channel, kind, bytes);
+        for chunk in bytes.chunks(frame::MAX_PAYLOAD) {
+            self.send(channel, kind, chunk);
+        }
     }
 
     pub(crate) fn credit(&self, channel: u32, bytes: u32) {

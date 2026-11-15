@@ -179,6 +179,7 @@ fn connect_gives_up_on_a_core_that_never_says_hello() {
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
+#[cfg(unix)]
 /// A throwaway core under its own `HC_SESSION`, stopped when dropped.
 struct TestCore {
     core: Arc<Core>,
@@ -186,6 +187,7 @@ struct TestCore {
     state: std::path::PathBuf,
 }
 
+#[cfg(unix)]
 impl TestCore {
     fn start() -> Option<Self> {
         let bin = hc_bin();
@@ -217,6 +219,7 @@ impl TestCore {
     }
 }
 
+#[cfg(unix)]
 /// An `hc` that can't reach the user's core: its own session, state,
 /// config and socket.
 fn isolated(session: &str, state: &std::path::Path) -> Command {
@@ -232,8 +235,10 @@ fn isolated(session: &str, state: &std::path::Path) -> Command {
     command
 }
 
+#[cfg(unix)]
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(unix)]
 impl Drop for TestCore {
     fn drop(&mut self) {
         let _ = isolated(&self.session, &self.state)
@@ -243,6 +248,7 @@ impl Drop for TestCore {
     }
 }
 
+#[cfg(unix)]
 fn recv_until(stream: &mut tokio_mpsc::UnboundedReceiver<Stream>, needle: &str) -> String {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut seen = String::new();
@@ -261,6 +267,8 @@ fn recv_until(stream: &mut tokio_mpsc::UnboundedReceiver<Stream>, needle: &str) 
     panic!("no {needle:?} within 10s; saw {seen:?}");
 }
 
+// The programs here are Unix shell lines.
+#[cfg(unix)]
 #[test]
 fn live_core_runs_attaches_and_versions_documents() {
     let Some(test) = TestCore::start() else {
@@ -296,6 +304,8 @@ fn live_core_runs_attaches_and_versions_documents() {
         .expect("kill");
 }
 
+// The programs here are Unix shell lines.
+#[cfg(unix)]
 #[test]
 fn live_core_streams_events_to_subscribers() {
     let Some(test) = TestCore::start() else {
