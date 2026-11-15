@@ -8,6 +8,19 @@ use super::snapshot::{
     SessionSnapshot, SNAPSHOT_VERSION,
 };
 
+/// Opens the lock file at `path`, creating it and its directory.
+pub(super) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
 pub(super) fn session_path() -> PathBuf {
     crate::session::data_dir().join("session.json")
 }

@@ -1,4 +1,5 @@
-use std::sync::Mutex;
+use std::fs::File;
+use std::sync::{Mutex, OnceLock};
 
 use super::snapshot::{parse_snapshot, SessionSnapshot};
 
@@ -8,6 +9,24 @@ fn version() -> std::sync::MutexGuard<'static, Option<u64>> {
     VERSION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Held by the server from its first read or write of the layout until it
+/// exits. An offline edit takes it too, so it never lands under a server
+/// that already loaded an older version.
+static OWNER: OnceLock<Option<File>> = OnceLock::new();
+
+fn lock_file() -> std::io::Result<File> {
+    super::io::open_lock_file(&crate::session::data_dir().join("layout.lock"))
+}
+
+fn own() {
+    OWNER.get_or_init(|| {
+        lock_file()
+            .and_then(|file| file.lock().map(|()| file))
+            .inspect_err(|err| tracing::warn!(%err, "cannot lock the layout"))
+            .ok()
+    });
 }
 
 pub(crate) fn name() -> String {
@@ -32,6 +51,7 @@ pub(super) fn load() -> Option<Option<SessionSnapshot>> {
     let core = crate::hc::backend()?
         .inspect_err(|err| tracing::warn!(%err, "cannot read the layout from herdr core"))
         .ok()?;
+    own();
     let name = name();
     let doc = core
         .doc_get(&name, None)
@@ -74,6 +94,7 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
         return Ok(());
     };
     let core = core.map_err(|err| err.to_string())?;
+    own();
     let name = name();
     let mut held = version();
     let base = match *held {
@@ -107,6 +128,12 @@ pub(crate) fn edit<T>(
         return Ok(None);
     };
     let core = core.map_err(|err| err.to_string())?;
+    let lock = lock_file().map_err(|err| err.to_string())?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => return Err(err.to_string()),
+    }
     let name = name();
     for _ in 0..8 {
         let doc = core.doc_get(&name, None).map_err(|err| err.to_string())?;
@@ -725,5 +752,30 @@ mod tests {
                 .sidebar_width,
             Some(99)
         );
+    }
+
+    #[test]
+    fn an_edit_never_lands_under_a_server_that_loaded_the_layout() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let value = serde_json::to_value(snapshot(31)).expect("json");
+        test.core
+            .doc_set(&name(), None, &value, 0)
+            .expect("doc.set");
+        let widen = || {
+            edit(|snapshot| {
+                snapshot.sidebar_width = Some(40);
+                ((), true)
+            })
+        };
+
+        assert_eq!(widen(), Ok(Some(())), "no server yet");
+        let loaded = load().expect("written").expect("not cleared");
+        assert_eq!(loaded.sidebar_width, Some(40), "the server starts with it");
+        assert_eq!(widen(), Ok(None), "the server owns the layout now");
+        save(Some(&snapshot(32))).expect("the server keeps saving");
     }
 }

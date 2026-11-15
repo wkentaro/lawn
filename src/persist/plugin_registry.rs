@@ -1,4 +1,3 @@
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -19,16 +18,7 @@ fn registry_lock_path() -> PathBuf {
 pub(crate) fn with_registry_lock<T>(
     operation: impl FnOnce() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let lock_path = registry_lock_path();
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
+    let lock = super::io::open_lock_file(&registry_lock_path())?;
     lock.lock()?;
     operation()
 }

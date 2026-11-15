@@ -43,8 +43,8 @@ impl TestCore {
         self.state.join("config")
     }
 
-    /// Makes this core the one `backend()` returns, for code that looks it up.
     pub(crate) fn share(&self) {
+        std::env::set_var("XDG_CONFIG_HOME", self.state.join("config"));
         *SHARED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(self.core.clone());
