@@ -500,7 +500,9 @@ fn restore_tab(
 
         let cwd = saved_cwd;
         let has_import = old_id.is_some_and(|old_id| imported_panes.contains_key(old_id));
-        if !has_import && !cwd.is_dir() {
+        // A running core terminal doesn't need its directory to come back.
+        let may_reattach = saved_pane.is_some_and(|pane| pane.core_terminal.is_some());
+        if !has_import && !may_reattach && !cwd.is_dir() {
             let terminal = unavailable_restored_terminal(
                 terminal_id,
                 saved_pane,
@@ -565,7 +567,31 @@ fn restore_tab(
         let handoff_agent_state = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.agent_state.clone());
-        let pending_native_agent_restore = if was_imported {
+        // A pane whose core terminal is still running gets it back, program
+        // and all, instead of a new shell.
+        let reattached = saved_pane
+            .and_then(|pane| pane.core_terminal.as_deref())
+            .filter(|_| !was_imported)
+            .and_then(|address| {
+                TerminalRuntime::reattach_core(
+                    *id,
+                    address,
+                    rows,
+                    cols,
+                    runtime_context.scrollback_limit_bytes,
+                    crate::terminal_theme::TerminalTheme::default(),
+                    None,
+                    runtime_context.events.clone(),
+                    runtime_context.render_notify.clone(),
+                    runtime_context.render_dirty.clone(),
+                )
+                .inspect_err(|err| {
+                    warn!(pane_id = id.raw(), %address, %err, "cannot reattach the core terminal; starting a new one")
+                })
+                .ok()
+            });
+        let kept_running = was_imported || reattached.is_some();
+        let pending_native_agent_restore = if kept_running {
             None
         } else {
             startup.restore_plan.clone()
@@ -611,7 +637,9 @@ fn restore_tab(
             continue;
         }
 
-        let runtime_result = {
+        let runtime_result = if let Some(runtime) = reattached {
+            Ok(runtime)
+        } else {
             #[cfg(unix)]
             if let Some(imported) = imported_runtime {
                 TerminalRuntime::from_handoff_fd(
@@ -667,7 +695,7 @@ fn restore_tab(
         match runtime_result {
             Ok(runtime) => {
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
-                if was_imported {
+                if kept_running {
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
@@ -682,11 +710,11 @@ fn restore_tab(
                     terminal.restore_reported_resume(resume);
                 }
                 match (saved_agent_name, saved_managed_agent) {
-                    (Some(agent_name), Some(agent)) if was_imported => {
+                    (Some(agent_name), Some(agent)) if kept_running => {
                         terminal.restore_managed_agent(agent_name, agent)
                     }
                     (Some(_), Some(_)) => {}
-                    (Some(agent_name), None) if was_imported => terminal.set_agent_name(agent_name),
+                    (Some(agent_name), None) if kept_running => terminal.set_agent_name(agent_name),
                     (Some(_), None) => {}
                     (None, _) => {}
                 }
@@ -1431,6 +1459,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            core_terminal: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -1519,6 +1548,7 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                core_terminal: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1531,6 +1561,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                core_terminal: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1674,6 +1705,7 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    core_terminal: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1685,6 +1717,7 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            core_terminal: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -1841,6 +1874,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            core_terminal: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -2286,6 +2320,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                core_terminal: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

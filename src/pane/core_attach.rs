@@ -19,7 +19,7 @@ enum Input {
 pub(super) struct CoreIo {
     core: Arc<Core>,
     channel: u32,
-    /// The core terminal's address (`t7`).
+    /// The core terminal's address (`t7`), saved so a restart reattaches.
     address: String,
     /// Keys and submissions go through one queue so a submission's pause
     /// never lets other input in between its text and its Enter.
@@ -82,6 +82,10 @@ impl CoreIo {
             })
             .map_err(|_| std::io::Error::other("core pane input stopped"))?;
         Ok(done)
+    }
+
+    pub(super) fn address(&self) -> &str {
+        &self.address
     }
 
     pub(super) fn respond(&self, bytes: &[u8]) {
@@ -317,6 +321,52 @@ fn attach_new(core: &Core, address: &str, rows: u16, cols: u16) -> std::io::Resu
 }
 
 impl PaneRuntime {
+    /// The herdr-core terminal this pane shows, if it shows one.
+    pub(crate) fn core_address(&self) -> Option<&str> {
+        match &self.io {
+            PaneRuntimeIo::Core(io) => Some(io.address()),
+            _ => None,
+        }
+    }
+
+    /// Shows an existing core terminal again, as after a restart.
+    // Same construction inputs as `attach_core`, with an address for the attach.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reattach_core(
+        pane_id: PaneId,
+        address: &str,
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+    ) -> std::io::Result<Self> {
+        let core = crate::hc::backend()
+            .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
+            .map_err(std::io::Error::other)?;
+        let attached = core
+            .attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows}))
+            .map_err(std::io::Error::other)?;
+        Self::attach_core(
+            pane_id,
+            core,
+            attached,
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            events,
+            render_notify,
+            render_dirty,
+            // The core keeps the history itself.
+            None,
+        )
+    }
+
     /// A pane showing a core terminal through an attach made at `rows`×`cols`.
     // Same construction inputs as `spawn_command_builder`, minus the command.
     #[allow(clippy::too_many_arguments)]

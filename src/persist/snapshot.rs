@@ -114,6 +114,9 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// The herdr-core terminal (`t7`) showing this pane, reattached on restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_terminal: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,6 +388,9 @@ fn capture_tab(
         panes.insert(
             id.raw(),
             PaneSnapshot {
+                core_terminal: terminal_id
+                    .and_then(|id| terminal_runtimes.get(id))
+                    .and_then(|runtime| runtime.core_address().map(str::to_owned)),
                 cwd,
                 label,
                 agent_name,
@@ -637,6 +643,28 @@ mod tests {
     }
 
     #[test]
+    fn core_terminal_round_trips_and_stays_out_of_older_sessions() {
+        let content = include_str!("../../tests/fixtures/session/current-herdr-session.json");
+        let mut snapshot = parse_snapshot(content).unwrap();
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .values_mut()
+            .next()
+            .unwrap();
+        assert_eq!(pane.core_terminal, None);
+        assert!(!serde_json::to_string(&*pane)
+            .unwrap()
+            .contains("core_terminal"));
+        pane.core_terminal = Some("t3".into());
+
+        let reloaded = parse_snapshot(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        assert!(reloaded.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .any(|pane| pane.core_terminal.as_deref() == Some("t3")));
+    }
+
+    #[test]
     fn layout_fingerprint_survives_json_round_trip() {
         let mut snapshot = parse_snapshot(include_str!(
             "../../tests/fixtures/session/current-herdr-session.json"
@@ -727,6 +755,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                core_terminal: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -739,6 +768,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                core_terminal: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1407,6 +1437,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                core_terminal: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1419,6 +1450,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                core_terminal: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
