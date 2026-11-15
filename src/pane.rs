@@ -1529,8 +1529,6 @@ pub struct PaneRuntime {
 enum PaneRuntimeIo {
     Actor(PtyIoActorHandle),
     /// The program runs in a herdr-core terminal; dropping detaches.
-    // Built only by `attach_core`, whose first caller lands next.
-    #[allow(dead_code)]
     Core(core_attach::CoreIo),
     #[cfg(test)]
     TestChannel {
@@ -2793,6 +2791,23 @@ impl PaneRuntime {
         initial_state: SpawnInitialState<'_>,
         agent_detection: AgentDetection,
     ) -> std::io::Result<Self> {
+        if let Some(core) = crate::hc::backend() {
+            let core = core.map_err(std::io::Error::other)?;
+            let attached = core_attach::start(&core, pane_id, &cmd, rows, cols)?;
+            return Self::attach_core(
+                pane_id,
+                core,
+                attached,
+                rows,
+                cols,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                events,
+                render_notify,
+                render_dirty,
+            );
+        }
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);

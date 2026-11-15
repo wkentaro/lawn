@@ -55,6 +55,7 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
     }
 
     let mut requested_session = None;
+    let mut core = false;
     let mut index = 1;
     while index < args.len() {
         let arg = &args[index];
@@ -70,6 +71,13 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
             index += 2;
             continue;
         }
+        // `--core` runs panes in herdr-core. The server started for this launch
+        // inherits the switch, in its own `core` session unless one is named.
+        if arg == "--core" {
+            core = true;
+            index += 1;
+            continue;
+        }
         if let Some(value) = arg.strip_prefix("--session=") {
             requested_session = Some(value.to_string());
             index += 1;
@@ -80,7 +88,10 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
         index += 1;
     }
 
-    if let Some(session) = requested_session {
+    if core {
+        std::env::set_var(crate::hc::CORE_ENV, "1");
+    }
+    if let Some(session) = requested_session.or_else(|| core.then(|| "core".to_owned())) {
         apply_explicit_name(&session)?;
     } else if std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_some() {
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
@@ -739,6 +750,29 @@ mod tests {
         assert!(explicit_session_requested());
         assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
         std::env::remove_var(SESSION_ENV_VAR);
+        clear_explicit_session_for_test();
+    }
+
+    #[test]
+    fn configure_from_args_core_flag_selects_the_core_session_unless_one_is_named() {
+        let _guard = env_lock().lock().unwrap();
+        for (args, session) in [
+            (vec!["lawn", "--core"], "core"),
+            (vec!["lawn", "--core", "--session", "work"], "work"),
+        ] {
+            std::env::remove_var(SESSION_ENV_VAR);
+            std::env::remove_var(crate::hc::CORE_ENV);
+            clear_explicit_session_for_test();
+            let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+
+            let cleaned = configure_from_args(&args).unwrap();
+
+            assert_eq!(cleaned, vec!["lawn"]);
+            assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok(session));
+            assert_eq!(std::env::var(crate::hc::CORE_ENV).as_deref(), Ok("1"));
+        }
+        std::env::remove_var(SESSION_ENV_VAR);
+        std::env::remove_var(crate::hc::CORE_ENV);
         clear_explicit_session_for_test();
     }
 

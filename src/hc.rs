@@ -31,6 +31,8 @@ pub(crate) const USES: &[&str] = &[
 ];
 /// Overrides the `hc` binary, for tests and unusual installs.
 pub(crate) const HC_BIN_ENV: &str = "LAWN_HC_BIN";
+/// Set to `1` by `lawn --core` so the server runs panes in herdr-core.
+pub(crate) const CORE_ENV: &str = "LAWN_CORE";
 /// Credit granted to an event stream; events are small and must not stall.
 const EVENT_CREDIT: u32 = 1024 * 1024;
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -168,6 +170,25 @@ fn hc_bin() -> std::ffi::OsString {
     std::env::var_os(HC_BIN_ENV)
         .filter(|bin| !bin.is_empty())
         .unwrap_or_else(|| "hc".into())
+}
+
+static SHARED: Mutex<Option<Arc<Core>>> = Mutex::new(None);
+
+/// The core panes run in, when `lawn --core` asked for one. Reconnects after
+/// the connection drops.
+pub(crate) fn backend() -> Option<HcResult<Arc<Core>>> {
+    if std::env::var_os(CORE_ENV).is_none_or(|value| value != "1") {
+        return None;
+    }
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(core) = shared.as_ref().filter(|core| !core.is_closed()) {
+        return Some(Ok(core.clone()));
+    }
+    let core = Core::connect();
+    *shared = core.as_ref().ok().cloned();
+    Some(core)
 }
 
 fn lock(routes: &Mutex<Routes>) -> MutexGuard<'_, Routes> {
@@ -368,6 +389,10 @@ impl Core {
             next_id: AtomicU64::new(1),
             child,
         }))
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        lock(&self.routes).closed
     }
 
     pub(crate) fn has_feature(&self, feature: &str) -> bool {

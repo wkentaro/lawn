@@ -2,9 +2,6 @@
 //! terminal engine for drawing and feeds it the core's output stream; the
 //! program lives on in the core when the pane goes away.
 
-// `lawn --core` is the first caller and lands next.
-#![allow(dead_code)]
-
 use super::*;
 use crate::hc::{Attached, Core, Stream};
 
@@ -131,6 +128,52 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
         }
         _ => crate::platform::ChildExitReason::WaitFailed,
     }
+}
+
+/// `terminal.run` for a command Lawn built for a PTY: same program, folder
+/// and environment, owned by no terminal so it outlives Lawn.
+fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
+    let argv: Vec<String> = if cmd.is_default_prog() {
+        Vec::new()
+    } else {
+        cmd.get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    };
+    // The core names the terminal itself, and a Lawn started in the pane
+    // picks its own backend.
+    let env: serde_json::Map<String, serde_json::Value> = cmd
+        .iter_full_env_as_str()
+        .filter(|(key, _)| !key.starts_with("HC_") && *key != crate::hc::CORE_ENV)
+        .map(|(key, value)| (key.to_owned(), value.into()))
+        .collect();
+    serde_json::json!({
+        "argv": argv,
+        "cwd": cmd.get_cwd().map(|cwd| cwd.to_string_lossy()),
+        "env": env,
+        "size": {"cols": cols, "rows": rows},
+        "labels": {"lawn": "1"},
+        "no_parent": true,
+        "no_notify": true,
+        "keep": true,
+    })
+}
+
+/// Starts `cmd` in a new core terminal and attaches to it.
+pub(super) fn start(
+    core: &Core,
+    pane_id: PaneId,
+    cmd: &CommandBuilder,
+    rows: u16,
+    cols: u16,
+) -> std::io::Result<Attached> {
+    let address = core
+        .run(run_params(cmd, rows, cols))
+        .map_err(std::io::Error::other)?;
+    info!(pane = pane_id.raw(), %address, "pane runs in herdr-core");
+    core.attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows}))
+        .map_err(std::io::Error::other)
 }
 
 impl PaneRuntime {
@@ -268,6 +311,32 @@ mod tests {
             ChildExitReason::WaitFailed
         );
         assert_eq!(exit_reason(&Stream::Lost), ChildExitReason::WaitFailed);
+    }
+
+    #[test]
+    fn run_params_keep_the_command_and_drop_core_identity() {
+        let mut cmd = CommandBuilder::new("claude");
+        cmd.arg("--resume");
+        cmd.cwd("/work");
+        cmd.env("HC_TERMINAL_ID", "t9");
+        cmd.env(crate::hc::CORE_ENV, "1");
+        cmd.env("LAWN_KEEP", "yes");
+        let params = run_params(&cmd, 24, 80);
+        assert_eq!(params["argv"], json!(["claude", "--resume"]));
+        assert_eq!(params["cwd"], "/work");
+        assert_eq!(params["env"]["LAWN_KEEP"], "yes");
+        assert!(params["env"].get("HC_TERMINAL_ID").is_none());
+        assert!(params["env"].get(crate::hc::CORE_ENV).is_none());
+        assert_eq!(params["size"], json!({"cols": 80, "rows": 24}));
+        assert_eq!(
+            (params["no_parent"].clone(), params["keep"].clone()),
+            (json!(true), json!(true))
+        );
+        assert!(
+            run_params(&CommandBuilder::new_default_prog(), 24, 80)["argv"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
     }
 
     #[cfg(unix)]
