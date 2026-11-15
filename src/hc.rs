@@ -383,12 +383,18 @@ impl Core {
             .is_some_and(|features| features.iter().any(|f| f == feature))
     }
 
+    /// Every frame leaves through here. The core closes the whole connection
+    /// on a frame over its limit, so stream bytes go out in pieces; `call`
+    /// rejects an oversized request before it gets here.
     fn send(&self, channel: u32, kind: u8, payload: &[u8]) {
-        let _ = self.writer.send(frame::encode(channel, kind, payload));
+        for piece in frame::pieces(payload) {
+            let _ = self.writer.send(frame::encode(channel, kind, piece));
+        }
     }
 
     pub(crate) fn call(&self, method: &str, params: Value) -> HcResult<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = request_payload(id, method, params)?;
         let (tx, rx) = mpsc::channel();
         {
             let mut routes = lock(&self.routes);
@@ -397,8 +403,7 @@ impl Core {
             }
             routes.replies.insert(id, tx);
         }
-        let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        self.send(0, frame::DATA, request.to_string().as_bytes());
+        self.send(0, frame::DATA, request.as_bytes());
         match await_reply(&self.routes, id, &rx, CALL_TIMEOUT) {
             Some(Ok(result)) => Ok(result),
             Some(Err(error)) => Err(HcError::rpc(method, &error)),
@@ -503,10 +508,7 @@ impl Core {
 
     /// Keys and pastes from a person.
     pub(crate) fn input(&self, channel: u32, bytes: &[u8]) {
-        // A frame past the core's limit would close the whole connection.
-        for chunk in bytes.chunks(frame::MAX_PAYLOAD) {
-            self.send(channel, frame::DATA, chunk);
-        }
+        self.send(channel, frame::DATA, bytes);
     }
 
     /// Replies the terminal engine generated. Paths without automatic-input
@@ -524,9 +526,7 @@ impl Core {
         } else {
             frame::DATA
         };
-        for chunk in bytes.chunks(frame::MAX_PAYLOAD) {
-            self.send(channel, kind, chunk);
-        }
+        self.send(channel, kind, bytes);
     }
 
     pub(crate) fn credit(&self, channel: u32, bytes: u32) {
@@ -558,6 +558,18 @@ impl Drop for Core {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A request as one frame's payload, which can't be split.
+fn request_payload(id: u64, method: &str, params: Value) -> HcResult<String> {
+    let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    let request = request.to_string();
+    if request.len() > frame::MAX_PAYLOAD {
+        return Err(HcError::Unavailable(format!(
+            "{method}: request is larger than the core accepts"
+        )));
+    }
+    Ok(request)
 }
 
 /// Waits for reply `id`. None means it timed out and a late reply will find

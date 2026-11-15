@@ -53,6 +53,12 @@ pub(crate) fn read(reader: &mut impl Read) -> io::Result<Option<Frame>> {
     }))
 }
 
+/// A payload in frame-sized pieces; an empty one is still one frame.
+pub(crate) fn pieces(payload: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let empty = payload.is_empty().then_some(payload);
+    payload.chunks(MAX_PAYLOAD).chain(empty)
+}
+
 pub(crate) fn resize_payload(cols: u16, rows: u16) -> [u8; 4] {
     let [c0, c1] = cols.to_le_bytes();
     let [r0, r1] = rows.to_le_bytes();
@@ -70,6 +76,14 @@ pub(crate) fn parse_resize(payload: &[u8]) -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pieces_keep_empty_frames_and_split_large_ones() {
+        assert_eq!(pieces(&[]).collect::<Vec<_>>(), vec![&[] as &[u8]]);
+        let big = vec![0u8; MAX_PAYLOAD + 1];
+        let lens: Vec<usize> = pieces(&big).map(<[u8]>::len).collect();
+        assert_eq!(lens, [MAX_PAYLOAD, 1]);
+    }
 
     #[test]
     fn frames_round_trip_back_to_back() {

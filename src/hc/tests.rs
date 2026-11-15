@@ -145,6 +145,17 @@ fn a_reply_already_taken_at_timeout_still_reaches_the_caller() {
 }
 
 #[test]
+fn a_request_over_the_frame_limit_fails_before_sending() {
+    let small = request_payload(1, "doc.set", json!({"value": "x"})).unwrap();
+    assert!(small.contains("doc.set"));
+    let huge = "x".repeat(frame::MAX_PAYLOAD);
+    assert!(matches!(
+        request_payload(2, "doc.set", json!({"value": huge})),
+        Err(HcError::Unavailable(message)) if message.contains("larger")
+    ));
+}
+
+#[test]
 fn losing_the_core_fails_waiting_calls_and_open_streams() {
     let routes = Mutex::new(Routes::default());
     let (reply_tx, reply_rx) = mpsc::channel();
