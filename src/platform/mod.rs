@@ -310,6 +310,10 @@ pub(crate) struct PlatformCapabilities {
     pub(crate) live_handoff: bool,
     pub(crate) direct_terminal_attach: bool,
     pub(crate) preserve_legacy_doubled_escape_input: bool,
+    /// Whether panes can run in herdr-core with only the environment Lawn
+    /// built. The core can't start a program from a clean environment, and
+    /// only a Unix pane can clear the rest itself.
+    pub(crate) core_panes: bool,
 }
 
 pub(crate) const fn capabilities() -> PlatformCapabilities {
@@ -317,6 +321,7 @@ pub(crate) const fn capabilities() -> PlatformCapabilities {
         live_handoff: cfg!(unix),
         direct_terminal_attach: cfg!(unix),
         preserve_legacy_doubled_escape_input: cfg!(target_os = "macos"),
+        core_panes: cfg!(unix),
     }
 }
 

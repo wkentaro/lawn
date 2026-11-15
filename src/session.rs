@@ -73,6 +73,9 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
         }
         // `--core` picks a core session, `core` or `core-<name>`.
         if arg == "--core" {
+            if !crate::platform::capabilities().core_panes {
+                return Err("--core is not supported on this platform yet".to_string());
+            }
             core = true;
             index += 1;
             continue;
@@ -112,12 +115,13 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
 const CORE_SESSION_NAME: &str = "core";
 
 /// Whether a session runs its panes in herdr-core: `core` and `core-<name>`
-/// do, whichever command started or attached them.
+/// do, whichever command started or attached them, where the platform can.
 pub(crate) fn runs_on_core(name: Option<&str>) -> bool {
-    name.is_some_and(|name| {
-        name.strip_prefix(CORE_SESSION_NAME)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
-    })
+    crate::platform::capabilities().core_panes
+        && name.is_some_and(|name| {
+            name.strip_prefix(CORE_SESSION_NAME)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+        })
 }
 
 pub fn active_name() -> Option<String> {
@@ -766,6 +770,15 @@ mod tests {
         clear_explicit_session_for_test();
     }
 
+    #[cfg(not(unix))]
+    #[test]
+    fn core_sessions_wait_for_a_platform_that_can_run_them() {
+        let _guard = env_lock().lock().unwrap();
+        let args = vec!["lawn".to_owned(), "--core".to_owned()];
+        assert!(configure_from_args(&args).is_err());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn configure_from_args_core_flag_keeps_core_sessions_apart() {
         let _guard = env_lock().lock().unwrap();
@@ -803,6 +816,7 @@ mod tests {
             (Some("core"), true),
             (Some("core-work"), true),
         ] {
+            let core = core && crate::platform::capabilities().core_panes;
             assert_eq!(runs_on_core(name), core, "{name:?}");
         }
     }
