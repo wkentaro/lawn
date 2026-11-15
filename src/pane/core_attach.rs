@@ -246,33 +246,14 @@ fn terminal_to_park(
     })
 }
 
-/// A label each session adds, with its name, to a terminal it wants to park.
-const CLAIM_LABEL: &str = "lawn.claim.";
-
-/// Whether `session` may park the terminal in a `terminal.label` reply to
-/// its claim: the terminal is already its own, or no other session claims it.
-fn won_claim(record: &serde_json::Value, session: &str) -> bool {
-    let labels = &record["labels"];
-    match labels["lawn"].as_str() {
-        Some(owner) => owner == session,
-        None => labels.as_object().is_some_and(|labels| {
-            let claims = labels.keys().filter(|key| key.starts_with(CLAIM_LABEL));
-            claims.count() == 1
-        }),
-    }
-}
-
 /// Whether `session` may park the terminal in `record`. A terminal belongs
 /// to the session of the nearest terminal above it that has one: a helper
 /// goes where the pane that started it is. Above a terminal with no session
 /// anywhere, the topmost one decides for all below it, and the first session
-/// to claim that one gets them.
-///
-/// Sessions that find the same terminal each add a label of their own, and
-/// the core answers each with every label so far, so only the first sees
-/// its label alone. The others take theirs back.
-// shortcut: walks up again for every terminal of a family; remember the
-// answer per snapshot once families get large.
+/// to write its name in that terminal's document gets them for good.
+// shortcut: walks up again for every terminal of a family, and leaves one
+// small document per family in the core; remember the answer per snapshot
+// once families get large, and drop the documents once the core can.
 fn claim(core: &Core, record: &serde_json::Value, session: &str) -> crate::hc::HcResult<bool> {
     let mut top = std::borrow::Cow::Borrowed(record);
     // Parents never loop; the bound is for a core that says they do.
@@ -290,19 +271,15 @@ fn claim(core: &Core, record: &serde_json::Value, session: &str) -> crate::hc::H
             Err(err) => return Err(err),
         }
     }
-    let label = |value: &str| {
-        let labels = [(format!("{CLAIM_LABEL}{session}"), value.into())];
-        let labels = serde_json::Map::from_iter(labels);
-        core.call(
-            "terminal.label",
-            serde_json::json!({"terminal": top["address"], "labels": labels}),
-        )
-    };
-    let won = won_claim(&label("1")?, session);
-    if !won {
-        label("")?;
+    let owner = format!("lawn-owner-{}", top["address"].as_str().unwrap_or_default());
+    // Version zero is a document never written, so only one write gets in.
+    match core.doc_set(&owner, None, &session.into(), 0) {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == Some("conflict") => {
+            Ok(core.doc_get(&owner, None)?.value.as_str() == Some(session))
+        }
+        Err(err) => Err(err),
     }
-    Ok(won)
 }
 
 /// Reports the core terminals Lawn should park: those already running, then
@@ -771,26 +748,6 @@ mod tests {
         assert!(!keeps("PATH"));
     }
 
-    #[test]
-    fn a_claim_is_won_alone_or_on_a_terminal_already_owned() {
-        let won = |labels: serde_json::Value| won_claim(&json!({"labels": labels}), "core");
-        assert!(won(json!({"lawn.claim.core": "1", "team": "red"})));
-        assert!(won(json!({"lawn": "core", "lawn.claim.core-work": "1"})));
-        for (why, labels) in [
-            (
-                "another session claimed first",
-                json!({"lawn.claim.core": "1", "lawn.claim.core-work": "1"}),
-            ),
-            (
-                "another session's",
-                json!({"lawn": "core-work", "lawn.claim.core": "1"}),
-            ),
-            ("no labels in the reply", json!(null)),
-        ] {
-            assert!(!won(labels), "{why}");
-        }
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn the_first_session_to_claim_a_terminal_gets_all_below_it() {
@@ -810,24 +767,41 @@ mod tests {
         let helper = run(json!({"argv": ["sleep", "30"], "parent": top}));
         let below = run(json!({"argv": ["sleep", "30"], "parent": helper}));
 
-        // Both sessions found all three before either parked one.
-        assert!(claims(&top, "core"));
-        assert!(!claims(&top, "core-work"));
-        assert!(!claims(&below, "core-work"), "its family is taken");
-        assert!(claims(&below, "core"));
-        assert_eq!(record(&top)["labels"], json!({"lawn.claim.core": "1"}));
-        assert_eq!(record(&below)["labels"], json!({}));
+        // Two sessions find all three at once and keep asking. Whichever
+        // gets one gets every one, every time.
+        let asked = |session: &'static str| {
+            let (claims, addresses) = (&claims, [&top, &below, &helper]);
+            move || -> Vec<bool> {
+                let ask = |address: &&String| claims(address, session);
+                (0..10).flat_map(|_| addresses.iter().map(ask)).collect()
+            }
+        };
+        let (core, work) = std::thread::scope(|scope| {
+            let core = scope.spawn(asked("core"));
+            let work = scope.spawn(asked("core-work"));
+            (core.join().expect("core"), work.join().expect("core-work"))
+        });
+        let winner = if core[0] { "core" } else { "core-work" };
+        assert!(
+            core.iter().all(|won| *won == (winner == "core")),
+            "{core:?}"
+        );
+        assert!(
+            work.iter().all(|won| *won == (winner != "core")),
+            "{work:?}"
+        );
 
-        // A pane of another session in between owns what it starts.
+        // A pane of the other session in between owns what it starts.
+        let other = if core[0] { "core-work" } else { "core" };
         test.core
             .call(
                 "terminal.label",
-                json!({"terminal": helper, "labels": {"lawn": "core-work"}}),
+                json!({"terminal": helper, "labels": {"lawn": other}}),
             )
             .expect("terminal.label");
-        assert!(claims(&below, "core-work"));
-        assert!(!claims(&below, "core"));
-        assert!(claims(&top, "core"));
+        assert!(claims(&below, other));
+        assert!(!claims(&below, winner));
+        assert!(claims(&top, winner));
     }
 
     #[test]

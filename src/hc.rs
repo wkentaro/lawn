@@ -25,6 +25,7 @@ pub(crate) const GENERATION: u64 = 1;
 pub(crate) const USES: &[&str] = &[
     "terminal.run",
     "terminal.attach",
+    "terminal.get",
     "terminal.label",
     "doc.get",
     "doc.set",
