@@ -359,6 +359,9 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
+                if !parked && workspace.parked {
+                    continue;
+                }
                 let workspace_matches =
                     words.is_empty() || text(&format!("{} {}", endpoint.label, workspace.label));
                 let mut children = Vec::new();
