@@ -58,6 +58,10 @@ fn ensure_remote_server_running() -> io::Result<()> {
         ));
     }
 
+    // Machine setup installs only Lawn, so a host without `hc` keeps PTYs.
+    if !crate::hc::installed() {
+        std::env::set_var(crate::hc::PTY_PANES_ENV, "1");
+    }
     crate::server::autodetect::spawn_server_daemon()?;
     crate::server::autodetect::wait_for_server_socket(&socket_path, Duration::from_secs(5))
 }

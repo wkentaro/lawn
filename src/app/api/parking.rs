@@ -679,7 +679,7 @@ mod tests {
         app.park_core_terminal(core_terminal("t9"));
         assert_eq!(app.core_terminals_to_park.len(), 1);
 
-        // The new workspace takes it; outside a core session the attach fails.
+        // The new workspace takes it; with PTY panes the attach fails.
         app.create_workspace_with_options(std::env::temp_dir(), true)
             .unwrap();
         assert!(app.core_terminals_to_park.is_empty());
@@ -728,7 +728,7 @@ mod tests {
         };
         let before = record(&foreign);
         // Each nextest test runs in its own process.
-        std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+        crate::hc::use_core_for_test();
         std::env::set_var("HC_TERMINAL_ID", &lawn_runs_here);
         let (mut app, _) = split_app();
 
@@ -758,7 +758,10 @@ mod tests {
         assert_eq!(shown, [foreign.as_str()]);
         let after = record(&foreign);
         assert_eq!(after["state"], "live");
-        assert_eq!(after["labels"]["lawn"], "core", "no other session parks it");
+        assert_eq!(
+            after["labels"]["lawn"], "default",
+            "no other session parks it"
+        );
         assert_eq!(
             (&after["cols"], &after["rows"]),
             (&before["cols"], &before["rows"]),

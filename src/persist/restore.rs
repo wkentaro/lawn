@@ -1516,8 +1516,7 @@ mod tests {
             return;
         };
         test.share();
-        // Each nextest test runs in its own process.
-        std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+        crate::hc::use_core_for_test();
         let finished = test
             .core
             .run(serde_json::json!({"argv": ["true"], "no_parent": true, "keep": true}))

@@ -7,7 +7,8 @@ python := if os() == "windows" { "python" } else { "python3" }
 # Run the complete native Lawn checks. Windows cross-lint remains in `check`.
 lawn-check: lint test
 
-# Run tests
+# Run tests. LAWN_PTY_PANES keeps panes off any real herdr core.
+[env("LAWN_PTY_PANES", "1")]
 test:
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
     just maintenance-test
@@ -26,6 +27,7 @@ test-windows-input *args:
     pwsh -NoProfile -File scripts/test_windows_input.ps1 -AllowInputInjection -ClearClipboard {{args}}
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
+[env("LAWN_PTY_PANES", "1")]
 test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
@@ -49,6 +51,7 @@ ci filter='all()': lint
     just ci-tests "{{filter}}"
 
 # Keep the test build independently configurable from clippy in CI.
+[env("LAWN_PTY_PANES", "1")]
 ci-tests filter='all()':
     cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
     just maintenance-test

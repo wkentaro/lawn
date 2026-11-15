@@ -1213,21 +1213,13 @@ mod tests {
     }
 
     #[test]
-    fn only_pty_sessions_advertise_live_handoff() {
-        let _guard = env_lock().lock().unwrap();
-        let advertised = |session: &str| {
-            std::env::set_var(crate::session::SESSION_ENV_VAR, session);
-            let capabilities = default_capabilities().expect("capabilities");
-            std::env::remove_var(crate::session::SESSION_ENV_VAR);
-            capabilities.live_handoff
-        };
+    fn core_panes_do_not_advertise_live_handoff() {
+        let pty = default_capabilities().expect("capabilities").live_handoff;
+        crate::hc::use_core_for_test();
+        let core = default_capabilities().expect("capabilities").live_handoff;
 
-        assert_eq!(
-            advertised("work"),
-            crate::platform::capabilities().live_handoff
-        );
-        assert!(!advertised("core"));
-        assert!(!advertised("core-work"));
+        assert_eq!(pty, crate::platform::capabilities().live_handoff);
+        assert!(!core);
     }
 
     #[test]
