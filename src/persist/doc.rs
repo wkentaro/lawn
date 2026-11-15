@@ -10,7 +10,7 @@ fn version() -> std::sync::MutexGuard<'static, Option<u64>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-pub(super) fn name() -> String {
+pub(crate) fn name() -> String {
     let session = crate::session::active_name()
         .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
     name_for(&session)
@@ -98,6 +98,34 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+pub(crate) fn edit<T>(
+    mut change: impl FnMut(&mut SessionSnapshot) -> (T, bool),
+) -> Result<Option<T>, String> {
+    let Some(core) = crate::hc::backend() else {
+        return Ok(None);
+    };
+    let core = core.map_err(|err| err.to_string())?;
+    let name = name();
+    for _ in 0..8 {
+        let doc = core.doc_get(&name, None).map_err(|err| err.to_string())?;
+        if doc.version == 0 || doc.value.is_null() {
+            return Ok(None);
+        }
+        let mut snapshot = parse_snapshot(&doc.value.to_string())?;
+        let (out, changed) = change(&mut snapshot);
+        if !changed {
+            return Ok(Some(out));
+        }
+        let value = serde_json::to_value(&snapshot).map_err(|err| err.to_string())?;
+        match core.doc_set(&name, None, &value, doc.version) {
+            Ok(_) => return Ok(Some(out)),
+            Err(err) if err.kind() == Some("conflict") => continue,
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Err(format!("{name} kept changing; try again"))
 }
 
 pub(crate) fn clear(session: &str) -> Result<(), String> {

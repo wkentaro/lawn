@@ -26,6 +26,7 @@ mod completion;
 mod integration;
 mod machine;
 pub(crate) mod notification;
+mod offline;
 pub(crate) mod pane;
 pub(crate) mod plugin;
 pub(crate) mod projection;
@@ -799,11 +800,18 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
 }
 
 pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
-    let client = target::api_client()?;
-    ensure_server_protocol_compatible(&client, &request.id)?;
-    client
-        .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+    let sent = target::api_client().and_then(|client| {
+        ensure_server_protocol_compatible(&client, &request.id)?;
+        client
+            .request_value(request)
+            .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+    });
+    match sent {
+        Err(err) if server_not_running::was_reported(&err) => {
+            offline::handle(request).unwrap_or(Err(err))
+        }
+        sent => sent,
+    }
 }
 
 pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde_json::Value> {
