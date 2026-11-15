@@ -133,8 +133,11 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
 /// and environment, owned by no terminal so it outlives Lawn.
 fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
-    let argv: Vec<String> = if cmd.is_default_prog() {
-        Vec::new()
+    let mut argv: Vec<String> = if cmd.is_default_prog() {
+        // Lawn picked the shell; a login shell is what portable-pty would start.
+        cmd.get_env("SHELL")
+            .map(|shell| vec![shell.to_string_lossy().into_owned(), "-l".to_owned()])
+            .unwrap_or_default()
     } else {
         cmd.get_argv()
             .iter()
@@ -143,11 +146,32 @@ fn run_params(cmd: &CommandBuilder, rows: u16, cols: u16) -> serde_json::Value {
     };
     // The core names the terminal itself, and a Lawn started in the pane
     // picks its own backend.
+    let keep = |key: &str| !key.starts_with("HC_") && key != crate::hc::CORE_ENV;
     let env: serde_json::Map<String, serde_json::Value> = cmd
         .iter_full_env_as_str()
-        .filter(|(key, _)| !key.starts_with("HC_") && *key != crate::hc::CORE_ENV)
+        .filter(|(key, _)| keep(key))
         .map(|(key, value)| (key.to_owned(), value.into()))
         .collect();
+    // The core adds `env` on top of its own environment, so anything the
+    // pane dropped has to be unset there too.
+    // shortcut: only drops what Lawn's own environment has, and nothing on
+    // Windows; send a clean environment once `terminal.run` takes one.
+    #[cfg(unix)]
+    if !argv.is_empty() {
+        let mut removed: Vec<String> = std::env::vars()
+            .map(|(key, _)| key)
+            .filter(|key| keep(key) && !env.contains_key(key))
+            .collect();
+        removed.push(crate::hc::CORE_ENV.to_owned());
+        removed.sort();
+        removed.dedup();
+        let mut wrapped = vec!["env".to_owned()];
+        for key in removed {
+            wrapped.extend(["-u".to_owned(), key]);
+        }
+        wrapped.extend(argv);
+        argv = wrapped;
+    }
     serde_json::json!({
         "argv": argv,
         "cwd": cmd.get_cwd().map(|cwd| cwd.to_string_lossy()),
@@ -322,7 +346,12 @@ mod tests {
         cmd.env(crate::hc::CORE_ENV, "1");
         cmd.env("LAWN_KEEP", "yes");
         let params = run_params(&cmd, 24, 80);
-        assert_eq!(params["argv"], json!(["claude", "--resume"]));
+        let argv: Vec<String> = serde_json::from_value(params["argv"].clone()).unwrap();
+        assert_eq!(argv[argv.len() - 2..], ["claude", "--resume"]);
+        #[cfg(unix)]
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["-u", crate::hc::CORE_ENV]));
         assert_eq!(params["cwd"], "/work");
         assert_eq!(params["env"]["LAWN_KEEP"], "yes");
         assert!(params["env"].get("HC_TERMINAL_ID").is_none());
@@ -332,11 +361,20 @@ mod tests {
             (params["no_parent"].clone(), params["keep"].clone()),
             (json!(true), json!(true))
         );
-        assert!(
-            run_params(&CommandBuilder::new_default_prog(), 24, 80)["argv"]
-                .as_array()
-                .is_some_and(Vec::is_empty)
-        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_params_start_lawns_login_shell_without_dropped_env() {
+        let mut cmd = CommandBuilder::new_default_prog();
+        cmd.env("SHELL", "/bin/fish");
+        // PATH is in Lawn's environment, so dropping it must reach the core.
+        cmd.env_remove("PATH");
+        let argv: Vec<String> =
+            serde_json::from_value(run_params(&cmd, 24, 80)["argv"].clone()).unwrap();
+        assert_eq!(argv[0], "env");
+        assert_eq!(argv[argv.len() - 2..], ["/bin/fish", "-l"]);
+        assert!(argv.windows(2).any(|pair| pair == ["-u", "PATH"]));
     }
 
     #[cfg(unix)]
