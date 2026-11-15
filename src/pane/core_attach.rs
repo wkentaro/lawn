@@ -337,17 +337,16 @@ pub(crate) fn watch_core_terminals(
     Ok(())
 }
 
-/// Marks a terminal Lawn parked as this session's, so no other session parks
-/// it as well.
+/// Marks a terminal a pane shows again as this session's, so no other
+/// session parks it or its helpers.
 // shortcut: two sessions that both see a new terminal with no parent both
 // park it; claim with a compare-and-set once the core has one.
-pub(crate) fn claim_core_terminal(core: &Core, address: &str) -> std::io::Result<()> {
-    core.call(
-        "terminal.label",
-        serde_json::json!({"terminal": address, "labels": {"lawn": session_label()}}),
-    )
-    .map(drop)
-    .map_err(std::io::Error::other)
+fn claim(core: &Core, address: &str) {
+    let labels = serde_json::json!({"lawn": session_label()});
+    let params = serde_json::json!({"terminal": address, "labels": labels});
+    if let Err(err) = core.call("terminal.label", params) {
+        warn!(%address, %err, "cannot mark the core terminal as this session's");
+    }
 }
 
 /// The foreground cwd in an `events.subscribe` snapshot of one terminal.
@@ -537,6 +536,7 @@ impl PaneRuntime {
         let attached = core
             .attach(reattach_params(address, rows, cols))
             .map_err(reattach_error)?;
+        claim(&core, address);
         Self::attach_core(
             pane_id,
             core,

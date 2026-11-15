@@ -89,12 +89,6 @@ impl App {
                 return;
             }
         };
-        let claimed = crate::hc::backend()
-            .and_then(Result::ok)
-            .map(|core| crate::pane::claim_core_terminal(&core, &found.address));
-        if let Some(Err(err)) = claimed {
-            warn!(address = %found.address, %err, "cannot mark the core terminal as this session's");
-        }
         let mut terminal = TerminalState::new(TerminalId::alloc(), found.cwd);
         if let Some(name) = found.name {
             terminal.set_manual_label(name);
