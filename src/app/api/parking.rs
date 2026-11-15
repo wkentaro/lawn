@@ -487,7 +487,11 @@ mod tests {
             test.core.run(params).expect("run")
         };
         let lawn_runs_here = run(serde_json::json!({}));
-        run(serde_json::json!({"labels": {"lawn": "core-other"}}));
+        let others = run(serde_json::json!({"labels": {"lawn": "core-other"}}));
+        // A helper started in another session's pane is that session's.
+        let mut helper = serde_json::json!({"parent": others});
+        helper["no_parent"] = false.into();
+        run(helper);
         let foreign = run(serde_json::json!({"name": "build"}));
         let record = |address: &str| {
             test.core
@@ -526,6 +530,7 @@ mod tests {
         assert_eq!(shown, [foreign.as_str()]);
         let after = record(&foreign);
         assert_eq!(after["state"], "live");
+        assert_eq!(after["labels"]["lawn"], "core", "no other session parks it");
         assert_eq!(
             (&after["cols"], &after["rows"]),
             (&before["cols"], &before["rows"]),
@@ -541,6 +546,31 @@ mod tests {
         assert!(app.session_snapshot().parked_panes.is_empty());
         assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 3);
         assert_eq!(record(&foreign)["state"], "live");
+
+        // A kept terminal would get a new shell when its program is killed.
+        // Its pane closes with the program and ends the terminal, so none is
+        // left running without a pane.
+        test.core
+            .call(
+                "terminal.keep",
+                serde_json::json!({"terminal": foreign, "keep": true}),
+            )
+            .expect("terminal.keep");
+        let pid = record(&foreign)["pid"].as_u64().expect("pid").to_string();
+        let killed = std::process::Command::new("kill")
+            .args(["-KILL", &pid])
+            .status()
+            .expect("kill");
+        assert!(killed.success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while record(&foreign)["state"] != "finished" {
+            assert!(std::time::Instant::now() < deadline, "the terminal to end");
+            let tick = std::time::Duration::from_millis(50);
+            if let Ok(Some(event)) = tokio::time::timeout(tick, app.event_rx.recv()).await {
+                app.handle_internal_event(event);
+            }
+        }
+        assert!(app.session_snapshot().parked_panes.is_empty());
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
