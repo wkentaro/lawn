@@ -231,6 +231,57 @@ fn a_parked_workspace_leaves_the_sidebar() {
 }
 
 #[test]
+fn parked_workspace_is_only_listed_in_parked_picker() {
+    for workspace_parked in [false, true] {
+        let mut projected = snapshot();
+        projected.workspaces[0].parked = workspace_parked;
+        projected.parked_panes = std::mem::take(&mut projected.panes);
+        projected.tabs.clear();
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(projected));
+
+        for parked in [false, true] {
+            if parked {
+                state.open_parked();
+            } else {
+                state.open_navigator_overlay();
+            }
+            let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+                panic!("navigator");
+            };
+            for query in ["", "client-shell", "/repo"] {
+                navigator.query = query.into();
+                let rows = render::client_navigator_rows(
+                    &state.endpoints,
+                    &state.active_endpoint_id,
+                    navigator,
+                );
+                let expected = if parked {
+                    2
+                } else {
+                    usize::from(!workspace_parked && query != "/repo")
+                };
+                assert_eq!(
+                    rows.len(),
+                    expected,
+                    "workspace_parked={workspace_parked}, parked={parked}, query={query:?}"
+                );
+                if parked {
+                    assert!(matches!(
+                        &rows[0].target,
+                        ClientNavigatorTarget::Workspace { workspace_id, .. } if workspace_id == "ws_1"
+                    ));
+                    assert!(matches!(
+                        &rows[1].target,
+                        ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_1"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn workspace_navigation_from_a_parked_peek_cycles_neighbors() {
     for multiple in [false, true] {
         for (hidden, next, previous) in [(1, 2, 3), (2, 3, 1), (3, 1, 2)] {
