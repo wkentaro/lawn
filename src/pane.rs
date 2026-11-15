@@ -1543,6 +1543,7 @@ impl PaneRuntimeIo {
     fn shutdown(&self) {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.shutdown(),
+            // Drops pass through here too, and they only detach.
             PaneRuntimeIo::Core(_) => {}
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
@@ -2368,6 +2369,10 @@ impl PaneRuntime {
         }
         self.compression.abort();
         self.io.shutdown();
+        // Closing a pane ends its program; a core terminal isn't our child.
+        if let PaneRuntimeIo::Core(io) = &self.io {
+            io.kill();
+        }
         shutdown_pane_processes(
             self.pane_id,
             self.child_pid.load(Ordering::Acquire),

@@ -22,13 +22,15 @@ enum Input {
 pub(super) struct CoreIo {
     core: Arc<Core>,
     channel: u32,
+    /// The core terminal's address (`t7`).
+    address: String,
     /// Keys and submissions go through one queue so a submission's pause
     /// never lets other input in between its text and its Enter.
     input: std::sync::mpsc::Sender<Input>,
 }
 
 impl CoreIo {
-    fn new(core: Arc<Core>, channel: u32) -> std::io::Result<Self> {
+    fn new(core: Arc<Core>, channel: u32, address: String) -> std::io::Result<Self> {
         let (input, queue) = std::sync::mpsc::channel();
         let writer = core.clone();
         crate::thread_spawn::spawn_named("hc-input", move || {
@@ -55,6 +57,7 @@ impl CoreIo {
         Ok(Self {
             core,
             channel,
+            address,
             input,
         })
     }
@@ -87,6 +90,23 @@ impl CoreIo {
 
     pub(super) fn resize(&self, cols: u16, rows: u16) {
         self.core.resize(self.channel, cols, rows);
+    }
+}
+
+impl CoreIo {
+    /// Ends the program, for a pane that closes. Dropping only detaches.
+    pub(super) fn kill(&self) {
+        let core = self.core.clone();
+        let address = self.address.clone();
+        // The caller may be the app loop; a slow core must not stall it.
+        let killer = crate::thread_spawn::spawn_named("hc-kill", move || {
+            if let Err(err) = core.call("terminal.kill", serde_json::json!({"terminal": address})) {
+                warn!(%address, %err, "cannot end the core terminal");
+            }
+        });
+        if let Err(err) = killer {
+            warn!(address = %self.address, %err, "cannot end the core terminal");
+        }
     }
 }
 
@@ -130,6 +150,19 @@ impl PaneRuntime {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
+        let Attached {
+            channel,
+            mut stream,
+            terminal: record,
+        } = attached;
+        let address = record
+            .get("address")
+            .and_then(|address| address.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        // From here on, failing drops `io`, which detaches the stream.
+        let io =
+            CoreIo::new(core.clone(), channel, address).inspect_err(|_| core.detach(channel))?;
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
         let terminal = Arc::new(PaneTerminal::new(new_pane_terminal(
             rows,
@@ -162,11 +195,6 @@ impl PaneRuntime {
             compression_wake: compression.notifier(),
             rt: tokio::runtime::Handle::current(),
         };
-        let Attached {
-            channel,
-            mut stream,
-            ..
-        } = attached;
         let reader_core = core.clone();
         let ended = stream_ended.clone();
         // Parsing is blocking work, like the PTY actor's reader thread.
@@ -198,7 +226,7 @@ impl PaneRuntime {
         Ok(Self {
             pane_id,
             terminal,
-            io: PaneRuntimeIo::Core(CoreIo::new(core, channel)?),
+            io: PaneRuntimeIo::Core(io),
             current_size: Cell::new((rows, cols, 0, 0)),
             child_pid,
             reported_cwd,
@@ -300,7 +328,14 @@ mod tests {
         wait_for("the echo", || runtime.visible_text().contains("got-hi")).await;
 
         drop(runtime);
-        // The program outlives the pane: attaching again still works.
+        // The program outlives the pane, even after a kill would have landed.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            test.core
+                .call("terminal.get", json!({"terminal": address}))
+                .expect("get")["state"],
+            "live"
+        );
         test.core
             .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
             .expect("still running after the pane is gone");
@@ -345,6 +380,23 @@ mod tests {
         test.core
             .call("terminal.kill", json!({"terminal": address}))
             .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_a_core_pane_ends_its_program() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let (events, _event_rx) = mpsc::channel(8);
+        let (address, runtime) = attach(&test.core, &["sleep", "30"], events);
+        runtime.shutdown();
+        wait_for("the program to end", || {
+            test.core
+                .call("terminal.get", json!({"terminal": address}))
+                .is_ok_and(|record| record["state"] == "finished")
+        })
+        .await;
     }
 
     #[cfg(unix)]
