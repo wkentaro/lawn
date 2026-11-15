@@ -27,6 +27,12 @@ impl HeadlessServer {
         params: crate::api::schema::ServerLiveHandoffParams,
     ) -> io::Result<()> {
         info!("starting live handoff");
+        // Core panes hold no PTY to pass on; a restart reattaches them instead.
+        if crate::hc::enabled() {
+            return Err(io::Error::other(
+                "live handoff does not move herdr core panes; restart the server instead",
+            ));
+        }
         let import_exe = params.import_exe.as_deref().map(std::path::PathBuf::from);
         let socket_path = crate::server::handoff::handoff_socket_path();
         let token = format!(

@@ -172,10 +172,15 @@ fn hc_bin() -> std::ffi::OsString {
 
 static SHARED: Mutex<Option<Arc<Core>>> = Mutex::new(None);
 
+/// Whether this Lawn runs its panes in herdr core: a core session.
+pub(crate) fn enabled() -> bool {
+    crate::session::runs_on_core(crate::session::active_name().as_deref())
+}
+
 /// The core panes run in, when this is a core session. Reconnects after the
 /// connection drops.
 pub(crate) fn backend() -> Option<HcResult<Arc<Core>>> {
-    if !crate::session::runs_on_core(crate::session::active_name().as_deref()) {
+    if !enabled() {
         return None;
     }
     let mut shared = SHARED
