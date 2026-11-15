@@ -27,6 +27,7 @@ use crate::render_signal::RenderSignal;
 
 mod agent_detection;
 mod background_agent;
+mod core_attach;
 mod cursor;
 mod input;
 mod kitty_keyboard;
@@ -1527,6 +1528,10 @@ pub struct PaneRuntime {
 
 enum PaneRuntimeIo {
     Actor(PtyIoActorHandle),
+    /// The program runs in a herdr-core terminal; dropping detaches.
+    // Built only by `attach_core`, whose first caller lands next.
+    #[allow(dead_code)]
+    Core(core_attach::CoreIo),
     #[cfg(test)]
     TestChannel {
         sender: mpsc::Sender<Bytes>,
@@ -1538,6 +1543,7 @@ impl PaneRuntimeIo {
     fn shutdown(&self) {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.shutdown(),
+            PaneRuntimeIo::Core(_) => {}
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
         }
@@ -1547,6 +1553,9 @@ impl PaneRuntimeIo {
     fn duplicate_handoff_fd(&self) -> std::io::Result<std::os::fd::RawFd> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.duplicate_for_handoff(),
+            PaneRuntimeIo::Core(_) => {
+                Err(std::io::Error::other("core panes have no PTY master fd"))
+            }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {
                 Err(std::io::Error::other("test runtime has no PTY master fd"))
@@ -1558,6 +1567,7 @@ impl PaneRuntimeIo {
     fn foreground_process_group_id(&self) -> Option<u32> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.foreground_process_group_id(),
+            PaneRuntimeIo::Core(_) => None,
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => None,
         }
@@ -1567,6 +1577,7 @@ impl PaneRuntimeIo {
     fn begin_handoff(&self, timeout: std::time::Duration) -> std::io::Result<()> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.begin_handoff(timeout),
+            PaneRuntimeIo::Core(_) => Ok(()),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }
@@ -1582,6 +1593,7 @@ impl PaneRuntimeIo {
                     actor.rollback_handoff()
                 }
             }
+            PaneRuntimeIo::Core(_) => Ok(()),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }
@@ -1591,6 +1603,7 @@ impl PaneRuntimeIo {
     fn release_after_commit(&self) -> std::io::Result<()> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.release_after_commit(),
+            PaneRuntimeIo::Core(_) => Ok(()),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }
@@ -1614,6 +1627,12 @@ impl PaneRuntimeIo {
                     terminal_responses,
                 );
             }
+            PaneRuntimeIo::Core(io) => {
+                io.resize(cols, rows);
+                for response in terminal_responses {
+                    io.respond(&response);
+                }
+            }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { resize_tx, .. } => {
                 let _ = resize_tx.send((rows, cols, cell_width_px, cell_height_px));
@@ -1633,6 +1652,7 @@ impl PaneRuntimeIo {
             PaneRuntimeIo::Actor(actor) => {
                 actor.nudge_child_redraw_after_handoff(rows, cols, cell_width_px, cell_height_px);
             }
+            PaneRuntimeIo::Core(_) => {}
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
         }
@@ -1641,6 +1661,10 @@ impl PaneRuntimeIo {
     fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.try_write_user_input(bytes),
+            PaneRuntimeIo::Core(io) => {
+                io.send(bytes);
+                Ok(())
+            }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => sender.try_send(bytes),
         }
@@ -1649,6 +1673,11 @@ impl PaneRuntimeIo {
     fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.write_terminal_response(response),
+            PaneRuntimeIo::Core(io) => {
+                if let Some(bytes) = response() {
+                    io.respond(&bytes);
+                }
+            }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => {
                 if let Some(bytes) = response() {
@@ -1674,6 +1703,10 @@ impl PaneRuntimeIo {
                     let _ = deadline;
                     actor.queue_user_input_submission(text, enter, delay)
                 }
+            }
+            PaneRuntimeIo::Core(io) => {
+                let _ = deadline;
+                io.submit(text, enter, delay)
             }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => {
@@ -2196,6 +2229,100 @@ fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
     (cwd.is_absolute() && cwd.is_dir()).then_some(cwd)
 }
 
+/// A pane's terminal engine with the host's theme applied.
+fn new_pane_terminal(
+    rows: u16,
+    cols: u16,
+    scrollback_limit_bytes: usize,
+    host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+    response_tx: &mpsc::Sender<Bytes>,
+) -> std::io::Result<GhosttyPaneTerminal> {
+    let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    if crate::kitty_graphics::is_enabled() {
+        terminal
+            .enable_kitty_graphics()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+    }
+    let pane_terminal = GhosttyPaneTerminal::new(terminal, response_tx.clone())?;
+    pane_terminal.apply_host_terminal_theme(host_terminal_theme);
+    let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
+    Ok(pane_terminal)
+}
+
+/// Feeds a pane program's output into its terminal and publishes what the
+/// output reports: bells, titles, cwd and clipboard writes.
+struct PaneOutput {
+    pane_id: PaneId,
+    terminal: Arc<PaneTerminal>,
+    response_writer: mpsc::Sender<Bytes>,
+    render_notify: Arc<Notify>,
+    render_dirty: Arc<RenderSignal>,
+    content_seq: Arc<AtomicU64>,
+    content_write_lock: Arc<Mutex<()>>,
+    /// Absent when screen detection is off for the pane.
+    detection_content_seq: Option<Arc<AtomicU64>>,
+    child_pid: Arc<AtomicU32>,
+    events: mpsc::Sender<AppEvent>,
+    reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    compression_wake: TerminalCompressionWake,
+    rt: tokio::runtime::Handle,
+}
+
+impl PaneOutput {
+    fn process(&self, bytes: &[u8]) -> PtyReadResult {
+        let pane_id = self.pane_id;
+        let content_write_guard = match self.content_write_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        let shell_pid = self.child_pid.load(Ordering::Acquire);
+        let result =
+            self.terminal
+                .process_pty_bytes(pane_id, shell_pid, bytes, &self.response_writer);
+        self.content_seq.fetch_add(1, Ordering::Release);
+        drop(content_write_guard);
+        self.compression_wake.wake();
+        publish_terminal_bells(pane_id, result.terminal_bells, &self.events);
+        if let Some(detection_content_seq) = &self.detection_content_seq {
+            observe_detection_content_change(bytes, detection_content_seq);
+        }
+        let title_requested =
+            result.terminal_title_changed && self.render_dirty.request_terminal_title(pane_id);
+        let render_requested = result.request_render && self.render_dirty.request_pty(pane_id);
+        if title_requested || render_requested {
+            self.render_notify.notify_one();
+        }
+        if let Some(delay) = result.render_delay {
+            let render_notify = self.render_notify.clone();
+            let render_dirty = self.render_dirty.clone();
+            self.rt.spawn(async move {
+                tokio::time::sleep(delay).await;
+                if render_dirty.request_pty(pane_id) {
+                    render_notify.notify_one();
+                }
+            });
+        }
+        if let Some(cwd) = result.reported_cwd {
+            publish_reported_cwd(pane_id, cwd, &self.reported_cwd, &self.events);
+        }
+        for content in result.clipboard_writes {
+            if let Err(err) = self.events.try_send(AppEvent::ClipboardWrite { content }) {
+                warn!(
+                    pane = pane_id.raw(),
+                    err = %err,
+                    "failed to send OSC 52 clipboard write"
+                );
+            }
+        }
+        PtyReadResult {
+            terminal_responses: result.terminal_responses,
+        }
+    }
+}
+
 fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
     if count == 0 {
         return;
@@ -2569,65 +2696,23 @@ impl PaneRuntime {
         let detection_content_seq = Arc::new(AtomicU64::new(0));
 
         let io = {
-            let terminal = terminal.clone();
-            let response_writer = response_tx.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
-            let content_seq = content_seq.clone();
-            let content_write_lock = content_write_lock.clone();
-            let detection_content_seq = detection_content_seq.clone();
-            let child_pid = child_pid.clone();
-            let read_events = events.clone();
-            let reported_cwd = reported_cwd.clone();
-            let compression_wake = compression.notifier();
             let rt = tokio::runtime::Handle::current();
-            let delay_rt = rt.clone();
-            let on_read = Box::new(move |bytes: &[u8]| {
-                let _content_write_guard = match content_write_lock.lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                content_seq.fetch_add(1, Ordering::AcqRel);
-                let shell_pid = child_pid.load(Ordering::Acquire);
-                let result =
-                    terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
-                content_seq.fetch_add(1, Ordering::Release);
-                drop(_content_write_guard);
-                compression_wake.wake();
-                publish_terminal_bells(pane_id, result.terminal_bells, &read_events);
-                observe_detection_content_change(bytes, &detection_content_seq);
-                let title_requested =
-                    result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
-                let render_requested = result.request_render && render_dirty.request_pty(pane_id);
-                if title_requested || render_requested {
-                    render_notify.notify_one();
-                }
-                if let Some(delay) = result.render_delay {
-                    let render_notify = render_notify.clone();
-                    let render_dirty = render_dirty.clone();
-                    delay_rt.spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        if render_dirty.request_pty(pane_id) {
-                            render_notify.notify_one();
-                        }
-                    });
-                }
-                if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, &read_events);
-                }
-                for content in result.clipboard_writes {
-                    if let Err(err) = read_events.try_send(AppEvent::ClipboardWrite { content }) {
-                        warn!(
-                            pane = pane_id.raw(),
-                            err = %err,
-                            "failed to queue OSC 52 clipboard write"
-                        );
-                    }
-                }
-                PtyReadResult {
-                    terminal_responses: result.terminal_responses,
-                }
-            });
+            let output = PaneOutput {
+                pane_id,
+                terminal: terminal.clone(),
+                response_writer: response_tx.clone(),
+                render_notify: render_notify.clone(),
+                render_dirty: render_dirty.clone(),
+                content_seq: content_seq.clone(),
+                content_write_lock: content_write_lock.clone(),
+                detection_content_seq: Some(detection_content_seq.clone()),
+                child_pid: child_pid.clone(),
+                events: events.clone(),
+                reported_cwd: reported_cwd.clone(),
+                compression_wake: compression.notifier(),
+                rt: rt.clone(),
+            };
+            let on_read = Box::new(move |bytes: &[u8]| output.process(bytes));
             let exit_events = events.clone();
             let cwd_process_exited = cwd_process_exited.clone();
             let on_reader_exit = Box::new(move || {
@@ -2706,16 +2791,14 @@ impl PaneRuntime {
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
-        let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        if crate::kitty_graphics::is_enabled() {
-            terminal
-                .enable_kitty_graphics()
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-        }
-        let pane_terminal = GhosttyPaneTerminal::new(terminal, response_tx.clone())?;
-        pane_terminal.apply_host_terminal_theme(host_terminal_theme);
-        let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
+        let pane_terminal = new_pane_terminal(
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            &response_tx,
+        )?;
         pane_terminal.set_windows_powershell_prompt_cwd_reporting(
             initial_state.windows_powershell_prompt_cwd_reporting,
         );
@@ -2773,66 +2856,23 @@ impl PaneRuntime {
         }
 
         let io = {
-            let terminal = terminal.clone();
-            let response_writer = response_tx.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
-            let content_seq = content_seq.clone();
-            let content_write_lock = content_write_lock.clone();
-            let detection_content_seq = detection_content_seq.clone();
-            let child_pid = child_pid.clone();
-            let events = events.clone();
-            let reported_cwd = reported_cwd.clone();
-            let compression_wake = compression.notifier();
-            let rt = tokio::runtime::Handle::current();
-            let on_read = Box::new(move |bytes: &[u8]| {
-                let _content_write_guard = match content_write_lock.lock() {
-                    Ok(guard) => guard,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                content_seq.fetch_add(1, Ordering::AcqRel);
-                let shell_pid = child_pid.load(Ordering::Acquire);
-                let result =
-                    terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
-                content_seq.fetch_add(1, Ordering::Release);
-                drop(_content_write_guard);
-                compression_wake.wake();
-                publish_terminal_bells(pane_id, result.terminal_bells, &events);
-                if agent_detection == AgentDetection::Enabled {
-                    observe_detection_content_change(bytes, &detection_content_seq);
-                }
-                let title_requested =
-                    result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
-                let render_requested = result.request_render && render_dirty.request_pty(pane_id);
-                if title_requested || render_requested {
-                    render_notify.notify_one();
-                }
-                if let Some(delay) = result.render_delay {
-                    let render_notify = render_notify.clone();
-                    let render_dirty = render_dirty.clone();
-                    rt.spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        if render_dirty.request_pty(pane_id) {
-                            render_notify.notify_one();
-                        }
-                    });
-                }
-                if let Some(cwd) = result.reported_cwd.clone() {
-                    publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
-                }
-                for content in result.clipboard_writes {
-                    if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
-                        warn!(
-                            pane = pane_id.raw(),
-                            err = %err,
-                            "failed to send OSC 52 clipboard write"
-                        );
-                    }
-                }
-                PtyReadResult {
-                    terminal_responses: result.terminal_responses,
-                }
-            });
+            let output = PaneOutput {
+                pane_id,
+                terminal: terminal.clone(),
+                response_writer: response_tx.clone(),
+                render_notify: render_notify.clone(),
+                render_dirty: render_dirty.clone(),
+                content_seq: content_seq.clone(),
+                content_write_lock: content_write_lock.clone(),
+                detection_content_seq: (agent_detection == AgentDetection::Enabled)
+                    .then(|| detection_content_seq.clone()),
+                child_pid: child_pid.clone(),
+                events: events.clone(),
+                reported_cwd: reported_cwd.clone(),
+                compression_wake: compression.notifier(),
+                rt: tokio::runtime::Handle::current(),
+            };
+            let on_read = Box::new(move |bytes: &[u8]| output.process(bytes));
             PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),
                 #[cfg(unix)]
@@ -3696,6 +3736,7 @@ impl PaneRuntime {
                 let _ = bytes;
                 Ok(())
             }
+            PaneRuntimeIo::Core(_) => Ok(()),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }

@@ -1,0 +1,366 @@
+//! Panes whose program runs in a herdr-core terminal. Lawn keeps its own
+//! terminal engine for drawing and feeds it the core's output stream; the
+//! program lives on in the core when the pane goes away.
+
+// `lawn --core` is the first caller and lands next.
+#![allow(dead_code)]
+
+use super::*;
+use crate::hc::{Attached, Core, Stream};
+
+enum Input {
+    Bytes(Bytes),
+    /// Text, a pause, then Enter, with nothing else sent in between.
+    Submit {
+        text: Bytes,
+        enter: Bytes,
+        delay: std::time::Duration,
+        reply: std::sync::mpsc::Sender<std::io::Result<()>>,
+    },
+}
+
+pub(super) struct CoreIo {
+    core: Arc<Core>,
+    channel: u32,
+    /// Keys and submissions go through one queue so a submission's pause
+    /// never lets other input in between its text and its Enter.
+    input: std::sync::mpsc::Sender<Input>,
+}
+
+impl CoreIo {
+    fn new(core: Arc<Core>, channel: u32) -> std::io::Result<Self> {
+        let (input, queue) = std::sync::mpsc::channel();
+        let writer = core.clone();
+        crate::thread_spawn::spawn_named("hc-input", move || {
+            while let Ok(item) = queue.recv() {
+                match item {
+                    Input::Bytes(bytes) => writer.input(channel, &bytes),
+                    Input::Submit {
+                        text,
+                        enter,
+                        delay,
+                        reply,
+                    } => {
+                        writer.input(channel, &text);
+                        std::thread::sleep(delay);
+                        writer.input(channel, &enter);
+                        let _ = reply.send(Ok(()));
+                    }
+                }
+            }
+        })?;
+        Ok(Self {
+            core,
+            channel,
+            input,
+        })
+    }
+
+    pub(super) fn send(&self, bytes: Bytes) {
+        let _ = self.input.send(Input::Bytes(bytes));
+    }
+
+    pub(super) fn submit(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        delay: std::time::Duration,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        let (reply, done) = std::sync::mpsc::channel();
+        self.input
+            .send(Input::Submit {
+                text,
+                enter,
+                delay,
+                reply,
+            })
+            .map_err(|_| std::io::Error::other("core pane input stopped"))?;
+        Ok(done)
+    }
+
+    pub(super) fn respond(&self, bytes: &[u8]) {
+        self.core.automatic_input(self.channel, bytes);
+    }
+
+    pub(super) fn resize(&self, cols: u16, rows: u16) {
+        self.core.resize(self.channel, cols, rows);
+    }
+}
+
+impl Drop for CoreIo {
+    fn drop(&mut self) {
+        self.core.detach(self.channel);
+    }
+}
+
+/// Why the core ended a pane's stream.
+fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
+    match item {
+        // The program ended for good; other reasons (a lost kept terminal,
+        // a stopping core) may bring the terminal back.
+        Stream::Closed(reason)
+            if matches!(
+                reason.get("reason").and_then(|r| r.as_str()),
+                Some("exited" | "killed")
+            ) =>
+        {
+            crate::platform::ChildExitReason::Exited
+        }
+        _ => crate::platform::ChildExitReason::WaitFailed,
+    }
+}
+
+impl PaneRuntime {
+    /// A pane showing a core terminal through an attach made at `rows`×`cols`.
+    // Same construction inputs as `spawn_command_builder`, minus the command.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attach_core(
+        pane_id: PaneId,
+        core: Arc<Core>,
+        attached: Attached,
+        rows: u16,
+        cols: u16,
+        scrollback_limit_bytes: usize,
+        host_terminal_theme: crate::terminal_theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+    ) -> std::io::Result<Self> {
+        let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
+        let terminal = Arc::new(PaneTerminal::new(new_pane_terminal(
+            rows,
+            cols,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            &response_tx,
+        )?));
+        let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
+        // The program isn't our child: no pid, so nothing here signals it.
+        let child_pid = Arc::new(AtomicU32::new(0));
+        let reported_cwd = Arc::new(Mutex::new(None));
+        let stream_ended = Arc::new(AtomicBool::new(false));
+        let content_seq = Arc::new(AtomicU64::new(0));
+        let content_write_lock = Arc::new(Mutex::new(()));
+
+        let output = PaneOutput {
+            pane_id,
+            terminal: terminal.clone(),
+            response_writer: response_tx,
+            render_notify,
+            render_dirty,
+            content_seq: content_seq.clone(),
+            content_write_lock: content_write_lock.clone(),
+            detection_content_seq: None,
+            child_pid: child_pid.clone(),
+            events: events.clone(),
+            reported_cwd: reported_cwd.clone(),
+            compression_wake: compression.notifier(),
+            rt: tokio::runtime::Handle::current(),
+        };
+        let Attached {
+            channel,
+            mut stream,
+            ..
+        } = attached;
+        let reader_core = core.clone();
+        let ended = stream_ended.clone();
+        // Parsing is blocking work, like the PTY actor's reader thread.
+        crate::thread_spawn::spawn_named("hc-pane", move || {
+            let reason = loop {
+                match stream.blocking_recv() {
+                    Some(Stream::Data(bytes)) => {
+                        let result = output.process(&bytes);
+                        for response in result.terminal_responses {
+                            reader_core.automatic_input(channel, &response);
+                        }
+                        reader_core.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
+                    }
+                    // shortcut: another screen's resize isn't mirrored; the next layout resize wins.
+                    Some(Stream::Resize { .. }) => {}
+                    Some(item) => break exit_reason(&item),
+                    None => break crate::platform::ChildExitReason::WaitFailed,
+                }
+            };
+            ended.store(true, Ordering::Release);
+            if let Err(err) = events.blocking_send(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: reason,
+            }) {
+                error!(pane = pane_id.raw(), err = %err, "failed to send PaneDied event");
+            }
+        })?;
+
+        Ok(Self {
+            pane_id,
+            terminal,
+            io: PaneRuntimeIo::Core(CoreIo::new(core, channel)?),
+            current_size: Cell::new((rows, cols, 0, 0)),
+            child_pid,
+            reported_cwd,
+            persistence_cwd: Mutex::new(None),
+            cwd_process_exited: stream_ended,
+            child_wait_completed: None,
+            kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
+            content_seq,
+            content_write_lock,
+            detection_content_seq: Arc::new(AtomicU64::new(0)),
+            full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
+            self_reported_agent_active: Arc::new(AtomicBool::new(false)),
+            detect_reset_notify: Arc::new(Notify::new()),
+            pending_release: Arc::new(Mutex::new(None)),
+            preserve_processes_on_drop: true,
+            compression,
+            detect_handle: None,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_a_reported_exit_counts_as_exited() {
+        use crate::platform::ChildExitReason;
+        assert_eq!(
+            exit_reason(&Stream::Closed(json!({"reason": "exited", "code": 0}))),
+            ChildExitReason::Exited
+        );
+        assert_eq!(
+            exit_reason(&Stream::Closed(json!({"reason": "removed"}))),
+            ChildExitReason::WaitFailed
+        );
+        assert_eq!(exit_reason(&Stream::Lost), ChildExitReason::WaitFailed);
+    }
+
+    #[cfg(unix)]
+    fn attach(
+        core: &Arc<Core>,
+        argv: &[&str],
+        events: mpsc::Sender<AppEvent>,
+    ) -> (String, PaneRuntime) {
+        let address = core
+            .run(json!({"argv": argv, "no_parent": true}))
+            .expect("run");
+        let attached = core
+            .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+            .expect("attach");
+        let runtime = PaneRuntime::attach_core(
+            PaneId::from_raw(7),
+            core.clone(),
+            attached,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .expect("attach_core");
+        (address, runtime)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !ready() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_shows_output_takes_input_and_detaches_on_drop() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let (events, _event_rx) = mpsc::channel(8);
+        let (address, runtime) = attach(
+            &test.core,
+            &[
+                "sh",
+                "-c",
+                "echo ready; read line; echo got-$line; sleep 30",
+            ],
+            events,
+        );
+        wait_for("the prompt", || runtime.visible_text().contains("ready")).await;
+        runtime.try_send_bytes(Bytes::from_static(b"hi\r")).unwrap();
+        wait_for("the echo", || runtime.visible_text().contains("got-hi")).await;
+
+        drop(runtime);
+        // The program outlives the pane: attaching again still works.
+        test.core
+            .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+            .expect("still running after the pane is gone");
+        test.core
+            .call("terminal.kill", json!({"terminal": address}))
+            .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_keeps_keys_out_of_a_pending_submission() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let (events, _event_rx) = mpsc::channel(8);
+        let (address, runtime) = attach(
+            &test.core,
+            &[
+                "sh",
+                "-c",
+                "stty -echo; echo ready; read a; read b; echo got-$a-$b; sleep 30",
+            ],
+            events,
+        );
+        wait_for("the prompt", || runtime.visible_text().contains("ready")).await;
+        let submitted = runtime
+            .queue_user_input_submission(
+                Bytes::from_static(b"one"),
+                Bytes::from_static(b"\r"),
+                std::time::Duration::from_millis(150),
+                None,
+            )
+            .unwrap();
+        runtime
+            .try_send_bytes(Bytes::from_static(b"two\r"))
+            .unwrap();
+        wait_for("both lines", || {
+            runtime.visible_text().contains("got-one-two")
+        })
+        .await;
+        submitted.recv().unwrap().unwrap();
+        test.core
+            .call("terminal.kill", json!({"terminal": address}))
+            .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_dies_when_its_program_exits() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        let (events, mut event_rx) = mpsc::channel(8);
+        let (_address, _runtime) = attach(&test.core, &["sh", "-c", "sleep 0.2"], events);
+        let died = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(AppEvent::PaneDied { exit_reason, .. }) = event_rx.recv().await {
+                    break exit_reason;
+                }
+            }
+        })
+        .await
+        .expect("PaneDied");
+        assert_eq!(died, crate::platform::ChildExitReason::Exited);
+    }
+}

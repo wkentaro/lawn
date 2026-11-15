@@ -680,5 +680,8 @@ fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>, writer: &mpsc::Sende
     }
 }
 
+// The live tests that use it run Unix shell lines.
+#[cfg(all(test, unix))]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
