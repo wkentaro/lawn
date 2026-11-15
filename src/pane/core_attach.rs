@@ -316,6 +316,9 @@ pub(crate) fn watch_core_terminals(
                 let one = std::slice::from_ref;
                 match (message["method"].as_str(), params["type"].as_str()) {
                     (Some("event"), Some("created")) => see(&mut lineage, one(data), false),
+                    // A kept terminal has a program again. It has no pane
+                    // if it was found while it had none to attach to.
+                    (Some("event"), Some("restarted")) => see(&mut lineage, one(data), true),
                     (Some("event"), Some("labels")) => {
                         if let Some(terminal) = lineage.get_mut(address) {
                             terminal.0 = session_of(&data["labels"]);
