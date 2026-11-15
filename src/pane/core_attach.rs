@@ -204,16 +204,20 @@ fn exit_reason(item: &Stream) -> crate::platform::ChildExitReason {
 /// `env` on top of its own environment, so whatever else the core holds has
 /// to go before the program starts; the core's own `HC_*` and `PWD` stay.
 /// `sh` and `env` by path: the pane's own PATH may not reach them.
-// shortcut: leaves a name `sh` can't spell (`BASH_FUNC_x%%`) and does nothing
-// on Windows; send a clean environment once `terminal.run` takes one.
+///
+/// Values are split into words too, so a word may name a variable that was
+/// never listed. That only unsets something outside `$1`, which is the goal,
+/// and the list itself stays in `$1` where no unset can reach it.
+// shortcut: leaves a name `sh` can't spell (`BASH_FUNC_x%%`); send a clean
+// environment once `terminal.run` takes one.
 #[cfg(unix)]
-const ONLY_PANE_ENV: &str = r#"_lawn_keep=" $1 PWD "; shift; set -f
+const ONLY_PANE_ENV: &str = r#"set -f
 for _lawn_word in $(/usr/bin/env 2>/dev/null); do
   _lawn_name=${_lawn_word%%=*}
   case $_lawn_name in ''|[0-9]*|*[!A-Za-z0-9_]*|HC_*) continue ;; esac
-  case $_lawn_keep in *" $_lawn_name "*) ;; *) command unset "$_lawn_name" 2>/dev/null ;; esac
+  case " $1 PWD " in *" $_lawn_name "*) ;; *) command unset "$_lawn_name" 2>/dev/null ;; esac
 done
-exec "$@""#;
+shift; exec "$@""#;
 
 /// `terminal.run` for a command Lawn built for a PTY: same program, folder
 /// and environment, owned by no terminal so it outlives Lawn.
@@ -550,7 +554,11 @@ mod tests {
     #[tokio::test]
     async fn core_pane_gets_only_the_env_lawn_built() {
         // The core starts with these; Lawn's own environment never has them.
-        std::env::set_var("LAWN_TEST_CORE_ONLY", "/wrong/repository/.git");
+        // Its value names the cleanup's own variables, which must survive it.
+        std::env::set_var(
+            "LAWN_TEST_CORE_ONLY",
+            "/wrong/repository/.git _lawn_keep=x _lawn_word=x _lawn_name=x",
+        );
         std::env::set_var("CLAUDECODE", "1");
         let test = crate::hc::test_support::TestCore::start();
         std::env::remove_var("LAWN_TEST_CORE_ONLY");
@@ -562,10 +570,12 @@ mod tests {
         cmd.args([
             "-c",
             "echo \"core=${LAWN_TEST_CORE_ONLY-unset} agent=${CLAUDECODE-unset} \
-             kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} pwd=${PWD:+set}\"; \
+             kept=$LAWN_KEEP spaced=$LAWN_SPACED id=${HC_TERMINAL_ID:+set} last=$LAWN_Z_LAST \
+             pwd=${PWD:+set}\"; \
              read line",
         ]);
         cmd.env("LAWN_KEEP", "yes");
+        cmd.env("LAWN_Z_LAST", "yes");
         // A value shaped like other variables must not confuse the cleanup.
         cmd.env("LAWN_SPACED", "a LAWN_KEEP=no\nPWD=x");
         let runtime = attach_started(&test.core, &cmd);
@@ -577,6 +587,8 @@ mod tests {
             "kept=yes",
             "spaced=a LAWN_KEEP=no",
             "id=set",
+            // Sorted after the core-only variable, so cleaned after it.
+            "last=yes",
             "pwd=set",
         ] {
             assert!(text.contains(part), "{part} missing from {text:?}");
