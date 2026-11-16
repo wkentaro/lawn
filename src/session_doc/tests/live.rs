@@ -1,0 +1,117 @@
+use std::cell::Cell;
+
+use serde_json::json;
+
+use super::*;
+use crate::hc::test_support::TestCore;
+
+#[test]
+fn a_missing_document_loads_empty() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "missing", None);
+    assert_eq!(
+        store.load(),
+        Ok(Loaded {
+            layout: Layout::default(),
+            version: 0
+        })
+    );
+}
+
+#[test]
+fn edits_round_trip_through_load() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "round-trip", None);
+    let (workspace, written) = store
+        .edit(|layout| {
+            let workspace = add_workspace(layout, split(pane("t1"), pane("t2")));
+            layout.workspaces[0].name = Some("main".to_owned());
+            layout.parked.insert(
+                "t3".to_owned(),
+                ReturnPosition {
+                    workspace: workspace.clone(),
+                    tab: "t1".to_owned(),
+                    beside: Some("t2".to_owned()),
+                    direction: Direction::Down,
+                },
+            );
+            workspace
+        })
+        .expect("edit");
+    assert_eq!(workspace, "w0");
+    assert!(written.version > 0);
+    assert_eq!(store.load(), Ok(written));
+}
+
+#[test]
+fn a_conflicting_edit_retries_on_top_of_the_other_write() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let a = Store::new(test.core.clone(), "shared", None);
+    let b = Store::new(test.core.clone(), "shared", None);
+    let stale = a.load().expect("load");
+    b.edit(|layout| add_workspace(layout, pane("t1")))
+        .expect("edit b");
+    assert!(a.load().expect("reload").version > stale.version);
+
+    let calls = Cell::new(0);
+    let (_, written) = a
+        .edit(|layout| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                let mut competing = layout.clone();
+                add_workspace(&mut competing, pane("t2"));
+                let current = test.core.doc_get(&a.name, None).expect("read").version;
+                test.core
+                    .doc_set(&a.name, None, &encode(&competing).expect("encode"), current)
+                    .expect("competing write");
+            }
+            add_workspace(layout, pane("t3"));
+        })
+        .expect("edit a");
+    assert_eq!(calls.get(), 2);
+    assert_eq!(
+        written.layout.terminals().collect::<Vec<_>>(),
+        ["t1", "t2", "t3"]
+    );
+    assert_eq!(a.load(), Ok(written));
+}
+
+#[test]
+fn an_unchanged_edit_keeps_the_version() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "unchanged", None);
+    let (_, first) = store
+        .edit(|layout| add_workspace(layout, pane("t1")))
+        .expect("edit");
+    let (shown, second) = store.edit(|layout| layout.shows("t1")).expect("no-op");
+    assert!(shown);
+    assert_eq!(second, first);
+    assert_eq!(store.load().expect("load").version, first.version);
+}
+
+#[test]
+fn a_newer_schema_refuses_to_load() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "newer", None);
+    test.core
+        .doc_set(
+            &store.name,
+            None,
+            &json!({"schema": 2, "layout": {"workspaces": []}}),
+            0,
+        )
+        .expect("write");
+    let err = store.load().expect_err("newer schema");
+    assert!(err.contains("newer Lawn"), "{err}");
+    assert!(store.edit(|_| ()).is_err());
+}
