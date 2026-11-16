@@ -19,11 +19,25 @@ impl SessionWriter {
         }
     }
 
-    fn preserve_unloaded(&mut self) -> io::Result<()> {
-        if self.protect_unloaded && preserve_existing(&self.path)? {
-            self.protect_unloaded = false;
+    fn preserve_unloaded(&self) -> io::Result<bool> {
+        if self.protect_unloaded {
+            preserve_existing(&self.path)
+        } else {
+            Ok(false)
         }
-        Ok(())
+    }
+
+    fn prune_recovery(&self) {
+        let directory = self.path.with_file_name("session-backups");
+        let result = recovery_files(&directory).and_then(|files| match files.split_last() {
+            Some((_, older)) => prune_backups(older, 3),
+            None => Ok(()),
+        });
+        if let Err(err) = result {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(%err, path = %directory.display(), "failed to prune session recovery copies");
+            }
+        }
     }
 
     fn preserve_snapshot_history(&self) {
@@ -50,11 +64,13 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
     ) -> io::Result<()> {
-        self.preserve_unloaded()?;
+        let preserved = self.preserve_unloaded()?;
         self.preserve_snapshot_history();
         super::io::save_to_path(&self.path, snapshot)?;
-        // Optional history failure must not reclassify our committed layout as unloaded.
         self.protect_unloaded = false;
+        if preserved {
+            self.prune_recovery();
+        }
         self.preserve_snapshot_history();
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::save_history_to_path(&history_path, history) {
@@ -65,13 +81,20 @@ impl SessionWriter {
     }
 
     pub(crate) fn clear(&mut self) {
-        let result = self.preserve_unloaded().and_then(|()| {
+        let result = self.preserve_unloaded().and_then(|preserved| {
             self.preserve_snapshot_history();
-            super::io::clear_path(&self.path)
+            super::io::clear_path(&self.path).map(|()| preserved)
         });
-        if let Err(err) = result {
-            crate::logging::session_clear_failed(&self.path, &err.to_string());
-            return;
+        match result {
+            Ok(true) => {
+                self.protect_unloaded = false;
+                self.prune_recovery();
+            }
+            Ok(false) => {}
+            Err(err) => {
+                crate::logging::session_clear_failed(&self.path, &err.to_string());
+                return;
+            }
         }
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::clear_path(&history_path) {
@@ -126,7 +149,17 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
 }
 
 fn preserve_existing(path: &Path) -> io::Result<bool> {
-    preserve_existing_in(path, "session-backups", 3)
+    let directory = path.with_file_name("session-backups");
+    if let Ok(files) = recovery_files(&directory) {
+        if let Some((_, latest)) = files.last() {
+            if let (Ok(current), Ok(previous)) = (std::fs::read(path), std::fs::read(latest)) {
+                if current == previous {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    preserve_existing_in(path, "session-backups", usize::MAX)
 }
 
 fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::Result<bool> {

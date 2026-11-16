@@ -387,6 +387,13 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
 
 pub fn restore_session(name: &str, file: &Path) -> Result<SessionInfo, String> {
     let session = normalize_name(name)?;
+    let _owner = own_session(session.as_deref()).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            format!("session {name} is running or being edited; stop it before restoring")
+        } else {
+            err.to_string()
+        }
+    })?;
     let socket_path = match &session {
         Some(session) => exact_session_dir(session)?
             .ok_or_else(|| format!("session {name} does not exist"))?
@@ -1314,6 +1321,56 @@ mod tests {
             .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
             .collect();
         assert_eq!(backups, vec![layout(30)]);
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn a_failed_restore_keeps_its_recovery_source_on_retries() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("failed-recovery");
+        let directory = data_dir_for(Some("work"));
+        let backups = directory.join("session-backups");
+        std::fs::create_dir_all(&backups).unwrap();
+        for sequence in 1..=3 {
+            std::fs::write(
+                backups.join(format!("session-{sequence:039}-1-0.json")),
+                layout(40 + sequence as u16),
+            )
+            .unwrap();
+        }
+        let source = backups.join(format!("session-{:039}-1-0.json", 1));
+        std::fs::write(directory.join("session.json"), layout(30)).unwrap();
+        std::fs::create_dir(directory.join("session.json.tmp")).unwrap();
+        for _ in 0..2 {
+            assert!(restore_session("work", &source).is_err());
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), layout(41));
+            assert_eq!(
+                std::fs::read_to_string(directory.join("session.json")).unwrap(),
+                layout(30)
+            );
+        }
+        std::fs::remove_dir(directory.join("session.json.tmp")).unwrap();
+        restore_session("work", &source).unwrap();
+        assert_eq!(crate::persist::load().unwrap().sidebar_width, Some(41));
+        assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 3);
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn a_restore_takes_ownership_before_reading_session_state() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("owned");
+        for name in ["work", DEFAULT_SESSION_NAME] {
+            let owner = own_session(normalize_name(name).unwrap().as_deref()).unwrap();
+            let err = restore_session(name, &config_home.join("missing.json")).unwrap_err();
+            assert!(err.contains("stop it before restoring"), "{err}");
+            assert!(!data_dir_for(normalize_name(name).unwrap().as_deref())
+                .join("session.json")
+                .exists());
+            drop(owner);
+        }
         std::fs::remove_dir_all(&config_home).unwrap();
         std::env::remove_var("XDG_CONFIG_HOME");
     }

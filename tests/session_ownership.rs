@@ -194,6 +194,32 @@ fn different_sockets_cannot_open_the_same_session() {
 }
 
 #[test]
+fn restoring_a_session_refuses_its_custom_socket_server() {
+    let fixture = Fixture::new();
+    let _server = fixture.start("custom");
+    fixture.wait_ready("custom");
+    let path = fixture
+        .root
+        .join("config/lawn-dev/sessions/work/session.json");
+    let before = fs::read(&path).ok();
+    let source = fixture.root.join("restore.json");
+    fs::write(
+        &source,
+        r#"{"version":3,"workspaces":[],"active":null,"selected":0,"sidebar_width":42}"#,
+    )
+    .unwrap();
+    let result = fixture
+        .command("unused")
+        .args(["session", "restore", "work"])
+        .arg(&source)
+        .output()
+        .unwrap();
+    assert!(!result.status.success(), "restored a running session");
+    assert_eq!(fs::read(&path).ok(), before);
+    fixture.wait_ready("custom");
+}
+
+#[test]
 fn deleting_a_session_refuses_its_custom_socket_server() {
     let fixture = Fixture::new();
     let _server = fixture.start("custom");
