@@ -14,7 +14,12 @@ impl App {
     pub(super) fn schedule_session_save(&mut self) {
         if self.policy.persist_session {
             self.pane_exit_checkpoint_pending = false;
-            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+            let debounce = if self.layout_shows_unsaved_core_terminal() {
+                Duration::ZERO
+            } else {
+                SESSION_SAVE_DEBOUNCE
+            };
+            self.session_save_deadline = Some(Instant::now() + debounce);
         }
     }
 
@@ -23,6 +28,26 @@ impl App {
             self.state.session_dirty = false;
             self.schedule_session_save();
         }
+    }
+
+    fn layout_shows_unsaved_core_terminal(&self) -> bool {
+        self.state
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| self.terminal_runtimes.get(&pane.attached_terminal_id))
+            .filter_map(crate::terminal::TerminalRuntime::core_address)
+            .any(|address| !self.saved_core_terminals.contains(address))
+    }
+
+    fn remember_saved_core_terminals(&mut self, job: &SessionSaveJob) {
+        self.saved_core_terminals = match job {
+            SessionSaveJob::Clear => Default::default(),
+            SessionSaveJob::Save { snapshot, .. } => {
+                snapshot.core_terminals().map(str::to_owned).collect()
+            }
+        };
     }
 
     fn reap_finished_session_save(&mut self) {
@@ -77,6 +102,7 @@ impl App {
         }
 
         let job = self.capture_session_save_job();
+        self.remember_saved_core_terminals(&job);
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
         let writer = self.session_writer.clone();
@@ -105,7 +131,9 @@ impl App {
             return;
         }
 
-        run_session_save_job(self.capture_session_save_job(), &self.session_writer);
+        let job = self.capture_session_save_job();
+        self.remember_saved_core_terminals(&job);
+        run_session_save_job(job, &self.session_writer);
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
     }
