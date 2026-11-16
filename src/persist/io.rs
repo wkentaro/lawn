@@ -8,18 +8,6 @@ use super::snapshot::{
     SessionSnapshot, SNAPSHOT_VERSION,
 };
 
-pub(super) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::File::options()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-}
-
 pub(super) fn session_path() -> PathBuf {
     crate::session::data_dir().join("session.json")
 }
@@ -161,7 +149,6 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
         return Err(not_a_snapshot("it has no workspaces".into()));
     }
     let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
-    let _lock = super::doc::hold_for_restore()?;
     super::SessionWriter::new(true)
         .try_save(&snapshot, None)
         .map_err(|err| err.to_string())?;

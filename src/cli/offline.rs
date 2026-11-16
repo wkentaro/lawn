@@ -13,14 +13,14 @@ type Answer = Option<Result<ResponseResult, ErrorBody>>;
 
 pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Value>> {
     let answer = match &request.method {
-        Method::WorkspaceList(_) => crate::persist::doc::edit(|snapshot| {
+        Method::WorkspaceList(_) => crate::persist::doc::edit(false, |snapshot| {
             let answer: Answer = (0..snapshot.workspaces.len())
                 .map(|index| workspace_info(snapshot, index))
                 .collect::<Option<Vec<_>>>()
                 .map(|workspaces| Ok(ResponseResult::WorkspaceList { workspaces }));
             (answer, false)
         }),
-        Method::WorkspaceRename(params) => crate::persist::doc::edit(|snapshot| {
+        Method::WorkspaceRename(params) => crate::persist::doc::edit(true, |snapshot| {
             let Some(index) = workspace_index(snapshot, &params.workspace_id) else {
                 return (Some(Err(workspace_not_found(&params.workspace_id))), false);
             };
@@ -30,7 +30,7 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             let changed = answer.is_some();
             (answer, changed)
         }),
-        Method::TabList(params) => crate::persist::doc::edit(|snapshot| {
+        Method::TabList(params) => crate::persist::doc::edit(false, |snapshot| {
             let workspaces = match params.workspace_id.as_deref() {
                 Some(workspace_id) => match workspace_index(snapshot, workspace_id) {
                     Some(index) => index..index + 1,
@@ -47,7 +47,7 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
                 .map(|tabs| Ok(ResponseResult::TabList { tabs }));
             (answer, false)
         }),
-        Method::TabRename(params) => crate::persist::doc::edit(|snapshot| {
+        Method::TabRename(params) => crate::persist::doc::edit(true, |snapshot| {
             let Some((workspace, tab)) = tab_index(snapshot, &params.tab_id) else {
                 return (Some(Err(tab_not_found(&params.tab_id))), false);
             };
@@ -137,7 +137,11 @@ fn workspace_info(snapshot: &SessionSnapshot, index: usize) -> Option<WorkspaceI
             .clone()
             .unwrap_or_else(|| derive_label_from_cwd(&workspace.identity_cwd)),
         focused: snapshot.active == Some(index),
-        pane_count: workspace.public_pane_numbers.len(),
+        pane_count: workspace
+            .tabs
+            .iter()
+            .map(|tab| tab.layout.pane_count())
+            .sum(),
         tab_count: workspace.visible_tab_count(),
         active_tab_id: public_tab_id_for_number(&id, active_tab_number),
         agent_status: AgentStatus::Unknown,
@@ -161,7 +165,7 @@ fn tab_info(snapshot: &SessionSnapshot, workspace_index: usize, tab: usize) -> O
             .clone()
             .unwrap_or_else(|| (tab + 1).to_string()),
         focused: snapshot.active == Some(workspace_index) && active_tab(workspace) == tab,
-        pane_count: workspace.tabs[tab].panes.len(),
+        pane_count: workspace.tabs[tab].layout.pane_count(),
         agent_status: AgentStatus::Unknown,
     })
 }
@@ -260,6 +264,52 @@ mod tests {
     }
 
     #[test]
+    fn an_all_parked_workspace_uses_effective_fallback_tab_numbers() {
+        let mut snapshot = snapshot();
+        let workspace = &mut snapshot.workspaces[0];
+        workspace.tabs = vec![tab(None, true), tab(None, true)];
+        workspace.public_tab_numbers.clear();
+        workspace.next_public_tab_number = 0;
+        workspace.active_tab = 0;
+        assert_eq!(workspace_info(&snapshot, 0).unwrap().active_tab_id, "w1:t3");
+    }
+
+    #[test]
+    fn pane_counts_follow_layout_leaves_not_optional_metadata() {
+        for (public, metadata) in [
+            (vec![], vec![]),
+            (vec![(1, 1)], vec![1]),
+            (vec![(1, 1), (2, 2), (99, 99)], vec![1, 2, 99]),
+        ] {
+            let mut snapshot = snapshot();
+            let workspace = &mut snapshot.workspaces[0];
+            workspace.public_pane_numbers = public.into_iter().collect();
+            workspace.tabs[0].layout = LayoutSnapshot::Split {
+                direction: crate::persist::DirectionSnapshot::Horizontal,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(1)),
+                second: Box::new(LayoutSnapshot::Pane(2)),
+            };
+            workspace.tabs[1].layout = LayoutSnapshot::Pane(0);
+            workspace.tabs[2].layout = LayoutSnapshot::Pane(3);
+            workspace.tabs[0].panes = metadata
+                .into_iter()
+                .map(|id| {
+                    let pane =
+                        serde_json::from_value(serde_json::json!({"cwd": "/missing"})).unwrap();
+                    (id, pane)
+                })
+                .collect();
+            assert_eq!(workspace_info(&snapshot, 0).unwrap().pane_count, 4);
+            assert_eq!(tab_info(&snapshot, 0, 0).unwrap().pane_count, 2);
+            assert_eq!(tab_info(&snapshot, 0, 1).unwrap().pane_count, 1);
+        }
+        let mut snapshot = snapshot();
+        snapshot.workspaces[0].tabs.clear();
+        assert_eq!(workspace_info(&snapshot, 0).unwrap().pane_count, 0);
+    }
+
+    #[test]
     fn a_socket_override_names_another_server() {
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         assert!(owns_the_target());
@@ -272,12 +322,71 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn file_backed_commands_list_while_owned_and_rename_after_release() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
+        assert!(crate::persist::load().is_none());
+        let mut saved = snapshot();
+        saved.collapsed_space_keys.insert("x".repeat(1024 * 1024));
+        crate::persist::SessionWriter::new(false).save(&saved, None);
+        let request = |method| Request {
+            id: "cli".into(),
+            method,
+        };
+        let rename = request(Method::WorkspaceRename(
+            crate::api::schema::WorkspaceRenameParams {
+                workspace_id: "w1".into(),
+                label: "renamed".into(),
+            },
+        ));
+        let owner = crate::session::own_session(Some("work")).unwrap();
+        let listed =
+            super::super::send_request(&request(Method::WorkspaceList(Default::default())))
+                .unwrap();
+        assert_eq!(listed["result"]["workspaces"][0]["pane_count"], 3);
+        assert!(super::super::send_request(&rename).is_err());
+        drop(owner);
+        let renamed = super::super::send_request(&rename).unwrap();
+        assert_eq!(renamed["result"]["workspace"]["pane_count"], 3);
+        let renamed_tab = super::super::send_request(&request(Method::TabRename(
+            crate::api::schema::TabRenameParams {
+                tab_id: "w1:t3".into(),
+                label: "tab renamed".into(),
+            },
+        )))
+        .unwrap();
+        assert_eq!(renamed_tab["result"]["tab"]["pane_count"], 1);
+        let tabs =
+            super::super::send_request(&request(Method::TabList(Default::default()))).unwrap();
+        assert_eq!(tabs["result"]["tabs"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            test.core
+                .doc_get(&crate::persist::doc::name(), None)
+                .unwrap()
+                .value["lawn_layout_file"]["version"],
+            1
+        );
+        let loaded = crate::persist::load().unwrap();
+        assert_eq!(loaded.workspaces[0].custom_name.as_deref(), Some("renamed"));
+        assert_eq!(
+            loaded.workspaces[0].tabs[1].custom_name.as_deref(),
+            Some("tab renamed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_rename_without_a_server_lands_in_the_document() {
         let Some(test) = crate::hc::test_support::TestCore::start() else {
             return;
         };
         test.share();
         crate::hc::use_core_for_test();
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
         let request = |method| Request {
             id: "cli".into(),
             method,

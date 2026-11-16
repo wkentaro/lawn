@@ -39,10 +39,6 @@ impl TestCore {
         })
     }
 
-    pub(crate) fn config_home(&self) -> std::path::PathBuf {
-        self.state.join("config")
-    }
-
     pub(crate) fn share(&self) {
         std::env::set_var("XDG_CONFIG_HOME", self.state.join("config"));
         *SHARED

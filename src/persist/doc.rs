@@ -1,6 +1,4 @@
-use std::fs::File;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use super::snapshot::{parse_snapshot, SessionSnapshot};
 
@@ -10,45 +8,6 @@ fn version() -> std::sync::MutexGuard<'static, Option<u64>> {
     VERSION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn lock_path() -> std::path::PathBuf {
-    crate::session::data_dir().join("layout.lock")
-}
-
-fn lock_file() -> std::io::Result<File> {
-    super::io::open_lock_file(&lock_path())
-}
-
-pub(crate) fn own() -> std::io::Result<Option<File>> {
-    if !crate::hc::enabled() {
-        return Ok(None);
-    }
-    own_within(Duration::from_secs(5)).map(Some)
-}
-
-fn own_within(wait: Duration) -> std::io::Result<File> {
-    let file = lock_file()?;
-    let deadline = Instant::now() + wait;
-    loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(file),
-            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(std::fs::TryLockError::WouldBlock) => {
-                let path = lock_path();
-                return Err(std::io::Error::other(format!(
-                    "another Lawn process is using {}",
-                    path.display()
-                )));
-            }
-            Err(std::fs::TryLockError::Error(err)) => {
-                tracing::warn!(%err, "cannot lock the layout; starting without it");
-                return Ok(file);
-            }
-        }
-    }
 }
 
 fn reachable_core() -> Option<std::sync::Arc<crate::hc::Core>> {
@@ -146,8 +105,21 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
 }
 
 pub(crate) fn edit<T>(
+    write: bool,
     mut change: impl FnMut(&mut SessionSnapshot) -> (T, bool),
 ) -> Result<Option<T>, String> {
+    if !crate::hc::enabled() {
+        return Ok(None);
+    }
+    let _owner = if write {
+        match crate::session::own_session(crate::session::active_name().as_deref()) {
+            Ok(owner) => Some(owner),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => return Ok(None),
+            Err(err) => return Err(err.to_string()),
+        }
+    } else {
+        None
+    };
     if !crate::session::data_dir().exists() {
         return Ok(None);
     }
@@ -155,33 +127,42 @@ pub(crate) fn edit<T>(
         return Ok(None);
     };
     let name = name();
-    let mut lock = None;
     for _ in 0..8 {
         let doc = core.doc_get(&name, None).map_err(|err| err.to_string())?;
-        if doc.version == 0 || doc.value.is_null() {
+        let (doc, snapshot) = read_document(&core, &name, doc)?;
+        let Some(mut snapshot) = snapshot else {
             return Ok(None);
-        }
-        let mut snapshot = parse_snapshot(&doc.value.to_string())?;
-        let loaded = super::snapshot::layout_fingerprint(&snapshot);
+        };
+        let loaded = if write {
+            payload_fingerprint(&doc.value)
+                .map(str::to_owned)
+                .or_else(|| super::snapshot::layout_fingerprint(&snapshot))
+        } else {
+            None
+        };
         let (out, changed) = change(&mut snapshot);
-        if !changed {
+        if !write || !changed {
             return Ok(Some(out));
         }
-        if lock.is_none() {
-            let file = lock_file().map_err(|err| err.to_string())?;
-            match file.try_lock() {
-                Ok(()) => {}
-                Err(std::fs::TryLockError::Error(err))
-                    if err.kind() != std::io::ErrorKind::Unsupported =>
+        let value = match document_value(&core, &name, Some(&snapshot), doc.version) {
+            Ok(value) => value,
+            Err(err) => {
+                if core
+                    .doc_get(&name, None)
+                    .map_err(|err| err.to_string())?
+                    .version
+                    != doc.version
                 {
-                    return Err(err.to_string())
+                    continue;
                 }
-                Err(_) => return Ok(None),
+                return Err(err);
             }
-            lock = Some(file);
+        };
+        let result = core.doc_set(&name, None, &value, doc.version);
+        if let Err(err) = prune_payloads(&core, &name, Some(&value)) {
+            tracing::warn!(%err, "cannot prune layout payloads");
         }
-        let value = serde_json::to_value(&snapshot).map_err(|err| err.to_string())?;
-        match core.doc_set(&name, None, &value, doc.version) {
+        match result {
             Ok(_) => {
                 if let Err(err) = super::io::carry_history(loaded, &snapshot) {
                     tracing::warn!(%err, "cannot keep pane history with the edited layout");
@@ -197,21 +178,6 @@ pub(crate) fn edit<T>(
 
 pub(crate) fn clear(session: &str) -> Result<(), String> {
     set_current(&name_for(session), None)
-}
-
-pub(super) fn hold_for_restore() -> Result<Option<File>, String> {
-    let file = lock_file().map_err(|err| err.to_string())?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Err(format!(
-            "a Lawn server is using {}; stop it before restoring",
-            lock_path().display()
-        )),
-        Err(std::fs::TryLockError::Error(err)) if err.kind() == std::io::ErrorKind::Unsupported => {
-            Ok(None)
-        }
-        Err(std::fs::TryLockError::Error(err)) => Err(err.to_string()),
-    }
 }
 
 pub(super) fn replace(snapshot: &SessionSnapshot) -> Result<(), String> {
@@ -403,7 +369,6 @@ mod tests {
 
     fn test_core() -> Option<crate::hc::test_support::TestCore> {
         let test = crate::hc::test_support::TestCore::start()?;
-        std::env::set_var("XDG_CONFIG_HOME", test.config_home());
         test.share();
         crate::hc::use_core_for_test();
         Some(test)
@@ -514,11 +479,9 @@ mod tests {
     #[test]
     fn an_edit_keeps_the_pane_history_that_matched_its_layout() {
         use super::super::snapshot::{layout_fingerprint, SessionHistorySnapshot};
-        let Some(test) = crate::hc::test_support::TestCore::start() else {
+        let Some(_test) = test_core() else {
             return;
         };
-        test.share();
-        crate::hc::use_core_for_test();
         std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
         let history_path = crate::session::data_dir().join("session-history.json");
         let write_history = |fingerprint: Option<String>| {
@@ -530,27 +493,20 @@ mod tests {
             super::super::io::save_history_to_path(&history_path, Some(&history)).expect("history");
         };
         let widen = |width| {
-            edit(|snapshot| {
+            edit(true, |snapshot| {
                 snapshot.sidebar_width = Some(width);
                 ((), true)
             })
         };
-        test.core
-            .doc_set(
-                &name(),
-                None,
-                &serde_json::to_value(snapshot(31)).expect("json"),
-                0,
-            )
-            .expect("doc.set");
-        write_history(layout_fingerprint(&snapshot(31)));
+        save(Some(&oversized_snapshot(31))).expect("file-backed layout");
+        write_history(layout_fingerprint(&oversized_snapshot(31)));
 
         assert_eq!(widen(40), Ok(Some(())));
 
         let carried = super::super::io::load_history().expect("history");
         assert_eq!(
             carried.layout_fingerprint,
-            layout_fingerprint(&snapshot(40))
+            layout_fingerprint(&oversized_snapshot(40))
         );
 
         write_history(Some("another layout".into()));
@@ -561,20 +517,21 @@ mod tests {
 
     #[test]
     fn a_restore_never_lands_under_a_running_server() {
-        let Some(test) = crate::hc::test_support::TestCore::start() else {
+        let Some(test) = test_core() else {
             return;
         };
-        test.share();
-        crate::hc::use_core_for_test();
         std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
         let held = serde_json::to_value(snapshot(31)).expect("json");
         test.core.doc_set(&name(), None, &held, 0).expect("doc.set");
         let source = crate::session::data_dir().join("saved.json");
         let saved = serde_json::to_string(&snapshot(40)).expect("json");
         std::fs::write(&source, saved).expect("write");
-        let _server = own().expect("the server starts").expect("core panes");
+        let _server =
+            crate::session::own_session(crate::session::active_name().as_deref()).unwrap();
 
-        let refused = super::super::io::restore_from(&source).expect_err("a server holds it");
+        let refused =
+            crate::session::restore_session(crate::session::DEFAULT_SESSION_NAME, &source)
+                .expect_err("a server holds it");
 
         assert!(refused.contains("stop it before restoring"), "{refused}");
         let stored = test.core.doc_get(&name(), None).expect("doc.get").value;
@@ -882,44 +839,89 @@ mod tests {
 
     #[test]
     fn an_edit_never_lands_under_a_running_server() {
-        let Some(test) = crate::hc::test_support::TestCore::start() else {
+        let Some(test) = test_core() else {
             return;
         };
-        test.share();
-        crate::hc::use_core_for_test();
         std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
         let value = serde_json::to_value(snapshot(31)).expect("json");
         test.core
             .doc_set(&name(), None, &value, 0)
             .expect("doc.set");
         let widen = || {
-            edit(|snapshot| {
+            edit(true, |snapshot| {
                 snapshot.sidebar_width = Some(40);
                 ((), true)
             })
         };
 
         assert_eq!(widen(), Ok(Some(())), "no server yet");
-        let _server = own().expect("the server starts").expect("core panes");
+        let _server =
+            crate::session::own_session(crate::session::active_name().as_deref()).unwrap();
         let loaded = load().expect("written").expect("not cleared");
         assert_eq!(loaded.sidebar_width, Some(40), "the server starts with it");
         assert_eq!(widen(), Ok(None), "the server owns the layout now");
-        let width = edit(|snapshot| (snapshot.sidebar_width, false));
+        let width = edit(false, |snapshot| (snapshot.sidebar_width, false));
         assert_eq!(width, Ok(Some(Some(40))), "reading needs no lock");
         save(Some(&snapshot(32))).expect("the server keeps saving");
     }
 
     #[test]
-    fn a_second_server_gives_up_instead_of_waiting() {
-        let dir = std::env::temp_dir().join(format!("lawn-lock-{}", std::process::id()));
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-        let running = own_within(Duration::ZERO).expect("the first server");
+    fn an_oversized_edit_retries_over_a_concurrent_document_change() {
+        let Some(test) = test_core() else {
+            return;
+        };
+        save(Some(&oversized_snapshot(31))).unwrap();
+        let mut calls = 0;
+        let result = edit(true, |saved| {
+            calls += 1;
+            assert!(crate::session::own_session(crate::session::active_name().as_deref()).is_err());
+            if calls == 1 {
+                let current = test.core.doc_get(&name(), None).unwrap();
+                test.core
+                    .doc_set(
+                        &name(),
+                        None,
+                        &serde_json::to_value(snapshot(99)).unwrap(),
+                        current.version,
+                    )
+                    .unwrap();
+            }
+            saved.selected = 7;
+            ((), true)
+        });
+        assert_eq!(result, Ok(Some(())));
+        assert_eq!(calls, 2);
+        let saved = load().unwrap().unwrap();
+        assert_eq!(saved.sidebar_width, Some(99));
+        assert_eq!(saved.selected, 7);
+        assert!(crate::session::own_session(crate::session::active_name().as_deref()).is_ok());
+    }
 
-        let err = own_within(Duration::from_millis(100)).expect_err("taken");
-        assert!(err.to_string().contains("another Lawn process"), "{err}");
+    #[test]
+    fn an_offline_edit_refuses_a_locking_error() {
+        let Some(_test) = test_core() else {
+            return;
+        };
+        std::fs::create_dir_all(crate::config::config_dir()).unwrap();
+        std::fs::write(
+            crate::config::config_dir().join("session-locks"),
+            b"blocked",
+        )
+        .unwrap();
+        assert!(edit::<()>(true, |_| panic!("locking failed")).is_err());
+    }
 
-        drop(running);
-        own_within(Duration::ZERO).expect("free once it exits");
-        std::fs::remove_dir_all(dir).expect("clean up");
+    #[test]
+    fn a_root_owner_blocks_edits_before_the_document_is_read() {
+        let Some(test) = test_core() else {
+            return;
+        };
+        std::fs::create_dir_all(crate::session::data_dir()).unwrap();
+        let _owner = crate::session::own_session(crate::session::active_name().as_deref()).unwrap();
+        test.core
+            .doc_set(&name(), None, &serde_json::json!({"version": u32::MAX}), 0)
+            .unwrap();
+        let result = edit(true, |_| panic!("a busy session must not be edited"));
+        assert_eq!(result, Ok(None::<()>));
     }
 }

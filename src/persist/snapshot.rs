@@ -79,6 +79,7 @@ impl WorkspaceSnapshot {
         self.public_tab_numbers
             .iter()
             .copied()
+            .chain((0..self.tabs.len()).map(|tab| self.tab_number(tab)))
             .max()
             .and_then(|max| max.checked_add(1))
             .unwrap_or(1)
@@ -173,6 +174,15 @@ pub enum LayoutSnapshot {
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+}
+
+impl LayoutSnapshot {
+    pub(crate) fn pane_count(&self) -> usize {
+        match self {
+            Self::Pane(_) => 1,
+            Self::Split { first, second, .. } => first.pane_count() + second.pane_count(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

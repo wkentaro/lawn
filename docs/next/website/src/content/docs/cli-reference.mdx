@@ -172,7 +172,9 @@ herdr workspace create --cwd ~/project --label api --no-focus
 
 A workspace is a top-level project or work context. Creating one also creates its first tab and root pane. The JSON response exposes their IDs as `.result.workspace.workspace_id`, `.result.tab.tab_id`, and `.result.root_pane.pane_id`.
 
-On Linux and macOS, when a local session's server is not running, `workspace list`, `workspace rename`, `tab list`, and `tab rename` read and edit the session's saved layout instead, and the next server starts with the change. Agent status reads `unknown` until the server runs.
+For core-backed sessions on Linux and macOS, `workspace list`, `workspace rename`, `tab list`, and `tab rename` can use the saved core layout document when the local server is not running. The next server starts with the change. Agent status reads `unknown` until the server runs.
+
+Renames take session ownership before reading the layout and refuse while a server or another editor owns it, including before the server publishes its socket. Listing needs no ownership. Pane counts follow the saved layout leaves; workspace counts include parked panes.
 
 ## Tabs
 

@@ -55,14 +55,6 @@ pub fn run_server() -> io::Result<()> {
         }
         Err(err) => return Err(err),
     };
-    let _layout_lock = match crate::persist::doc::own() {
-        Ok(lock) => lock,
-        Err(err) => {
-            eprintln!("error: cannot lock this session's layout: {err}");
-            drop(_api_server);
-            std::process::exit(1);
-        }
-    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
