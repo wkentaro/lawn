@@ -478,35 +478,17 @@ impl AppState {
     }
 
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) -> bool {
-        if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
-            return false;
+        let moved = crate::session_model::move_workspace(
+            &mut self.workspaces,
+            &mut self.active,
+            &mut self.selected,
+            source_idx,
+            insert_idx,
+        );
+        if moved {
+            self.mark_session_dirty();
         }
-
-        let target_idx = if source_idx < insert_idx {
-            insert_idx - 1
-        } else {
-            insert_idx
-        };
-        if source_idx == target_idx {
-            return false;
-        }
-
-        self.mark_session_dirty();
-
-        let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
-        let selected_id = self
-            .workspaces
-            .get(self.selected)
-            .map(|workspace| workspace.id.clone());
-
-        let workspace = self.workspaces.remove(source_idx);
-        self.workspaces.insert(target_idx, workspace);
-
-        self.active = active_id.and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
-        self.selected = selected_id
-            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
-            .unwrap_or(0);
-        true
+        moved
     }
 
     pub fn move_workspace_block(

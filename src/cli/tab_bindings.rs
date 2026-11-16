@@ -1,7 +1,7 @@
 use clap::Command;
 
 use crate::api::schema::tabs::{
-    tab_id, TabCreateProjection, TabListProjection, TabRenameProjection,
+    tab_id, TabCreateProjection, TabListProjection, TabMoveProjection, TabRenameProjection,
 };
 use crate::api::schema::{Method, Request, TabTarget};
 
@@ -13,7 +13,7 @@ cli_projection! {
     }
 }
 
-const LEAVES: [Leaf; 6] = [
+const LEAVES: [Leaf; 7] = [
     Leaf {
         name: "list",
         about: "List tabs",
@@ -50,6 +50,13 @@ const LEAVES: [Leaf; 6] = [
         method: |matches| TabRenameProjection::from_matches(matches).map(Method::TabRename),
     },
     Leaf {
+        name: "move",
+        about: "Reorder a tab",
+        id: "cli:tab:move",
+        arguments: TabMoveProjection::arguments,
+        method: |matches| TabMoveProjection::from_matches(matches).map(Method::TabMove),
+    },
+    Leaf {
         name: "close",
         about: "Close a tab",
         id: "cli:tab:close",
@@ -75,6 +82,33 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Request, ParseError> {
         request(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn tab_move_projection_requires_an_id_and_insertion_boundary() {
+        assert_eq!(
+            serde_json::to_value(parse(&["move", "w1:t3", "2"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:tab:move", "method": "tab.move",
+                "params": {"tab_id": "w1:t3", "insert_index": 2}
+            })
+        );
+        for args in [
+            vec!["move"],
+            vec!["move", "w1:t3"],
+            vec!["move", "w1:t3", "-1"],
+            vec!["move", "w1:t3", "x"],
+            vec!["move", "w1:t3", "0", "extra"],
+        ] {
+            assert!(parse(&args).is_err(), "argv: {args:?}");
+        }
+        let mut root = command();
+        let help = root
+            .find_subcommand_mut("move")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("<TAB_ID> <INSERT_INDEX>"));
     }
 
     #[test]

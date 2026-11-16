@@ -160,6 +160,7 @@ herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
+herdr workspace move <workspace_id> <insert_index>
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
 herdr workspace close <workspace_id>
 ```
@@ -172,9 +173,11 @@ herdr workspace create --cwd ~/project --label api --no-focus
 
 A workspace is a top-level project or work context. Creating one also creates its first tab and root pane. The JSON response exposes their IDs as `.result.workspace.workspace_id`, `.result.tab.tab_id`, and `.result.root_pane.pane_id`.
 
-For core-backed sessions on Linux and macOS, `workspace list`, `workspace rename`, `tab list`, and `tab rename` can use the saved core layout document when the local server is not running. The next server starts with the change. Agent status reads `unknown` until the server runs.
+For core-backed sessions on Linux and macOS, workspace and tab `list`, `rename`, and `move` commands can use the saved core layout document when the local server is not running. The next server starts with the change. Agent status reads `unknown` until the server runs.
 
-Renames take session ownership before reading the layout and refuse while a server or another editor owns it, including before the server publishes its socket. Listing needs no ownership. Pane counts follow the saved layout leaves; workspace counts include parked panes.
+Renames and moves take session ownership before reading the layout and refuse while a server or another editor owns it, including before the server publishes its socket. Listing needs no ownership. Pane counts follow the saved layout leaves; workspace counts include parked panes.
+
+`move` takes a zero-based insertion boundary in the current order. Boundary `0` puts the item first; the item count puts it last. For example, `workspace move <workspace_id> 2` moves the workspace before the current third workspace, or to the end when there are two. Moving within its current boundaries does nothing. Moves preserve the active workspace, tab, and saved output. Tab moves stay within the same workspace and exclude parked tabs.
 
 ## Tabs
 
@@ -184,6 +187,7 @@ herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env
 herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
+herdr tab move <tab_id> <insert_index>
 herdr tab close <tab_id>
 ```
 

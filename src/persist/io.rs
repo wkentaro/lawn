@@ -157,12 +157,35 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
     })
 }
 
-pub(super) fn carry_history(from: Option<String>, to: &SessionSnapshot) -> std::io::Result<()> {
+pub(super) fn carry_history(
+    from: Option<String>,
+    to: &SessionSnapshot,
+    order: Option<crate::session_model::LayoutMove>,
+) -> std::io::Result<()> {
     let Some(mut history) = load_history() else {
         return Ok(());
     };
     if from.is_none() || history.layout_fingerprint != from {
         return Ok(());
+    }
+    if let Some(order) = order {
+        history
+            .workspaces
+            .resize_with(to.workspaces.len(), Default::default);
+        match order {
+            crate::session_model::LayoutMove::Workspace { source, insert } => {
+                crate::session_model::move_item(&mut history.workspaces, source, insert);
+            }
+            crate::session_model::LayoutMove::Tab {
+                workspace,
+                source,
+                insert,
+            } => {
+                let tabs = &mut history.workspaces[workspace].tabs;
+                tabs.resize_with(to.workspaces[workspace].tabs.len(), Default::default);
+                crate::session_model::move_item(tabs, source, insert);
+            }
+        }
     }
     history.layout_fingerprint = super::snapshot::layout_fingerprint(to);
     save_history_to_path(&session_history_path(), Some(&history))

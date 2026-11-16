@@ -539,27 +539,16 @@ impl Workspace {
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
         let visible = self.visible_tab_count();
-        if source_idx >= visible || insert_idx > visible {
+        let Some(target) =
+            crate::session_model::move_item(&mut self.tabs[..visible], source_idx, insert_idx)
+        else {
             return false;
-        }
-
-        let target_idx = if source_idx < insert_idx {
-            insert_idx.saturating_sub(1)
+        };
+        self.active_tab = if self.active_tab < self.tabs.len() {
+            crate::session_model::index_after_move(self.active_tab, source_idx, target)
         } else {
-            insert_idx
-        }
-        .min(visible.saturating_sub(1));
-
-        if source_idx == target_idx {
-            return false;
-        }
-
-        let active_root_pane = self.tabs.get(self.active_tab).map(|tab| tab.root_pane);
-        let tab = self.tabs.remove(source_idx);
-        self.tabs.insert(target_idx, tab);
-        self.active_tab = active_root_pane
-            .and_then(|root_pane| self.tabs.iter().position(|tab| tab.root_pane == root_pane))
-            .unwrap_or(target_idx);
+            target
+        };
         true
     }
 
