@@ -3,7 +3,8 @@ use crate::api::schema::{
     TabInfo, WorkspaceInfo,
 };
 use crate::persist::{SessionSnapshot, WorkspaceSnapshot};
-use crate::workspace::{decode_public_number, derive_label_from_cwd, public_tab_id_for_number};
+use crate::session_model::workspace_index;
+use crate::workspace::{derive_label_from_cwd, public_tab_id_for_number};
 
 pub(super) fn owns_the_target() -> bool {
     !super::target::is_remote() && crate::session::uses_own_socket()
@@ -21,10 +22,13 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             (answer, false)
         }),
         Method::WorkspaceRename(params) => crate::persist::doc::edit(true, |snapshot| {
-            let Some(index) = workspace_index(snapshot, &params.workspace_id) else {
+            let Some(index) = crate::session_model::rename_workspace(
+                &mut snapshot.workspaces,
+                &params.workspace_id,
+                &params.label,
+            ) else {
                 return (Some(Err(workspace_not_found(&params.workspace_id))), false);
             };
-            snapshot.workspaces[index].custom_name = Some(params.label.clone());
             let answer: Answer = workspace_info(snapshot, index)
                 .map(|workspace| Ok(ResponseResult::WorkspaceInfo { workspace }));
             let changed = answer.is_some();
@@ -32,7 +36,7 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
         }),
         Method::TabList(params) => crate::persist::doc::edit(false, |snapshot| {
             let workspaces = match params.workspace_id.as_deref() {
-                Some(workspace_id) => match workspace_index(snapshot, workspace_id) {
+                Some(workspace_id) => match workspace_index(&snapshot.workspaces, workspace_id) {
                     Some(index) => index..index + 1,
                     None => return (Some(Err(workspace_not_found(workspace_id))), false),
                 },
@@ -48,10 +52,13 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             (answer, false)
         }),
         Method::TabRename(params) => crate::persist::doc::edit(true, |snapshot| {
-            let Some((workspace, tab)) = tab_index(snapshot, &params.tab_id) else {
+            let Some((workspace, tab)) = crate::session_model::rename_tab(
+                &mut snapshot.workspaces,
+                &params.tab_id,
+                &params.label,
+            ) else {
                 return (Some(Err(tab_not_found(&params.tab_id))), false);
             };
-            snapshot.workspaces[workspace].tabs[tab].custom_name = Some(params.label.clone());
             let answer: Answer =
                 tab_info(snapshot, workspace, tab).map(|tab| Ok(ResponseResult::TabInfo { tab }));
             let changed = answer.is_some();
@@ -87,38 +94,6 @@ fn active_tab(workspace: &WorkspaceSnapshot) -> usize {
     workspace
         .active_tab
         .min(workspace.tabs.len().saturating_sub(1))
-}
-
-fn workspace_index(snapshot: &SessionSnapshot, id: &str) -> Option<usize> {
-    snapshot
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.id.as_deref() == Some(id))
-        .or_else(|| id.strip_prefix("w_")?.parse::<usize>().ok()?.checked_sub(1))
-        .or_else(|| id.parse::<usize>().ok()?.checked_sub(1))
-        .filter(|&index| index < snapshot.workspaces.len())
-}
-
-fn tab_index(snapshot: &SessionSnapshot, id: &str) -> Option<(usize, usize)> {
-    let visible = |workspace: usize, tab: usize| {
-        (tab < snapshot.workspaces[workspace].visible_tab_count()).then_some((workspace, tab))
-    };
-    if let Some(rest) = id.strip_prefix("t_") {
-        let (workspace_raw, tab_raw) = rest.rsplit_once('_')?;
-        let workspace = workspace_index(snapshot, workspace_raw)?;
-        return visible(workspace, tab_raw.parse::<usize>().ok()?.checked_sub(1)?);
-    }
-    let (workspace_raw, tab_raw) = id.rsplit_once(':')?;
-    let workspace = workspace_index(snapshot, workspace_raw)?;
-    let tab = match tab_raw.strip_prefix('t') {
-        Some(encoded) => {
-            let number = decode_public_number(encoded)?;
-            let workspace = &snapshot.workspaces[workspace];
-            (0..workspace.tabs.len()).position(|tab| workspace.tab_number(tab) == number)?
-        }
-        None => tab_raw.parse::<usize>().ok()?.checked_sub(1)?,
-    };
-    visible(workspace, tab)
 }
 
 fn workspace_info(snapshot: &SessionSnapshot, index: usize) -> Option<WorkspaceInfo> {
@@ -174,6 +149,7 @@ fn tab_info(snapshot: &SessionSnapshot, workspace_index: usize, tab: usize) -> O
 mod tests {
     use super::*;
     use crate::persist::{LayoutSnapshot, TabSnapshot};
+    use crate::session_model::tab_index;
 
     fn tab(name: Option<&str>, parked: bool) -> TabSnapshot {
         TabSnapshot {
@@ -211,17 +187,91 @@ mod tests {
     }
 
     #[test]
-    fn ids_resolve_the_way_the_server_resolves_them() {
+    fn live_and_saved_identity_resolution_match() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state = crate::app::AppState::test_with_adversarial_identity_state();
+        app.state.assert_invariants_for_test();
+        let mut alias = crate::workspace::Workspace::test_new("alias");
+        alias.id = "w_1".into();
+        app.state.workspaces.push(alias);
+        let mut numeric = crate::workspace::Workspace::test_new("numeric");
+        numeric.id = "1".into();
+        app.state.workspaces.push(numeric);
+        app.state.ensure_test_terminals();
+
+        for parked in [false, true] {
+            let last = app.state.workspaces[0].tabs.last_mut().unwrap();
+            last.parked_from = parked.then_some(1);
+            let snapshot = crate::persist::capture(
+                &app.state.workspaces,
+                &app.state.terminals,
+                &app.terminal_runtimes,
+                app.state.active,
+                app.state.selected,
+            );
+            let ids = app
+                .state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.id.clone())
+                .chain(["0", "2", "3", "4", "w_0", "w_2", "w_4", "missing"].map(String::from));
+            for id in ids {
+                assert_eq!(
+                    workspace_index(&snapshot.workspaces, &id),
+                    app.parse_workspace_id(&id),
+                    "{id}"
+                );
+                for number in 0..8 {
+                    for tab_id in [
+                        format!("{id}:t{}", crate::workspace::encode_public_number(number)),
+                        format!("{id}:{number}"),
+                        format!("t_{id}_{number}"),
+                    ] {
+                        assert_eq!(
+                            tab_index(&snapshot.workspaces, &tab_id),
+                            app.parse_tab_id(&tab_id),
+                            "{tab_id}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_snapshot_identity_reads_do_not_allocate_ids() {
+        let mut snapshot = snapshot();
+        snapshot.workspaces[0].id = None;
+        assert_eq!(workspace_index(&snapshot.workspaces, "1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w_1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w1"), None);
+        assert_eq!(tab_index(&snapshot.workspaces, "1:t3"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "1:t4"), None);
+        assert!(workspace_info(&snapshot, 0).is_none());
+        snapshot.workspaces[0].tabs.clear();
+        assert_eq!(tab_index(&snapshot.workspaces, "1:1"), None);
+        assert!(snapshot.workspaces[0].id.is_none());
+    }
+
+    #[test]
+    fn saved_ids_keep_public_numbers_and_restore_defaults() {
         let snapshot = snapshot();
-        assert_eq!(workspace_index(&snapshot, "w1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "w_1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "2"), None);
-        assert_eq!(tab_index(&snapshot, "w1:t3"), Some((0, 1)));
-        assert_eq!(tab_index(&snapshot, "w1:2"), Some((0, 1)));
-        assert_eq!(tab_index(&snapshot, "t_w1_2"), Some((0, 1)));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w_1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "2"), None);
+        assert_eq!(tab_index(&snapshot.workspaces, "w1:t3"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "w1:2"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "t_w1_2"), Some((0, 1)));
         assert_eq!(
-            tab_index(&snapshot, "w1:t4"),
+            tab_index(&snapshot.workspaces, "w1:t4"),
             None,
             "parked tabs are hidden"
         );

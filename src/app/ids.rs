@@ -58,43 +58,11 @@ impl App {
     }
 
     pub(crate) fn parse_workspace_id(&self, id: &str) -> Option<usize> {
-        self.state
-            .workspaces
-            .iter()
-            .position(|workspace| workspace.id == id)
-            .or_else(|| id.strip_prefix("w_")?.parse::<usize>().ok()?.checked_sub(1))
-            .or_else(|| id.parse::<usize>().ok()?.checked_sub(1))
-            .filter(|&index| index < self.state.workspaces.len())
+        crate::session_model::workspace_index(&self.state.workspaces, id)
     }
 
     pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
-        if let Some(rest) = id.strip_prefix("t_") {
-            let (ws_raw, tab_raw) = rest.rsplit_once('_')?;
-            let ws_idx = self.parse_workspace_id(ws_raw)?;
-            let tab_idx = tab_raw.parse::<usize>().ok()?.checked_sub(1)?;
-            return self.visible_tab(ws_idx, tab_idx);
-        }
-
-        let (ws_raw, tab_raw) = id.rsplit_once(':')?;
-        let ws_idx = self.parse_workspace_id(ws_raw)?;
-        let tab_idx = if let Some(encoded) = tab_raw.strip_prefix('t') {
-            let tab_number = crate::workspace::decode_public_number(encoded)?;
-            self.state
-                .workspaces
-                .get(ws_idx)?
-                .tabs
-                .iter()
-                .position(|tab| tab.number == tab_number)?
-        } else {
-            tab_raw.parse::<usize>().ok()?.checked_sub(1)?
-        };
-        self.visible_tab(ws_idx, tab_idx)
-    }
-
-    /// Tab ids name visible tabs only; parked tabs are not addressable.
-    fn visible_tab(&self, ws_idx: usize, tab_idx: usize) -> Option<(usize, usize)> {
-        (tab_idx < self.state.workspaces.get(ws_idx)?.visible_tab_count())
-            .then_some((ws_idx, tab_idx))
+        crate::session_model::tab_index(&self.state.workspaces, id)
     }
 
     fn resolve_raw_pane_id(&self, raw: u32) -> Option<crate::layout::PaneId> {

@@ -163,14 +163,14 @@ impl App {
         id: String,
         params: WorkspaceRenameParams,
     ) -> String {
-        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+        let Some(index) = crate::session_model::rename_workspace(
+            &mut self.state.workspaces,
+            &params.workspace_id,
+            &params.label,
+        ) else {
             return workspace_not_found(id, &params.workspace_id);
         };
-        let Some(ws) = self.state.workspaces.get_mut(index) else {
-            return workspace_not_found(id, &params.workspace_id);
-        };
-        ws.set_custom_name(params.label.clone());
-        crate::logging::workspace_renamed(&ws.id);
+        crate::logging::workspace_renamed(&self.state.workspaces[index].id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
             event: EventKind::WorkspaceRenamed,
