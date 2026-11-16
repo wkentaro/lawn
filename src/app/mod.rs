@@ -387,7 +387,15 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let snapshot = policy.restore_session.then(crate::persist::load).flatten();
+        let mut snapshot = policy.restore_session.then(crate::persist::load).flatten();
+        let mut history = snapshot
+            .as_ref()
+            .filter(|_| config.experimental.pane_history)
+            .and_then(|_| crate::persist::load_history());
+        let closed_panes_dropped = snapshot.as_mut().is_some_and(|snapshot| {
+            let closed = crate::pane::closed_core_terminals(snapshot.core_terminals());
+            snapshot.close_panes_showing(&closed, history.as_mut())
+        });
         let mut plugin_installation_leases = crate::plugin_installations::Leases::new();
         let mut plugin_installation_cleanup_allowed = true;
         if policy.persist_plugin_registry {
@@ -409,11 +417,6 @@ impl App {
             policy.restore_session && snapshot.is_none(),
         )));
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
-            let history = config
-                .experimental
-                .pane_history
-                .then(crate::persist::load_history)
-                .flatten();
             let (ws, terminals, terminal_runtimes) = crate::persist::restore(
                 &snap,
                 history.as_ref(),
@@ -555,7 +558,7 @@ impl App {
             plugin_commands_in_flight: 0,
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
-            session_dirty: false,
+            session_dirty: closed_panes_dropped,
             terminal_runtime_shutdowns: Vec::new(),
         };
 
@@ -3175,6 +3178,91 @@ mod tests {
 
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pane_closed_before_its_layout_was_saved_stays_closed() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        let run = || {
+            test.core
+                .run(serde_json::json!({
+                    "argv": ["/bin/sh", "-c", "read line"],
+                    "no_parent": true,
+                    "keep": true,
+                    "labels": {"lawn": crate::session::DEFAULT_SESSION_NAME},
+                }))
+                .expect("run")
+        };
+        let (kept, closed) = (run(), run());
+        test.core
+            .call("terminal.kill", serde_json::json!({"terminal": closed}))
+            .expect("kill");
+        let saved: crate::persist::SessionSnapshot = serde_json::from_value(serde_json::json!({
+            "version": 3,
+            "workspaces": [{
+                "identity_cwd": "/tmp",
+                "tabs": [{
+                    "layout": {"Split": {
+                        "direction": "Horizontal",
+                        "ratio": 0.5,
+                        "first": {"Pane": 1},
+                        "second": {"Pane": 2},
+                    }},
+                    "panes": {
+                        "1": {"cwd": "/tmp", "core_terminal": kept},
+                        "2": {"cwd": "/tmp", "core_terminal": closed},
+                    },
+                    "zoomed": false,
+                    "focused": 2,
+                    "root_pane": 1,
+                }],
+            }],
+            "active": 0,
+            "selected": 0,
+        }))
+        .expect("snapshot");
+        crate::persist::SessionWriter::new(false).save(&saved, None);
+        let terminals = || {
+            test.core
+                .call("terminal.list", serde_json::json!({"all": true}))
+                .expect("terminal.list")["terminals"]
+                .as_array()
+                .expect("terminals")
+                .len()
+        };
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy {
+                restore_session: true,
+                ..crate::app::AppPolicy::TEST
+            },
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 1);
+        let shown: Vec<&str> = app
+            .terminal_runtimes
+            .values()
+            .filter_map(|runtime| runtime.core_address())
+            .collect();
+        assert_eq!(shown, [kept.as_str()]);
+        assert_eq!(terminals(), 2, "no new program replaced the closed pane");
+        assert!(
+            app.state.session_dirty,
+            "the closed pane leaves the saved layout"
+        );
+        app.state.assert_invariants_for_test();
     }
 
     #[test]

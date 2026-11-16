@@ -148,7 +148,22 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
     {
         return Err(not_a_snapshot("it has no workspaces".into()));
     }
-    let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
+    let mut snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
+    let closed = crate::pane::closed_core_terminals(snapshot.core_terminals());
+    for pane in snapshot
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| &mut workspace.tabs)
+        .flat_map(|tab| tab.panes.values_mut())
+    {
+        if pane
+            .core_terminal
+            .as_ref()
+            .is_some_and(|address| closed.contains(address))
+        {
+            pane.core_terminal = None;
+        }
+    }
     super::SessionWriter::new(true)
         .try_save(&snapshot, None)
         .map_err(|err| err.to_string())?;

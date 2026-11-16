@@ -315,6 +315,40 @@ fn reattach_params(address: &str, rows: u16, cols: u16) -> serde_json::Value {
     serde_json::json!({"terminal": address, "cols": cols, "rows": rows, "history": u32::MAX})
 }
 
+pub(crate) fn closed_core_terminals<'a>(
+    addresses: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashSet<String> {
+    let addresses: std::collections::HashSet<&str> = addresses.into_iter().collect();
+    if addresses.is_empty() {
+        return Default::default();
+    }
+    let Some(Ok(core)) = crate::hc::backend() else {
+        return Default::default();
+    };
+    match core.call("terminal.list", serde_json::json!({"all": true})) {
+        Ok(listed) => killed_terminals(&listed, &addresses),
+        Err(err) => {
+            warn!(%err, "cannot list core terminals to find closed panes");
+            Default::default()
+        }
+    }
+}
+
+fn killed_terminals(
+    listed: &serde_json::Value,
+    addresses: &std::collections::HashSet<&str>,
+) -> std::collections::HashSet<String> {
+    listed["terminals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|record| record["state"] == "finished" && record["reason"] == "killed")
+        .filter_map(|record| record["address"].as_str())
+        .filter(|address| addresses.contains(address))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// `NotFound` when the saved program is gone for good: the core forgot the
 /// terminal or it finished. Anything else may pass, so the caller keeps it.
 fn reattach_error(err: crate::hc::HcError) -> std::io::Error {
