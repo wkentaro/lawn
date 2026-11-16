@@ -39,7 +39,18 @@ impl TestCore {
         })
     }
 
+    #[cfg(unix)]
+    pub(crate) fn disconnect(&self) {
+        crate::platform::signal_processes(&[self.core.child.id()], crate::platform::Signal::Kill);
+    }
+
     pub(crate) fn share(&self) {
+        #[cfg(unix)]
+        std::env::set_var("HC_SOCKET", self.state.join("hc.sock"));
+        #[cfg(not(unix))]
+        std::env::remove_var("HC_SOCKET");
+        std::env::set_var("HC_SESSION", &self.session);
+        std::env::set_var("XDG_STATE_HOME", self.state.join("state"));
         std::env::set_var("XDG_CONFIG_HOME", self.state.join("config"));
         *SHARED
             .lock()
