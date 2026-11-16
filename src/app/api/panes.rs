@@ -3093,6 +3093,111 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn api_core_pane_sends_fail_while_disconnected_without_replaying() {
+        async fn wait_for(mut ready: impl FnMut() -> bool) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !ready() {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let (mut app, pane_id) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let internal = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal = app.state.workspaces[0]
+            .terminal_id(internal)
+            .unwrap()
+            .clone();
+        let address = test.core.run(serde_json::json!({"argv": ["sh", "-c", "stty -echo; echo ready; read line; echo got-$line; sleep 30"], "no_parent": true})).unwrap();
+        let runtime = crate::terminal::TerminalRuntime::reattach_core(
+            internal,
+            &address,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            app.event_tx.clone(),
+            app.render_notify.clone(),
+            app.render_dirty.clone(),
+        )
+        .unwrap();
+        app.terminal_runtimes.insert(terminal, runtime);
+        wait_for(|| {
+            app.lookup_runtime_sender(0, internal)
+                .unwrap()
+                .visible_text()
+                .contains("ready")
+        })
+        .await;
+        let bin = std::env::var_os(crate::hc::HC_BIN_ENV);
+        std::env::set_var(crate::hc::HC_BIN_ENV, "/nonexistent-lawn-test-hc");
+        test.disconnect();
+        wait_for(|| test.core.is_closed()).await;
+        for method in [
+            crate::api::schema::Method::PaneSendText(PaneSendTextParams {
+                pane_id: pane_id.clone(),
+                text: "offline-text\r".into(),
+            }),
+            crate::api::schema::Method::PaneSendInput(PaneSendInputParams {
+                pane_id: pane_id.clone(),
+                text: "offline-input".into(),
+                keys: vec!["Enter".into()],
+            }),
+        ] {
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "offline".into(),
+                method,
+            });
+            let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+            assert_eq!(error.error.code, "pane_send_failed");
+        }
+        match bin {
+            Some(bin) => std::env::set_var(crate::hc::HC_BIN_ENV, bin),
+            None => std::env::remove_var(crate::hc::HC_BIN_ENV),
+        }
+        wait_for(|| {
+            app.lookup_runtime_sender(0, internal)
+                .unwrap()
+                .validate_input_submission(b"fresh")
+                .is_ok()
+        })
+        .await;
+        let response = app.handle_pane_send_text(
+            "fresh".into(),
+            PaneSendTextParams {
+                pane_id,
+                text: "fresh\r".into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
+        wait_for(|| {
+            app.lookup_runtime_sender(0, internal)
+                .unwrap()
+                .visible_text()
+                .contains("got-fresh")
+        })
+        .await;
+        assert!(!app
+            .lookup_runtime_sender(0, internal)
+            .unwrap()
+            .visible_text()
+            .contains("offline"));
+        app.state.assert_invariants_for_test();
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
     #[tokio::test]
     async fn api_pane_send_input_brackets_text_and_enter_atomically() {
         let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);

@@ -1668,10 +1668,7 @@ impl PaneRuntimeIo {
     fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.try_write_user_input(bytes),
-            PaneRuntimeIo::Core(io) => {
-                io.send(bytes);
-                Ok(())
-            }
+            PaneRuntimeIo::Core(io) => io.send(bytes),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => sender.try_send(bytes),
         }
@@ -3765,7 +3762,7 @@ impl PaneRuntime {
                 let _ = bytes;
                 Ok(())
             }
-            PaneRuntimeIo::Core(_) => Ok(()),
+            PaneRuntimeIo::Core(io) => io.validate_input(),
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => Ok(()),
         }

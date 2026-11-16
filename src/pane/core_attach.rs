@@ -5,123 +5,8 @@
 use super::*;
 use crate::hc::{Attached, Core, Stream};
 
-enum Input {
-    Bytes(Bytes),
-    /// Text, a pause, then Enter, with nothing else sent in between.
-    Submit {
-        text: Bytes,
-        enter: Bytes,
-        delay: std::time::Duration,
-        reply: std::sync::mpsc::Sender<std::io::Result<()>>,
-    },
-}
-
-pub(super) struct CoreIo {
-    core: Arc<Core>,
-    channel: u32,
-    /// The core terminal's address (`t7`), saved so a restart reattaches.
-    address: String,
-    /// Keys and submissions go through one queue so a submission's pause
-    /// never lets other input in between its text and its Enter.
-    input: std::sync::mpsc::Sender<Input>,
-    /// The events stream that follows the program's cwd, when it opened.
-    events_channel: Option<u32>,
-}
-
-impl CoreIo {
-    fn new(core: Arc<Core>, channel: u32, address: String) -> std::io::Result<Self> {
-        let (input, queue) = std::sync::mpsc::channel();
-        let writer = core.clone();
-        crate::thread_spawn::spawn_named("hc-input", move || {
-            while let Ok(item) = queue.recv() {
-                match item {
-                    Input::Bytes(bytes) => writer.input(channel, &bytes),
-                    Input::Submit {
-                        text,
-                        enter,
-                        delay,
-                        reply,
-                    } => {
-                        // The pause starts once the text is out, so a slow
-                        // core can't deliver text and Enter together.
-                        let sent = writer.write_input(channel, &text).and_then(|()| {
-                            std::thread::sleep(delay);
-                            writer.write_input(channel, &enter)
-                        });
-                        let _ = reply.send(sent.map_err(std::io::Error::other));
-                    }
-                }
-            }
-        })?;
-        Ok(Self {
-            core,
-            channel,
-            address,
-            input,
-            events_channel: None,
-        })
-    }
-
-    pub(super) fn send(&self, bytes: Bytes) {
-        let _ = self.input.send(Input::Bytes(bytes));
-    }
-
-    pub(super) fn submit(
-        &self,
-        text: Bytes,
-        enter: Bytes,
-        delay: std::time::Duration,
-    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
-        let (reply, done) = std::sync::mpsc::channel();
-        self.input
-            .send(Input::Submit {
-                text,
-                enter,
-                delay,
-                reply,
-            })
-            .map_err(|_| std::io::Error::other("core pane input stopped"))?;
-        Ok(done)
-    }
-
-    pub(super) fn address(&self) -> &str {
-        &self.address
-    }
-
-    pub(super) fn respond(&self, bytes: &[u8]) {
-        self.core.automatic_input(self.channel, bytes);
-    }
-
-    pub(super) fn resize(&self, cols: u16, rows: u16) {
-        self.core.resize(self.channel, cols, rows);
-    }
-}
-
-impl CoreIo {
-    /// Ends the program, for a pane that closes. Dropping only detaches.
-    pub(super) fn kill(&self) {
-        let core = self.core.clone();
-        let address = self.address.clone();
-        // The caller may be the app loop; a slow core must not stall it.
-        let killer = crate::thread_spawn::spawn_named("hc-kill", move || {
-            if let Err(err) = core.call("terminal.kill", serde_json::json!({"terminal": address})) {
-                warn!(%address, %err, "cannot end the core terminal");
-            }
-        });
-        if let Err(err) = killer {
-            warn!(address = %self.address, %err, "cannot end the core terminal");
-        }
-    }
-}
-
-impl Drop for CoreIo {
-    fn drop(&mut self) {
-        self.core.detach(self.channel);
-        if let Some(channel) = self.events_channel {
-            self.core.detach(channel);
-        }
-    }
-}
+mod io;
+pub(super) use io::CoreIo;
 
 /// The cwd of a terminal record's foreground process.
 fn foreground_cwd(record: &serde_json::Value) -> Option<std::path::PathBuf> {
@@ -173,7 +58,7 @@ fn follow_core_terminal(
     pane_id: PaneId,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     events: mpsc::Sender<AppEvent>,
-) -> std::io::Result<u32> {
+) -> std::io::Result<(u32, std::thread::JoinHandle<()>)> {
     let subscription = core
         .subscribe(serde_json::json!({"terminal": address}))
         .map_err(std::io::Error::other)?;
@@ -196,7 +81,7 @@ fn follow_core_terminal(
     publish(snapshot_cwd(&subscription.snapshot));
     let snapshot = subscription.snapshot;
     let reader = core.clone();
-    crate::thread_spawn::spawn_named("hc-pane", move || {
+    let worker = crate::thread_spawn::spawn_named("hc-pane", move || {
         // Sending waits for room, which the caller's thread must not do.
         publish_status(snapshot_status(&snapshot));
         read_events(&reader, channel, stream, |message| {
@@ -215,7 +100,7 @@ fn follow_core_terminal(
             }
         });
     })?;
-    Ok(channel)
+    Ok((channel, worker))
 }
 
 /// Hands each message of an `events.subscribe` stream to `on_message`, until
@@ -623,7 +508,7 @@ impl PaneRuntime {
     ) -> std::io::Result<Self> {
         let Attached {
             channel,
-            mut stream,
+            stream,
             terminal: record,
         } = attached;
         let address = record
@@ -632,8 +517,8 @@ impl PaneRuntime {
             .unwrap_or_default()
             .to_owned();
         // From here on, failing drops `io`, which detaches the stream.
-        let io =
-            CoreIo::new(core.clone(), channel, address).inspect_err(|_| core.detach(channel))?;
+        let io = CoreIo::new(core.clone(), channel, address, rows, cols)
+            .inspect_err(|_| core.detach(channel))?;
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
         let pane_terminal = new_pane_terminal(
             rows,
@@ -654,16 +539,6 @@ impl PaneRuntime {
         // The program isn't our child: no pid, so nothing here signals it.
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
-        let mut io = io;
-        io.events_channel = follow_core_terminal(
-            &core,
-            &io.address,
-            pane_id,
-            reported_cwd.clone(),
-            events.clone(),
-        )
-        .inspect_err(|err| warn!(pane = pane_id.raw(), %err, "cannot follow the core terminal"))
-        .ok();
         let stream_ended = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
@@ -683,36 +558,7 @@ impl PaneRuntime {
             compression_wake: compression.notifier(),
             rt: tokio::runtime::Handle::current(),
         };
-        let reader_core = core.clone();
-        let ended = stream_ended.clone();
-        // Parsing is blocking work, like the PTY actor's reader thread.
-        crate::thread_spawn::spawn_named("hc-pane", move || {
-            let reason = loop {
-                match stream.blocking_recv() {
-                    Some(Stream::Data(bytes)) => {
-                        let result = output.process(&bytes);
-                        for response in result.terminal_responses {
-                            reader_core.automatic_input(channel, &response);
-                        }
-                        reader_core.credit(channel, u32::try_from(bytes.len()).unwrap_or(u32::MAX));
-                    }
-                    // The core sends RESIZE only to observing viewers. For a typing
-                    // viewer like this one, the core sizes the grid to whichever viewer
-                    // typed, resized or focused last, so our next keystroke or layout
-                    // resize takes it back.
-                    Some(Stream::Resize { .. }) => {}
-                    Some(item) => break exit_reason(&item),
-                    None => break crate::platform::ChildExitReason::WaitFailed,
-                }
-            };
-            ended.store(true, Ordering::Release);
-            if let Err(err) = events.blocking_send(AppEvent::PaneDied {
-                pane_id,
-                exit_reason: reason,
-            }) {
-                error!(pane = pane_id.raw(), err = %err, "failed to send PaneDied event");
-            }
-        })?;
+        io.read(stream, output, stream_ended.clone())?;
 
         Ok(Self {
             pane_id,
@@ -1005,7 +851,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
+    pub(super) async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !ready() {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1077,8 +923,7 @@ mod tests {
         .expect("PaneDied");
         assert_eq!(died, crate::platform::ChildExitReason::Exited);
         assert!(runtime.visible_text().contains("done-early"));
-        // Typing into the ended pane goes nowhere and must not upset the core.
-        runtime.try_send_bytes(Bytes::from_static(b"hi\r")).unwrap();
+        assert!(runtime.try_send_bytes(Bytes::from_static(b"hi\r")).is_err());
         drop(runtime);
         test.core
             .call("terminal.read", json!({"terminal": address}))
@@ -1200,6 +1045,184 @@ mod tests {
         test.core
             .call("terminal.kill", json!({"terminal": address}))
             .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_reconnects_without_exiting_or_starting_another_terminal() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let (events, mut event_rx) = mpsc::channel(64);
+        let (address, runtime) = attach(
+            &test.core,
+            &[
+                "sh",
+                "-c",
+                "stty -echo; printf '\\033]7501;state=working:app=claude\\033\\\\'; echo ready; read line; cd /; printf '\\033]7501;state=done:app=claude\\033\\\\'; stty size; echo got-$line; sleep 30",
+            ],
+            events,
+        );
+        wait_for("the prompt", || runtime.visible_text().contains("ready")).await;
+        wait_for("the initial metadata snapshot", || {
+            std::iter::from_fn(|| event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CoreStatusReported { status, .. } if status.state == AgentState::Working))
+        })
+        .await;
+        test.disconnect();
+        wait_for("the lost connection", || test.core.is_closed()).await;
+        runtime.resize(31, 91, 0, 0);
+        let replacement = crate::hc::backend().unwrap().unwrap();
+        assert_eq!(
+            replacement
+                .call("terminal.get", json!({"terminal": address}))
+                .unwrap()["state"],
+            "live"
+        );
+        wait_for("the replacement metadata snapshot", || {
+            let mut replaced = false;
+            while let Ok(event) = event_rx.try_recv() {
+                assert!(
+                    !matches!(event, AppEvent::PaneDied { .. }),
+                    "transport loss killed the pane"
+                );
+                replaced |= matches!(event, AppEvent::CoreStatusReported { status, .. } if status.state == AgentState::Working);
+            }
+            replaced
+        })
+        .await;
+        runtime
+            .try_send_bytes(Bytes::from_static(b"reconnected\r"))
+            .unwrap();
+        wait_for("input through the replacement", || {
+            runtime.visible_text().contains("got-reconnected")
+        })
+        .await;
+        assert!(runtime.visible_text().contains("31 91"));
+        wait_for("metadata events after reconnecting", || {
+            std::iter::from_fn(|| event_rx.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CoreStatusReported { status, .. } if status.finished))
+        }).await;
+        wait_for("the renewed foreground directory", || {
+            runtime.follow_cwd().as_deref() == Some(std::path::Path::new("/"))
+        })
+        .await;
+        assert_eq!(runtime.core_address(), Some(address.as_str()));
+        let core = crate::hc::backend().unwrap().unwrap();
+        let record = core
+            .call("terminal.get", json!({"terminal": address}))
+            .unwrap();
+        assert_eq!(record["state"], "live");
+        let listed = core.call("terminal.list", json!({})).unwrap();
+        assert_eq!(listed["terminals"].as_array().unwrap().len(), 1);
+        core.call("terminal.kill", json!({"terminal": address}))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_does_not_replay_a_submission_or_queued_keys_after_connection_loss() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let (events, mut received) = mpsc::channel(64);
+        let (address, runtime) = attach(&test.core, &["sh", "-c", "echo ready; read first; echo first-$first; read second; echo second-$second; sleep 30"], events);
+        wait_for("the prompt", || runtime.visible_text().contains("ready")).await;
+        wait_for("the first subscription", || {
+            std::iter::from_fn(|| received.try_recv().ok())
+                .any(|event| matches!(event, AppEvent::CoreStatusReported { .. }))
+        })
+        .await;
+        let submitted = runtime
+            .queue_user_input_submission(
+                Bytes::from_static(b"uncertain"),
+                Bytes::from_static(b"\r"),
+                std::time::Duration::from_secs(10),
+                None,
+            )
+            .unwrap();
+        wait_for("the unsubmitted text", || {
+            runtime.visible_text().contains("uncertain")
+        })
+        .await;
+        runtime
+            .try_send_bytes(Bytes::from_static(b"stale\r"))
+            .unwrap();
+        test.disconnect();
+        wait_for("the failed submission", || match submitted.try_recv() {
+            Ok(result) => {
+                assert!(result.is_err());
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(error) => panic!("submission reply failed: {error}"),
+        })
+        .await;
+        wait_for("the new subscription", || {
+            let mut replaced = false;
+            while let Ok(event) = received.try_recv() {
+                assert!(!matches!(event, AppEvent::PaneDied { .. }));
+                replaced |= matches!(event, AppEvent::CoreStatusReported { .. });
+            }
+            replaced
+        })
+        .await;
+        runtime
+            .try_send_bytes(Bytes::from_static(b"\x15safe\rsecond\r"))
+            .unwrap();
+        wait_for("only the explicitly resent input", || {
+            let text = runtime.visible_text();
+            text.contains("first-safe") && text.contains("second-second")
+        })
+        .await;
+        let text = runtime.visible_text();
+        assert!(!text.contains("first-uncertain"));
+        assert!(!text.contains("stale"));
+        crate::hc::backend()
+            .unwrap()
+            .unwrap()
+            .call("terminal.kill", json!({"terminal": address}))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn core_pane_reports_an_actual_exit_during_a_connection_outage() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let control = Core::connect().unwrap();
+        let (events, mut received) = mpsc::channel(64);
+        let (address, runtime) = attach(&test.core, &["sh", "-c", "echo ready; sleep 30"], events);
+        wait_for("the prompt", || runtime.visible_text().contains("ready")).await;
+        let bin = std::env::var_os(crate::hc::HC_BIN_ENV);
+        std::env::set_var(crate::hc::HC_BIN_ENV, "/nonexistent-lawn-test-hc");
+        test.disconnect();
+        wait_for("the lost connection", || test.core.is_closed()).await;
+        control
+            .call("terminal.kill", json!({"terminal": address}))
+            .unwrap();
+        match bin {
+            Some(bin) => std::env::set_var(crate::hc::HC_BIN_ENV, bin),
+            None => std::env::remove_var(crate::hc::HC_BIN_ENV),
+        }
+        wait_for("the confirmed terminal exit", || {
+            while let Ok(event) = received.try_recv() {
+                if let AppEvent::PaneDied { exit_reason, .. } = event {
+                    assert_eq!(exit_reason, crate::platform::ChildExitReason::Exited);
+                    return true;
+                }
+            }
+            false
+        })
+        .await;
+        assert!(runtime.visible_text().contains("ready"));
     }
 
     #[cfg(unix)]
