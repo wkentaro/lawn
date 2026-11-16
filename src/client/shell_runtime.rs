@@ -943,6 +943,22 @@ pub(super) fn finish_client_shell_input(
     Ok(false)
 }
 
+pub(super) fn follow_core_pane(
+    state: &mut ClientState,
+    core_render: Option<&mut super::core_render::CoreRender>,
+) {
+    let (Some(core_render), Some(shell)) = (core_render, state.shell.as_mut()) else {
+        return;
+    };
+    let shown = shell
+        .core_pane
+        .as_ref()
+        .map(|core_pane| core_pane.pane_id());
+    if core_render.follow(shell.focused_surface_pane(), shown) {
+        shell.core_pane = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,6 +4,7 @@ use super::*;
 fn dropping_the_owner_cancels_connection_retries() {
     let connection = Arc::new(Connection {
         routing: Mutex::new(Routing {
+            role: CoreRole::Viewer,
             current: None,
             events_channel: None,
             size: (24, 80),
@@ -46,7 +47,15 @@ async fn replacement_routing_rejects_old_keys_and_renews_responses_and_size() {
     let attached = core
         .attach(json!({"terminal": address, "rows": 24, "cols": 80}))
         .unwrap();
-    let io = CoreIo::new(core.clone(), attached.channel, address.clone(), 24, 80).unwrap();
+    let io = CoreIo::new(
+        core.clone(),
+        attached.channel,
+        address.clone(),
+        24,
+        80,
+        super::CoreRole::Viewer,
+    )
+    .unwrap();
     let text = || {
         core.call("terminal.read", json!({"terminal": address}))
             .unwrap()["text"]

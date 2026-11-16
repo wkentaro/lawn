@@ -773,8 +773,7 @@ impl HeadlessServer {
                         continue;
                     }
                     let render_started = crate::render_prof::timer();
-                    let (buffer, cursor) =
-                        crate::server::render_stream::render_terminal_virtual(runtime, area);
+                    let (buffer, cursor) = crate::ui::render_terminal_virtual(runtime, area);
                     crate::render_prof::duration_since(
                         "full_render.render_terminal_virtual",
                         render_started,

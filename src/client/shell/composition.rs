@@ -21,6 +21,35 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
+    fn local_core_pane(&self) -> Option<&crate::client::core_render::CorePane> {
+        self.core_pane
+            .as_ref()
+            .filter(|_| self.active_endpoint_id.is_local())
+    }
+
+    pub(crate) fn core_pane_drawn(&self) -> bool {
+        self.local_core_pane()
+            .zip(self.pane_surface.as_ref())
+            .is_some_and(|(core_pane, surface)| core_pane.target(surface).is_some())
+    }
+
+    pub(crate) fn focused_surface_pane(&self) -> Option<(&str, (u16, u16))> {
+        if !self.active_endpoint_id.is_local() {
+            return None;
+        }
+        self.pane_surface
+            .as_ref()?
+            .panes
+            .iter()
+            .find(|pane| pane.focused)
+            .map(|pane| {
+                (
+                    pane.pane_id.as_str(),
+                    (pane.inner_rect.width, pane.inner_rect.height),
+                )
+            })
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -382,6 +411,23 @@ impl ClientShellState {
         });
         if !empty_parked_workspace {
             blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+            if let Some((inner, local)) = self
+                .local_core_pane()
+                .and_then(|core_pane| core_pane.render(surface))
+            {
+                let cursor = frame.cursor.take();
+                blit_pane_surface(
+                    &mut frame,
+                    &local,
+                    Rect::new(
+                        layout.pane_surface.x.saturating_add(inner.x),
+                        layout.pane_surface.y.saturating_add(inner.y),
+                        inner.width,
+                        inner.height,
+                    ),
+                );
+                frame.cursor = cursor;
+            }
         }
         if let Some((restore, dismiss, drawn)) =
             self.render_restore_controls(&mut frame, layout, mode_bar)

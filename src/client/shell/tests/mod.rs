@@ -232,6 +232,8 @@ mod chrome_context;
 mod close_pane;
 mod close_tab;
 mod copy;
+#[cfg(unix)]
+mod core_pane;
 mod endpoint_requests;
 mod endpoints;
 mod graphics;
