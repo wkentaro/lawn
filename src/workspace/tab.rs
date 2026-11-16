@@ -49,9 +49,6 @@ pub struct Tab {
     /// Set while the tab holds a parked pane: the number of the tab it left.
     /// Parked tabs are hidden from users and sit after every visible tab.
     pub parked_from: Option<usize>,
-    pub events: mpsc::Sender<AppEvent>,
-    pub(crate) render_notify: Arc<Notify>,
-    pub(crate) render_dirty: Arc<RenderSignal>,
 }
 
 impl Tab {
@@ -150,9 +147,9 @@ impl Tab {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                events.clone(),
-                render_notify.clone(),
-                render_dirty.clone(),
+                events,
+                render_notify,
+                render_dirty,
             )?
         } else {
             TerminalRuntime::spawn(
@@ -165,9 +162,9 @@ impl Tab {
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                events.clone(),
-                render_notify.clone(),
-                render_dirty.clone(),
+                events,
+                render_notify,
+                render_dirty,
             )?
         };
 
@@ -192,9 +189,6 @@ impl Tab {
                 runtimes: HashMap::new(),
                 zoomed: false,
                 parked_from: None,
-                events,
-                render_notify,
-                render_dirty,
             },
             terminal,
             runtime,
@@ -220,6 +214,7 @@ impl Tab {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        channels: super::TabChannels,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
             self.layout.focused(),
@@ -238,6 +233,7 @@ impl Tab {
                 command,
                 launch_env,
             }),
+            channels,
         )
     }
 
@@ -259,6 +255,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
+        channels: super::TabChannels,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
             target,
@@ -274,6 +271,7 @@ impl Tab {
             shell_config,
             launch_env,
             None,
+            channels,
         )
     }
 
@@ -294,6 +292,7 @@ impl Tab {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        channels: super::TabChannels,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
             target,
@@ -309,6 +308,7 @@ impl Tab {
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
             launch_env,
             Some(SplitCommand::Argv { argv, launch_env }),
+            channels,
         )
     }
 
@@ -329,6 +329,7 @@ impl Tab {
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         command: Option<SplitCommand<'_>>,
+        channels: super::TabChannels,
     ) -> std::io::Result<NewPane> {
         let Some(new_id) = self
             .layout
@@ -346,6 +347,7 @@ impl Tab {
         } else {
             None
         };
+        let (events, render_notify, render_dirty) = channels;
         let runtime = match command {
             Some(SplitCommand::Shell {
                 command,
@@ -361,9 +363,9 @@ impl Tab {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                self.events.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                events,
+                render_notify,
+                render_dirty,
             ),
             Some(SplitCommand::Argv { argv, launch_env }) => TerminalRuntime::spawn_argv_command(
                 new_id,
@@ -376,9 +378,9 @@ impl Tab {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                self.events.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                events,
+                render_notify,
+                render_dirty,
             ),
             None => TerminalRuntime::spawn(
                 new_id,
@@ -390,9 +392,9 @@ impl Tab {
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                self.events.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                events,
+                render_notify,
+                render_dirty,
             ),
         };
         let runtime = match runtime {
@@ -439,9 +441,6 @@ impl Tab {
         number: usize,
         custom_name: Option<String>,
         moved: MovedPane,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
     ) -> Self {
         let mut panes = HashMap::new();
         let pane_id = moved.pane_id;
@@ -456,9 +455,6 @@ impl Tab {
             runtimes: HashMap::new(),
             zoomed: false,
             parked_from: None,
-            events,
-            render_notify,
-            render_dirty,
         }
     }
 

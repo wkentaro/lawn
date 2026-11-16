@@ -74,6 +74,7 @@ impl App {
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.pane_host_terminal_appearance();
         let previous_focus = self.state.current_pane_focus_target();
+        let channels = self.tab_channels();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -92,6 +93,7 @@ impl App {
                 shell_config,
                 extra_env,
                 params.focus,
+                channels,
             ),
             None => ws.split_pane(
                 target_pane_id,
@@ -105,6 +107,7 @@ impl App {
                 shell_config,
                 extra_env,
                 params.focus,
+                channels,
             ),
         };
         let (target_tab_idx, new_pane) = match split_result {
@@ -1263,9 +1266,8 @@ impl App {
                     return encode_error(id, "pane_move_failed", "target workspace disappeared");
                 };
                 let moved_pane_id = moved.pane_id;
-                let channels = self.tab_channels();
                 let target_tab_idx = self.state.workspaces[target_ws_idx]
-                    .create_tab_from_existing_pane(moved, label, channels);
+                    .create_tab_from_existing_pane(moved, label);
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
@@ -1282,9 +1284,6 @@ impl App {
                     tab_label,
                     identity_cwd,
                     moved,
-                    self.event_tx.clone(),
-                    self.render_notify.clone(),
-                    self.render_dirty.clone(),
                 );
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1406,21 +1405,14 @@ impl App {
         moved: crate::workspace::MovedPane,
     ) {
         if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            let channels = self.tab_channels();
-            self.state.workspaces[ws_idx].create_tab_from_existing_pane(
-                moved,
-                context.previous_tab_label,
-                channels,
-            );
+            self.state.workspaces[ws_idx]
+                .create_tab_from_existing_pane(moved, context.previous_tab_label);
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
                 context.previous_tab_label,
                 context.identity_cwd,
                 moved,
-                self.event_tx.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
             );
             workspace.id = context.previous_workspace_id;
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
@@ -3721,9 +3713,13 @@ mod tests {
     }
 
     #[test]
-    fn api_pane_move_only_pane_to_new_tab_uses_app_render_handles() {
+    fn api_pane_move_only_pane_to_new_tab_preserves_terminal_identity() {
         let mut app = app_with_issue_workspace();
         let source = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal = app.state.workspaces[0].tabs[0]
+            .terminal_id(source)
+            .unwrap()
+            .clone();
         seed_terminal_states(&mut app);
         let source_public = app.public_pane_id(0, source).unwrap();
 
@@ -3744,14 +3740,12 @@ mod tests {
             panic!("expected pane move response");
         };
         assert!(move_result.changed);
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_notify,
-            &app.render_notify
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_dirty,
-            &app.render_dirty
-        ));
+        assert_eq!(move_result.pane.terminal_id, terminal.to_string());
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].terminal_id(source),
+            Some(&terminal)
+        );
+        app.state.assert_invariants_for_test();
     }
 
     #[test]
@@ -3838,14 +3832,7 @@ mod tests {
             app.state.workspaces[0].tabs[0].terminal_id(source),
             Some(&source_terminal)
         );
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_notify,
-            &app.render_notify
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_dirty,
-            &app.render_dirty
-        ));
+        app.state.assert_invariants_for_test();
         let envelopes = app.event_hub.events_after(0);
         let events: Vec<_> = envelopes
             .iter()

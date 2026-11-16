@@ -427,6 +427,7 @@ impl App {
         let extra_env = super::env::normalize_launch_env(pane.env.clone())
             .map_err(|(_, message)| message.to_string())?;
         let command = layout_command(pane)?;
+        let channels = self.tab_channels();
         let result = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err("workspace not found".into());
@@ -445,6 +446,7 @@ impl App {
                     host_terminal_theme,
                     host_terminal_appearance,
                     false,
+                    channels,
                 )
             } else {
                 ws.split_pane_with_ratio(
@@ -460,6 +462,7 @@ impl App {
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
                     false,
+                    channels,
                 )
             }
         };

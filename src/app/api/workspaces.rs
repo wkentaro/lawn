@@ -396,8 +396,7 @@ impl App {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
-        let channels = self.tab_channels();
-        let Some(panes) = self.state.park_workspace(index, channels) else {
+        let Some(panes) = self.state.park_workspace(index) else {
             return encode_error(
                 id,
                 "workspace_empty",

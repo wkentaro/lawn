@@ -170,13 +170,10 @@ impl Workspace {
         tab_label: Option<String>,
         identity_cwd: PathBuf,
         moved: MovedPane,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
     ) -> Self {
         let id = generate_workspace_id();
         let root_pane = moved.pane_id;
-        let tab = Tab::from_existing_pane(1, tab_label, moved, events, render_notify, render_dirty);
+        let tab = Tab::from_existing_pane(1, tab_label, moved);
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(root_pane, 1);
         Self {
@@ -569,6 +566,7 @@ impl Workspace {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        channels: TabChannels,
     ) -> std::io::Result<crate::workspace::tab::NewPane> {
         let pane_number = self.next_public_pane_number;
         let tab_number = self
@@ -589,6 +587,7 @@ impl Workspace {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
+                channels,
             )?;
         self.register_new_pane_with_number(new_pane.pane_id, pane_number);
         Ok(new_pane)
@@ -609,6 +608,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
+        channels: TabChannels,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         self.split_pane_with_runtime(
             pane_id,
@@ -624,6 +624,7 @@ impl Workspace {
             extra_env,
             focus_new_pane,
             None,
+            channels,
         )
     }
 
@@ -642,6 +643,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
+        channels: TabChannels,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         self.split_pane_with_runtime(
             pane_id,
@@ -657,6 +659,7 @@ impl Workspace {
             extra_env,
             focus_new_pane,
             None,
+            channels,
         )
     }
 
@@ -674,6 +677,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         focus_new_pane: bool,
+        channels: TabChannels,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         self.split_pane_with_runtime(
             pane_id,
@@ -689,6 +693,7 @@ impl Workspace {
             extra_env,
             focus_new_pane,
             Some(argv),
+            channels,
         )
     }
 
@@ -707,6 +712,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         focus_new_pane: bool,
+        channels: TabChannels,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         self.split_pane_with_runtime(
             pane_id,
@@ -722,6 +728,7 @@ impl Workspace {
             extra_env,
             focus_new_pane,
             Some(argv),
+            channels,
         )
     }
 
@@ -741,6 +748,7 @@ impl Workspace {
         extra_env: Vec<(String, String)>,
         focus_new_pane: bool,
         argv: Option<&[String]>,
+        channels: TabChannels,
     ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
         // A parked tab holds exactly one pane.
         let tab_idx = self
@@ -764,6 +772,7 @@ impl Workspace {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
+                channels,
             )
         } else {
             tab.split_pane_shell(
@@ -779,6 +788,7 @@ impl Workspace {
                 host_terminal_appearance,
                 shell_config,
                 &launch_env,
+                channels,
             )
         } {
             Ok(new_pane) => new_pane,
@@ -884,26 +894,19 @@ impl Workspace {
         &mut self,
         moved: MovedPane,
         label: Option<String>,
-        channels: TabChannels,
     ) -> usize {
         let pane_id = moved.pane_id;
-        let tab = self.new_tab_from_moved(moved, label, channels);
+        let tab = self.new_tab_from_moved(moved, label);
         if !self.public_pane_numbers.contains_key(&pane_id) {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }
         self.push_visible_tab(tab)
     }
 
-    fn new_tab_from_moved(
-        &mut self,
-        moved: MovedPane,
-        label: Option<String>,
-        channels: TabChannels,
-    ) -> Tab {
+    fn new_tab_from_moved(&mut self, moved: MovedPane, label: Option<String>) -> Tab {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
-        let (events, render_notify, render_dirty) = channels;
-        Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty)
+        Tab::from_existing_pane(number, label, moved)
     }
 
     /// Detaches a tab and releases its pane numbers. The caller removes the
@@ -1020,7 +1023,7 @@ impl Workspace {
 
     /// Hides a pane in a parked tab of its own. Its terminal keeps running,
     /// and it keeps its pane id and a tab id, so every lookup still finds it.
-    pub(crate) fn park_pane(&mut self, pane_id: PaneId, channels: TabChannels) -> Option<()> {
+    pub(crate) fn park_pane(&mut self, pane_id: PaneId) -> Option<()> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
         let origin = &self.tabs[tab_idx];
         if origin.parked_from.is_some() {
@@ -1033,7 +1036,7 @@ impl Workspace {
             tab
         } else {
             let moved = self.tabs[tab_idx].take_pane_for_move(pane_id)?;
-            self.new_tab_from_moved(moved, None, channels)
+            self.new_tab_from_moved(moved, None)
         };
         tab.parked_from = Some(origin_number);
         self.tabs.push(tab);
@@ -1042,14 +1045,9 @@ impl Workspace {
 
     /// Adds a pane from outside the workspace, already parked. Unparking it
     /// joins the tab numbered `origin`, else shows its parked tab.
-    pub(crate) fn add_parked_pane(
-        &mut self,
-        moved: MovedPane,
-        origin: Option<usize>,
-        channels: TabChannels,
-    ) {
+    pub(crate) fn add_parked_pane(&mut self, moved: MovedPane, origin: Option<usize>) {
         self.register_new_pane_with_number(moved.pane_id, self.next_public_pane_number);
-        let mut tab = self.new_tab_from_moved(moved, None, channels);
+        let mut tab = self.new_tab_from_moved(moved, None);
         tab.parked_from = Some(origin.unwrap_or(tab.number));
         self.tabs.push(tab);
     }
@@ -1079,14 +1077,7 @@ impl Workspace {
             ) {
                 Ok(_) => return Some(()),
                 Err(moved) => {
-                    tab = Tab::from_existing_pane(
-                        tab.number,
-                        tab.custom_name,
-                        moved,
-                        tab.events,
-                        tab.render_notify,
-                        tab.render_dirty,
-                    );
+                    tab = Tab::from_existing_pane(tab.number, tab.custom_name, moved);
                 }
             }
         }
@@ -1242,9 +1233,6 @@ pub(crate) struct TakenPane {
 #[cfg(test)]
 impl Workspace {
     pub(crate) fn test_new(name: &str) -> Self {
-        let (events, _) = mpsc::channel(64);
-        let render_notify = Arc::new(Notify::new());
-        let render_dirty = Arc::new(RenderSignal::new());
         let identity_cwd = std::env::current_dir().unwrap_or_else(|_| "/".into());
         let (layout, root_id) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
@@ -1259,9 +1247,6 @@ impl Workspace {
             runtimes: HashMap::new(),
             zoomed: false,
             parked_from: None,
-            events,
-            render_notify,
-            render_dirty,
         };
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
@@ -1295,9 +1280,6 @@ impl Workspace {
     }
 
     pub(crate) fn test_add_tab(&mut self, name: Option<&str>) -> usize {
-        let (events, _) = mpsc::channel(64);
-        let render_notify = Arc::new(Notify::new());
-        let render_dirty = Arc::new(RenderSignal::new());
         let (layout, root_id) = TileLayout::new();
         let mut panes = HashMap::new();
         panes.insert(root_id, PaneState::new(TerminalId::alloc()));
@@ -1310,9 +1292,6 @@ impl Workspace {
             runtimes: HashMap::new(),
             zoomed: false,
             parked_from: None,
-            events,
-            render_notify,
-            render_dirty,
         };
         self.next_public_tab_number += 1;
         self.register_new_pane(root_id);
@@ -1510,6 +1489,83 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moved_pane_builds_tab_state_without_runtime_context() {
+        let terminal = TerminalId::alloc();
+        let pane = PaneId::alloc();
+        let tab = Tab::from_existing_pane(
+            7,
+            Some("moved".into()),
+            MovedPane {
+                pane_id: pane,
+                pane_state: PaneState::new(terminal.clone()),
+            },
+        );
+        assert_eq!(tab.number, 7);
+        assert_eq!(tab.custom_name.as_deref(), Some("moved"));
+        assert_eq!(tab.root_pane, pane);
+        assert_eq!(tab.layout.focused(), pane);
+        assert_eq!(tab.terminal_id(pane), Some(&terminal));
+        assert_eq!(tab.layout.pane_count(), 1);
+        assert!(!tab.zoomed);
+        assert_eq!(tab.parked_from, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn split_after_moving_a_pane_uses_supplied_runtime_channels() {
+        let pane = PaneId::alloc();
+        let moved = MovedPane {
+            pane_id: pane,
+            pane_state: PaneState::new(TerminalId::alloc()),
+        };
+        let mut workspace = Workspace::from_existing_pane(None, None, "/tmp".into(), moved);
+        let (events, mut received) = mpsc::channel(64);
+        let notify = Arc::new(Notify::new());
+        let dirty = Arc::new(RenderSignal::new());
+        let (_, spawned) = workspace
+            .split_pane_argv_command(
+                pane,
+                Direction::Horizontal,
+                24,
+                80,
+                Some("/tmp".into()),
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf channel-output".into(),
+                ],
+                Vec::new(),
+                1024 * 1024,
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                true,
+                (events, notify.clone(), dirty.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match received.recv().await {
+                    Some(AppEvent::PaneDied { pane_id, .. }) if pane_id == spawned.pane_id => break,
+                    Some(_) => {}
+                    None => panic!("spawn event channel closed before exit"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified())
+            .await
+            .unwrap();
+        assert!(dirty.take().pty_sources.contains(&spawned.pane_id));
+        assert_eq!(workspace.tabs[0].layout.focused(), spawned.pane_id);
+        assert_eq!(
+            workspace.tabs[0].terminal_id(spawned.pane_id),
+            Some(&spawned.terminal.id)
+        );
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {
@@ -1710,15 +1766,6 @@ mod tests {
         ws.assert_invariants_for_test();
     }
 
-    fn tab_channels(ws: &Workspace) -> TabChannels {
-        let tab = &ws.tabs[0];
-        (
-            tab.events.clone(),
-            tab.render_notify.clone(),
-            tab.render_dirty.clone(),
-        )
-    }
-
     fn tab_index_for_number(ws: &Workspace, number: usize) -> usize {
         ws.tabs
             .iter()
@@ -1732,8 +1779,7 @@ mod tests {
         let origin_idx = ws.tabs.len() - 1;
         let origin_number = ws.tabs[origin_idx].number;
         let parked = ws.tabs[origin_idx].layout.focused();
-        let channels = tab_channels(&ws);
-        ws.park_pane(parked, channels.clone()).unwrap();
+        ws.park_pane(parked).unwrap();
         ws.assert_invariants_for_test();
         let anchor = ws.tabs[origin_idx].layout.focused();
         let plan = ws.unpark_plan(parked).unwrap();
@@ -1782,8 +1828,7 @@ mod tests {
         let alone_idx = ws.active_tab;
         let alone_number = ws.tabs[alone_idx].number;
         let pane = ws.tabs[alone_idx].root_pane;
-        let channels = tab_channels(&ws);
-        ws.park_pane(pane, channels).unwrap();
+        ws.park_pane(pane).unwrap();
         ws.assert_invariants_for_test();
         assert_eq!(
             ws.unpark_plan(pane),
@@ -1804,8 +1849,7 @@ mod tests {
         let mut ws = Workspace::test_adversarial_identity_state();
         let origin_idx = ws.tabs.len() - 1;
         let parked = ws.tabs[origin_idx].layout.focused();
-        let channels = tab_channels(&ws);
-        ws.park_pane(parked, channels).unwrap();
+        ws.park_pane(parked).unwrap();
         let parked_number = ws.tabs[ws.find_tab_index_for_pane(parked).unwrap()].number;
         assert!(matches!(ws.unpark_plan(parked), Some(UnparkPlan::Split(_))));
 

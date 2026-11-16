@@ -128,6 +128,7 @@ impl App {
         let (rows, cols) = self.state.new_pane_size(new_pane_placement);
         let previous_focus = self.state.current_pane_focus_target();
         let host_terminal_appearance = self.pane_host_terminal_appearance();
+        let channels = self.tab_channels();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "workspace_not_found", "workspace not found");
         };
@@ -143,6 +144,7 @@ impl App {
             self.state.host_terminal_theme,
             host_terminal_appearance,
             params.focus || placement == PluginPanePlacement::Zoomed,
+            channels,
         );
         let (tab_idx, new_pane) = match result {
             Some(Ok(result)) => result,

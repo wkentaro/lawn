@@ -717,8 +717,7 @@ async fn focusing_a_parked_terminal_peeks_without_moving_the_shared_location() {
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
-    let channels = server.app.tab_channels();
-    server.app.state.park_pane(0, parked, channels).unwrap();
+    server.app.state.park_pane(0, parked).unwrap();
     let parked_terminal = server.app.state.workspaces[0].tabs[1]
         .terminal_id(parked)
         .unwrap()
@@ -753,8 +752,7 @@ fn two_tabs_and_a_parked_pane() -> (HeadlessServer, String) {
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
-    let channels = server.app.tab_channels();
-    server.app.state.park_pane(0, parked, channels).unwrap();
+    server.app.state.park_pane(0, parked).unwrap();
     let parked_terminal = server.app.state.workspaces[0].tabs[2]
         .terminal_id(parked)
         .unwrap()
@@ -845,8 +843,7 @@ async fn parked_peek_geometry_follows_the_remaining_viewer() {
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
-    let channels = server.app.tab_channels();
-    server.app.state.park_pane(0, parked, channels).unwrap();
+    server.app.state.park_pane(0, parked).unwrap();
     let terminal = server.app.state.workspaces[0].tabs[1]
         .terminal_id(parked)
         .unwrap()
@@ -918,8 +915,7 @@ fn restore_fixture() -> RestoreFixture {
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
     for pane in [parked, other] {
-        let channels = server.app.tab_channels();
-        server.app.state.park_pane(0, pane, channels).unwrap();
+        server.app.state.park_pane(0, pane).unwrap();
     }
     let terminal = server.app.state.workspaces[0]
         .terminal_id(parked)
@@ -1175,8 +1171,7 @@ async fn a_restore_preview_of_a_pane_without_an_origin_shows_its_own_tab() {
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
-    let channels = server.app.tab_channels();
-    server.app.state.park_pane(0, alone, channels).unwrap();
+    server.app.state.park_pane(0, alone).unwrap();
     let terminal = server.app.state.workspaces[0]
         .terminal_id(alone)
         .unwrap()

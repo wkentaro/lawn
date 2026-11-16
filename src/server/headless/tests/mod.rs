@@ -8412,12 +8412,7 @@ fn a_client_viewing_a_parked_workspace_moves_to_a_shown_one() {
         .focus_workspace(second.clone());
     assert_eq!(location(&server), Some(second));
 
-    let channels = server.app.tab_channels();
-    server
-        .app
-        .state
-        .park_workspace(1, channels)
-        .expect("parked panes");
+    server.app.state.park_workspace(1).expect("parked panes");
     server.reconcile_client_shell_locations();
 
     assert_eq!(location(&server), Some(first));
