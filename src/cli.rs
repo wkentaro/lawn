@@ -449,6 +449,7 @@ fn run_session_command(args: &[String]) -> std::io::Result<i32> {
         "attach" => session_attach_help(&args[1..]),
         "stop" => session_stop(&args[1..]),
         "delete" => session_delete(&args[1..]),
+        "restore" => session_restore(&args[1..]),
         "help" | "--help" | "-h" => {
             print_session_help();
             Ok(0)
@@ -543,6 +544,33 @@ fn session_delete(args: &[String]) -> std::io::Result<i32> {
         }
         Err(message) => {
             print_session_error("session_delete_failed", &message);
+            Ok(1)
+        }
+    }
+}
+
+fn session_restore(args: &[String]) -> std::io::Result<i32> {
+    let usage = "usage: lawn session restore <name> <file> [--json]";
+    let (positionals, json) = match parse_session_positionals(args, usage) {
+        Ok(parsed) => parsed,
+        Err(code) => return Ok(code),
+    };
+    let [name, file] = positionals;
+
+    match crate::session::restore_session(&name, std::path::Path::new(&file)) {
+        Ok(session) => {
+            if json {
+                _print_json(&serde_json::json!({
+                    "restored": true,
+                    "session": session,
+                }));
+            } else {
+                println!("restored session {} from {file}", session.name);
+            }
+            Ok(0)
+        }
+        Err(message) => {
+            print_session_error("session_restore_failed", &message);
             Ok(1)
         }
     }
@@ -916,7 +944,14 @@ fn parse_session_json_only(args: &[String], usage: &str) -> Result<bool, i32> {
 }
 
 fn parse_session_name_and_json(args: &[String], usage: &str) -> Result<(String, bool), i32> {
-    let mut name = None;
+    parse_session_positionals(args, usage).map(|([name], json)| (name, json))
+}
+
+fn parse_session_positionals<const N: usize>(
+    args: &[String],
+    usage: &str,
+) -> Result<([String; N], bool), i32> {
+    let mut positionals = Vec::with_capacity(N);
     let mut json = false;
     let mut options_ended = false;
     for arg in args {
@@ -924,19 +959,18 @@ fn parse_session_name_and_json(args: &[String], usage: &str) -> Result<(String, 
             options_ended = true;
         } else if !options_ended && arg == "--json" {
             json = true;
-        } else if name.is_none() {
-            name = Some(arg.clone());
         } else {
-            eprintln!("{usage}");
-            return Err(2);
+            positionals.push(arg.clone());
         }
     }
 
-    let Some(name) = name else {
-        eprintln!("{usage}");
-        return Err(2);
-    };
-    Ok((name, json))
+    match positionals.try_into() {
+        Ok(positionals) => Ok((positionals, json)),
+        Err(_) => {
+            eprintln!("{usage}");
+            Err(2)
+        }
+    }
 }
 
 fn print_session_table(sessions: &[crate::session::SessionInfo]) {
@@ -996,7 +1030,8 @@ fn print_session_help() {
     eprintln!("  lawn session attach <name>");
     eprintln!("  lawn session stop <name> [--json]");
     eprintln!("  lawn session delete <name> [--json]");
-    eprintln!("  use 'default' as <name> to target the default session for stop");
+    eprintln!("  lawn session restore <name> <file> [--json]");
+    eprintln!("  use 'default' as <name> to target the default session for stop and restore");
 }
 
 fn _print_json<T: Serialize>(value: &T) {

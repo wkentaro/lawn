@@ -368,7 +368,7 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
             err.to_string()
         }
     })?;
-    let Some(dir) = exact_session_dir_for_delete(name)? else {
+    let Some(dir) = exact_session_dir(name)? else {
         return Ok(session_info(Some(name)));
     };
     let socket_path = dir.join("herdr.sock");
@@ -385,7 +385,25 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
     }
 }
 
-fn exact_session_dir_for_delete(name: &str) -> Result<Option<PathBuf>, String> {
+pub fn restore_session(name: &str, file: &Path) -> Result<SessionInfo, String> {
+    let session = normalize_name(name)?;
+    let socket_path = match &session {
+        Some(session) => exact_session_dir(session)?
+            .ok_or_else(|| format!("session {name} does not exist"))?
+            .join("herdr.sock"),
+        None => api_socket_path_for(None),
+    };
+    if is_running_at(&socket_path) {
+        return Err(format!(
+            "session {name} is running; stop it before restoring"
+        ));
+    }
+    apply_explicit_name(name)?;
+    crate::persist::restore_from(file)?;
+    Ok(session_info(session.as_deref()))
+}
+
+fn exact_session_dir(name: &str) -> Result<Option<PathBuf>, String> {
     let sessions_dir = crate::config::config_dir().join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
@@ -1242,6 +1260,95 @@ mod tests {
     #[test]
     fn delete_default_session_is_rejected() {
         assert!(delete_session(DEFAULT_SESSION_NAME).is_err());
+    }
+
+    fn restore_home(name: &str) -> PathBuf {
+        let config_home = std::env::temp_dir().join(format!(
+            "herdr-session-restore-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&config_home);
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(SESSION_ENV_VAR);
+        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        clear_explicit_session_for_test();
+        config_home
+    }
+
+    fn layout(sidebar_width: u16) -> String {
+        format!(
+            r#"{{"version":3,"workspaces":[],"active":null,"selected":0,"sidebar_width":{sidebar_width}}}"#
+        )
+    }
+
+    #[test]
+    fn a_restored_file_is_the_next_layout_and_the_old_one_is_kept() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("ok");
+        let session_dir = data_dir_for(Some("work"));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("session.json"), layout(30)).unwrap();
+        let source = config_home.join("saved.json");
+        std::fs::write(&source, layout(40)).unwrap();
+
+        let info = restore_session("work", &source).unwrap();
+
+        assert_eq!(info.name, "work");
+        let loaded = crate::persist::load().expect("restored");
+        assert_eq!(loaded.sidebar_width, Some(40));
+        let backups: Vec<_> = std::fs::read_dir(session_dir.join("session-backups"))
+            .unwrap()
+            .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+            .collect();
+        assert_eq!(backups, vec![layout(30)]);
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn a_restore_refuses_a_bad_file_or_a_missing_session() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("bad");
+        let session_dir = data_dir_for(Some("work"));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("session.json"), layout(30)).unwrap();
+        let source = config_home.join("saved.json");
+        std::fs::write(&source, "not json").unwrap();
+
+        let err = restore_session("work", &source).unwrap_err();
+        assert!(err.contains("is not a session snapshot"), "{err}");
+        std::fs::write(&source, r#"{"theme":"dark"}"#).unwrap();
+        let err = restore_session("work", &source).unwrap_err();
+        assert!(err.contains("has no workspaces"), "{err}");
+        assert!(restore_session("typo", &source)
+            .unwrap_err()
+            .contains("does not exist"));
+        assert_eq!(
+            std::fs::read_to_string(session_dir.join("session.json")).unwrap(),
+            layout(30)
+        );
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_refuses_a_running_session() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("running");
+        let session_dir = data_dir_for(Some("work"));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let _server =
+            std::os::unix::net::UnixListener::bind(session_dir.join("herdr.sock")).unwrap();
+        let source = config_home.join("saved.json");
+        std::fs::write(&source, layout(40)).unwrap();
+
+        let err = restore_session("work", &source).unwrap_err();
+
+        assert!(err.contains("is running"), "{err}");
+        assert!(!session_dir.join("session.json").exists());
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]

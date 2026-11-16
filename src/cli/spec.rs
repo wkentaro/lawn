@@ -268,6 +268,13 @@ fn session_command() -> Command {
                 .arg(required("name", "NAME"))
                 .arg(json_flag()),
         )
+        .subcommand(
+            Command::new("restore")
+                .about("Restore a stopped session's layout from a saved file")
+                .arg(required("name", "NAME"))
+                .arg(required("file", "FILE"))
+                .arg(json_flag()),
+        )
 }
 
 fn integration_command() -> Command {

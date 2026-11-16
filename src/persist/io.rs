@@ -132,6 +132,25 @@ pub fn load() -> Option<SessionSnapshot> {
     }
 }
 
+pub fn restore_from(source: &Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(source)
+        .map_err(|err| format!("cannot read {}: {err}", source.display()))?;
+    let not_a_snapshot =
+        |err: String| format!("{} is not a session snapshot: {err}", source.display());
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|err| not_a_snapshot(err.to_string()))?;
+    if !value
+        .get("workspaces")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err(not_a_snapshot("it has no workspaces".into()));
+    }
+    let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
+    super::SessionWriter::new(true)
+        .try_save(&snapshot, None)
+        .map_err(|err| err.to_string())
+}
+
 pub fn load_history() -> Option<SessionHistorySnapshot> {
     let path = session_history_path();
     if !path.exists() {

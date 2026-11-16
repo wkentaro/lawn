@@ -40,7 +40,7 @@ When saving, Herdr prefers the live shell's directory where the operating system
 
 If `session.json` cannot be read or parsed, or requires a newer Herdr version, Herdr logs why loading failed. Before saving or clearing the replacement session, it preserves the original bytes in `session-backups/` beside `session.json` and logs the recovery path as `persist.backup`. A file missing at startup is checked again before the first save or clear. These failed-load recovery copies are separate from normal snapshot history.
 
-Herdr retains the three most recent recovery copies, pruning older copies only after a new copy is safely written. If preservation fails, autosave and shutdown leave the original untouched and log the failure; preservation is retried on the next save request. Copies are never restored automatically. To recover one, stop the affected server, copy the recovery file over its `session.json`, then restart. Recovery copies do not include pane screen history.
+Herdr retains the three most recent recovery copies, pruning older copies only after a new copy is safely written. If preservation fails, autosave and shutdown leave the original untouched and log the failure; preservation is retried on the next save request. Copies are never restored automatically. To recover one, stop the affected server, run `herdr session restore <name> <file>` with the recovery file, then restart. Recovery copies do not include pane screen history.
 
 ## Shutdown and snapshot recovery
 
@@ -52,7 +52,7 @@ Normal pane closures still update `session.json`. There are no recovery prompts 
 
 1. Find the affected session directory with `herdr session list --json`.
 2. Stop that server (`herdr server stop` for the default session, or `herdr session stop <name>` for a named session).
-3. Keep a copy of its current `session.json`, then copy the chosen file from `session-snapshots/` over `session.json`. File modification times identify when snapshots were taken.
+3. Run `herdr session restore <name> <file>` with the chosen file from `session-snapshots/`, using `default` for the default session. File modification times identify when snapshots were taken. The command refuses a running session or a file that is not a session snapshot, and keeps the replaced `session.json` in `session-backups/`.
 4. Start the session again.
 
 Snapshots contain layout and agent session references, not running processes or pane screen history. Treat them as private session data. A snapshot-write failure is logged but does not prevent the primary session from saving.

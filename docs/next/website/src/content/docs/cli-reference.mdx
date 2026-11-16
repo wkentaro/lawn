@@ -147,9 +147,10 @@ herdr session list [--json]
 herdr session attach <name>
 herdr session stop <name> [--json]
 herdr session delete <name> [--json]
+herdr session restore <name> <file> [--json]
 ```
 
-Use `default` as the session name when you need to stop the default session explicitly.
+Use `default` as the session name when you need to stop or restore the default session explicitly. `session restore` replaces a stopped session's saved layout with a snapshot or recovery copy; see [Session state and restore](/docs/session-state/).
 
 ## Workspaces
 
