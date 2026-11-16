@@ -28,7 +28,7 @@ use super::frame_output::clear_received_kitty_graphics;
 /// Sets up the terminal for client mode (raw mode, optional mouse, keyboard enhancements).
 ///
 /// Returns a guard that restores the terminal when dropped.
-pub(super) fn setup_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
+pub(crate) fn setup_terminal(mouse_capture: bool) -> io::Result<TerminalGuard> {
     setup_terminal_with_capabilities(true, mouse_capture)
 }
 
@@ -134,7 +134,7 @@ pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: b
 }
 
 /// Guard that restores the terminal when dropped.
-pub(super) struct TerminalGuard {
+pub(crate) struct TerminalGuard {
     host_escape_disambiguation_active: bool,
     host_sgr_pixel_mouse: Option<bool>,
     buffered_host_input: Vec<u8>,
@@ -612,7 +612,7 @@ fn windows_uses_vt_mouse_reporting() -> bool {
     is_ssh_session() || crate::platform::windows_virtual_terminal_input_active()
 }
 
-pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
+pub(crate) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
     #[cfg(windows)]
     if windows_uses_vt_mouse_reporting() {
         if !enabled {
@@ -802,7 +802,7 @@ pub(super) fn write_host_keyboard_protocol_refresh(
 }
 
 impl TerminalGuard {
-    pub(super) fn host_escape_disambiguation_active(&self) -> bool {
+    pub(crate) fn host_escape_disambiguation_active(&self) -> bool {
         self.host_escape_disambiguation_active
     }
 
@@ -811,7 +811,7 @@ impl TerminalGuard {
         self.host_sgr_pixel_mouse
     }
 
-    pub(super) fn take_buffered_host_input(&mut self) -> Vec<u8> {
+    pub(crate) fn take_buffered_host_input(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buffered_host_input)
     }
 
@@ -854,7 +854,7 @@ impl TerminalGuard {
     }
 
     /// Captures the restoration state for use by the process panic hook.
-    pub(super) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
+    pub(crate) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
         let restore_claimed = self.restore_claimed.clone();
         let reset_keyboard_enhancements = self.reset_keyboard_enhancements;
         let reset_modify_other_keys = self.reset_modify_other_keys;

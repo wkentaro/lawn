@@ -557,6 +557,10 @@ impl PaneTerminal {
         self.ghostty.render(frame, area, show_cursor);
     }
 
+    pub fn try_render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) -> bool {
+        self.ghostty.try_render(frame, area, show_cursor)
+    }
+
     pub fn collect_dirty_patch(
         &self,
         area_width: u16,
@@ -2387,15 +2391,19 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
+        self.try_render(frame, area, show_cursor);
+    }
+
+    pub fn try_render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) -> bool {
         let Ok(mut core) = self.core.lock() else {
-            return;
+            return false;
         };
         if core
             .terminal
             .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
             .unwrap_or(false)
         {
-            return;
+            return false;
         }
         let host_theme = core.host_terminal_theme;
         let initial_default_foreground = core.initial_default_foreground;
@@ -2407,7 +2415,7 @@ impl GhosttyPaneTerminal {
             ..
         } = &mut *core;
         if render_state.update(terminal).is_err() {
-            return;
+            return false;
         }
         let colors = render_state.colors().ok();
         let default_bg = colors
@@ -2423,17 +2431,17 @@ impl GhosttyPaneTerminal {
 
         let mut row_iterator = match crate::ghostty::RowIterator::new() {
             Ok(iterator) => iterator,
-            Err(_) => return,
+            Err(_) => return false,
         };
         let mut row_cells = match crate::ghostty::RowCells::new() {
             Ok(cells) => cells,
-            Err(_) => return,
+            Err(_) => return false,
         };
         {
             let buf = frame.buffer_mut();
             let mut rows = match render_state.populate_row_iterator(&mut row_iterator) {
                 Ok(rows) => rows,
-                Err(_) => return,
+                Err(_) => return false,
             };
             let mut grapheme_bytes = Vec::new();
             let mut symbol_scratch = String::new();
@@ -2503,6 +2511,7 @@ impl GhosttyPaneTerminal {
                 }
             }
         }
+        true
     }
 
     pub fn collect_dirty_patch(

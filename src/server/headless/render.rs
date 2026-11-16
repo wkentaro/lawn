@@ -177,12 +177,7 @@ impl HeadlessServer {
                 let report_all = client.shell_surface_active
                     && self
                         .shell_focused_runtime(client_id)
-                        .is_some_and(|(runtime, _)| {
-                            let protocol = runtime.keyboard_protocol();
-                            protocol.reports_all_keys()
-                                || (protocol.reports_event_types()
-                                    && runtime.modify_other_keys_level() > 0)
-                        });
+                        .is_some_and(|(runtime, _)| runtime.requests_all_key_reports());
                 (client_id, report_all)
             })
             .collect::<Vec<_>>();

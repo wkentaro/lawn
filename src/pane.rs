@@ -3665,6 +3665,10 @@ impl PaneRuntime {
         self.terminal.render(frame, area, show_cursor);
     }
 
+    pub fn try_render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) -> bool {
+        self.terminal.try_render(frame, area, show_cursor)
+    }
+
     pub(crate) fn collect_dirty_patch_snapshot(
         &self,
         area_width: u16,

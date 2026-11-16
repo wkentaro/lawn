@@ -484,6 +484,35 @@ impl PaneRuntime {
         }
     }
 
+    /// Shows a core terminal that belongs to no session.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attach_core_terminal(
+        pane_id: PaneId,
+        core: Arc<Core>,
+        address: &str,
+        rows: u16,
+        cols: u16,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+    ) -> std::io::Result<Self> {
+        let attached = attach_new(&core, address, rows, cols)?;
+        Self::attach_core(
+            pane_id,
+            core,
+            attached,
+            rows,
+            cols,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            render_notify,
+            render_dirty,
+            None,
+        )
+    }
+
     /// Shows an existing core terminal again, as after a restart.
     // Same construction inputs as `attach_core`, with an address for the attach.
     #[allow(clippy::too_many_arguments)]

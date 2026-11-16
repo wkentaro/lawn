@@ -38,7 +38,7 @@ mod startup;
 mod state;
 mod terminal_geometry;
 mod terminal_sessions;
-mod terminal_setup;
+pub(crate) mod terminal_setup;
 mod timer;
 mod transport;
 
