@@ -127,6 +127,7 @@ pub struct App {
     startup_per_agent_delay: Duration,
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
+    saved_core_terminals: std::collections::HashSet<String>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     pub(crate) session_owner: Option<Arc<std::fs::File>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
@@ -396,6 +397,11 @@ impl App {
             let closed = crate::pane::closed_core_terminals(snapshot.core_terminals());
             snapshot.close_panes_showing(&closed, history.as_mut())
         });
+        let saved_core_terminals = snapshot
+            .iter()
+            .flat_map(|snapshot| snapshot.core_terminals())
+            .map(str::to_owned)
+            .collect();
         let mut plugin_installation_leases = crate::plugin_installations::Leases::new();
         let mut plugin_installation_cleanup_allowed = true;
         if policy.persist_plugin_registry {
@@ -628,6 +634,7 @@ impl App {
             ),
             next_agent_resume_at: None,
             session_save_deadline: None,
+            saved_core_terminals,
             session_save_thread: None,
             session_owner: None,
             session_writer,
@@ -3007,6 +3014,61 @@ mod tests {
 
         assert!(!app.state.session_dirty);
         assert!(app.session_save_deadline.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_core_pane_is_saved_without_the_debounce() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        app.state.workspaces = vec![Workspace::test_new("core")];
+        app.state.ensure_test_terminals();
+        let pane = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal = app.state.workspaces[0].terminal_id(pane).unwrap().clone();
+        let address = test
+            .core
+            .run(serde_json::json!({"argv": ["sh", "-c", "read line"], "no_parent": true}))
+            .expect("run");
+        let runtime = crate::terminal::TerminalRuntime::reattach_core(
+            pane,
+            &address,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            app.event_tx.clone(),
+            app.render_notify.clone(),
+            app.render_dirty.clone(),
+        )
+        .expect("reattach");
+        app.terminal_runtimes.insert(terminal, runtime);
+        let started = Instant::now();
+
+        app.schedule_session_save();
+        assert!(app
+            .session_save_deadline
+            .is_some_and(|deadline| deadline <= Instant::now()));
+        app.session_save_deadline = None;
+        app.state.session_dirty = true;
+        app.sync_session_save_schedule();
+        assert!(app
+            .session_save_deadline
+            .is_some_and(|deadline| deadline <= Instant::now()));
+
+        app.save_session_now();
+        app.state.session_dirty = true;
+        app.sync_session_save_schedule();
+        assert!(app
+            .session_save_deadline
+            .is_some_and(|deadline| deadline >= started + SESSION_SAVE_DEBOUNCE));
+        app.save_session_now();
     }
 
     #[test]
