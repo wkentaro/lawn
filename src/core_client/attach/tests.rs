@@ -69,3 +69,45 @@ fn committed_text_reaches_the_program_as_text_while_typed_keys_stay_reports() {
         [None]
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_zero_sized_sample_keeps_the_last_size_until_a_valid_one_follows() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use crate::core_client::view::Geometry;
+
+    let size = |cols, rows| Geometry {
+        cols,
+        rows,
+        cell_width_px: 8,
+        cell_height_px: 16,
+    };
+    let (tx, mut sizes) = tokio::sync::mpsc::unbounded_channel();
+    let quit = AtomicBool::new(false);
+    let mut samples = vec![
+        Err(crate::platform::zero_sized_terminal_grid_error()),
+        Ok(size(100, 30)),
+    ]
+    .into_iter();
+    let mut signals = vec![true].into_iter();
+
+    follow_host_size(
+        size(80, 24),
+        || {
+            samples.next().unwrap_or_else(|| {
+                quit.store(true, Ordering::Release);
+                Ok(size(100, 30))
+            })
+        },
+        move || signals.next().unwrap_or(false),
+        &quit,
+        &tx,
+    );
+
+    let mut seen = Vec::new();
+    while let Ok(sample) = sizes.try_recv() {
+        seen.push(sample.expect("a zero-sized sample is not a lost host"));
+    }
+    assert_eq!(seen, [size(100, 30)]);
+}

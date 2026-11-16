@@ -63,6 +63,8 @@ pub use terminal_sessions::{run_terminal_session_control, run_terminal_session_o
 
 #[cfg(unix)]
 pub(crate) use terminal_geometry::host_terminal_geometry;
+#[cfg(unix)]
+pub(crate) use terminal_geometry::{resize_poll_loop_with, HostResize};
 
 #[cfg(not(windows))]
 use terminal_geometry::query_host_terminal_appearance;

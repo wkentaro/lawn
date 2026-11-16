@@ -194,7 +194,7 @@ async fn pixel_mouse_reports_use_the_host_cell_size() {
 }
 
 #[tokio::test]
-async fn an_osc52_copy_reaches_the_host_and_the_program_end_follows() {
+async fn an_osc52_copy_and_a_bell_reach_the_host_and_the_program_end_follows() {
     let (events_tx, events) = mpsc::channel(4);
     let mut view = View::new(
         TerminalRuntime::test_with_screen_bytes(20, 4, b""),
@@ -209,6 +209,13 @@ async fn an_osc52_copy_reaches_the_host_and_the_program_end_follows() {
         .await
         .expect("send");
     events_tx
+        .send(AppEvent::TerminalBell {
+            pane_id: PaneId::from_raw(0),
+            count: 2,
+        })
+        .await
+        .expect("send");
+    events_tx
         .send(AppEvent::PaneDied {
             pane_id: PaneId::from_raw(0),
             exit_reason: crate::platform::ChildExitReason::Exited,
@@ -217,5 +224,6 @@ async fn an_osc52_copy_reaches_the_host_and_the_program_end_follows() {
         .expect("send");
 
     assert_eq!(view.event().await, Event::Copy(b"copied".to_vec()));
+    assert_eq!(view.event().await, Event::Bell(2));
     assert_eq!(view.event().await, Event::Ended);
 }

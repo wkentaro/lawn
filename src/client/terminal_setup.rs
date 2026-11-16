@@ -818,7 +818,7 @@ impl TerminalGuard {
     /// Re-sends the keyboard and input modes enabled at setup. A host that
     /// reset its terminal state (a reconnect or window reload) forgets them,
     /// which turns Shift+Enter and Ctrl+Enter into plain Enter.
-    pub(super) fn refresh_host_keyboard_protocol(
+    pub(crate) fn refresh_host_keyboard_protocol(
         &self,
         writer: &mut impl io::Write,
         report_all_keys: bool,

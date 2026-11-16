@@ -44,7 +44,7 @@ fn run(terminal: &str) -> io::Result<()> {
             restore();
             hook(info);
         }));
-        unix::show(view, &mut guard, stop).await
+        unix::show(view, geometry, &mut guard, stop).await
     })
 }
 
@@ -60,10 +60,12 @@ mod unix {
     use tokio::signal::unix::{signal, Signal, SignalKind};
     use tokio::sync::mpsc;
     use tokio::time::Instant;
+    use tracing::warn;
 
     use super::super::screen::Screen;
     use super::super::view::{Event, Geometry, View};
     use crate::client::terminal_setup::{set_mouse_capture, TerminalGuard};
+    use crate::client::HostResize;
     use crate::input::TerminalKey;
     use crate::raw_input::RawInputEvent;
 
@@ -106,6 +108,86 @@ mod unix {
         })
     }
 
+    /// The host's sizes after `host`, from a thread that polls them as the
+    /// old client does. An error means the host terminal is gone.
+    struct HostSizes {
+        sizes: mpsc::UnboundedReceiver<io::Result<Geometry>>,
+        quit: Arc<AtomicBool>,
+    }
+
+    impl HostSizes {
+        fn watch(host: Geometry) -> io::Result<Self> {
+            let (tx, sizes) = mpsc::unbounded_channel();
+            let quit = Arc::new(AtomicBool::new(false));
+            let watching = quit.clone();
+            crate::thread_spawn::spawn_named("lawn-resize", move || {
+                crate::platform::watch_terminal_resize_signal();
+                follow_host_size(
+                    host,
+                    host_geometry,
+                    crate::platform::take_terminal_resize_signal,
+                    &watching,
+                    &tx,
+                );
+            })?;
+            Ok(Self { sizes, quit })
+        }
+
+        async fn recv(&mut self) -> io::Result<Geometry> {
+            self.sizes
+                .recv()
+                .await
+                .unwrap_or_else(|| Err(io::Error::other("the resize watcher stopped")))
+        }
+    }
+
+    impl Drop for HostSizes {
+        fn drop(&mut self) {
+            self.quit.store(true, Ordering::Release);
+        }
+    }
+
+    /// Sends `tx` the host's size on each resize signal or change. A
+    /// zero-sized sample, which a window drag can produce, keeps the last
+    /// size and the pending signal until a valid sample follows.
+    pub(in crate::core_client) fn follow_host_size(
+        host: Geometry,
+        mut read: impl FnMut() -> io::Result<Geometry>,
+        take_signal: impl FnMut() -> bool,
+        quit: &AtomicBool,
+        tx: &mpsc::UnboundedSender<io::Result<Geometry>>,
+    ) {
+        let sample = |geometry: Geometry| {
+            (
+                geometry.cols,
+                geometry.rows,
+                geometry.cell_width_px,
+                geometry.cell_height_px,
+                false,
+            )
+        };
+        crate::client::resize_poll_loop_with(
+            sample(host),
+            |_| read().map(sample),
+            take_signal,
+            quit,
+            |report| {
+                tx.send(match report {
+                    HostResize::Resized((cols, rows, cell_width_px, cell_height_px, _)) => {
+                        Ok(Geometry {
+                            cols,
+                            rows,
+                            cell_width_px,
+                            cell_height_px,
+                        })
+                    }
+                    HostResize::Unavailable(error) => Err(error),
+                })
+                .is_ok()
+            },
+        );
+    }
+
     /// How the host reports keys, which tells committed text from typed keys.
     #[derive(Debug, Clone, Copy)]
     pub(in crate::core_client) struct HostKeys {
@@ -129,6 +211,7 @@ mod unix {
 
     pub(super) async fn show(
         mut view: View,
+        mut host: Geometry,
         guard: &mut TerminalGuard,
         mut stop: Stop,
     ) -> io::Result<()> {
@@ -138,15 +221,13 @@ mod unix {
             guard.host_escape_disambiguation_active(),
             mouse_capture.clone(),
         )?;
-        let mut resized = signal(SignalKind::window_change())?;
+        let mut sizes = HostSizes::watch(host)?;
         let mut screen = Screen::default();
         let mut keys = HostKeys {
             kitty: guard.host_escape_disambiguation_active(),
             all: false,
         };
         let mut out = io::stdout();
-        let mut host = host_geometry()?;
-        view.resize(host);
         let mut due = Some(Instant::now());
         let mut last_draw = Instant::now();
         loop {
@@ -171,20 +252,34 @@ mod unix {
                     let Some(events) = events else {
                         return Ok(());
                     };
+                    if crate::raw_input::events_require_host_mode_refresh(&events) {
+                        refresh_host_modes(guard, &mouse_capture, keys.all, false);
+                    }
                     for event in events {
                         if !forward(&view, keys, event) {
                             return Ok(());
                         }
                     }
                 }
-                _ = resized.recv() => {
-                    host = host_geometry()?;
+                size = sizes.recv() => {
+                    let Ok(size) = size else {
+                        return Ok(());
+                    };
+                    host = size;
                     view.resize(host);
+                    refresh_host_modes(guard, &mouse_capture, keys.all, true);
                     due = Some(Instant::now());
                 }
                 event = view.event() => match event {
                     Event::Copy(content) => {
                         crate::selection::write_osc52_bytes(&content);
+                    }
+                    Event::Bell(count) => {
+                        if let Err(error) =
+                            crate::terminal_effects::write_terminal_bells(&mut out, count)
+                        {
+                            warn!(%error, "the bell did not reach the host");
+                        }
                     }
                     Event::Ended => return Ok(()),
                 },
@@ -197,6 +292,25 @@ mod unix {
         match due {
             Some(due) => tokio::time::sleep_until(due).await,
             None => std::future::pending().await,
+        }
+    }
+
+    /// Re-sends the input modes a host forgets when it resets, as after a
+    /// reconnect or a window reload. A focus report shows the host still
+    /// reports focus, so only a resize re-enables it.
+    fn refresh_host_modes(
+        guard: &TerminalGuard,
+        mouse_capture: &AtomicBool,
+        all_keys: bool,
+        focus_reporting: bool,
+    ) {
+        if let Err(error) = set_mouse_capture(mouse_capture.load(Ordering::Acquire), false) {
+            warn!(%error, "the host mouse mode was not refreshed");
+        }
+        if let Err(error) =
+            guard.refresh_host_keyboard_protocol(&mut io::stdout(), all_keys, focus_reporting)
+        {
+            warn!(%error, "the host keyboard mode was not refreshed");
         }
     }
 
@@ -317,7 +431,7 @@ mod unix {
 }
 
 #[cfg(all(test, unix))]
-pub(super) use unix::{detaches, HostKeys};
+pub(super) use unix::{detaches, follow_host_size, HostKeys};
 
 #[cfg(test)]
 mod tests;

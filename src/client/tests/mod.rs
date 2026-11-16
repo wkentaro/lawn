@@ -45,7 +45,6 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
     let mut signals = vec![true, false].into_iter();
 
     super::terminal_geometry::resize_poll_loop_with(
-        resize_tx,
         (80, 24, 8, 16, true),
         move |_| match samples.next() {
             Some(sample) => sample,
@@ -56,6 +55,7 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
         },
         move || signals.next().unwrap_or(false),
         &should_quit,
+        |report| resize_tx.blocking_send(report).is_ok(),
     );
 
     // The transient zero-sized sample must keep the loop polling and retain the
@@ -68,7 +68,9 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
     assert!(
         matches!(
             events.as_slice(),
-            [super::ClientLoopEvent::Resize(80, 24, 8, 16, true)]
+            [super::terminal_geometry::HostResize::Resized((
+                80, 24, 8, 16, true
+            ))]
         ),
         "expected exactly one recovered resize report"
     );
@@ -88,7 +90,6 @@ fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
     .into_iter();
 
     super::terminal_geometry::resize_poll_loop_with(
-        resize_tx,
         (80, 24, 8, 16, true),
         move |_| {
             samples
@@ -97,6 +98,7 @@ fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
         },
         || false,
         &should_quit,
+        |report| resize_tx.blocking_send(report).is_ok(),
     );
 
     // The transient sample must not stop the loop, but the following real
@@ -108,7 +110,7 @@ fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
     assert!(
         matches!(
             events.as_slice(),
-            [super::ClientLoopEvent::TerminalUnavailable(err)]
+            [super::terminal_geometry::HostResize::Unavailable(err)]
                 if err.kind() == io::ErrorKind::NotConnected
         ),
         "expected exactly one terminal-unavailable event"

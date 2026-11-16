@@ -31,6 +31,8 @@ pub(crate) struct Geometry {
 pub(crate) enum Event {
     /// The program copied these bytes with OSC 52.
     Copy(Vec<u8>),
+    /// The program rang the bell this many times.
+    Bell(u16),
     /// The program has ended.
     Ended,
 }
@@ -111,6 +113,7 @@ impl View {
         while let Some(event) = self.events.recv().await {
             match event {
                 AppEvent::ClipboardWrite { content } => return Event::Copy(content),
+                AppEvent::TerminalBell { count, .. } => return Event::Bell(count),
                 AppEvent::PaneDied { .. } => return Event::Ended,
                 _ => {}
             }
