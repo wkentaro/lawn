@@ -22,6 +22,7 @@ use crate::app::App;
 #[cfg(test)]
 use crate::app::Mode;
 use crate::layout::{find_in_direction, NavDirection, PaneId};
+use crate::session_model::PaneDestination as ResolvedPaneMoveDestination;
 
 use super::super::api_helpers::{
     detect_state_from_api, encode_api_keys, normalize_metadata_source, normalize_metadata_tokens,
@@ -1028,16 +1029,6 @@ impl App {
         else {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
-        let recovery_context = PaneMoveRecoveryContext {
-            source_ws_idx,
-            previous_workspace_id: previous_workspace_id.clone(),
-            previous_workspace_label: self.state.workspaces[source_ws_idx].custom_name.clone(),
-            previous_tab_label: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
-                .custom_name
-                .clone(),
-            identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
-        };
-
         if self.state.workspaces[source_ws_idx].tabs[source_tab_idx].zoomed {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
                 return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
@@ -1153,9 +1144,8 @@ impl App {
                 ResolvedPaneMoveDestination::ExistingTab {
                     tab_id: target_tab_id,
                     target_pane_id,
-                    split,
+                    direction: split_direction_to_layout(split),
                     ratio: ratio.unwrap_or(0.5),
-                    cross_workspace: source_ws_idx != target_ws_idx,
                 }
             }
             PaneMoveDestination::NewTab {
@@ -1180,120 +1170,58 @@ impl App {
                 }
             }
             PaneMoveDestination::NewWorkspace { label, tab_label } => {
-                ResolvedPaneMoveDestination::NewWorkspace { label, tab_label }
-            }
-        };
-
-        let mut previous_focus = self.state.current_pane_focus_target();
-        let taken = match self
-            .state
-            .workspaces
-            .get_mut(source_ws_idx)
-            .and_then(|ws| ws.take_pane_for_move(source_pane_id))
-        {
-            Some(taken) => taken,
-            None => return encode_error(id, "pane_move_failed", "source pane could not be moved"),
-        };
-        let source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
-        let source_workspace_empty = taken.workspace_empty;
-        let moved = taken.moved;
-        let cross_workspace = match &resolved {
-            ResolvedPaneMoveDestination::ExistingTab {
-                cross_workspace, ..
-            } => *cross_workspace,
-            ResolvedPaneMoveDestination::NewTab { workspace_id, .. } => {
-                workspace_id != &previous_workspace_id
-            }
-            ResolvedPaneMoveDestination::NewWorkspace { .. } => true,
-        };
-        if cross_workspace {
-            if let Some(ws) = self.state.workspaces.get_mut(source_ws_idx) {
-                ws.unregister_moved_pane(source_pane_id);
-            }
-            self.state
-                .public_pane_id_aliases
-                .insert(previous_pane_id.clone(), source_pane_id);
-        }
-
-        let mut closed_workspace_id = None;
-        if source_workspace_empty && cross_workspace {
-            self.state.remove_emptied_workspace(source_ws_idx, None);
-            closed_workspace_id = Some(previous_workspace_id.clone());
-        }
-
-        let mut created_workspace = false;
-        let mut created_tab = false;
-        let (target_ws_idx, target_tab_idx, moved_pane_id) = match resolved {
-            ResolvedPaneMoveDestination::ExistingTab {
-                tab_id,
-                target_pane_id,
-                split,
-                ratio,
-                cross_workspace: _,
-            } => {
-                let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
-                    self.recover_failed_pane_move(recovery_context, moved);
-                    return encode_error(id, "pane_move_failed", "target tab disappeared");
-                };
-                let direction = split_direction_to_layout(split);
-                let moved_pane_id = match self.state.workspaces[target_ws_idx]
-                    .insert_moved_pane_into_tab(
-                        target_tab_idx,
-                        target_pane_id,
-                        moved,
-                        direction,
-                        ratio,
-                        focus,
-                    ) {
-                    Ok(pane_id) => pane_id,
-                    Err(moved) => {
-                        self.recover_failed_pane_move(recovery_context, moved);
-                        return encode_error(
-                            id,
-                            "pane_move_failed",
-                            "target pane could not be split",
-                        );
-                    }
-                };
-                (target_ws_idx, target_tab_idx, moved_pane_id)
-            }
-            ResolvedPaneMoveDestination::NewTab {
-                workspace_id,
-                label,
-            } => {
-                let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                    self.recover_failed_pane_move(recovery_context, moved);
-                    return encode_error(id, "pane_move_failed", "target workspace disappeared");
-                };
-                let moved_pane_id = moved.pane_id;
-                let target_tab_idx = self.state.workspaces[target_ws_idx]
-                    .create_tab_from_existing_pane(moved, label);
-                created_tab = true;
-                (target_ws_idx, target_tab_idx, moved_pane_id)
-            }
-            ResolvedPaneMoveDestination::NewWorkspace { label, tab_label } => {
-                let identity_cwd = self
+                let cwd = self
                     .state
                     .terminals
                     .get(&source_terminal_id)
                     .map(|terminal| terminal.cwd.clone())
                     .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
-                let moved_pane_id = moved.pane_id;
-                let workspace = crate::workspace::Workspace::from_existing_pane(
+                ResolvedPaneMoveDestination::NewWorkspace {
                     label,
                     tab_label,
-                    identity_cwd,
-                    moved,
-                );
-                self.state.workspaces.push(workspace);
-                let target_ws_idx = self.state.workspaces.len() - 1;
-                created_workspace = true;
-                created_tab = true;
-                (target_ws_idx, 0, moved_pane_id)
+                    cwd,
+                }
             }
         };
 
-        if cross_workspace {
+        let mut previous_focus = self.state.current_pane_focus_target();
+        let relocated = match crate::session_model::relocate_pane(
+            &mut self.state.workspaces,
+            (source_ws_idx, source_pane_id),
+            resolved,
+            focus,
+            self.state.active,
+            self.state.selected,
+        ) {
+            Ok(relocated) => relocated,
+            Err(error) => {
+                self.state.active = error.active;
+                self.state.selected = error.selected;
+                if error.preserve_previous_alias {
+                    self.state
+                        .public_pane_id_aliases
+                        .insert(previous_pane_id.clone(), source_pane_id);
+                }
+                if error.recovered {
+                    self.state.mark_session_dirty();
+                    self.schedule_session_save();
+                }
+                return encode_error(id, "pane_move_failed", error.message);
+            }
+        };
+        self.state.active = relocated.active;
+        self.state.selected = relocated.selected;
+        let target_ws_idx = relocated.workspace_index;
+        let target_tab_idx = relocated.tab_index;
+        let moved_pane_id = relocated.pane_id;
+        let source_removed_tab_id = relocated.removed_tab.then(|| previous_tab_id.clone());
+        let closed_workspace_id = relocated
+            .removed_workspace
+            .then(|| previous_workspace_id.clone());
+        if relocated.cross_workspace {
+            self.state
+                .public_pane_id_aliases
+                .insert(previous_pane_id.clone(), source_pane_id);
             let target_workspace_id = self.public_workspace_id(target_ws_idx);
             self.state.retarget_moved_panes(
                 &[moved_pane_id],
@@ -1308,8 +1236,10 @@ impl App {
                 .record_pane_focus_change(previous_focus, target_ws_idx, moved_pane_id);
             self.state.mode = crate::app::Mode::Terminal;
         }
-        let created_workspace = created_workspace.then(|| self.workspace_info(target_ws_idx));
-        let created_tab = if created_tab {
+        let created_workspace = relocated
+            .created_workspace
+            .then(|| self.workspace_info(target_ws_idx));
+        let created_tab = if relocated.created_tab {
             self.tab_info(target_ws_idx, target_tab_idx)
         } else {
             None
@@ -1397,37 +1327,6 @@ impl App {
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
         encode_success(id, ResponseResult::PaneMove { move_result })
-    }
-
-    fn recover_failed_pane_move(
-        &mut self,
-        context: PaneMoveRecoveryContext,
-        moved: crate::workspace::MovedPane,
-    ) {
-        if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            self.state.workspaces[ws_idx]
-                .create_tab_from_existing_pane(moved, context.previous_tab_label);
-        } else {
-            let mut workspace = crate::workspace::Workspace::from_existing_pane(
-                context.previous_workspace_label,
-                context.previous_tab_label,
-                context.identity_cwd,
-                moved,
-            );
-            workspace.id = context.previous_workspace_id;
-            let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
-            if let Some(active) = self.state.active {
-                if active >= insert_idx {
-                    self.state.active = Some(active + 1);
-                }
-            }
-            if self.state.selected >= insert_idx && !self.state.workspaces.is_empty() {
-                self.state.selected += 1;
-            }
-            self.state.workspaces.insert(insert_idx, workspace);
-        }
-        self.state.mark_session_dirty();
-        self.schedule_session_save();
     }
 
     pub(super) fn handle_pane_zoom(&mut self, id: String, params: PaneZoomParams) -> String {
@@ -2280,32 +2179,6 @@ impl From<PaneDirection> for NavDirection {
             PaneDirection::Down => NavDirection::Down,
         }
     }
-}
-
-enum ResolvedPaneMoveDestination {
-    ExistingTab {
-        tab_id: String,
-        target_pane_id: PaneId,
-        split: crate::api::schema::SplitDirection,
-        ratio: f32,
-        cross_workspace: bool,
-    },
-    NewTab {
-        workspace_id: String,
-        label: Option<String>,
-    },
-    NewWorkspace {
-        label: Option<String>,
-        tab_label: Option<String>,
-    },
-}
-
-struct PaneMoveRecoveryContext {
-    source_ws_idx: usize,
-    previous_workspace_id: String,
-    previous_workspace_label: Option<String>,
-    previous_tab_label: Option<String>,
-    identity_cwd: std::path::PathBuf,
 }
 
 fn encode_unchanged_pane_move(
@@ -4080,40 +3953,62 @@ mod tests {
     }
 
     #[test]
-    fn api_pane_move_recovery_restores_removed_source_workspace() {
-        let mut app = app_with_issue_workspace();
-        let source = app.state.workspaces[0].tabs[0].root_pane;
-        let source_terminal = app.state.workspaces[0].tabs[0]
-            .terminal_id(source)
-            .unwrap()
-            .clone();
-        let previous_workspace_id = app.public_workspace_id(0);
-        let context = PaneMoveRecoveryContext {
-            source_ws_idx: 0,
-            previous_workspace_id: previous_workspace_id.clone(),
-            previous_workspace_label: app.state.workspaces[0].custom_name.clone(),
-            previous_tab_label: app.state.workspaces[0].tabs[0].custom_name.clone(),
-            identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
-        };
-        let taken = app.state.workspaces[0]
-            .take_pane_for_move(source)
-            .expect("source pane should be movable");
-        app.state.workspaces.remove(0);
-        app.state.active = None;
-        app.state.selected = 0;
+    fn api_pane_move_without_focus_repairs_selection_before_reviving_a_workspace() {
+        for source_index in [0, 2] {
+            let mut app = app_with_issue_workspace();
+            let source = Workspace::test_new("source");
+            let mut target = Workspace::test_new("target");
+            target.tabs[0].parked_from = Some(1);
+            target.parked = true;
+            app.state.workspaces = if source_index == 0 {
+                vec![source, Workspace::test_new("middle"), target]
+            } else {
+                vec![target, Workspace::test_new("middle"), source]
+            };
+            app.state.terminals.clear();
+            app.state.ensure_test_terminals();
+            app.state.active = Some(source_index);
+            app.state.selected = source_index;
+            let source_pane = app.state.workspaces[source_index].tabs[0].root_pane;
+            let old_id = app.public_pane_id(source_index, source_pane).unwrap();
+            let terminal_id = app.state.workspaces[source_index]
+                .terminal_id(source_pane)
+                .unwrap()
+                .clone();
+            let target_id = app.public_workspace_id(2 - source_index);
+            let middle_id = app.public_workspace_id(1);
 
-        app.recover_failed_pane_move(context, taken.moved);
+            let response = app.handle_pane_move(
+                "req".into(),
+                PaneMoveParams {
+                    pane_id: old_id.clone(),
+                    destination: PaneMoveDestination::NewTab {
+                        workspace_id: Some(target_id.clone()),
+                        label: Some("moved".into()),
+                    },
+                    focus: false,
+                },
+            );
 
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].id, previous_workspace_id);
-        assert_eq!(
-            app.state.workspaces[0].tabs[0].terminal_id(source),
-            Some(&source_terminal)
-        );
-        assert_eq!(
-            app.parse_pane_id(&format!("{previous_workspace_id}:p1")),
-            Some((0, source))
-        );
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::PaneMove { move_result } = success.result else {
+                panic!("expected pane move, got {response}");
+            };
+            assert!(move_result.changed);
+            assert_eq!(move_result.pane.workspace_id, target_id);
+            assert_eq!(move_result.pane.terminal_id, terminal_id.to_string());
+            assert_eq!(
+                app.public_workspace_id(app.state.active.unwrap()),
+                middle_id
+            );
+            assert_eq!(app.public_workspace_id(app.state.selected), middle_id);
+            let target = app.parse_workspace_id(&target_id).unwrap();
+            assert_eq!(app.parse_pane_id(&old_id), Some((target, source_pane)));
+            assert!(!app.state.workspaces[target].parked);
+            assert_eq!(app.state.workspaces[target].visible_tab_count(), 1);
+            assert_eq!(app.state.workspaces[target].parked_tabs().len(), 1);
+            app.state.assert_invariants_for_test();
+        }
     }
 
     #[test]

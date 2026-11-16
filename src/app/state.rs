@@ -924,19 +924,6 @@ impl AppState {
         }
     }
 
-    /// Removes a workspace a move left empty. Active and selected indexes
-    /// that pointed at it follow `follow` (an index before removal), or
-    /// clamp in place when it is None.
-    pub(crate) fn remove_emptied_workspace(&mut self, idx: usize, follow: Option<usize>) {
-        (self.active, self.selected) = crate::session_model::remove_empty_workspace(
-            &mut self.workspaces,
-            idx,
-            follow,
-            self.active,
-            self.selected,
-        );
-    }
-
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
         self.pane_id_aliases.remove(&pane_id.raw());
     }
