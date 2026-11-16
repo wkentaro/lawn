@@ -205,6 +205,10 @@ pub fn active_api_socket_path() -> PathBuf {
     api_socket_path_for(active_name().as_deref())
 }
 
+pub fn uses_own_socket() -> bool {
+    active_api_socket_path() == api_socket_path_for(active_name().as_deref())
+}
+
 pub fn client_socket_path_for(name: Option<&str>) -> PathBuf {
     data_dir_for(name).join("herdr-client.sock")
 }

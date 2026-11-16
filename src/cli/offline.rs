@@ -5,18 +5,12 @@ use crate::api::schema::{
 use crate::persist::{SessionSnapshot, WorkspaceSnapshot};
 use crate::workspace::{decode_public_number, derive_label_from_cwd, public_tab_id_for_number};
 
-/// Whether the missing server is the one this session's layout belongs to,
-/// not another machine's or one a socket override names.
 pub(super) fn owns_the_target() -> bool {
-    !super::target::is_remote() && std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_none()
+    !super::target::is_remote() && crate::session::uses_own_socket()
 }
 
 type Answer = Option<Result<ResponseResult, ErrorBody>>;
 
-/// The answer to `request` from the layout document, or `None` when the
-/// command needs a running server or there is no layout to edit. A layout
-/// without the ids the server gives it, such as a very old one, is left for
-/// the server to fill in.
 pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Value>> {
     let answer = match &request.method {
         Method::WorkspaceList(_) => crate::persist::doc::edit(|snapshot| {
@@ -271,6 +265,9 @@ mod tests {
         assert!(owns_the_target());
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/other.sock");
         assert!(!owns_the_target());
+        let args = ["lawn", "--session", "work", "workspace", "list"].map(String::from);
+        crate::session::configure_from_args(&args).expect("session");
+        assert!(owns_the_target(), "--session names its own server");
     }
 
     #[cfg(unix)]
