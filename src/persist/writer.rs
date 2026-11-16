@@ -40,8 +40,8 @@ impl SessionWriter {
         }
     }
 
-    fn preserve_snapshot_history(&self) {
-        if let Err(err) = preserve_snapshot_history(&self.path) {
+    fn preserve_snapshot_history(&self, prune: bool) {
+        if let Err(err) = preserve_snapshot_history(&self.path, prune) {
             tracing::warn!(
                 event = "persist.snapshot", outcome = "error", path = %self.path.display(),
                 err = %err, "failed to preserve session snapshot"
@@ -65,13 +65,13 @@ impl SessionWriter {
         history: Option<&SessionHistorySnapshot>,
     ) -> io::Result<()> {
         let preserved = self.preserve_unloaded()?;
-        self.preserve_snapshot_history();
+        self.preserve_snapshot_history(false);
         super::io::save_to_path(&self.path, snapshot)?;
         self.protect_unloaded = false;
         if preserved {
             self.prune_recovery();
         }
-        self.preserve_snapshot_history();
+        self.preserve_snapshot_history(true);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::save_history_to_path(&history_path, history) {
             crate::logging::session_save_failed(&history_path, &err.to_string());
@@ -82,7 +82,7 @@ impl SessionWriter {
 
     pub(crate) fn clear(&mut self) {
         let result = self.preserve_unloaded().and_then(|preserved| {
-            self.preserve_snapshot_history();
+            self.preserve_snapshot_history(false);
             super::io::clear_path(&self.path).map(|()| preserved)
         });
         match result {
@@ -96,6 +96,7 @@ impl SessionWriter {
                 return;
             }
         }
+        self.preserve_snapshot_history(true);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::clear_path(&history_path) {
             crate::logging::session_clear_failed(&history_path, &err.to_string());
@@ -107,13 +108,16 @@ impl SessionWriter {
 const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const SNAPSHOT_LIMIT: usize = 48;
 
-fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
+fn preserve_snapshot_history(path: &Path, prune: bool) -> io::Result<()> {
     let directory = path.with_file_name("session-snapshots");
     let existing = match recovery_files(&directory) {
         Ok(files) => files,
         Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(err) => return Err(err),
     };
+    if prune && existing.len() > SNAPSHOT_LIMIT {
+        prune_backups(&existing[..existing.len() - 1], SNAPSHOT_LIMIT)?;
+    }
     if let Some((_, latest)) = existing.last() {
         let modified = std::fs::metadata(latest)?.modified()?;
         if SystemTime::now()
@@ -144,7 +148,8 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
             }
         }
     }
-    preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
+    let keep = if prune { SNAPSHOT_LIMIT } else { usize::MAX };
+    preserve_existing_in(path, "session-snapshots", keep)?;
     Ok(())
 }
 

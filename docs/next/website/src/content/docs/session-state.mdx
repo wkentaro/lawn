@@ -46,7 +46,7 @@ Herdr retains the three most recent recovery copies after a successful save or c
 
 On Linux systems with systemd-logind, Herdr listens for the host shutdown warning and requests a short delay while it saves and stops. This happens before logind proceeds with shutdown. The operating system limits the delay; Herdr does not block shutdown indefinitely. This protection is unavailable without logind and does not cover forced shutdown, power loss, or processes killed before the warning arrives.
 
-Herdr also keeps up to 48 layout snapshots in `session-snapshots/` beside `session.json`, on all platforms. The first saved layout is copied immediately. Later saves or clears can add a snapshot of the previous saved layout, at most once every 15 minutes. Unchanged snapshots are not duplicated. The interval survives server restarts, so a burst of pane exits or restarts cannot rotate away all older layouts. Recent changes may not be in the recovery snapshots.
+Herdr also keeps up to 48 layout snapshots in `session-snapshots/` beside `session.json`, on all platforms. Older snapshots are pruned only after a primary save or clear succeeds; failed mutations can temporarily retain additional snapshots. The first saved layout is copied immediately. Later saves or clears can add a snapshot of the previous saved layout, at most once every 15 minutes. Unchanged snapshots are not duplicated. The interval survives server restarts, so a burst of pane exits or restarts cannot rotate away all older layouts. Recent changes may not be in the recovery snapshots.
 
 Normal pane closures still update `session.json`. There are no recovery prompts and no automatic restoration of older snapshots. To recover a layout:
 

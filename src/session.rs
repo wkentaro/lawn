@@ -1359,6 +1359,51 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_restore_keeps_its_normal_snapshot_source_on_retries() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("failed-snapshot");
+        let directory = data_dir_for(Some("work"));
+        let snapshots = directory.join("session-snapshots");
+        std::fs::create_dir_all(&snapshots).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        value["sidebar_width"] = serde_json::json!(41);
+        let saved = serde_json::to_string(&value).unwrap();
+        for sequence in 1..=48 {
+            let path = snapshots.join(format!("session-{sequence:039}-1-0.json"));
+            std::fs::write(&path, &saved).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1))
+                .unwrap();
+        }
+        let source = snapshots.join(format!("session-{:039}-1-0.json", 1));
+        value["sidebar_width"] = serde_json::json!(30);
+        let current = serde_json::to_string(&value).unwrap();
+        std::fs::write(directory.join("session.json"), &current).unwrap();
+        std::fs::create_dir(directory.join("session.json.tmp")).unwrap();
+        for _ in 0..2 {
+            assert!(restore_session("work", &source).is_err());
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), saved);
+            assert_eq!(
+                std::fs::read_to_string(directory.join("session.json")).unwrap(),
+                current
+            );
+            assert!(std::fs::read_dir(&snapshots).unwrap().count() <= 49);
+        }
+        std::fs::remove_dir(directory.join("session.json.tmp")).unwrap();
+        restore_session("work", &source).unwrap();
+        assert_eq!(crate::persist::load().unwrap().sidebar_width, Some(41));
+        assert_eq!(std::fs::read_dir(&snapshots).unwrap().count(), 48);
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
     fn a_restore_takes_ownership_before_reading_session_state() {
         let _guard = env_lock().lock().unwrap();
         let config_home = restore_home("owned");
