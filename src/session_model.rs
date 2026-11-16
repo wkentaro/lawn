@@ -1,5 +1,7 @@
+mod pane_relocation;
 mod relocation;
 
+pub(crate) use pane_relocation::{relocate_pane, PaneDestination};
 pub(crate) use relocation::{relocate_tab, remove_empty_workspace, shown_workspace_from};
 
 use crate::workspace::decode_public_number;
