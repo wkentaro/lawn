@@ -128,6 +128,7 @@ pub struct App {
     next_agent_resume_at: Option<Instant>,
     pub(crate) session_save_deadline: Option<Instant>,
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) session_owner: Option<Arc<std::fs::File>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
     server_hangup_probe: fn() -> bool,
@@ -625,6 +626,7 @@ impl App {
             next_agent_resume_at: None,
             session_save_deadline: None,
             session_save_thread: None,
+            session_owner: None,
             session_writer,
             pane_exit_checkpoint_pending: false,
             #[cfg(not(test))]
@@ -3050,6 +3052,31 @@ mod tests {
         app.save_session_now();
         assert!(crate::session::data_dir().join("session.json").exists());
 
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[test]
+    fn background_save_retains_ownership_after_the_app_is_dropped() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let config_home = unique_temp_path("background-session-owner");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        app.session_owner = Some(Arc::new(crate::session::own_session(None).unwrap()));
+        let owner = Arc::downgrade(app.session_owner.as_ref().unwrap());
+        let writer = app.session_writer.clone();
+        let pending_write = writer.lock().unwrap();
+        app.start_background_session_save();
+        let thread = app.session_save_thread.take().unwrap();
+        drop(app);
+        assert!(owner.upgrade().is_some());
+        assert!(crate::session::own_session(None).is_err());
+        drop(pending_write);
+        thread.join().unwrap();
+        assert!(owner.upgrade().is_none());
+        assert!(crate::session::own_session(None).is_ok());
         std::env::remove_var("XDG_CONFIG_HOME");
         let _ = std::fs::remove_dir_all(config_home);
     }

@@ -33,6 +33,13 @@ impl HeadlessServer {
                 "live handoff does not move herdr core panes; restart the server instead",
             ));
         }
+        let session_owner = self
+            .app
+            .session_owner
+            .as_ref()
+            .map(|owner| owner.try_clone())
+            .transpose()?;
+        self.app.save_session_now();
         let import_exe = params.import_exe.as_deref().map(std::path::PathBuf::from);
         let socket_path = crate::server::handoff::handoff_socket_path();
         let token = format!(
@@ -119,6 +126,7 @@ impl HeadlessServer {
             self.api_window_title.clone(),
             self.host_shutdown_intent.get(),
         );
+        manifest.session_owner = session_owner.is_some();
         manifest.terminal_ids = pane_by_terminal
             .iter()
             .map(|(terminal, pane)| (*pane, terminal.clone()))
@@ -173,6 +181,10 @@ impl HeadlessServer {
             }
         };
 
+        if let Some(owner) = session_owner {
+            use std::os::fd::IntoRawFd;
+            fds.push(owner.into_raw_fd());
+        }
         let send_result = crate::server::handoff::send_fds_and_wait_restored(&mut stream, &fds);
         for fd in fds {
             let _ = unsafe { libc::close(fd) };

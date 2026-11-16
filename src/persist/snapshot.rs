@@ -70,6 +70,30 @@ pub struct WorkspaceSnapshot {
     pub parked: bool,
 }
 
+impl WorkspaceSnapshot {
+    pub(crate) fn tab_number(&self, tab: usize) -> usize {
+        self.public_tab_numbers.get(tab).copied().unwrap_or(tab + 1)
+    }
+
+    pub(crate) fn next_tab_number(&self) -> usize {
+        self.public_tab_numbers
+            .iter()
+            .copied()
+            .chain((0..self.tabs.len()).map(|tab| self.tab_number(tab)))
+            .max()
+            .and_then(|max| max.checked_add(1))
+            .unwrap_or(1)
+            .max(self.next_public_tab_number)
+    }
+
+    pub(crate) fn visible_tab_count(&self) -> usize {
+        self.tabs
+            .iter()
+            .take_while(|tab| tab.parked_from.is_none())
+            .count()
+    }
+}
+
 #[derive(Deserialize)]
 struct LegacyWorkspaceSnapshot {
     #[serde(default)]
@@ -150,6 +174,15 @@ pub enum LayoutSnapshot {
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+}
+
+impl LayoutSnapshot {
+    pub(crate) fn pane_count(&self) -> usize {
+        match self {
+            Self::Pane(_) => 1,
+            Self::Split { first, second, .. } => first.pane_count() + second.pane_count(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -414,13 +447,16 @@ fn capture_tab(
 }
 
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
+    layout_fingerprint_value(serde_json::to_value(snapshot).ok()?)
+}
+
+pub(super) fn layout_fingerprint_value(mut value: serde_json::Value) -> Option<String> {
     use sha2::{Digest, Sha256};
 
-    let mut value = serde_json::to_value(snapshot).ok()?;
-    // Sets serialize as arrays; normalize their order as well as JSON object keys.
-    let mut collapsed: Vec<_> = snapshot.collapsed_space_keys.iter().collect();
-    collapsed.sort_unstable();
-    value["collapsed_space_keys"] = serde_json::to_value(collapsed).ok()?;
+    value
+        .get_mut("collapsed_space_keys")?
+        .as_array_mut()?
+        .sort_unstable_by(|left, right| left.as_str().cmp(&right.as_str()));
     let bytes = serde_json::to_vec(&value).ok()?;
     Some(format!("{:x}", Sha256::digest(bytes)))
 }

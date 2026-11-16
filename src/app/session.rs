@@ -80,10 +80,13 @@ impl App {
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
         let writer = self.session_writer.clone();
+        let owner = self.session_owner.clone();
         match std::thread::Builder::new()
             .name("herdr-session-save".into())
-            .spawn(move || run_session_save_job(job, &writer))
-        {
+            .spawn(move || {
+                let _owner = owner;
+                run_session_save_job(job, &writer);
+            }) {
             Ok(thread) => self.session_save_thread = Some(thread),
             Err(err) => {
                 tracing::warn!(err = %err, "failed to spawn session save thread; saving inline");

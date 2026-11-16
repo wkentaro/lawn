@@ -92,6 +92,9 @@ pub fn clear_history() {
 }
 
 pub fn load() -> Option<SessionSnapshot> {
+    if let Some(snapshot) = super::doc::load() {
+        return snapshot;
+    }
     let path = session_path();
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
@@ -130,6 +133,39 @@ pub fn load() -> Option<SessionSnapshot> {
             None
         }
     }
+}
+
+pub fn restore_from(source: &Path) -> Result<(), String> {
+    let content = std::fs::read_to_string(source)
+        .map_err(|err| format!("cannot read {}: {err}", source.display()))?;
+    let not_a_snapshot =
+        |err: String| format!("{} is not a session snapshot: {err}", source.display());
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|err| not_a_snapshot(err.to_string()))?;
+    if !value
+        .get("workspaces")
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Err(not_a_snapshot("it has no workspaces".into()));
+    }
+    let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
+    super::SessionWriter::new(true)
+        .try_save(&snapshot, None)
+        .map_err(|err| err.to_string())?;
+    super::doc::replace(&snapshot).map_err(|err| {
+        format!("session.json was restored, but not the herdr core layout document: {err}")
+    })
+}
+
+pub(super) fn carry_history(from: Option<String>, to: &SessionSnapshot) -> std::io::Result<()> {
+    let Some(mut history) = load_history() else {
+        return Ok(());
+    };
+    if from.is_none() || history.layout_fingerprint != from {
+        return Ok(());
+    }
+    history.layout_fingerprint = super::snapshot::layout_fingerprint(to);
+    save_history_to_path(&session_history_path(), Some(&history))
 }
 
 pub fn load_history() -> Option<SessionHistorySnapshot> {

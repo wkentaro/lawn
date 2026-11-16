@@ -9,7 +9,7 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
 use crate::workspace::{MovedPane, TabChannels};
 
 impl App {
-    /// Starts parking the core terminals no pane shows, in a core session.
+    /// Starts parking the core terminals no pane shows, when panes run in core.
     /// Call it once the session is restored, so its panes are known.
     pub(crate) fn watch_core_terminals(&self) {
         let Some(core) = crate::hc::backend() else {

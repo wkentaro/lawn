@@ -31,6 +31,7 @@ pub fn run_server() -> io::Result<()> {
         return run_handoff_import_server(&socket_path, token);
     }
 
+    let session_owner = crate::session::own_session(crate::session::active_name().as_deref())?;
     let loaded_config = config::Config::load();
     #[cfg(windows)]
     if loaded_config.config.server.allow_unelevated_clients {
@@ -69,6 +70,7 @@ pub fn run_server() -> io::Result<()> {
             api_rx,
             event_hub,
         )?;
+        app.session_owner = Some(std::sync::Arc::new(session_owner));
         seed_startup_workspace_if_empty(&mut app);
 
         // Create the headless server.
@@ -137,8 +139,11 @@ fn take_startup_cwd() -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> {
-    let loaded_config = config::Config::load();
     let mut received = crate::server::handoff::receive(socket_path, token)?;
+    let session_owner = received.session_owner.take().ok_or_else(|| {
+        io::Error::other("legacy source cannot transfer session ownership; stop and restart it")
+    })?;
+    let loaded_config = config::Config::load();
     crate::server::handoff::log_import_result(received.manifest.panes.len());
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -163,7 +168,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
         .map_err(io::Error::other)?;
 
     let result = rt.block_on(async {
-        let app = app::App::new_from_handoff(
+        let mut app = app::App::new_from_handoff(
             &loaded_config.config,
             config::config_diagnostic_summary(&loaded_config.diagnostics),
             api_rx,
@@ -172,6 +177,7 @@ fn run_handoff_import_server(socket_path: &Path, token: &str) -> io::Result<()> 
             &received.manifest.terminal_ids,
             &mut imports,
         )?;
+        app.session_owner = Some(std::sync::Arc::new(session_owner));
         crate::server::handoff::report_restored(&mut received.stream)?;
         if std::env::var("HERDR_TEST_HANDOFF_IMPORT_FAIL").as_deref() == Ok("after_restored") {
             return Err(io::Error::other(

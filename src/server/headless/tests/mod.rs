@@ -191,16 +191,15 @@ fn completed_handoff_disables_only_old_server_session_persistence() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn core_session_refuses_live_handoff_and_keeps_its_clients() {
+async fn core_panes_refuse_live_handoff_and_keeps_its_clients() {
     let mut server = test_headless_server();
     let (control, _render) = connect_matching_test_shell(&mut server, 1);
     while control.try_recv().is_ok() {}
 
-    std::env::set_var(crate::session::SESSION_ENV_VAR, "core");
+    crate::hc::use_core_for_test();
     let result = server.perform_live_handoff(Default::default());
-    std::env::remove_var(crate::session::SESSION_ENV_VAR);
 
-    let err = result.expect_err("core sessions cannot hand off");
+    let err = result.expect_err("core panes cannot hand off");
     assert!(err.to_string().contains("restart the server"), "{err}");
     assert!(!server.handoff_in_progress);
     assert!(server.clients.contains_key(&1));

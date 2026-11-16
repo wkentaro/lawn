@@ -19,15 +19,29 @@ impl SessionWriter {
         }
     }
 
-    fn preserve_unloaded(&mut self) -> io::Result<()> {
-        if self.protect_unloaded && preserve_existing(&self.path)? {
-            self.protect_unloaded = false;
+    fn preserve_unloaded(&self) -> io::Result<bool> {
+        if self.protect_unloaded {
+            preserve_existing(&self.path)
+        } else {
+            Ok(false)
         }
-        Ok(())
     }
 
-    fn preserve_snapshot_history(&self) {
-        if let Err(err) = preserve_snapshot_history(&self.path) {
+    fn prune_recovery(&self) {
+        let directory = self.path.with_file_name("session-backups");
+        let result = recovery_files(&directory).and_then(|files| match files.split_last() {
+            Some((_, older)) => prune_backups(older, 3),
+            None => Ok(()),
+        });
+        if let Err(err) = result {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(%err, path = %directory.display(), "failed to prune session recovery copies");
+            }
+        }
+    }
+
+    fn preserve_snapshot_history(&self, prune: bool) {
+        if let Err(err) = preserve_snapshot_history(&self.path, prune) {
             tracing::warn!(
                 event = "persist.snapshot", outcome = "error", path = %self.path.display(),
                 err = %err, "failed to preserve session snapshot"
@@ -40,33 +54,51 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
     ) {
-        let result = self.preserve_unloaded().and_then(|()| {
-            self.preserve_snapshot_history();
-            super::io::save_to_path(&self.path, snapshot)
-        });
-        if let Err(err) = result {
-            crate::logging::session_save_failed(&self.path, &err.to_string());
-            return;
+        match self.try_save(snapshot, history) {
+            Ok(()) => save_doc(Some(snapshot)),
+            Err(err) => crate::logging::session_save_failed(&self.path, &err.to_string()),
         }
-        // Optional history failure must not reclassify our committed layout as unloaded.
+    }
+
+    pub(super) fn try_save(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        history: Option<&SessionHistorySnapshot>,
+    ) -> io::Result<()> {
+        let preserved = self.preserve_unloaded()?;
+        self.preserve_snapshot_history(false);
+        super::io::save_to_path(&self.path, snapshot)?;
         self.protect_unloaded = false;
-        self.preserve_snapshot_history();
+        if preserved {
+            self.prune_recovery();
+        }
+        self.preserve_snapshot_history(true);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::save_history_to_path(&history_path, history) {
             crate::logging::session_save_failed(&history_path, &err.to_string());
         }
         crate::logging::session_saved(&self.path, snapshot.workspaces.len());
+        Ok(())
     }
 
     pub(crate) fn clear(&mut self) {
-        let result = self.preserve_unloaded().and_then(|()| {
-            self.preserve_snapshot_history();
-            super::io::clear_path(&self.path)
+        let result = self.preserve_unloaded().and_then(|preserved| {
+            self.preserve_snapshot_history(false);
+            super::io::clear_path(&self.path).map(|()| preserved)
         });
-        if let Err(err) = result {
-            crate::logging::session_clear_failed(&self.path, &err.to_string());
-            return;
+        match result {
+            Ok(true) => {
+                self.protect_unloaded = false;
+                self.prune_recovery();
+            }
+            Ok(false) => {}
+            Err(err) => {
+                crate::logging::session_clear_failed(&self.path, &err.to_string());
+                return;
+            }
         }
+        self.preserve_snapshot_history(true);
+        save_doc(None);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::clear_path(&history_path) {
             crate::logging::session_clear_failed(&history_path, &err.to_string());
@@ -75,16 +107,25 @@ impl SessionWriter {
     }
 }
 
+fn save_doc(snapshot: Option<&SessionSnapshot>) {
+    if let Err(err) = super::doc::save(snapshot) {
+        tracing::warn!(%err, "failed to save the layout to herdr core");
+    }
+}
+
 const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 const SNAPSHOT_LIMIT: usize = 48;
 
-fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
+fn preserve_snapshot_history(path: &Path, prune: bool) -> io::Result<()> {
     let directory = path.with_file_name("session-snapshots");
     let existing = match recovery_files(&directory) {
         Ok(files) => files,
         Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(err) => return Err(err),
     };
+    if prune && existing.len() > SNAPSHOT_LIMIT {
+        prune_backups(&existing[..existing.len() - 1], SNAPSHOT_LIMIT)?;
+    }
     if let Some((_, latest)) = existing.last() {
         let modified = std::fs::metadata(latest)?.modified()?;
         if SystemTime::now()
@@ -115,12 +156,23 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
             }
         }
     }
-    preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
+    let keep = if prune { SNAPSHOT_LIMIT } else { usize::MAX };
+    preserve_existing_in(path, "session-snapshots", keep)?;
     Ok(())
 }
 
 fn preserve_existing(path: &Path) -> io::Result<bool> {
-    preserve_existing_in(path, "session-backups", 3)
+    let directory = path.with_file_name("session-backups");
+    if let Ok(files) = recovery_files(&directory) {
+        if let Some((_, latest)) = files.last() {
+            if let (Ok(current), Ok(previous)) = (std::fs::read(path), std::fs::read(latest)) {
+                if current == previous {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    preserve_existing_in(path, "session-backups", usize::MAX)
 }
 
 fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::Result<bool> {

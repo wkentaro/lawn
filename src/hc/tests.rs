@@ -2,6 +2,17 @@
 use super::test_support::TestCore;
 use super::*;
 
+#[test]
+fn a_missing_hc_stops_the_launch_with_install_help() {
+    assert!(require_installed().is_ok(), "PTY panes need no core");
+    use_core_for_test();
+    std::env::set_var(HC_BIN_ENV, "/nonexistent/hc");
+
+    let err = require_installed().expect_err("hc is missing");
+
+    assert!(err.to_string().contains("install.sh"), "{err}");
+}
+
 fn hello(generation: u64, methods: &[&str]) -> Value {
     json!({"generation": generation, "methods": methods, "features": []})
 }

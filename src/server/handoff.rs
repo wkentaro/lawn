@@ -55,12 +55,15 @@ pub(crate) struct HandoffManifest {
     /// committed. Absent from manifests written before this field existed.
     #[serde(default)]
     pub host_shutdown_intent: Option<crate::platform::HostShutdownIntent>,
+    #[serde(default)]
+    pub session_owner: bool,
 }
 
 #[cfg(unix)]
 pub(crate) struct ReceivedHandoff {
     pub manifest: HandoffManifest,
     pub fds: Vec<RawFd>,
+    pub session_owner: Option<std::fs::File>,
     pub stream: UnixStream,
 }
 
@@ -176,8 +179,15 @@ pub(crate) fn accept_and_validate_on(
 
     stream.set_read_timeout(Some(READY_TIMEOUT))?;
     let validated = read_line_unbuffered(&mut stream)?;
-    if validated.trim_end() != "validated" {
-        return Err(io::Error::other("handoff import did not validate manifest"));
+    let expected = if manifest.session_owner {
+        "validated session-owner-v1"
+    } else {
+        "validated"
+    };
+    if validated.trim_end() != expected {
+        return Err(io::Error::other(
+            "handoff replacement cannot retain session ownership or did not validate manifest",
+        ));
     }
     let _ = std::fs::remove_file(socket_path);
     Ok(stream)
@@ -270,12 +280,35 @@ pub(crate) fn receive(socket_path: &Path, token: &str) -> io::Result<ReceivedHan
             crate::build_info::version()
         )));
     }
-    stream.write_all(b"validated\n")?;
+    let validation = if manifest.session_owner {
+        b"validated session-owner-v1\n".as_slice()
+    } else {
+        b"validated\n".as_slice()
+    };
+    stream.write_all(validation)?;
     stream.flush()?;
-    let fds = recv_fds(&stream, manifest.panes.len())?;
+    let mut fds = recv_fds(
+        &stream,
+        manifest.panes.len() + usize::from(manifest.session_owner),
+    )?;
+    let session_owner = if manifest.session_owner {
+        let fd = fds
+            .pop()
+            .ok_or_else(|| io::Error::other("missing session owner"))?;
+        match crate::platform::adopt_handoff_file(fd) {
+            Ok(file) => Some(file),
+            Err(err) => {
+                close_raw_fds(&fds);
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
     Ok(ReceivedHandoff {
         manifest,
         fds,
+        session_owner,
         stream,
     })
 }
@@ -328,6 +361,7 @@ pub(crate) fn manifest_for(
         terminal_ids: Default::default(),
         api_window_title,
         host_shutdown_intent,
+        session_owner: false,
     }
 }
 
@@ -550,6 +584,40 @@ mod tests {
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_legacy_replacement_cannot_silently_drop_session_ownership() {
+        let path =
+            std::env::temp_dir().join(format!("lawn-handoff-owner-{}.sock", std::process::id()));
+        let listener = UnixListener::bind(&path).unwrap();
+        let endpoint = path.clone();
+        let replacement = std::thread::spawn(move || {
+            let mut stream = UnixStream::connect(endpoint).unwrap();
+            stream.write_all(b"token\n").unwrap();
+            let manifest = read_line_unbuffered(&mut stream).unwrap();
+            let manifest: HandoffManifest = serde_json::from_str(&manifest).unwrap();
+            assert!(manifest.session_owner);
+            stream.write_all(b"validated\n").unwrap();
+        });
+        let mut manifest = manifest_for(empty_snapshot(), Vec::new(), None, None, None, None);
+        manifest.session_owner = true;
+        let result = accept_and_validate_on(listener, &path, "token", &manifest);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("session ownership"));
+        replacement.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_manifest_has_no_session_owner() {
+        let manifest = manifest_for(empty_snapshot(), Vec::new(), None, None, None, None);
+        let mut encoded = serde_json::to_value(manifest).unwrap();
+        encoded.as_object_mut().unwrap().remove("session_owner");
+        let decoded: HandoffManifest = serde_json::from_value(encoded).unwrap();
+        assert!(!decoded.session_owner);
     }
 
     #[test]

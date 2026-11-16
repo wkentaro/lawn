@@ -581,6 +581,10 @@ fn main() -> io::Result<()> {
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("server") {
+        if let Err(err) = hc::require_installed() {
+            eprintln!("lawn: {err}");
+            std::process::exit(1);
+        }
         return server::headless::run_server();
     }
 

@@ -33,6 +33,10 @@ pub(crate) const USES: &[&str] = &[
 ];
 /// Overrides the `hc` binary, for tests and unusual installs.
 pub(crate) const HC_BIN_ENV: &str = "LAWN_HC_BIN";
+/// Keeps panes on Lawn's own PTYs. The test recipes set it until the PTY
+/// backend goes, so tests never start terminals in a real core.
+pub(crate) const PTY_PANES_ENV: &str = "LAWN_PTY_PANES";
+const INSTALL_HINT: &str = "curl -fsSL https://releases.herdr.dev/core/install.sh | sh";
 /// Credit granted to an event stream; events are small and must not stall.
 const EVENT_CREDIT: u32 = 1024 * 1024;
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -181,12 +185,52 @@ fn hc_bin() -> std::ffi::OsString {
 
 static SHARED: Mutex<Option<Arc<Core>>> = Mutex::new(None);
 
-/// Whether this Lawn runs its panes in herdr core: a core session.
+/// Whether this Lawn runs its panes in herdr core, which it does wherever
+/// the platform can.
+#[cfg(not(test))]
 pub(crate) fn enabled() -> bool {
-    crate::session::runs_on_core(crate::session::active_name().as_deref())
+    crate::platform::capabilities().core_panes && std::env::var_os(PTY_PANES_ENV).is_none()
 }
 
-/// The core panes run in, when this is a core session. Reconnects after the
+/// Unit tests stay on PTYs unless they opt in with `use_core_for_test`.
+#[cfg(test)]
+pub(crate) fn enabled() -> bool {
+    TEST_CORE_PANES.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+static TEST_CORE_PANES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Runs this test process's panes in a core. Nextest gives each test its
+/// own process.
+#[cfg(test)]
+pub(crate) fn use_core_for_test() {
+    TEST_CORE_PANES.store(true, Ordering::Relaxed);
+}
+
+/// Whether `hc` starts.
+pub(crate) fn installed() -> bool {
+    crate::noninteractive_process::command(hc_bin())
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// Fails with install help when panes need a core and `hc` won't start.
+pub(crate) fn require_installed() -> io::Result<()> {
+    if !enabled() || installed() {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "Lawn runs its panes in herdr core, but `{}` was not found.\nInstall it with: {INSTALL_HINT}",
+            hc_bin().to_string_lossy()
+        ),
+    ))
+}
+
+/// The core panes run in, when they run in one. Reconnects after the
 /// connection drops.
 pub(crate) fn backend() -> Option<HcResult<Arc<Core>>> {
     if !enabled() {
