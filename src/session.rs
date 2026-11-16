@@ -393,10 +393,20 @@ pub fn restore_session(name: &str, file: &Path) -> Result<SessionInfo, String> {
             .join("herdr.sock"),
         None => api_socket_path_for(None),
     };
-    if is_running_at(&socket_path) {
-        return Err(format!(
-            "session {name} is running; stop it before restoring"
-        ));
+    match crate::ipc::connect_local_stream(&socket_path) {
+        Ok(_) => {
+            return Err(format!(
+                "session {name} is running; stop it before restoring"
+            ))
+        }
+        Err(err)
+            if crate::cli::server_not_running_error(&err)
+                || err.kind() == std::io::ErrorKind::InvalidInput => {}
+        Err(err) => {
+            return Err(format!(
+                "cannot tell whether session {name} is running: {err}"
+            ))
+        }
     }
     apply_explicit_name(name)?;
     crate::persist::restore_from(file)?;
@@ -1263,10 +1273,13 @@ mod tests {
     }
 
     fn restore_home(name: &str) -> PathBuf {
-        let config_home = std::env::temp_dir().join(format!(
-            "herdr-session-restore-{name}-{}",
-            std::process::id()
-        ));
+        let short_enough_for_a_socket = if cfg!(unix) {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let config_home =
+            short_enough_for_a_socket.join(format!("lawn-restore-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&config_home);
         std::env::set_var("XDG_CONFIG_HOME", &config_home);
         std::env::remove_var(SESSION_ENV_VAR);
@@ -1313,6 +1326,8 @@ mod tests {
         std::fs::create_dir_all(&session_dir).unwrap();
         std::fs::write(session_dir.join("session.json"), layout(30)).unwrap();
         let source = config_home.join("saved.json");
+        let err = restore_session("work", &source).unwrap_err();
+        assert!(err.contains("cannot read"), "{err}");
         std::fs::write(&source, "not json").unwrap();
 
         let err = restore_session("work", &source).unwrap_err();
@@ -1346,6 +1361,49 @@ mod tests {
         let err = restore_session("work", &source).unwrap_err();
 
         assert!(err.contains("is running"), "{err}");
+        assert!(!session_dir.join("session.json").exists());
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn a_restore_takes_a_socket_path_no_server_could_bind_as_stopped() {
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("long");
+        let name = "w".repeat(MAX_SESSION_NAME_LEN);
+        let session_dir = data_dir_for(Some(&name));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let source = config_home.join("saved.json");
+        std::fs::write(&source, layout(40)).unwrap();
+
+        restore_session(&name, &source).unwrap();
+
+        let loaded = crate::persist::load().expect("restored");
+        assert_eq!(loaded.sidebar_width, Some(40));
+        std::fs::remove_dir_all(&config_home).unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_restore_refuses_a_session_it_cannot_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = env_lock().lock().unwrap();
+        let config_home = restore_home("denied");
+        let session_dir = data_dir_for(Some("work"));
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let socket = session_dir.join("herdr.sock");
+        let _server = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let source = config_home.join("saved.json");
+        std::fs::write(&source, layout(40)).unwrap();
+
+        let err = restore_session("work", &source).unwrap_err();
+
+        assert!(
+            err.contains("cannot tell whether session work is running"),
+            "{err}"
+        );
         assert!(!session_dir.join("session.json").exists());
         std::fs::remove_dir_all(&config_home).unwrap();
         std::env::remove_var("XDG_CONFIG_HOME");
