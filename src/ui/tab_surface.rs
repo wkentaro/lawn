@@ -87,15 +87,15 @@ pub(crate) fn compute_tab_surface_for_presented(
             .tabs
             .get(target.tab_index)
     });
-    let (presented_panes, split_borders) = match presented {
-        Some(presented) => (
-            Some(presented.panes),
-            if tab.is_some_and(|tab| tab.zoomed) {
+    let (presented, split_borders) = match presented {
+        Some(mut presented) => {
+            let splits = if tab.is_some_and(|tab| tab.zoomed) && !presented.unzoomed {
                 Vec::new()
             } else {
-                presented.splits
-            },
-        ),
+                std::mem::take(&mut presented.splits)
+            };
+            (Some(presented), splits)
+        }
         None => (
             None,
             tab.map(|tab| {
@@ -108,15 +108,15 @@ pub(crate) fn compute_tab_surface_for_presented(
             .unwrap_or_default(),
         ),
     };
-    let pane_infos = target.map_or_else(Vec::new, |target| match presented_panes {
-        Some(panes) => compute_pane_infos_for_tab_presented(
+    let pane_infos = target.map_or_else(Vec::new, |target| match presented {
+        Some(presented) => compute_pane_infos_for_tab_presented(
             app,
             terminal_runtimes,
             target,
             area,
             resize_panes,
             cell_size,
-            Some(panes),
+            Some(presented),
         ),
         None => compute_pane_infos_for_tab(
             app,
@@ -181,7 +181,7 @@ pub(crate) fn resize_tab_surface_presented(
             area,
             true,
             cell_size,
-            Some(presented.panes),
+            Some(presented),
         );
     } else {
         resize_tab_surface(

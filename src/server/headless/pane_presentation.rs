@@ -85,7 +85,12 @@ impl HeadlessServer {
         false
     }
 
-    pub(super) fn set_client_pane_presentation(&mut self, client_id: u64, data: &str) -> bool {
+    pub(super) fn set_client_pane_presentation(
+        &mut self,
+        client_id: u64,
+        data: &str,
+        restore_preview: bool,
+    ) -> bool {
         let request = match contract::decode_set(data) {
             Ok(request) => request,
             Err(message) => {
@@ -118,9 +123,12 @@ impl HeadlessServer {
             .clients
             .get(&client_id)
             .and_then(|client| client.pane_presentation.as_ref());
+        let same = |previous: &ClientPanePresentation| {
+            request == previous.request && restore_preview == previous.restore_preview
+        };
         if previous.is_some_and(|previous| {
             request.sequence < previous.request.sequence
-                || (request.sequence == previous.request.sequence && request != previous.request)
+                || (request.sequence == previous.request.sequence && !same(previous))
         }) {
             return self.pane_presentation_error(
                 client_id,
@@ -129,7 +137,7 @@ impl HeadlessServer {
                 "pane presentation sequence is stale",
             );
         }
-        if previous.is_some_and(|previous| request == previous.request) {
+        if previous.is_some_and(same) {
             let client = self.clients.get_mut(&client_id).expect("validated shell");
             client.shell_snapshot = None;
             client.request_recompute();
@@ -149,7 +157,7 @@ impl HeadlessServer {
                 "the selected terminal no longer has a pane",
             );
         }
-        let mut presentation = ClientPanePresentation::new(request, &locations);
+        let mut presentation = ClientPanePresentation::new(request, restore_preview, &locations);
         if presentation.request.preview_terminal.is_none()
             && presentation.request.focus_terminal.is_none()
         {
@@ -216,6 +224,18 @@ impl HeadlessServer {
     ) -> Option<crate::layout::PresentedLayout> {
         let presentation = self.clients.get(&client_id)?.pane_presentation.as_ref()?;
         let target = target?;
+        if let Some(origin) = presentation.restore_origin(&self.app.state) {
+            if target == origin.target {
+                return presentation.restore_layout(&self.app.state, origin, area);
+            }
+            if target.workspace_index == origin.target.workspace_index
+                && self.app.state.workspaces[origin.target.workspace_index]
+                    .find_tab_index_for_pane(origin.parked)
+                    == Some(target.tab_index)
+            {
+                return Some(crate::layout::PresentedLayout::default());
+            }
+        }
         let tab = self
             .app
             .state
@@ -232,7 +252,7 @@ impl HeadlessServer {
         tab: &crate::workspace::Tab,
     ) -> Option<crate::layout::PaneId> {
         match self.clients.get(&client_id)?.pane_presentation.as_ref() {
-            Some(presentation) => presentation.focused(tab),
+            Some(presentation) => presentation.focused_in(&self.app.state, tab),
             None => Some(tab.layout.focused()),
         }
     }

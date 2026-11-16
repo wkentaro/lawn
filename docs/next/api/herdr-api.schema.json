@@ -3538,6 +3538,29 @@
           ],
           "type": "object"
         },
+        "PaneUnparkToParams": {
+          "properties": {
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "layout": {
+              "$ref": "#/schemas/request/$defs/LayoutNode"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "tab_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "tab_id",
+            "layout"
+          ],
+          "type": "object"
+        },
         "PaneWaitForOutputParams": {
           "properties": {
             "lines": {
@@ -5915,6 +5938,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneUnparkParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.unpark_to",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneUnparkToParams"
             }
           },
           "required": [
@@ -9483,6 +9522,16 @@
         },
         "ParkedRestoreTarget": {
           "properties": {
+            "layout": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/LayoutNode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "pane_id": {
               "type": "string"
             },

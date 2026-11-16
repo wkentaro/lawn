@@ -1,8 +1,10 @@
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneInfo, PaneTarget, PaneUnparkParams,
-    ParkedRestoreSplit, ParkedRestoreTarget, ResponseResult, SplitDirection,
+    EventData, EventEnvelope, EventKind, LayoutNode, LayoutPane, PaneInfo, PaneTarget,
+    PaneUnparkParams, PaneUnparkToParams, ParkedRestoreSplit, ParkedRestoreTarget, ResponseResult,
+    SplitDirection,
 };
 use crate::app::App;
+use crate::layout::Node;
 use crate::workspace::UnparkPlan;
 use ratatui::layout::Direction;
 
@@ -95,7 +97,7 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<ParkedRestoreTarget> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let plan = ws.unpark_plan(pane_id)?;
+        let (plan, layout) = ws.unpark_layout(pane_id)?;
         let tab_idx = ws
             .tabs
             .iter()
@@ -123,7 +125,60 @@ impl App {
                 .clone()
                 .unwrap_or_else(|| (label_idx + 1).to_string()),
             split,
+            layout: Some(self.restore_layout_node(ws_idx, layout.root())?),
         })
+    }
+
+    fn restore_layout_node(&self, ws_idx: usize, node: &Node) -> Option<LayoutNode> {
+        Some(match node {
+            Node::Pane(pane_id) => LayoutNode::Pane {
+                pane: LayoutPane {
+                    pane_id: Some(self.public_pane_id(ws_idx, *pane_id)?),
+                    ..LayoutPane::default()
+                },
+            },
+            Node::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => LayoutNode::Split {
+                direction: match direction {
+                    Direction::Horizontal => SplitDirection::Right,
+                    Direction::Vertical => SplitDirection::Down,
+                },
+                ratio: *ratio,
+                first: Box::new(self.restore_layout_node(ws_idx, first)?),
+                second: Box::new(self.restore_layout_node(ws_idx, second)?),
+            },
+        })
+    }
+
+    pub(super) fn handle_pane_unpark_to(
+        &mut self,
+        id: String,
+        params: PaneUnparkToParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return encode_error(id, "pane_not_found", "pane not found");
+        };
+        let Some(target) = self.parked_restore_target(ws_idx, pane_id) else {
+            return encode_error(id, "pane_not_parked", "pane is not parked");
+        };
+        if target.tab_id != params.tab_id || target.layout.as_ref() != Some(&params.layout) {
+            return encode_error(
+                id,
+                "stale_restore_target",
+                "the restore destination changed since it was read",
+            );
+        }
+        self.handle_pane_unpark(
+            id,
+            PaneUnparkParams {
+                pane_id: params.pane_id,
+                focus: params.focus,
+            },
+        )
     }
 }
 
@@ -252,6 +307,7 @@ mod tests {
                     direction: crate::api::schema::SplitDirection::Right,
                     ratio: 0.5,
                 }),
+                layout: snapshot.parked_restore_targets[0].layout.clone(),
             }]
         );
         assert_eq!(
@@ -1011,5 +1067,169 @@ mod tests {
         );
 
         assert_eq!(response["error"]["code"], "workspace_empty", "{response}");
+    }
+
+    fn three_pane_app() -> (App, PaneId, PaneId) {
+        let mut workspace = Workspace::test_new("three");
+        let middle = workspace.test_split(Direction::Horizontal);
+        let parked = workspace.test_split(Direction::Vertical);
+        (app(vec![workspace]), middle, parked)
+    }
+
+    fn restore_target(app: &App, pane_id: &str) -> crate::api::schema::ParkedRestoreTarget {
+        app.session_snapshot()
+            .parked_restore_targets
+            .into_iter()
+            .find(|target| target.pane_id == pane_id)
+            .unwrap()
+    }
+
+    fn unpark_to(
+        app: &mut App,
+        target: &crate::api::schema::ParkedRestoreTarget,
+    ) -> serde_json::Value {
+        call(
+            app,
+            "pane.unpark_to",
+            serde_json::json!({
+                "pane_id": target.pane_id,
+                "focus": true,
+                "tab_id": target.tab_id,
+                "layout": target.layout,
+            }),
+        )
+    }
+
+    #[test]
+    fn a_planned_restore_lands_in_the_layout_it_named() {
+        let (mut app, _, parked) = three_pane_app();
+        let pane_id = park(&mut app, parked);
+        let target = restore_target(&app, &pane_id);
+
+        let response = unpark_to(&mut app, &target);
+
+        assert_eq!(
+            response["result"]["pane"]["tab_id"], target.tab_id,
+            "{response}"
+        );
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert_eq!(app.restore_layout_node(0, tab.layout.root()), target.layout);
+        assert_eq!(tab.layout.focused(), parked);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn a_planned_restore_refuses_a_destination_that_changed() {
+        type Target = crate::api::schema::ParkedRestoreTarget;
+        type Change = fn(&mut App, PaneId, &mut Target);
+        let cases: [(&str, Change); 5] = [
+            ("tampered ratio", |_, _, target| {
+                let Some(crate::api::schema::LayoutNode::Split { ratio, .. }) =
+                    target.layout.as_mut()
+                else {
+                    panic!("expected a split layout");
+                };
+                *ratio = 0.25;
+            }),
+            ("moved ratio", |app, _, _| {
+                assert!(app.state.workspaces[0].tabs[0]
+                    .layout
+                    .set_ratio_at(&[], 0.3));
+            }),
+            ("new split", |app, _, _| {
+                app.state.workspaces[0].test_split(Direction::Vertical);
+            }),
+            ("parked anchor", |app, middle, _| {
+                park(app, middle);
+            }),
+            ("wrong tab", |app, _, target| {
+                let index = app.state.workspaces[0].test_add_tab(None);
+                target.tab_id = app.public_tab_id(0, index).unwrap();
+            }),
+        ];
+        for (name, change) in cases {
+            let (mut app, middle, parked) = three_pane_app();
+            let pane_id = park(&mut app, parked);
+            let mut target = restore_target(&app, &pane_id);
+
+            change(&mut app, middle, &mut target);
+            let response = unpark_to(&mut app, &target);
+
+            assert_eq!(
+                response["error"]["code"], "stale_restore_target",
+                "{name}: {response}"
+            );
+            assert!(
+                app.state.workspaces[0]
+                    .parked_tabs()
+                    .iter()
+                    .any(|tab| tab.panes.contains_key(&parked)),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn output_and_unrelated_tabs_leave_a_planned_restore_current() {
+        let (mut app, middle, parked) = three_pane_app();
+        let pane_id = park(&mut app, parked);
+        let target = restore_target(&app, &pane_id);
+
+        app.state.workspaces[0].test_add_tab(Some("elsewhere"));
+        let terminal_id = app.state.workspaces[0].tabs[0]
+            .terminal_id(middle)
+            .unwrap()
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Working,
+            );
+        let response = unpark_to(&mut app, &target);
+
+        assert_eq!(
+            response["result"]["pane"]["tab_id"], target.tab_id,
+            "{response}"
+        );
+    }
+
+    #[test]
+    fn a_planned_restore_reports_unknown_and_shown_panes() {
+        let (mut app, middle, _) = three_pane_app();
+        let shown = app.public_pane_id(0, middle).unwrap();
+        let mut target = crate::api::schema::ParkedRestoreTarget {
+            pane_id: "nope".into(),
+            tab_id: app.public_tab_id(0, 0).unwrap(),
+            tab_label: "1".into(),
+            split: None,
+            layout: Some(crate::api::schema::LayoutNode::Pane {
+                pane: Default::default(),
+            }),
+        };
+
+        assert_eq!(
+            unpark_to(&mut app, &target)["error"]["code"],
+            "pane_not_found"
+        );
+        target.pane_id = shown;
+        assert_eq!(
+            unpark_to(&mut app, &target)["error"]["code"],
+            "pane_not_parked"
+        );
+    }
+
+    #[test]
+    fn a_restore_target_from_an_older_server_reads_without_a_layout() {
+        let target: crate::api::schema::ParkedRestoreTarget =
+            serde_json::from_value(serde_json::json!({
+                "pane_id": "p", "tab_id": "t", "tab_label": "1",
+            }))
+            .unwrap();
+
+        assert_eq!(target.layout, None);
+        assert!(!serde_json::to_string(&target).unwrap().contains("layout"));
     }
 }

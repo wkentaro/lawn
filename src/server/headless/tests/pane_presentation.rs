@@ -884,3 +884,540 @@ async fn parked_peek_geometry_follows_the_remaining_viewer() {
     assert_ne!(size(&server), before);
     shutdown_test_runtimes(&mut server);
 }
+
+struct RestoreFixture {
+    server: HeadlessServer,
+    first: crate::layout::PaneId,
+    parked: crate::layout::PaneId,
+    other: crate::layout::PaneId,
+    terminal: String,
+}
+
+fn restore_fixture() -> RestoreFixture {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("restore");
+    let first = workspace.tabs[0].root_pane;
+    workspace.test_split(ratatui::layout::Direction::Horizontal);
+    let parked = workspace.test_split(ratatui::layout::Direction::Vertical);
+    workspace.test_add_tab(Some("other"));
+    let other = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.switch_tab(0);
+    workspace.tabs[0].layout.focus_pane(first);
+    for pane in workspace
+        .tabs
+        .iter()
+        .flat_map(|tab| tab.layout.pane_ids())
+        .collect::<Vec<_>>()
+    {
+        workspace.insert_test_runtime(
+            pane,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b""),
+        );
+    }
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    for pane in [parked, other] {
+        let channels = server.app.tab_channels();
+        server.app.state.park_pane(0, pane, channels).unwrap();
+    }
+    let terminal = server.app.state.workspaces[0]
+        .terminal_id(parked)
+        .unwrap()
+        .to_string();
+    RestoreFixture {
+        server,
+        first,
+        parked,
+        other,
+        terminal,
+    }
+}
+
+fn restore_preview(
+    server: &mut HeadlessServer,
+    client_id: u64,
+    sequence: u64,
+    terminal: Option<&str>,
+) -> bool {
+    let mut policy = request(server, sequence);
+    policy.focus_terminal = terminal.map(str::to_owned);
+    server.handle_server_event(ServerEvent::ClientPaneRestorePreview {
+        client_id,
+        data: serde_json::to_string(&policy).unwrap(),
+    })
+}
+
+fn unpark_to(server: &mut HeadlessServer, parked: crate::layout::PaneId) -> String {
+    let pane_id = server.app.public_pane_id(0, parked).unwrap();
+    let target = server
+        .app
+        .session_snapshot()
+        .parked_restore_targets
+        .into_iter()
+        .find(|target| target.pane_id == pane_id)
+        .unwrap();
+    client_response(
+        server,
+        api::schema::Method::PaneUnparkTo(api::schema::PaneUnparkToParams {
+            pane_id,
+            focus: true,
+            tab_id: target.tab_id,
+            layout: target.layout.unwrap(),
+        }),
+    )
+}
+
+fn surface_rects(
+    surface: &crate::protocol::PaneSurfaceFrame,
+) -> Vec<(String, crate::protocol::SurfaceRect)> {
+    let mut rects = surface
+        .panes
+        .iter()
+        .map(|pane| (pane.pane_id.clone(), pane.rect))
+        .collect::<Vec<_>>();
+    rects.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    rects
+}
+
+#[tokio::test]
+async fn a_restore_preview_shows_the_parked_pane_where_it_returns() {
+    let RestoreFixture {
+        mut server,
+        first,
+        parked,
+        other,
+        terminal,
+    } = restore_fixture();
+    let (control, render) = connect_test_shell(&mut server, 7, 80, 24);
+    let (other_control, other_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let _ = client_shell_snapshot(&control);
+    let _ = client_shell_snapshot(&other_control);
+    let native_before = server.app.state.workspaces[0].tabs[0].layout.pane_ids();
+
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, parked);
+    assert_eq!(server.shell_focus_target(8).unwrap().pane_id, first);
+    assert!(server.shell_client_accepts_pane_input(7, 0, parked));
+    assert!(server.shell_client_views_pane(7, 0, parked));
+    assert!(!server.shell_client_views_pane(7, 0, other));
+    assert!(!server.shell_client_views_pane(8, 0, parked));
+    assert_eq!(
+        server.app.state.workspaces[0].tabs[0].layout.pane_ids(),
+        native_before
+    );
+    server.render_and_stream();
+    let _ = identity_projection(&control);
+    let snapshot = client_shell_snapshot(&control);
+    let public_parked = server.app.public_pane_id(0, parked).unwrap();
+    assert_eq!(snapshot.focused_tab_id, server.app.public_tab_id(0, 0));
+    assert_eq!(
+        snapshot.focused_pane_id.as_deref(),
+        Some(public_parked.as_str())
+    );
+    assert_eq!(snapshot.parked_panes.len(), 2);
+    let preview = recv_pane_surface(&render, "restore preview");
+    assert_eq!(preview.panes.len(), 3);
+    assert!(!preview.splits.is_empty());
+    assert_eq!(recv_pane_surface(&other_render, "native").panes.len(), 2);
+
+    let response = unpark_to(&mut server, parked);
+    assert!(response.contains("\"result\""), "{response}");
+    server.render_and_stream();
+    let restored = loop {
+        let surface = recv_pane_surface(&render, "restored");
+        if surface.panes.len() == 3 {
+            break surface;
+        }
+    };
+    assert_eq!(surface_rects(&restored), surface_rects(&preview));
+    server.app.state.assert_invariants_for_test();
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn dismissing_a_restore_preview_leaves_a_zoomed_origin_as_it_was() {
+    let RestoreFixture {
+        mut server,
+        first,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    server.app.state.workspaces[0].tabs[0].zoomed = true;
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let ratios = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].tabs[0]
+            .layout
+            .splits(Rect::new(0, 0, 80, 24))
+            .iter()
+            .map(|split| split.ratio)
+            .collect::<Vec<_>>()
+    };
+    let before = ratios(&server);
+
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    let target = server.shell_target_for_client(7);
+    let layout = server
+        .pane_layout_for_client(7, target, Rect::new(0, 0, 80, 24))
+        .unwrap();
+    assert!(layout.unzoomed);
+    assert_eq!(layout.panes.len(), 3);
+    assert!(!layout.splits.is_empty());
+    assert!(server.shell_client_views_pane(7, 0, first));
+
+    assert!(restore_preview(&mut server, 7, 2, None));
+    assert_eq!(server.shell_target_for_client(7).unwrap().tab_index, 0);
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, first);
+    let tab = &server.app.state.workspaces[0].tabs[0];
+    assert!(tab.zoomed);
+    assert_eq!(tab.layout.focused(), first);
+    assert!(!tab.layout.pane_ids().contains(&parked));
+    assert_eq!(ratios(&server), before);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_restore_preview_refuses_layout_edits_from_its_client() {
+    let RestoreFixture {
+        mut server,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    let error = |server: &mut HeadlessServer, method| {
+        serde_json::from_str::<api::schema::ErrorResponse>(&client_response(server, method))
+            .map(|response| response.error.code)
+            .unwrap_or_default()
+    };
+
+    for method in [
+        api::schema::Method::PaneZoom(api::schema::PaneZoomParams::default()),
+        api::schema::Method::PaneResize(api::schema::PaneResizeParams {
+            pane_id: None,
+            direction: api::schema::PaneDirection::Left,
+            amount: Some(0.1),
+        }),
+        api::schema::Method::PaneFocusDirection(api::schema::PaneFocusDirectionParams {
+            pane_id: None,
+            direction: api::schema::PaneDirection::Left,
+        }),
+        api::schema::Method::PaneSwap(api::schema::PaneSwapParams {
+            pane_id: None,
+            direction: Some(api::schema::PaneDirection::Left),
+            source_pane_id: None,
+            target_pane_id: None,
+        }),
+    ] {
+        assert_eq!(
+            error(&mut server, method.clone()),
+            "restore_preview_active",
+            "{method:?}"
+        );
+    }
+
+    let mut peek = request(&server, 2);
+    peek.focus_terminal = Some(terminal);
+    assert!(apply(&mut server, 7, &peek));
+    assert_ne!(
+        error(
+            &mut server,
+            api::schema::Method::PaneZoom(api::schema::PaneZoomParams::default())
+        ),
+        "restore_preview_active"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_lone_client_sizes_the_parked_pane_for_its_restore_preview() {
+    let RestoreFixture {
+        mut server,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let _ = client_shell_snapshot(&control);
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&parked].current_size()
+    };
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    server.reapply_controlled_shell_tab_geometry(false);
+    let previewed = size(&server);
+    let tab_id = server.app.public_tab_id(0, 0).unwrap();
+    assert_eq!(
+        server.shell_geometry_controller_for_terminal(&terminal),
+        server
+            .tab_geometry_controllers
+            .get(&tab_id)
+            .map(|&controller| (controller, server.shell_target_for_client(7).unwrap()))
+    );
+
+    let response = unpark_to(&mut server, parked);
+    assert!(response.contains("\"result\""), "{response}");
+    server.reapply_controlled_shell_tab_geometry(false);
+    assert_eq!(previewed, size(&server));
+    assert!(previewed.1 < 80);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_restore_preview_of_a_pane_without_an_origin_shows_its_own_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("standalone");
+    workspace.test_add_tab(Some("alone"));
+    let alone = workspace.tabs[1].root_pane;
+    workspace.switch_tab(0);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let channels = server.app.tab_channels();
+    server.app.state.park_pane(0, alone, channels).unwrap();
+    let terminal = server.app.state.workspaces[0]
+        .terminal_id(alone)
+        .unwrap()
+        .to_string();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let mut peek = request(&server, 1);
+    peek.focus_terminal = Some(terminal.clone());
+    assert!(apply(&mut server, 7, &peek));
+    let old_kind = server.shell_target_for_client(7);
+
+    assert!(restore_preview(&mut server, 7, 2, Some(&terminal)));
+
+    assert_eq!(server.shell_target_for_client(7), old_kind);
+    assert_eq!(server.shell_focus_target(7).unwrap().pane_id, alone);
+    assert!(server.clients[&7]
+        .pane_presentation
+        .as_ref()
+        .unwrap()
+        .restore_origin(&server.app.state)
+        .is_none());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn one_sequence_cannot_switch_between_preview_kinds() {
+    let RestoreFixture {
+        mut server,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let _ = client_shell_snapshot(&control);
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    while control.try_recv().is_ok() {}
+    let mut peek = request(&server, 1);
+    peek.focus_terminal = Some(terminal);
+
+    assert!(!apply(&mut server, 7, &peek));
+
+    let error = loop {
+        if let ServerMessage::EndpointControl { kind, data } =
+            read_server_message(control.recv().unwrap())
+        {
+            if kind == contract::ERROR_KIND {
+                break serde_json::from_str::<contract::PanePresentationError>(&data).unwrap();
+            }
+        }
+    };
+    assert_eq!(error.code, "stale_sequence");
+    assert!(
+        server.clients[&7]
+            .pane_presentation
+            .as_ref()
+            .unwrap()
+            .restore_preview
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn the_origin_controller_sizes_the_previewed_parked_pane_among_viewers() {
+    let RestoreFixture {
+        mut server,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let (_other_control, _other_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&parked].current_size()
+    };
+    let before = size(&server);
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    let origin = server.shell_target_for_client(7).unwrap();
+    server.claim_shell_tab_geometry(7, false);
+    server.reapply_controlled_shell_tab_geometry(false);
+    let previewed = size(&server);
+    assert_ne!(previewed, before);
+    assert_eq!(
+        server.shell_geometry_controller_for_terminal(&terminal),
+        Some((7, origin))
+    );
+
+    let boot_id = server.client_shell_boot_id.clone();
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 7,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "background".into(),
+                method: api::schema::Method::ClientShellSurfaceSet(
+                    api::schema::ClientShellSurfaceSetParams { active: false },
+                ),
+            }),
+        })
+    );
+    assert_eq!(
+        server.shell_geometry_controller_for_terminal(&terminal),
+        None
+    );
+
+    let response = unpark_to(&mut server, parked);
+    assert!(response.contains("\"result\""), "{response}");
+    server.reapply_controlled_shell_tab_geometry(false);
+    assert_eq!(size(&server), previewed);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_direct_detach_returns_a_previewed_pane_to_the_client_that_shows_it() {
+    let RestoreFixture {
+        mut server,
+        first,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let (_other_control, _other_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let size = |server: &HeadlessServer, pane| {
+        server.app.state.workspaces[0].test_runtimes[&pane].current_size()
+    };
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    server.claim_shell_tab_geometry(7, false);
+    let previewed = size(&server, parked);
+    assert!(server.claim_shell_tab_geometry(8, false));
+    let native_first = size(&server, first);
+    assert_eq!(size(&server, parked), previewed);
+    let mut direct = ClientConnection::new(
+        (80, 24),
+        crate::kitty_graphics::HostCellSize::default(),
+        1,
+        RenderEncoding::SemanticFrame,
+        None,
+    );
+    direct.mode = ClientConnectionMode::TerminalAttach {
+        terminal_id: terminal.clone(),
+    };
+    server.clients.insert(21, direct);
+    server.app.state.workspaces[0].test_runtimes[&parked].resize(30, 100, 0, 0);
+    assert_ne!(size(&server, parked), previewed);
+
+    server.remove_client_and_resize_if_needed(21);
+
+    assert_eq!(size(&server, parked), previewed);
+    assert_eq!(size(&server, first), native_first);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn the_interacting_view_takes_back_a_pane_two_previews_share() {
+    let RestoreFixture {
+        mut server,
+        first,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (_control, _render) = connect_test_shell(&mut server, 7, 80, 24);
+    let (_other_control, _other_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let size = |server: &HeadlessServer, pane| {
+        server.app.state.workspaces[0].test_runtimes[&pane].current_size()
+    };
+    let mut peek = request(&server, 1);
+    peek.focus_terminal = Some(terminal.clone());
+    assert!(apply(&mut server, 8, &peek));
+    server.claim_shell_tab_geometry(8, false);
+    let standalone = size(&server, parked);
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    server.claim_shell_tab_geometry(7, false);
+    let previewed = size(&server, parked);
+    assert_ne!(previewed, standalone);
+    let first_size = size(&server, first);
+
+    for _ in 0..2 {
+        server.claim_shell_tab_geometry(8, false);
+        assert_eq!(size(&server, parked), standalone);
+        assert_eq!(size(&server, first), first_size);
+        server.claim_shell_tab_geometry(7, false);
+        assert_eq!(size(&server, parked), previewed);
+    }
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_direct_detach_returns_a_shared_pane_to_a_legacy_peek_that_shows_it() {
+    let RestoreFixture {
+        mut server,
+        parked,
+        terminal,
+        ..
+    } = restore_fixture();
+    let (_a_control, _a_render) = connect_test_shell(&mut server, 7, 80, 24);
+    let (_b_control, _b_render) = connect_test_shell(&mut server, 8, 80, 24);
+    let (_c_control, _c_render) = connect_test_shell(&mut server, 9, 100, 40);
+    let size = |server: &HeadlessServer| {
+        server.app.state.workspaces[0].test_runtimes[&parked].current_size()
+    };
+    assert!(restore_preview(&mut server, 7, 1, Some(&terminal)));
+    let boot_id = server.client_shell_boot_id.clone();
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 7,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "background".into(),
+                method: api::schema::Method::ClientShellSurfaceSet(
+                    api::schema::ClientShellSurfaceSetParams { active: false },
+                ),
+            }),
+        })
+    );
+    let mut peek = request(&server, 1);
+    peek.focus_terminal = Some(terminal.clone());
+    assert!(apply(&mut server, 8, &peek));
+    server.claim_shell_tab_geometry(8, false);
+    let standalone = size(&server);
+    assert!(apply(&mut server, 9, &peek));
+    server.claim_shell_tab_geometry(9, false);
+    assert_ne!(size(&server), standalone);
+    let parked_tab = server.shell_tab_id_for_client(9).unwrap();
+    let clear = request(&server, 2);
+    assert!(apply(&mut server, 9, &clear));
+    assert_eq!(server.tab_geometry_controllers.get(&parked_tab), Some(&9));
+    assert_ne!(server.shell_tab_id_for_client(9), Some(parked_tab));
+    let mut direct = ClientConnection::new(
+        (80, 24),
+        crate::kitty_graphics::HostCellSize::default(),
+        1,
+        RenderEncoding::SemanticFrame,
+        None,
+    );
+    direct.mode = ClientConnectionMode::TerminalAttach {
+        terminal_id: terminal.clone(),
+    };
+    server.clients.insert(21, direct);
+    server.app.state.workspaces[0].test_runtimes[&parked].resize(30, 100, 0, 0);
+
+    server.remove_client_and_resize_if_needed(21);
+
+    assert_eq!(size(&server), standalone);
+    shutdown_test_runtimes(&mut server);
+}

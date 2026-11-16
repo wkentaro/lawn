@@ -76,29 +76,10 @@ impl HeadlessServer {
         {
             return true;
         }
-        let Some(target) = self.shell_target_for_client(client_id) else {
+        let Some((target, panes)) = self.shell_viewed_panes(client_id) else {
             return false;
         };
-        let Some(tab) = self
-            .app
-            .state
-            .workspaces
-            .get(target.workspace_index)
-            .and_then(|workspace| workspace.tabs.get(target.tab_index))
-        else {
-            return false;
-        };
-        if tab.zoomed {
-            return false;
-        }
-        let presentation = self
-            .clients
-            .get(&client_id)
-            .and_then(|client| client.pane_presentation.as_ref());
-        tab.layout.pane_ids().into_iter().any(|pane_id| {
-            if presentation.is_some_and(|presentation| !presentation.presents(pane_id)) {
-                return false;
-            }
+        panes.into_iter().any(|pane_id| {
             self.app
                 .state
                 .runtime_for_pane_in_workspace(
@@ -307,30 +288,10 @@ impl HeadlessServer {
                 if !client.is_active_shell_client() || client.writer.is_none() {
                     continue;
                 }
-                let Some(target) = self.shell_target_for_client(client_id) else {
+                let Some((_, panes)) = self.shell_viewed_panes(client_id) else {
                     continue;
                 };
-                let Some(tab) = self
-                    .app
-                    .state
-                    .workspaces
-                    .get(target.workspace_index)
-                    .and_then(|workspace| workspace.tabs.get(target.tab_index))
-                else {
-                    continue;
-                };
-                if tab.zoomed {
-                    if let Some(pane_id) = self.focused_pane_for_client(client_id, tab) {
-                        pane_ids.insert(pane_id);
-                    }
-                } else {
-                    pane_ids.extend(tab.layout.pane_ids().into_iter().filter(|id| {
-                        client
-                            .pane_presentation
-                            .as_ref()
-                            .is_none_or(|presentation| presentation.presents(*id))
-                    }));
-                }
+                pane_ids.extend(panes);
                 if self.shell_client_shows_popup(client_id) {
                     if let Some(popup) = &self.app.state.popup_pane {
                         pane_ids.insert(popup.pane_id);
@@ -441,24 +402,7 @@ impl HeadlessServer {
             {
                 return self.shell_client_shows_popup(client_id);
             }
-            let Some(target) = self.shell_target_for_client(client_id) else {
-                return false;
-            };
-            let Some(tab) = self
-                .app
-                .state
-                .workspaces
-                .get(target.workspace_index)
-                .and_then(|workspace| workspace.tabs.get(target.tab_index))
-            else {
-                return false;
-            };
-            tab.panes.contains_key(&pane_id)
-                && client
-                    .pane_presentation
-                    .as_ref()
-                    .is_none_or(|presentation| presentation.presents(pane_id))
-                && (!tab.zoomed || self.focused_pane_for_client(client_id, tab) == Some(pane_id))
+            self.shell_pane_view_target(client_id, pane_id).is_some()
         })
     }
 

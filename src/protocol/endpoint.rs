@@ -178,6 +178,7 @@ impl EndpointServerWelcome {
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 pane_presentation::CAPABILITY.into(),
+                pane_presentation::RESTORE_PREVIEW_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -391,6 +392,7 @@ mod tests {
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 pane_presentation::CAPABILITY.to_string(),
+                pane_presentation::RESTORE_PREVIEW_CAPABILITY.to_string(),
             ]
         );
     }

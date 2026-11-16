@@ -47,7 +47,7 @@ pub(super) fn snapshot_with_completions(
             .filter_map(|agent| agent.completion_seq.map(|seq| (agent.pane_id.clone(), seq)))
             .collect(),
     };
-    let peek = presentation.and_then(|presentation| presentation.peek_target());
+    let peek = presentation.and_then(|presentation| presentation.peek_target(&app.state));
     let focused_workspace_id = peek
         .map(|peek| app.public_workspace_id(peek.workspace_index))
         .or_else(|| location.and_then(|location| location.focused_workspace_id.clone()))
@@ -71,7 +71,7 @@ pub(super) fn snapshot_with_completions(
                 .tabs
                 .get(tab_index)?;
             let pane_id = match presentation {
-                Some(presentation) => presentation.focused(tab)?,
+                Some(presentation) => presentation.focused_in(&app.state, tab)?,
                 None => tab.layout.focused(),
             };
             app.public_pane_id(workspace_index, pane_id)

@@ -1128,6 +1128,24 @@ impl Workspace {
         )
     }
 
+    pub(crate) fn unpark_layout(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<(UnparkPlan, crate::layout::TileLayout)> {
+        let plan = self.unpark_plan(pane_id)?;
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.number == plan.tab_number())?;
+        let mut layout = tab.layout.clone();
+        if let UnparkPlan::Split(split) = plan {
+            layout
+                .insert_pane_near(split.anchor, pane_id, split.direction, split.ratio, false)
+                .then_some(())?;
+        }
+        Some((plan, layout))
+    }
+
     pub fn find_tab_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
         self.tabs
             .iter()

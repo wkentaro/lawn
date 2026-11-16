@@ -85,11 +85,16 @@ impl RenderPipeline {
                 workspace_index,
                 tab_index: self.app.state.workspaces[workspace_index].active_tab_index(),
             });
+        let area = Rect::new(0, 0, surface_size.cols, surface_size.rows);
         let presented = target.and_then(|target| {
-            self.presentation.as_ref()?.layout(
-                &self.app.state.workspaces[target.workspace_index].tabs[target.tab_index],
-                Rect::new(0, 0, surface_size.cols, surface_size.rows),
-            )
+            let presentation = self.presentation.as_ref()?;
+            match presentation.restore_origin(&self.app.state) {
+                Some(origin) => presentation.restore_layout(&self.app.state, origin, area),
+                None => presentation.layout(
+                    &self.app.state.workspaces[target.workspace_index].tabs[target.tab_index],
+                    area,
+                ),
+            }
         });
         let rendered = super::client_shell::render_pane_surface(
             &mut self.app,
@@ -627,6 +632,62 @@ async fn render_scale_profile() {
     print_surface_reuse_profiles();
     print_surface_damage_profiles();
     print_pane_presentation_profiles();
+    print_restore_preview_profiles();
+}
+
+fn print_restore_preview_profiles() {
+    println!("restore preview: origin panes + one parked pane, fixed {COLS}x{ROWS}");
+    println!("       panes  metadata_median_us  metadata_p95_us  server_median_us  server_p95_us");
+    for count in [1, 15] {
+        let mut pipeline = RenderPipeline::new(active_panes(count + 1));
+        pipeline.app.state.ensure_test_terminals();
+        let parked = *pipeline.app.state.workspaces[0].tabs[0]
+            .layout
+            .pane_ids()
+            .last()
+            .unwrap();
+        let channels = pipeline.app.tab_channels();
+        pipeline.app.state.park_pane(0, parked, channels).unwrap();
+        let locations = super::pane_presentation::terminal_locations(&pipeline.app.state);
+        let terminal = pipeline.app.state.workspaces[0]
+            .terminal_id(parked)
+            .unwrap()
+            .to_string();
+        let request = crate::protocol::endpoint::pane_presentation::SetPanePresentation {
+            boot_id: "bench-boot".into(),
+            sequence: 1,
+            hidden_terminals: vec![terminal.clone()],
+            read_only_terminals: Vec::new(),
+            preview_terminal: None,
+            focus_terminal: Some(terminal),
+        };
+        let presentation =
+            super::pane_presentation::ClientPanePresentation::new(request, true, &locations);
+        assert!(presentation.restore_origin(&pipeline.app.state).is_some());
+        pipeline.presentation = Some(presentation);
+        let metadata = summarize(
+            (0..WARMUP_COUNT + SAMPLE_COUNT)
+                .map(|_| {
+                    let started = Instant::now();
+                    black_box(super::client_shell::snapshot_with_completions(
+                        &pipeline.app,
+                        "bench-boot",
+                        1,
+                        None,
+                        None,
+                        pipeline.presentation.as_ref(),
+                    ));
+                    started.elapsed()
+                })
+                .skip(WARMUP_COUNT)
+                .collect(),
+        );
+        let stats = profile_pipeline(pipeline);
+        println!(
+            "  {count:>10}  {:>18}  {:>15}  {:>16}  {:>13}",
+            metadata.median_us, metadata.p95_us, stats.server.median_us, stats.server.p95_us
+        );
+    }
 }
 
 fn print_pane_presentation_profiles() {
@@ -675,7 +736,7 @@ fn print_pane_presentation_profiles() {
                     pipeline.client = ClientShellState::new(config);
                     let endpoint = crate::client::endpoint::ClientEndpointId::Local;
                     pipeline.client.set_endpoint_parking_supported(&endpoint, true);
-                    pipeline.presentation = Some(super::pane_presentation::ClientPanePresentation::new(request, &locations));
+                    pipeline.presentation = Some(super::pane_presentation::ClientPanePresentation::new(request, false, &locations));
                     let (snapshot, _, identities) = super::client_shell::snapshot_with_completions(&pipeline.app, "bench-boot", 1, None, None, pipeline.presentation.as_ref());
                     pipeline.client.set_endpoint_snapshot_for_generation(&endpoint, 7, Box::new(snapshot));
                     black_box(pipeline.client.tick_parking());

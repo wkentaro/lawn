@@ -243,7 +243,9 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 
 窗格移到同一工作区的隐藏标签页，窗格 id 不变，因此 `pane.read`、`pane.report_agent`、`agent.send_keys` 等针对窗格或智能体的请求仍能送达。标签页请求和 `session.snapshot` 的 `tabs` 不包含隐藏标签页。`pane.split` 不会拆分暂存的窗格，`pane.focus` 会返回 `pane_parked` 错误。有暂存窗格的工作区，在最后一个可见标签页关闭或移走后仍会保留。`session.snapshot` 在 `parked_panes` 中列出暂存的窗格。关闭工作区会一并关闭其中暂存的窗格。`pane.unpark` 把窗格放回原来的标签页；该标签页不存在时放入新标签页。响应是 `type: "pane_info"`。订阅者会收到带有 `pane` 的 `pane.parked` 和 `pane.unparked`;如果窗格离开或返回的标签页可见，随后还会收到该标签页的 `layout.updated`。
 
-可选字段 `parked_restore_targets` 为每个暂存窗格提供恢复目标的 `tab_id` 和 `tab_label`。如果原标签页仍然可见，`split` 还包含分割目标 `target_pane_id`、`direction` 和 `ratio`。这些信息描述当前的恢复目标，不会预留位置。列表为空时省略该字段。
+可选字段 `parked_restore_targets` 为每个暂存窗格提供恢复目标的 `tab_id` 和 `tab_label`。如果原标签页仍然可见，`split` 还包含分割目标 `target_pane_id`、`direction` 和 `ratio`。可选的 `layout` 用窗格 ID、分割方向和比例描述恢复后整个标签页的布局。这些信息描述当前的恢复目标，不会预留位置。列表为空时省略该字段。
+
+对于声明支持 `pane.unpark_to` 的服务器，客户端可以发送目标中的 `pane_id`、`tab_id`、`layout`，以及可选的 `focus`，其默认值为 `false`。只有当前目标和布局仍然匹配时才会恢复，否则返回 `stale_restore_target`，窗格保持暂存状态。终端输出不会使目标失效。成功时的响应和事件与 `pane.unpark` 相同。旧服务器可能不提供 `layout` 或该方法，客户端必须确认两者都存在后才能发送 `pane.unpark_to`。
 
 `workspace.park` 暂存工作区所有可见标签页中的窗格，并隐藏该工作区。它接受 `workspace_id`,返回带有 `parked: true` 的 `type: "workspace_info"`。没有窗格的工作区会返回 `workspace_empty` 错误。订阅者会先收到每个窗格的 `pane.parked`,然后收到 `workspace.updated`。当工作区重新有可见标签页时（例如通过 `pane.unpark` 或 `tab.create`）,或被 `workspace.focus` 选中时，它会重新显示。如果被暂存的工作区是当前工作区，下一个显示中的工作区会成为当前工作区；若没有剩余，Lawn 会打开一个新工作区。
 

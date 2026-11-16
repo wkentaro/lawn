@@ -3,7 +3,6 @@ use super::*;
 use crate::layout::PaneId;
 use crate::server::client_shell::resize_popup_runtime;
 use crate::server::clients::ClientShellTopology;
-use crate::server::pane_presentation::ClientPanePresentation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShellFocusTarget {
@@ -62,7 +61,7 @@ impl HeadlessServer {
         if let Some(peek) = client
             .pane_presentation
             .as_ref()
-            .and_then(ClientPanePresentation::peek_target)
+            .and_then(|presentation| presentation.peek_target(&self.app.state))
         {
             return Some(peek);
         }
@@ -223,7 +222,7 @@ impl HeadlessServer {
             if let Some(presentation) = client
                 .pane_presentation
                 .as_mut()
-                .filter(|presentation| presentation.peek_target().is_some())
+                .filter(|presentation| presentation.active_peek().is_some())
             {
                 presentation.deactivate_focus();
                 client.shell_snapshot = None;
@@ -285,6 +284,7 @@ impl HeadlessServer {
                 | Method::WorkspacePark(_)
                 | Method::PaneSplit(_)
                 | Method::PaneUnpark(_)
+                | Method::PaneUnparkTo(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
                 | Method::TabMoveToWorkspace(_)
@@ -321,6 +321,7 @@ impl HeadlessServer {
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneUnpark(_)
+                | Method::PaneUnparkTo(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
@@ -356,6 +357,7 @@ impl HeadlessServer {
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneUnpark(_)
+                | Method::PaneUnparkTo(_)
                 | Method::PaneZoom(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
@@ -520,34 +522,96 @@ impl HeadlessServer {
         workspace_index: usize,
         pane_id: crate::layout::PaneId,
     ) -> bool {
-        let Some(target) = self.shell_target_for_client(client_id) else {
-            return false;
-        };
-        if target.workspace_index != workspace_index {
-            return false;
-        }
-        let Some(tab) = self
+        self.shell_pane_view_target(client_id, pane_id)
+            .is_some_and(|target| target.workspace_index == workspace_index)
+    }
+
+    pub(super) fn shell_pane_view_target(
+        &self,
+        client_id: u64,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<crate::ui::TabSurfaceTarget> {
+        let target = self.shell_target_for_client(client_id)?;
+        let tab = self
             .app
             .state
             .workspaces
-            .get(workspace_index)
-            .and_then(|workspace| workspace.tabs.get(target.tab_index))
-        else {
-            return false;
+            .get(target.workspace_index)?
+            .tabs
+            .get(target.tab_index)?;
+        let presentation = self.clients.get(&client_id)?.pane_presentation.as_ref();
+        let origin = presentation
+            .and_then(|presentation| presentation.restore_origin(&self.app.state))
+            .filter(|origin| origin.target == target);
+        let viewed = if tab.zoomed && origin.is_none() {
+            self.focused_pane_for_client(client_id, tab) == Some(pane_id)
+        } else {
+            presentation.is_none_or(|presentation| presentation.presents(pane_id))
+                && (origin.is_some_and(|origin| origin.parked == pane_id)
+                    || tab.panes.contains_key(&pane_id))
         };
-        if self
+        viewed.then_some(target)
+    }
+
+    pub(super) fn shell_viewed_panes(
+        &self,
+        client_id: u64,
+    ) -> Option<(crate::ui::TabSurfaceTarget, Vec<crate::layout::PaneId>)> {
+        let target = self.shell_target_for_client(client_id)?;
+        let tab = self
+            .app
+            .state
+            .workspaces
+            .get(target.workspace_index)?
+            .tabs
+            .get(target.tab_index)?;
+        let presentation = self.clients.get(&client_id)?.pane_presentation.as_ref();
+        let presented = |pane_id: &crate::layout::PaneId| {
+            presentation.is_none_or(|presentation| presentation.presents(*pane_id))
+        };
+        if let Some(origin) = presentation
+            .and_then(|presentation| presentation.restore_origin(&self.app.state))
+            .filter(|origin| origin.target == target)
+        {
+            let mut panes = tab.layout.pane_ids();
+            panes.retain(presented);
+            panes.push(origin.parked);
+            return Some((target, panes));
+        }
+        if tab.zoomed {
+            return Some((
+                target,
+                self.focused_pane_for_client(client_id, tab)
+                    .into_iter()
+                    .collect(),
+            ));
+        }
+        let mut panes = tab.layout.pane_ids();
+        panes.retain(presented);
+        Some((target, panes))
+    }
+
+    pub(super) fn restore_preview_blocks(
+        &self,
+        client_id: u64,
+        method: &api::schema::Method,
+    ) -> bool {
+        use api::schema::Method;
+
+        matches!(
+            method,
+            Method::LayoutSetSplitRatio(_)
+                | Method::PaneFocusDirection(_)
+                | Method::PaneResize(_)
+                | Method::PaneSplit(_)
+                | Method::PaneSwap(_)
+                | Method::PaneZoom(_)
+        ) && self
             .clients
             .get(&client_id)
             .and_then(|client| client.pane_presentation.as_ref())
-            .is_some_and(|presentation| !presentation.presents(pane_id))
-        {
-            return false;
-        }
-        if tab.zoomed {
-            self.focused_pane_for_client(client_id, tab) == Some(pane_id)
-        } else {
-            tab.layout.pane_ids().contains(&pane_id)
-        }
+            .and_then(|presentation| presentation.restore_origin(&self.app.state))
+            .is_some()
     }
 
     fn finish_shell_tab_geometry_change(&mut self, start_pending_agent_resumes: bool) {
@@ -753,7 +817,9 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if self.tab_geometry_controllers.insert(tab_id, client_id) == Some(client_id) {
+        if self.tab_geometry_controllers.insert(tab_id, client_id) == Some(client_id)
+            && !self.shares_a_peeked_pane(client_id)
+        {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -806,6 +872,34 @@ impl HeadlessServer {
         &self,
         terminal_id: &str,
     ) -> Option<(u64, crate::ui::TabSurfaceTarget)> {
+        let previewed = self.clients.values().find_map(|client| {
+            let origin = client
+                .pane_presentation
+                .as_ref()?
+                .restore_origin(&self.app.state)?;
+            (self.app.state.workspaces[origin.target.workspace_index]
+                .terminal_id(origin.parked)?
+                .as_str()
+                == terminal_id)
+                .then_some(origin)
+        });
+        if let Some(origin) = previewed {
+            let viewers = self.clients.iter().filter_map(|(&client_id, client)| {
+                let target = self
+                    .shell_pane_view_target(client_id, origin.parked)
+                    .filter(|target| {
+                        client.is_active_shell_client()
+                            && target.workspace_index == origin.target.workspace_index
+                    })?;
+                let controls = self
+                    .tab_id_for_target(target)
+                    .and_then(|tab_id| self.tab_geometry_controllers.get(&tab_id))
+                    == Some(&client_id);
+                Some((controls, client_id, target))
+            });
+            let (_, client_id, target) = viewers.min_by_key(|(controls, ..)| !*controls)?;
+            return Some((client_id, target));
+        }
         let target = if self
             .app
             .state
@@ -851,7 +945,93 @@ impl HeadlessServer {
         client_id: u64,
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
+        if self
+            .tab_id_for_target(target)
+            .and_then(|tab_id| self.tab_geometry_controllers.get(&tab_id))
+            != Some(&client_id)
+        {
+            return self.resize_peeked_pane(client_id, target);
+        }
         self.apply_shell_tab_geometry_to_target(client_id, target, true)
+    }
+
+    fn resize_peeked_pane(&mut self, client_id: u64, target: crate::ui::TabSurfaceTarget) -> bool {
+        let Some(client) = self.clients.get(&client_id) else {
+            return false;
+        };
+        let (cols, rows) = client.terminal_size;
+        let area = Rect::new(0, 0, cols, rows);
+        let cell_size = if client.cell_size.is_known() {
+            client.cell_size
+        } else {
+            crate::kitty_graphics::HostCellSize::default()
+        };
+        let Some(pane_id) = client
+            .pane_presentation
+            .as_ref()
+            .and_then(|presentation| presentation.active_peek())
+            .map(|peek| peek.pane_id)
+        else {
+            return false;
+        };
+        if self.app.state.workspaces[target.workspace_index]
+            .terminal_id(pane_id)
+            .is_some_and(|terminal_id| {
+                self.app
+                    .state
+                    .direct_attach_resize_locks
+                    .contains(terminal_id)
+            })
+        {
+            return false;
+        }
+        let layout = crate::ui::compute_tab_surface_for_presented(
+            &self.app.state,
+            &self.app.terminal_runtimes,
+            Some(target),
+            area,
+            false,
+            cell_size,
+            self.pane_layout_for_client(client_id, Some(target), area),
+        );
+        let (Some(info), Some(runtime)) = (
+            layout.pane_infos.iter().find(|info| info.id == pane_id),
+            self.app.state.runtime_for_pane_in_workspace(
+                &self.app.terminal_runtimes,
+                target.workspace_index,
+                pane_id,
+            ),
+        ) else {
+            return false;
+        };
+        runtime.resize(
+            info.inner_rect.height,
+            info.inner_rect.width,
+            cell_size.width_px,
+            cell_size.height_px,
+        );
+        self.finish_shell_tab_geometry_change(true);
+        true
+    }
+
+    fn shares_a_peeked_pane(&self, client_id: u64) -> bool {
+        let peeked = |client_id: u64| {
+            self.clients
+                .get(&client_id)?
+                .pane_presentation
+                .as_ref()?
+                .active_peek()
+                .map(|peek| (peek.target.workspace_index, peek.pane_id))
+        };
+        let Some(pane) = peeked(client_id) else {
+            return false;
+        };
+        let target = self.shell_target_for_client(client_id);
+        self.clients.keys().any(|&other| {
+            other != client_id
+                && peeked(other) == Some(pane)
+                && self.shell_target_for_client(other) != target
+        })
     }
 
     /// Applies a public socket request, including its session-wide focus projection.
@@ -914,7 +1094,11 @@ impl HeadlessServer {
         );
         let inspect_unpark = matches!(
             &msg.request.method,
-            api::schema::Method::PaneUnpark(params) if params.focus
+            api::schema::Method::PaneUnpark(api::schema::PaneUnparkParams { focus: true, .. })
+                | api::schema::Method::PaneUnparkTo(api::schema::PaneUnparkToParams {
+                    focus: true,
+                    ..
+                })
         );
         let ensure_active_requested = matches!(
             &msg.request.method,
@@ -984,6 +1168,16 @@ impl HeadlessServer {
         let internal_changed = self.drain_all_internal_events_with_forwarding();
         if self.shutting_down || self.host_shutdown_requested() {
             Self::reject_api_request_for_shutdown(msg);
+            return internal_changed;
+        }
+        if self.restore_preview_blocks(client_id, &msg.request.method) {
+            let _ = msg
+                .respond_to
+                .send(crate::server::client_commands::error_response(
+                    msg.request.id,
+                    "restore_preview_active",
+                    "this client previews a restore layout that the request cannot address",
+                ));
             return internal_changed;
         }
         let focus_before = self.shell_focus_target(client_id);

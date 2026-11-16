@@ -6,6 +6,8 @@ pub const CAPABILITY: &str = "pane_presentation_v1";
 pub const SET_KIND: &str = "endpoint.pane-presentation.set.v1";
 pub const IDENTITIES_KIND: &str = "endpoint.pane-presentation.v1";
 pub const ERROR_KIND: &str = "endpoint.pane-presentation.error.v1";
+pub const RESTORE_PREVIEW_CAPABILITY: &str = "pane_restore_preview_v1";
+pub const RESTORE_PREVIEW_SET_KIND: &str = "endpoint.pane-presentation.restore-preview.set.v1";
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_TERMINALS: usize = 4096;

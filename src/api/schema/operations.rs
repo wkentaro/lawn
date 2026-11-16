@@ -188,6 +188,7 @@ mod tests {
             "pane.move",
             "pane.park",
             "pane.unpark",
+            "pane.unpark_to",
             "pane.zoom",
             "pane.focus_direction",
             "pane.resize",

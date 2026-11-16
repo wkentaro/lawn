@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::agents::AgentInfo;
 use super::common::SplitDirection;
-use super::panes::{PaneInfo, PaneLayoutSnapshot};
+use super::panes::{LayoutNode, PaneInfo, PaneLayoutSnapshot};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
@@ -36,6 +36,8 @@ pub struct ParkedRestoreTarget {
     pub tab_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub split: Option<ParkedRestoreSplit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<LayoutNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

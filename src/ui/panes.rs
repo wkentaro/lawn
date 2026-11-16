@@ -396,16 +396,23 @@ pub(super) fn compute_pane_infos_for_tab_presented(
     area: Rect,
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
-    presented: Option<Vec<PaneInfo>>,
+    presented: Option<crate::layout::PresentedLayout>,
 ) -> Vec<PaneInfo> {
     let ws_idx = target.workspace_index;
     let tab_idx = target.tab_index;
-    let Some(tab) = app
-        .workspaces
-        .get(ws_idx)
-        .and_then(|workspace| workspace.tabs.get(tab_idx))
-    else {
+    let Some(workspace) = app.workspaces.get(ws_idx) else {
         return Vec::new();
+    };
+    let Some(tab) = workspace.tabs.get(tab_idx) else {
+        return Vec::new();
+    };
+    let unzoomed = presented
+        .as_ref()
+        .is_some_and(|presented| presented.unzoomed);
+    let presented = presented.map(|presented| presented.panes);
+    let terminal_id = |pane_id| {
+        tab.terminal_id(pane_id)
+            .or_else(|| workspace.terminal_id(pane_id))
     };
 
     if presented.as_ref().is_some_and(Vec::is_empty) {
@@ -416,7 +423,7 @@ pub(super) fn compute_pane_infos_for_tab_presented(
         .map_or_else(|| tab.layout.pane_count(), Vec::len)
         > 1;
 
-    if tab.zoomed {
+    if tab.zoomed && !unzoomed {
         let focused_id = presented
             .as_ref()
             .and_then(|panes| panes.iter().find(|pane| pane.is_focused))
@@ -429,7 +436,7 @@ pub(super) fn compute_pane_infos_for_tab_presented(
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
             if resize_panes
-                && tab.terminal_id(focused_id).is_some_and(|terminal_id| {
+                && terminal_id(focused_id).is_some_and(|terminal_id| {
                     !app.direct_attach_resize_locks.contains(terminal_id)
                 })
             {
@@ -467,7 +474,7 @@ pub(super) fn compute_pane_infos_for_tab_presented(
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
             if resize_panes
-                && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                && terminal_id(info.id).is_some_and(|terminal_id| {
                     !app.direct_attach_resize_locks.contains(terminal_id)
                 })
             {
@@ -543,6 +550,7 @@ pub(super) fn render_panes(
             .tabs
             .get(target.tab_index)
             .and_then(|tab| tab.terminal_id(info.id))
+            .or_else(|| ws.terminal_id(info.id))
             .and_then(|id| app.terminals.get(id))
             .and_then(|terminal| terminal.restore_error.as_deref())
         {

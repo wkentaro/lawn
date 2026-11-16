@@ -303,6 +303,10 @@ mod tests {
             Some("5db69844687bcdc92b1fd70186a1db9b5845bb12218310bb9f573693a595142e")
         );
         assert_eq!(
+            actual.remove("pane.unpark_to").as_deref(),
+            Some("50f6259c4b8786173cbb6539be4de82876a06ddd1e661fbbe30bdf1b8b223548")
+        );
+        assert_eq!(
             actual.remove("pane.snapshot").as_deref(),
             Some("a6ace65cfe47d808c5d86a6104cb4b471480e7f7c27cbbd3dc2e1ad0ce5b0cd7")
         );

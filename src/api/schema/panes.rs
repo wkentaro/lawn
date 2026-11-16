@@ -765,3 +765,12 @@ pub struct PaneUnparkParams {
     #[serde(default)]
     pub focus: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneUnparkToParams {
+    pub pane_id: String,
+    #[serde(default)]
+    pub focus: bool,
+    pub tab_id: String,
+    pub layout: LayoutNode,
+}

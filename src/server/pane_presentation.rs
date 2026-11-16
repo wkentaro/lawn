@@ -4,7 +4,7 @@ use crate::app::AppState;
 use crate::layout::{PaneId, PresentedLayout};
 use crate::protocol::endpoint::pane_presentation::SetPanePresentation;
 use crate::ui::TabSurfaceTarget;
-use crate::workspace::Tab;
+use crate::workspace::{Tab, UnparkPlan};
 use ratatui::layout::Rect;
 
 #[derive(Clone, Copy)]
@@ -43,14 +43,21 @@ pub(crate) fn terminal_locations(state: &AppState) -> HashMap<&str, PaneLocation
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RestoreOrigin {
+    pub(crate) target: TabSurfaceTarget,
+    pub(crate) parked: PaneId,
+}
+
 #[derive(Clone)]
 pub(crate) struct ClientPanePresentation {
     pub(crate) request: SetPanePresentation,
+    pub(crate) restore_preview: bool,
     hidden: HashSet<PaneId>,
     read_only: HashSet<PaneId>,
     preview: Option<PaneLocation>,
     focus: Option<PaneId>,
-    peek: Option<TabSurfaceTarget>,
+    peek: Option<PaneLocation>,
     pub(crate) preview_active: bool,
     focus_active: bool,
 }
@@ -58,12 +65,14 @@ pub(crate) struct ClientPanePresentation {
 impl ClientPanePresentation {
     pub(crate) fn new(
         request: SetPanePresentation,
+        restore_preview: bool,
         locations: &HashMap<&str, PaneLocation>,
     ) -> Self {
         let mut result = Self {
             preview_active: request.preview_terminal.is_some(),
             focus_active: request.focus_terminal.is_some(),
             request,
+            restore_preview,
             hidden: HashSet::new(),
             read_only: HashSet::new(),
             preview: None,
@@ -102,7 +111,7 @@ impl ClientPanePresentation {
         self.peek = self
             .requested_location(locations)
             .filter(|location| location.parked)
-            .map(|location| location.target);
+            .copied();
     }
 
     fn requested_location<'a>(
@@ -118,13 +127,80 @@ impl ClientPanePresentation {
 
     /// A parked pane this client is checking in on; it overrides the shared
     /// location without moving it, so ending the peek returns to the same tab.
-    pub(crate) fn peek_target(&self) -> Option<TabSurfaceTarget> {
+    pub(crate) fn peek_target(&self, state: &AppState) -> Option<TabSurfaceTarget> {
+        let peek = self.active_peek()?;
+        Some(
+            self.restore_origin(state)
+                .map_or(peek.target, |origin| origin.target),
+        )
+    }
+
+    pub(crate) fn active_peek(&self) -> Option<PaneLocation> {
         self.peek
             .filter(|_| self.preview_active || self.focus_active)
     }
 
+    pub(crate) fn restore_origin(&self, state: &AppState) -> Option<RestoreOrigin> {
+        if !self.restore_preview {
+            return None;
+        }
+        let peek = self.active_peek()?;
+        let workspace_index = peek.target.workspace_index;
+        let workspace = state.workspaces.get(workspace_index)?;
+        let UnparkPlan::Split(split) = workspace.unpark_plan(peek.pane_id)? else {
+            return None;
+        };
+        let tab_index = workspace
+            .visible_tabs()
+            .iter()
+            .position(|tab| tab.number == split.tab_number)?;
+        Some(RestoreOrigin {
+            target: TabSurfaceTarget {
+                workspace_index,
+                tab_index,
+            },
+            parked: peek.pane_id,
+        })
+    }
+
+    pub(crate) fn restore_layout(
+        &self,
+        state: &AppState,
+        origin: RestoreOrigin,
+        area: Rect,
+    ) -> Option<PresentedLayout> {
+        let (_, layout) = state
+            .workspaces
+            .get(origin.target.workspace_index)?
+            .unpark_layout(origin.parked)?;
+        let mut presented = layout.presented(area, Some(origin.parked), |id| self.presents(id));
+        presented.unzoomed = true;
+        Some(presented)
+    }
+
+    pub(crate) fn focused_in(&self, state: &AppState, tab: &Tab) -> Option<PaneId> {
+        if let Some(origin) = self.restore_origin(state) {
+            if state
+                .workspaces
+                .get(origin.target.workspace_index)
+                .and_then(|workspace| workspace.tabs.get(origin.target.tab_index))
+                .is_some_and(|origin_tab| std::ptr::eq(origin_tab, tab))
+            {
+                return Some(origin.parked);
+            }
+        }
+        self.focused(tab)
+    }
+
     pub(crate) fn presents(&self, pane_id: PaneId) -> bool {
-        if self.preview_active {
+        if self.restore_preview
+            && self
+                .active_peek()
+                .is_some_and(|peek| peek.pane_id == pane_id)
+        {
+            return true;
+        }
+        if self.preview_active && !self.restore_preview {
             self.preview
                 .is_some_and(|preview| preview.pane_id == pane_id)
         } else {
@@ -248,7 +324,7 @@ mod tests {
                 parked: false,
             },
         )]);
-        let mut policy = ClientPanePresentation::new(request(), &locations);
+        let mut policy = ClientPanePresentation::new(request(), false, &locations);
         assert!(!policy.presents(first));
         locations.insert(
             "one",
@@ -263,7 +339,7 @@ mod tests {
         assert!(!policy.presents(second));
         let mut preview = request();
         preview.preview_terminal = Some("one".into());
-        let mut policy = ClientPanePresentation::new(preview, &locations);
+        let mut policy = ClientPanePresentation::new(preview, false, &locations);
         assert!(policy.presents(second));
         assert!(!policy.accepts_input(second));
         assert!(!policy.presents(first));

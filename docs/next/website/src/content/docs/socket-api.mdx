@@ -103,7 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.ensure_active`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.park`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` (always return `unsupported`) |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.move_to_workspace`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.park`, `pane.unpark`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.park`, `pane.unpark`, `pane.unpark_to`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.snapshot`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -330,8 +330,18 @@ pane, and `pane.focus` rejects it with `pane_parked`. A workspace with parked
 panes stays open when its last visible tab closes or moves away. `session.snapshot` lists parked panes under `parked_panes`.
 The optional `parked_restore_targets` list names each parked pane's destination
 `tab_id` and `tab_label`. When the original tab remains visible, `split` also
-provides `target_pane_id`, `direction`, and `ratio`. These describe the current
-restore destination, not a reservation. The list is omitted when empty.
+provides `target_pane_id`, `direction`, and `ratio`. Optional `layout` describes
+the whole tab after restoration, using pane IDs, split directions, and ratios.
+These describe the current restore destination, not a reservation. The list is
+omitted when empty.
+
+Servers advertising `pane.unpark_to` accept `pane_id`, `tab_id`, and `layout`
+from that target, plus optional `focus` with a default of `false`. The request
+restores only if the current destination and layout still match. Otherwise it
+returns `stale_restore_target` and leaves the pane parked. Terminal output does
+not invalidate a target. Success has the same response and events as
+`pane.unpark`. Older servers omit `layout` or the advertised method; clients
+must not send `pane.unpark_to` without both.
 Closing the workspace closes its parked panes too.
 `pane.unpark` returns the pane to the tab it left, or to a new tab when that tab
 is gone. The response is `type: "pane_info"`. Subscribers see `pane.parked`
