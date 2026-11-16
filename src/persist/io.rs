@@ -161,6 +161,7 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
         return Err(not_a_snapshot("it has no workspaces".into()));
     }
     let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
+    let _lock = super::doc::hold_for_restore()?;
     super::SessionWriter::new(true)
         .try_save(&snapshot, None)
         .map_err(|err| err.to_string())?;

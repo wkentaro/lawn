@@ -193,6 +193,21 @@ pub(crate) fn clear(session: &str) -> Result<(), String> {
     set_current(&name_for(session), None)
 }
 
+pub(super) fn hold_for_restore() -> Result<Option<File>, String> {
+    let file = lock_file().map_err(|err| err.to_string())?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!(
+            "a Lawn server is using {}; stop it before restoring",
+            lock_path().display()
+        )),
+        Err(std::fs::TryLockError::Error(err)) if err.kind() == std::io::ErrorKind::Unsupported => {
+            Ok(None)
+        }
+        Err(std::fs::TryLockError::Error(err)) => Err(err.to_string()),
+    }
+}
+
 pub(super) fn replace(snapshot: &SessionSnapshot) -> Result<(), String> {
     set_current(&name(), Some(snapshot))
 }
@@ -488,6 +503,29 @@ mod tests {
 
         let loaded = load().expect("written").expect("not cleared");
         assert_eq!(loaded.sidebar_width, Some(31), "the document wins on load");
+    }
+
+    #[test]
+    fn a_restore_never_lands_under_a_running_server() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
+        let held = serde_json::to_value(snapshot(31)).expect("json");
+        test.core.doc_set(&name(), None, &held, 0).expect("doc.set");
+        let source = crate::session::data_dir().join("saved.json");
+        let saved = serde_json::to_string(&snapshot(40)).expect("json");
+        std::fs::write(&source, saved).expect("write");
+        let _server = own().expect("the server starts").expect("core panes");
+
+        let refused = super::super::io::restore_from(&source).expect_err("a server holds it");
+
+        assert!(refused.contains("stop it before restoring"), "{refused}");
+        let stored = test.core.doc_get(&name(), None).expect("doc.get").value;
+        assert_eq!(stored, held);
+        assert!(!super::super::io::session_path().exists());
     }
 
     #[test]
