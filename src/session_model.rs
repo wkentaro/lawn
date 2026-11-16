@@ -8,6 +8,7 @@ use crate::workspace::decode_public_number;
 
 pub(crate) trait Workspace {
     fn id(&self) -> Option<&str>;
+    fn parked(&self) -> bool;
     fn visible_tab_count(&self) -> usize;
     fn tab_position(&self, number: usize) -> Option<usize>;
     fn rename(&mut self, label: String);
@@ -126,6 +127,10 @@ impl Workspace for crate::workspace::Workspace {
         Some(&self.id)
     }
 
+    fn parked(&self) -> bool {
+        self.parked
+    }
+
     fn visible_tab_count(&self) -> usize {
         self.visible_tab_count()
     }
@@ -147,6 +152,10 @@ impl Workspace for crate::workspace::Workspace {
 impl Workspace for crate::persist::WorkspaceSnapshot {
     fn id(&self) -> Option<&str> {
         self.id.as_deref()
+    }
+
+    fn parked(&self) -> bool {
+        self.parked
     }
 
     fn visible_tab_count(&self) -> usize {

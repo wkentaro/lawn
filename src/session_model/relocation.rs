@@ -66,8 +66,8 @@ pub(crate) fn relocate_tab(
     })
 }
 
-pub(crate) fn remove_empty_workspace(
-    workspaces: &mut Vec<Workspace>,
+pub(crate) fn remove_empty_workspace<W: super::Workspace>(
+    workspaces: &mut Vec<W>,
     index: usize,
     follow: Option<usize>,
     active: Option<usize>,
@@ -84,11 +84,14 @@ pub(crate) fn remove_empty_workspace(
     (active.map(|i| shown(remap(i))), shown(remap(selected)))
 }
 
-pub(crate) fn shown_workspace_from(workspaces: &[Workspace], start: usize) -> Option<usize> {
+pub(crate) fn shown_workspace_from<W: super::Workspace>(
+    workspaces: &[W],
+    start: usize,
+) -> Option<usize> {
     let count = workspaces.len();
     (0..count)
         .map(|offset| (start + offset) % count)
-        .find(|&index| !workspaces[index].parked)
+        .find(|&index| !workspaces[index].parked())
 }
 
 #[cfg(test)]

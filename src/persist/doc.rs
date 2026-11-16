@@ -496,6 +496,52 @@ mod tests {
     }
 
     #[test]
+    fn a_restored_file_starts_its_closed_panes_again() {
+        let Some(test) = test_core() else {
+            return;
+        };
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        let run = || {
+            test.core
+                .run(serde_json::json!({"argv": ["/bin/sh", "-c", "read line"], "no_parent": true}))
+                .expect("run")
+        };
+        let (live, closed) = (run(), run());
+        test.core
+            .call("terminal.kill", serde_json::json!({"terminal": closed}))
+            .expect("kill");
+        let pane = |address: &str| serde_json::json!({"cwd": "/tmp", "core_terminal": address});
+        let saved = serde_json::json!({
+            "version": super::super::snapshot::SNAPSHOT_VERSION,
+            "workspaces": [{
+                "identity_cwd": "/tmp",
+                "tabs": [{
+                    "layout": {"Split": {
+                        "direction": "Horizontal",
+                        "ratio": 0.5,
+                        "first": {"Pane": 1},
+                        "second": {"Pane": 2},
+                    }},
+                    "panes": {"1": pane(&live), "2": pane(&closed)},
+                    "zoomed": false,
+                }],
+            }],
+            "active": 0,
+            "selected": 0,
+        });
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
+        let source = crate::session::data_dir().join("saved.json");
+        std::fs::write(&source, saved.to_string()).expect("write");
+
+        super::super::io::restore_from(&source).expect("restore");
+
+        let loaded = load().expect("written").expect("not cleared");
+        let panes = &loaded.workspaces[0].tabs[0].panes;
+        assert_eq!(panes[&1].core_terminal.as_deref(), Some(live.as_str()));
+        assert_eq!(panes[&2].core_terminal, None);
+    }
+
+    #[test]
     fn an_edit_keeps_the_pane_history_that_matched_its_layout() {
         use super::super::snapshot::{layout_fingerprint, SessionHistorySnapshot};
         let Some(_test) = test_core() else {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use ratatui::layout::Direction;
@@ -208,6 +208,171 @@ impl LayoutSnapshot {
             Self::Pane(_) => 1,
             Self::Split { first, second, .. } => first.pane_count() + second.pane_count(),
         }
+    }
+
+    fn without(self, closed: &HashSet<u32>) -> Option<Self> {
+        match self {
+            Self::Pane(id) => (!closed.contains(&id)).then_some(Self::Pane(id)),
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => match (first.without(closed), second.without(closed)) {
+                (Some(first), Some(second)) => Some(Self::Split {
+                    direction,
+                    ratio,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                }),
+                (Some(remaining), None) | (None, Some(remaining)) => Some(remaining),
+                (None, None) => None,
+            },
+        }
+    }
+}
+
+impl SessionSnapshot {
+    pub(crate) fn core_terminals(&self) -> impl Iterator<Item = &str> {
+        self.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| pane.core_terminal.as_deref())
+    }
+
+    pub(crate) fn close_panes_showing(
+        &mut self,
+        closed: &HashSet<String>,
+        history: Option<&mut SessionHistorySnapshot>,
+    ) -> bool {
+        let fingerprint = layout_fingerprint(self);
+        let mut history = history.filter(|history| {
+            history.layout_fingerprint.is_some() && history.layout_fingerprint == fingerprint
+        });
+        let mut changed = false;
+        let mut workspace = 0;
+        while workspace < self.workspaces.len() {
+            let workspace_history = history
+                .as_deref_mut()
+                .and_then(|history| history.workspaces.get_mut(workspace));
+            if !self.workspaces[workspace].close_panes_showing(closed, workspace_history) {
+                workspace += 1;
+                continue;
+            }
+            changed = true;
+            if !self.workspaces[workspace].tabs.is_empty() {
+                workspace += 1;
+                continue;
+            }
+            (self.active, self.selected) = crate::session_model::remove_empty_workspace(
+                &mut self.workspaces,
+                workspace,
+                None,
+                self.active,
+                self.selected,
+            );
+            if let Some(history) = history.as_deref_mut() {
+                if workspace < history.workspaces.len() {
+                    history.workspaces.remove(workspace);
+                }
+            }
+        }
+        if let Some(history) = history.filter(|_| changed) {
+            history.layout_fingerprint = layout_fingerprint(self);
+        }
+        changed
+    }
+}
+
+impl WorkspaceSnapshot {
+    fn close_panes_showing(
+        &mut self,
+        closed: &HashSet<String>,
+        mut history: Option<&mut WorkspaceHistorySnapshot>,
+    ) -> bool {
+        let next_tab_number = self.next_tab_number();
+        let next_pane_number = self
+            .public_pane_numbers
+            .values()
+            .map(|number| number + 1)
+            .max()
+            .unwrap_or(0)
+            .max(self.next_public_pane_number);
+        let mut changed = false;
+        let mut tab = 0;
+        while tab < self.tabs.len() {
+            let closing: HashSet<u32> = self.tabs[tab]
+                .panes
+                .iter()
+                .filter(|(_, pane)| {
+                    pane.core_terminal
+                        .as_ref()
+                        .is_some_and(|address| closed.contains(address))
+                })
+                .map(|(&id, _)| id)
+                .collect();
+            if closing.is_empty() {
+                tab += 1;
+                continue;
+            }
+            if !changed {
+                changed = true;
+                for index in self.public_tab_numbers.len()..self.tabs.len() {
+                    self.public_tab_numbers.push(index + 1);
+                }
+            }
+            self.public_pane_numbers
+                .retain(|id, _| !closing.contains(id));
+            let tab_history = history
+                .as_deref_mut()
+                .and_then(|history| history.tabs.get_mut(tab));
+            if self.tabs[tab].close_panes(&closing) {
+                if let Some(tab_history) = tab_history {
+                    tab_history.panes.retain(|id, _| !closing.contains(id));
+                }
+                tab += 1;
+                continue;
+            }
+            self.tabs.remove(tab);
+            self.public_tab_numbers.remove(tab);
+            if let Some(history) = history.as_deref_mut() {
+                if tab < history.tabs.len() {
+                    history.tabs.remove(tab);
+                }
+            }
+            if self.active_tab > tab {
+                self.active_tab -= 1;
+            }
+        }
+        if changed {
+            let shown = match self.visible_tab_count() {
+                0 => self.tabs.len(),
+                visible => visible,
+            };
+            self.active_tab = self.active_tab.min(shown.saturating_sub(1));
+            self.next_public_tab_number = next_tab_number;
+            self.next_public_pane_number = next_pane_number;
+        }
+        changed
+    }
+}
+
+impl TabSnapshot {
+    fn close_panes(&mut self, closing: &HashSet<u32>) -> bool {
+        let layout = std::mem::replace(&mut self.layout, LayoutSnapshot::Pane(0));
+        let Some(layout) = layout.without(closing) else {
+            return false;
+        };
+        self.layout = layout;
+        self.panes.retain(|id, _| !closing.contains(id));
+        let forget = |pane: Option<u32>| pane.filter(|pane| !closing.contains(pane));
+        self.focused = forget(self.focused);
+        self.root_pane = forget(self.root_pane);
+        if self.layout.pane_count() == 1 {
+            self.zoomed = false;
+        }
+        true
     }
 }
 
@@ -1567,5 +1732,242 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
         );
+    }
+
+    fn core_session(workspaces: serde_json::Value) -> SessionSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "version": SNAPSHOT_VERSION,
+            "workspaces": workspaces,
+            "active": 1,
+            "selected": 1,
+        }))
+        .unwrap()
+    }
+
+    fn core_tab(panes: &[(u32, &str)], focused: u32) -> serde_json::Value {
+        let leaf = |id: u32| serde_json::json!({"Pane": id});
+        let layout = panes[1..].iter().fold(leaf(panes[0].0), |layout, (id, _)| {
+            serde_json::json!({"Split": {
+                "direction": "Horizontal",
+                "ratio": 0.5,
+                "first": layout,
+                "second": leaf(*id),
+            }})
+        });
+        let panes: serde_json::Map<String, serde_json::Value> = panes
+            .iter()
+            .map(|(id, address)| {
+                (
+                    id.to_string(),
+                    serde_json::json!({"cwd": "/tmp", "core_terminal": address}),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "layout": layout,
+            "panes": panes,
+            "zoomed": true,
+            "focused": focused,
+            "root_pane": panes.keys().next().unwrap().parse::<u32>().unwrap(),
+        })
+    }
+
+    fn closed(addresses: &[&str]) -> std::collections::HashSet<String> {
+        addresses
+            .iter()
+            .map(|address| (*address).to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn closing_a_pane_collapses_its_split_and_moves_focus() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1")], 1)]},
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t2"), (2, "t3")], 2)],
+             "public_pane_numbers": {"1": 1, "2": 2}, "next_public_pane_number": 3},
+        ]));
+
+        assert!(session.close_panes_showing(&closed(&["t3"]), None));
+
+        let tab = &session.workspaces[1].tabs[0];
+        assert!(matches!(tab.layout, LayoutSnapshot::Pane(1)));
+        assert_eq!(tab.panes.keys().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(tab.focused, None);
+        assert!(!tab.zoomed);
+        assert_eq!(
+            session.workspaces[1].public_pane_numbers,
+            HashMap::from([(1, 1)])
+        );
+        assert_eq!(session.workspaces[1].next_public_pane_number, 3);
+        assert_eq!((session.active, session.selected), (Some(1), 1));
+    }
+
+    #[test]
+    fn closing_every_pane_of_a_tab_keeps_the_other_tab_numbers() {
+        let mut session = core_session(serde_json::json!([{
+            "identity_cwd": "/tmp",
+            "tabs": [
+                core_tab(&[(1, "t1")], 1),
+                core_tab(&[(2, "t2"), (3, "t3")], 2),
+                core_tab(&[(4, "t4")], 4),
+            ],
+            "active_tab": 2,
+        }]));
+        session.active = Some(0);
+        session.selected = 0;
+
+        assert!(session.close_panes_showing(&closed(&["t2", "t3"]), None));
+
+        let workspace = &session.workspaces[0];
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(workspace.public_tab_numbers, [1, 3]);
+        assert_eq!(workspace.next_tab_number(), 4);
+        assert_eq!(workspace.active_tab, 1);
+        assert!(workspace.tabs[1].panes.contains_key(&4));
+    }
+
+    #[test]
+    fn closing_a_whole_workspace_keeps_focus_on_the_one_shown() {
+        for (closing, active, selected) in
+            [("t1", Some(0), 0), ("t2", Some(1), 1), ("t3", Some(1), 1)]
+        {
+            let mut session = core_session(serde_json::json!([
+                {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1")], 1)]},
+                {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t2")], 1)]},
+                {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t3")], 1)]},
+            ]));
+
+            assert!(session.close_panes_showing(&closed(&[closing]), None));
+
+            assert_eq!(session.workspaces.len(), 2, "{closing}");
+            assert_eq!(
+                (session.active, session.selected),
+                (active, selected),
+                "{closing}"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_the_last_workspace_leaves_nothing_shown() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1")], 1)]},
+        ]));
+        session.active = Some(0);
+        session.selected = 0;
+
+        assert!(session.close_panes_showing(&closed(&["t1"]), None));
+
+        assert!(session.workspaces.is_empty());
+        assert_eq!((session.active, session.selected), (None, 0));
+    }
+
+    #[test]
+    fn nothing_closed_leaves_the_saved_layout_byte_for_byte() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1"), (2, "t2")], 2), core_tab(&[(3, "t3")], 3)]},
+        ]));
+        let before = serde_json::to_string(&session).unwrap();
+
+        assert!(!session.close_panes_showing(&closed(&["t9"]), None));
+
+        assert_eq!(serde_json::to_string(&session).unwrap(), before);
+    }
+
+    #[test]
+    fn closing_never_lands_focus_on_something_parked() {
+        let mut parked_tab = core_tab(&[(3, "t3")], 3);
+        parked_tab["parked_from"] = 1.into();
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1")], 1)]},
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t5")], 1)]},
+            {"identity_cwd": "/tmp", "tabs": [parked_tab.clone()], "parked": true},
+            {"identity_cwd": "/tmp", "tabs": [
+                core_tab(&[(1, "t1b")], 1),
+                core_tab(&[(2, "t2")], 2),
+                parked_tab,
+            ], "active_tab": 1},
+        ]));
+
+        assert!(session.close_panes_showing(&closed(&["t5", "t2"]), None));
+
+        assert_eq!((session.active, session.selected), (Some(2), 2));
+        assert_eq!(session.workspaces[2].active_tab, 0);
+        assert_eq!(session.workspaces[2].visible_tab_count(), 1);
+    }
+
+    #[test]
+    fn a_workspace_saved_without_tabs_is_not_closed() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": []},
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1"), (2, "t2")], 1)]},
+        ]));
+
+        assert!(session.close_panes_showing(&closed(&["t2"]), None));
+
+        assert_eq!(session.workspaces.len(), 2);
+        assert!(session.workspaces[0].tabs.is_empty());
+    }
+
+    #[test]
+    fn surviving_panes_keep_their_saved_history() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1")], 1)]},
+            {"identity_cwd": "/tmp", "tabs": [
+                core_tab(&[(1, "t2")], 1),
+                core_tab(&[(2, "t3"), (3, "t4")], 2),
+            ]},
+        ]));
+        let line = |text: &str| PaneHistorySnapshot {
+            ansi: text.into(),
+            lines: 1,
+        };
+        let mut history = SessionHistorySnapshot {
+            version: SNAPSHOT_VERSION,
+            layout_fingerprint: layout_fingerprint(&session),
+            workspaces: vec![
+                WorkspaceHistorySnapshot {
+                    tabs: vec![TabHistorySnapshot {
+                        panes: HashMap::from([(1, line("gone"))]),
+                    }],
+                },
+                WorkspaceHistorySnapshot {
+                    tabs: vec![
+                        TabHistorySnapshot {
+                            panes: HashMap::from([(1, line("closed tab"))]),
+                        },
+                        TabHistorySnapshot {
+                            panes: HashMap::from([(2, line("kept")), (3, line("closed"))]),
+                        },
+                    ],
+                },
+            ],
+        };
+
+        assert!(session.close_panes_showing(&closed(&["t1", "t2", "t4"]), Some(&mut history)));
+
+        assert_eq!(history.layout_fingerprint, layout_fingerprint(&session));
+        assert_eq!(history.workspaces.len(), 1);
+        assert_eq!(history.workspaces[0].tabs.len(), 1);
+        let panes = &history.workspaces[0].tabs[0].panes;
+        assert_eq!(panes.keys().copied().collect::<Vec<_>>(), [2]);
+        assert_eq!(panes[&2].ansi, "kept");
+    }
+
+    #[test]
+    fn history_of_another_layout_is_left_for_restore_to_reject() {
+        let mut session = core_session(serde_json::json!([
+            {"identity_cwd": "/tmp", "tabs": [core_tab(&[(1, "t1"), (2, "t2")], 1)]},
+        ]));
+        let mut history = SessionHistorySnapshot {
+            version: SNAPSHOT_VERSION,
+            layout_fingerprint: Some("other".into()),
+            workspaces: vec![WorkspaceHistorySnapshot::default()],
+        };
+
+        assert!(session.close_panes_showing(&closed(&["t2"]), Some(&mut history)));
+
+        assert_eq!(history.layout_fingerprint.as_deref(), Some("other"));
+        assert_eq!(history.workspaces.len(), 1);
     }
 }
