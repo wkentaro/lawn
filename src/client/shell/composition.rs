@@ -21,33 +21,36 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
-    fn local_core_pane(&self) -> Option<&crate::client::core_render::CorePane> {
-        self.core_pane
-            .as_ref()
+    fn local_core_panes(&self) -> impl Iterator<Item = &crate::client::core_render::CorePane> {
+        self.core_panes
+            .values()
             .filter(|_| self.active_endpoint_id.is_local())
     }
 
-    pub(crate) fn core_pane_drawn(&self) -> bool {
-        self.local_core_pane()
-            .zip(self.pane_surface.as_ref())
-            .is_some_and(|(core_pane, surface)| core_pane.target(surface).is_some())
+    pub(crate) fn take_drawn_core_changes(&self) -> bool {
+        let Some(surface) = self.pane_surface.as_ref() else {
+            return false;
+        };
+        self.local_core_panes().fold(false, |drawn, core_pane| {
+            let changed = core_pane.take_change();
+            drawn || (changed && core_pane.target(surface).is_some())
+        })
     }
 
-    pub(crate) fn focused_surface_pane(&self) -> Option<(&str, (u16, u16))> {
+    pub(crate) fn surface_panes(&self) -> Vec<(&str, (u16, u16))> {
         if !self.active_endpoint_id.is_local() {
-            return None;
+            return Vec::new();
         }
         self.pane_surface
-            .as_ref()?
-            .panes
             .iter()
-            .find(|pane| pane.focused)
+            .flat_map(|surface| &surface.panes)
             .map(|pane| {
                 (
                     pane.pane_id.as_str(),
                     (pane.inner_rect.width, pane.inner_rect.height),
                 )
             })
+            .collect()
     }
 
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
@@ -411,9 +414,9 @@ impl ClientShellState {
         });
         if !empty_parked_workspace {
             blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
-            if let Some((inner, local)) = self
-                .local_core_pane()
-                .and_then(|core_pane| core_pane.render(surface))
+            for (inner, local) in self
+                .local_core_panes()
+                .filter_map(|core_pane| core_pane.render(surface))
             {
                 let cursor = frame.cursor.take();
                 blit_pane_surface(

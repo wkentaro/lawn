@@ -789,7 +789,7 @@ pub(crate) struct ClientShellState {
     /// A future projection surface waits here until its matching snapshot arrives. The visible
     /// pane surface always remains an exact snapshot pair.
     pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
-    pub(crate) core_pane: Option<crate::client::core_render::CorePane>,
+    pub(crate) core_panes: HashMap<String, crate::client::core_render::CorePane>,
     pub(super) graphics: crate::kitty_graphics::surface::ClientState,
     pub(super) graphics_cell_size: crate::kitty_graphics::HostCellSize,
     pub(super) popup_terminal_id: Option<String>,
@@ -957,7 +957,7 @@ impl ClientShellState {
             pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
-            core_pane: None,
+            core_panes: HashMap::new(),
             graphics: crate::kitty_graphics::surface::ClientState::new(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
