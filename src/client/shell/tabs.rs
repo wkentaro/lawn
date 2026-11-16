@@ -19,13 +19,28 @@ pub(crate) fn render_tab_bar(
 ) {
     let palette = &config.palette;
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
+    let preview = parking.and_then(|parking| parking.restore_preview(snapshot));
+    let temporary_tab = preview
+        .as_ref()
+        .filter(|preview| preview.temporary_tab)
+        .map(|preview| ClientShellTab {
+            tab_id: preview.target.tab_id.clone(),
+            workspace_id: preview.pane.workspace_id.clone(),
+            number: 0,
+            label: format!("({})", preview.target.tab_label),
+            custom_label: false,
+            focused: true,
+            zoomed: false,
+            agent_status: crate::api::schema::AgentStatus::Unknown,
+        });
     let tabs = snapshot
         .tabs
         .iter()
         .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
+        .chain(temporary_tab.as_ref())
         .collect::<Vec<_>>();
     let statuses = if online {
-        tab_statuses(snapshot, parking)
+        tab_statuses(snapshot, parking, preview.as_ref())
     } else {
         HashMap::new()
     };
@@ -155,7 +170,12 @@ pub(crate) fn render_tab_bar(
                     .remove_modifier(Modifier::UNDERLINED),
             );
         }
-        hits.tabs.push((rect, tab.tab_id.clone()));
+        if temporary_tab
+            .as_ref()
+            .is_none_or(|temporary| temporary.tab_id != tab.tab_id)
+        {
+            hits.tabs.push((rect, tab.tab_id.clone()));
+        }
         first_visible.get_or_insert(index);
         last_visible = Some(index);
         x = x.saturating_add(width + 1);
@@ -421,6 +441,7 @@ fn tab_label(tab: &ClientShellTab) -> String {
 fn tab_statuses<'a>(
     snapshot: &'a ClientShellSnapshot,
     parking: Option<&lawn::PaneParking>,
+    preview: Option<&lawn::RestorePreview<'a>>,
 ) -> HashMap<&'a str, (crate::api::schema::AgentStatus, usize)> {
     use crate::api::schema::AgentStatus;
     let panes = snapshot
@@ -431,6 +452,12 @@ fn tab_statuses<'a>(
                 && parking.is_none_or(|parking| !parking.hides_pane(&pane.pane_id))
         })
         .map(|pane| (pane.pane_id.as_str(), pane.tab_id.as_str()))
+        .chain(preview.map(|preview| {
+            (
+                preview.pane.pane_id.as_str(),
+                preview.target.tab_id.as_str(),
+            )
+        }))
         .collect::<HashMap<_, _>>();
     let rank = |status| match status {
         AgentStatus::Blocked => 4,

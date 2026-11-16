@@ -47,6 +47,7 @@ pub(crate) fn render_collapsed_sidebar(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    parking: Option<&lawn::PaneParking>,
     selected_workspace_id: Option<&str>,
     hits: &mut ShellHitMap,
 ) {
@@ -56,12 +57,13 @@ pub(crate) fn render_collapsed_sidebar(
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) =
         collapsed_sidebar_sections(area, config.sidebar_collapsed_mode);
-    for (index, workspace) in workspace_entries(snapshot)
-        .iter()
-        .map(|entry| &snapshot.workspaces[entry.index])
+    let mut number = 0;
+    for (index, entry) in displayed_workspace_entries(snapshot, parking)
+        .into_iter()
         .take(workspace_area.height as usize)
         .enumerate()
     {
+        let workspace = &snapshot.workspaces[entry.index];
         let rect = Rect::new(
             workspace_area.x,
             workspace_area.y + index as u16,
@@ -83,19 +85,27 @@ pub(crate) fn render_collapsed_sidebar(
         } else {
             Style::default().fg(palette.overlay0)
         };
+        let label = if entry.temporary {
+            "()".to_owned()
+        } else {
+            number += 1;
+            format!("{number:<2}")
+        };
         put_text(
             buffer,
             rect.x,
             rect.y,
             rect.width.min(2),
-            &format!("{:<2}", index + 1),
+            &label,
             number_style,
         );
-        hits.workspaces.push(WorkspaceHit {
-            rect,
-            endpoint_id: ClientEndpointId::Local,
-            workspace_id: workspace.workspace_id.clone(),
-        });
+        if !entry.temporary {
+            hits.workspaces.push(WorkspaceHit {
+                rect,
+                endpoint_id: ClientEndpointId::Local,
+                workspace_id: workspace.workspace_id.clone(),
+            });
+        }
     }
 
     if let Some(divider_y) = divider_y {
@@ -214,7 +224,14 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(snapshot);
+    let entries = displayed_workspace_entries(
+        snapshot,
+        state
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
+            .map(|endpoint| &endpoint.parking),
+    );
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -227,11 +244,9 @@ pub(crate) fn render_sidebar(
     let row_heights = entries
         .iter()
         .map(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
+            displayed_workspace(snapshot, *entry)
                 .map(|workspace| {
-                    workspace_rows(workspace, &config.spaces)
+                    workspace_rows(&workspace, &config.spaces)
                         .len()
                         .max(1)
                         .min(u16::MAX as usize) as u16
@@ -285,10 +300,10 @@ pub(crate) fn render_sidebar(
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let mut y = body.y;
     for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
-        let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+        let Some(workspace) = displayed_workspace(snapshot, *entry) else {
             continue;
         };
-        let rows = workspace_rows(workspace, &config.spaces);
+        let rows = workspace_rows(&workspace, &config.spaces);
         let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -317,11 +332,13 @@ pub(crate) fn render_sidebar(
             dragged,
             palette,
         );
-        hits.workspaces.push(WorkspaceHit {
-            rect,
-            endpoint_id: ClientEndpointId::Local,
-            workspace_id: workspace.workspace_id.clone(),
-        });
+        if !entry.temporary {
+            hits.workspaces.push(WorkspaceHit {
+                rect,
+                endpoint_id: ClientEndpointId::Local,
+                workspace_id: workspace.workspace_id.clone(),
+            });
+        }
         let gap = gaps[entry_position];
         y = y.saturating_add(row_height + gap);
     }
@@ -431,10 +448,44 @@ pub(crate) fn render_sidebar(
 
 /// The workspaces lists show, skipping parked ones.
 pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
-    (0..snapshot.workspaces.len())
-        .filter(|&index| !snapshot.workspaces[index].parked)
-        .map(|index| WorkspaceEntry { index })
+    displayed_workspace_entries(snapshot, None)
+}
+
+pub(in crate::client::shell) fn displayed_workspace_entries(
+    snapshot: &ClientShellSnapshot,
+    parking: Option<&lawn::PaneParking>,
+) -> Vec<WorkspaceEntry> {
+    let temporary = parking
+        .and_then(|parking| parking.restore_preview(snapshot))
+        .filter(|preview| preview.temporary_workspace)
+        .map(|preview| preview.pane.workspace_id.as_str());
+    snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, workspace)| {
+            !workspace.parked || Some(workspace.workspace_id.as_str()) == temporary
+        })
+        .map(|(index, workspace)| WorkspaceEntry {
+            index,
+            temporary: workspace.parked,
+        })
         .collect()
+}
+
+pub(in crate::client::shell) fn displayed_workspace(
+    snapshot: &ClientShellSnapshot,
+    entry: WorkspaceEntry,
+) -> Option<std::borrow::Cow<'_, ClientShellWorkspace>> {
+    let workspace = snapshot.workspaces.get(entry.index)?;
+    Some(if entry.temporary {
+        std::borrow::Cow::Owned(ClientShellWorkspace {
+            label: format!("({})", workspace.label),
+            ..workspace.clone()
+        })
+    } else {
+        std::borrow::Cow::Borrowed(workspace)
+    })
 }
 
 pub(in crate::client::shell) fn workspace_rows(

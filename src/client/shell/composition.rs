@@ -383,6 +383,24 @@ impl ClientShellState {
         if !empty_parked_workspace {
             blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
         }
+        if let Some((restore, dismiss, drawn)) =
+            self.render_restore_controls(&mut frame, layout, mode_bar)
+        {
+            self.hits
+                .tabs
+                .retain(|(rect, _)| rect.intersection(drawn).is_empty());
+            for hit in [
+                &mut self.hits.new_tab,
+                &mut self.hits.tab_scroll_left,
+                &mut self.hits.tab_scroll_right,
+            ] {
+                if !hit.intersection(drawn).is_empty() {
+                    *hit = Rect::default();
+                }
+            }
+            self.hits.restore_pane = restore.unwrap_or_default();
+            self.hits.dismiss_parking_preview = dismiss;
+        }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self

@@ -2,6 +2,13 @@
 use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 
+fn active_parking<'a>(
+    endpoint: &'a ClientShellEndpoint,
+    active_endpoint_id: &ClientEndpointId,
+) -> Option<&'a lawn::PaneParking> {
+    (&endpoint.endpoint_id == active_endpoint_id).then_some(&endpoint.parking)
+}
+
 pub(super) fn render_collapsed(
     buffer: &mut Buffer,
     area: Rect,
@@ -22,7 +29,10 @@ pub(super) fn render_collapsed(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            let entries = super::sidebar::workspace_entries(snapshot);
+            let entries = super::sidebar::displayed_workspace_entries(
+                snapshot,
+                active_parking(endpoint, state.active_endpoint_id),
+            );
             if reveal {
                 if let Some(target) = state
                     .selected_workspace_id
@@ -114,11 +124,16 @@ pub(super) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot.as_deref() else {
             continue;
         };
-        let entries = super::sidebar::workspace_entries(snapshot);
-        let shown = entries
-            .iter()
-            .map(|entry| &snapshot.workspaces[entry.index]);
-        for (visible_index, workspace) in shown.enumerate() {
+        let entries = super::sidebar::displayed_workspace_entries(
+            snapshot,
+            active_parking(endpoint, state.active_endpoint_id),
+        );
+        let mut number = 0;
+        for entry in entries {
+            let workspace = &snapshot.workspaces[entry.index];
+            if !entry.temporary {
+                number += 1;
+            }
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -148,7 +163,11 @@ pub(super) fn render_collapsed(
                 );
             }
             let stale = endpoint.status != ClientEndpointStatus::Online;
-            let number = format!(" {}", visible_index + 1);
+            let number = if entry.temporary {
+                " ()".to_owned()
+            } else {
+                format!(" {number}")
+            };
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
                 Modifier::DIM
@@ -169,11 +188,13 @@ pub(super) fn render_collapsed(
                     })
                     .add_modifier(dim),
             );
-            hits.workspaces.push(WorkspaceHit {
-                rect,
-                endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id.clone(),
-            });
+            if !entry.temporary {
+                hits.workspaces.push(WorkspaceHit {
+                    rect,
+                    endpoint_id: endpoint.endpoint_id.clone(),
+                    workspace_id: workspace.workspace_id.clone(),
+                });
+            }
             y = y.saturating_add(1);
         }
     }
@@ -258,12 +279,15 @@ pub(super) fn render_expanded(
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
             rows.extend(
-                super::sidebar::workspace_entries(snapshot)
-                    .into_iter()
-                    .map(|entry| Row::Workspace {
-                        endpoint: endpoint_index,
-                        entry,
-                    }),
+                super::sidebar::displayed_workspace_entries(
+                    snapshot,
+                    active_parking(endpoint, state.active_endpoint_id),
+                )
+                .into_iter()
+                .map(|entry| Row::Workspace {
+                    endpoint: endpoint_index,
+                    entry,
+                }),
             );
         }
     }
@@ -286,9 +310,9 @@ pub(super) fn render_expanded(
                     .snapshot
                     .as_deref()
                     .and_then(|snapshot| {
-                        let workspace = snapshot.workspaces.get(entry.index)?;
+                        let workspace = super::sidebar::displayed_workspace(snapshot, *entry)?;
                         Some(
-                            super::sidebar::workspace_rows(workspace, &config.spaces)
+                            super::sidebar::workspace_rows(&workspace, &config.spaces)
                                 .len()
                                 .max(1)
                                 .min(u16::MAX as usize) as u16,
@@ -401,10 +425,10 @@ pub(super) fn render_expanded(
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
                 };
-                let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+                let Some(workspace) = super::sidebar::displayed_workspace(snapshot, *entry) else {
                     continue;
                 };
-                let tokens = super::sidebar::workspace_rows(workspace, &config.spaces);
+                let tokens = super::sidebar::workspace_rows(&workspace, &config.spaces);
                 let height = (tokens.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
                 if y.saturating_add(height) > body.bottom() {
                     break;
@@ -440,11 +464,13 @@ pub(super) fn render_expanded(
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                hits.workspaces.push(WorkspaceHit {
-                    rect,
-                    endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
-                });
+                if !entry.temporary {
+                    hits.workspaces.push(WorkspaceHit {
+                        rect,
+                        endpoint_id: endpoint.endpoint_id.clone(),
+                        workspace_id: workspace.workspace_id.clone(),
+                    });
+                }
                 y = y
                     .saturating_add(height)
                     .saturating_add(gaps.get(row_index).copied().unwrap_or(0));

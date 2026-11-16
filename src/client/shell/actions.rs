@@ -742,6 +742,10 @@ impl ClientShellState {
                     parking.finish_park(&pane_id);
                 }
             }
+            PendingEndpointKind::PaneUnparkTo { attempt } => {
+                self.finish_planned_restore(attempt);
+                return (true, Vec::new());
+            }
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
                 let mut outcome = ClientShellInput::default();
                 let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);

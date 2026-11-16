@@ -70,13 +70,37 @@ fn acknowledge_presentation(
     state: &mut ClientShellState,
     request: &SetPanePresentation,
     focused: Option<&str>,
+    projected: ClientShellSnapshot,
+) {
+    acknowledge_with_targets(
+        state,
+        &ClientEndpointId::Local,
+        request,
+        focused,
+        projected,
+        Vec::new(),
+    );
+}
+
+fn acknowledge_with_targets(
+    state: &mut ClientShellState,
+    endpoint_id: &ClientEndpointId,
+    request: &SetPanePresentation,
+    focused: Option<&str>,
     mut projected: ClientShellSnapshot,
+    parked_restore_targets: Vec<crate::api::schema::ParkedRestoreTarget>,
 ) {
     projected.revision += 1;
     projected.focused_pane_id = focused.map(str::to_owned);
+    let generation = state
+        .endpoints
+        .iter()
+        .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        .and_then(|endpoint| endpoint.snapshot_generation)
+        .unwrap_or(7);
     state.set_endpoint_pane_identities(
-        &ClientEndpointId::Local,
-        7,
+        endpoint_id,
+        generation,
         PaneIdentities {
             boot_id: projected.boot_id.clone(),
             revision: projected.revision,
@@ -87,11 +111,14 @@ fn acknowledge_presentation(
                 .chain(&projected.parked_panes)
                 .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
                 .collect(),
-            parked_restore_targets: Vec::new(),
+            parked_restore_targets,
         },
     );
     let revision = projected.revision;
-    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(projected));
+    state.set_endpoint_snapshot_for_generation(endpoint_id, generation, Box::new(projected));
+    if endpoint_id != &state.active_endpoint_id {
+        return;
+    }
     let mut frame = surface();
     frame.projection_revision = revision;
     if focused.is_none() {
@@ -1859,6 +1886,60 @@ fn parked_switcher_render_scale_profile() {
             }
         }
     }
+    for count in [1, 15] {
+        for in_place in [false, true] {
+            let mut projected = snapshot();
+            projected.agents = vec![agent("pane_1", AgentStatus::Idle)];
+            for index in 2..=count + 1 {
+                let mut pane = projected.panes[0].clone();
+                pane.pane_id = format!("pane_{index}");
+                pane.focused = false;
+                projected
+                    .agents
+                    .push(agent(&pane.pane_id, AgentStatus::Idle));
+                projected.panes.push(pane);
+            }
+            let origin = projected.panes[1..]
+                .iter()
+                .map(|pane| pane.pane_id.clone())
+                .collect::<Vec<_>>();
+            let origin = origin.iter().map(String::as_str).collect::<Vec<_>>();
+            let mut state = state_with_snapshot(projected);
+            if in_place {
+                support_restore_preview(&mut state);
+            }
+            assert!(state.parking_action(
+                ClientEndpointId::Local,
+                "pane_1".into(),
+                lawn::ParkingAction::Park,
+                &mut ClientShellInput::default(),
+            ));
+            present_with_targets(&mut state, "pane_2", &origin, true, mixed_targets());
+            preview(&mut state, ClientEndpointId::Local);
+            let shown = if in_place {
+                [origin.as_slice(), &["pane_1"]].concat()
+            } else {
+                vec!["pane_1"]
+            };
+            assert_eq!(
+                present_with_targets(&mut state, "pane_1", &shown, true, mixed_targets()),
+                Some(in_place)
+            );
+            for _ in 0..20 {
+                std::hint::black_box(state.compose(SIZE.0, SIZE.1).unwrap());
+            }
+            let start = Instant::now();
+            for _ in 0..1000 {
+                std::hint::black_box(state.compose(SIZE.0, SIZE.1).unwrap());
+            }
+            eprintln!(
+                "parked_preview in_place={in_place} origin_panes={count} viewport={}x{} us_per_frame={:.1}",
+                SIZE.0,
+                SIZE.1,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
 }
 
 #[test]
@@ -2260,4 +2341,1245 @@ fn renaming_a_peeked_parked_pane_opens_the_rename_overlay() {
     acknowledge(&mut state, &policy, Some("pane_1"));
     state.open_rename_pane_overlay();
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Rename(_))));
+}
+
+fn restore_target(
+    pane: &str,
+    tab: &str,
+    beside: Option<&str>,
+) -> crate::api::schema::ParkedRestoreTarget {
+    use crate::api::schema::{LayoutNode, LayoutPane, ParkedRestoreSplit, SplitDirection};
+    let leaf = |id: &str| LayoutNode::Pane {
+        pane: LayoutPane {
+            pane_id: Some(id.into()),
+            ..LayoutPane::default()
+        },
+    };
+    crate::api::schema::ParkedRestoreTarget {
+        pane_id: pane.into(),
+        tab_id: tab.into(),
+        tab_label: "logs".into(),
+        split: beside.map(|target| ParkedRestoreSplit {
+            target_pane_id: target.into(),
+            direction: SplitDirection::Right,
+            ratio: 0.5,
+        }),
+        layout: Some(match beside {
+            Some(target) => LayoutNode::Split {
+                direction: SplitDirection::Right,
+                ratio: 0.5,
+                first: Box::new(leaf(target)),
+                second: Box::new(leaf(pane)),
+            },
+            None => leaf(pane),
+        }),
+    }
+}
+
+fn split_surface(
+    state: &ClientShellState,
+    size: (u16, u16),
+    panes: &[&str],
+    border: bool,
+) -> PaneSurfaceFrame {
+    let area = state.layout(size.0, size.1).pane_surface;
+    let mut buffer = Buffer::empty(Rect::new(0, 0, area.width, area.height));
+    let mut frame = surface();
+    let template = frame.panes[0].clone();
+    let width = area.width / panes.len() as u16;
+    let inset = u16::from(border);
+    frame.panes = panes
+        .iter()
+        .enumerate()
+        .map(|(index, pane_id)| {
+            let x = width * index as u16;
+            let pane_width = if index + 1 == panes.len() {
+                area.width - x
+            } else {
+                width
+            };
+            if border {
+                for column in x..x + pane_width {
+                    buffer[(column, 0)].set_symbol("─");
+                }
+            }
+            PaneSurfacePane {
+                pane_id: (*pane_id).into(),
+                rect: SurfaceRect {
+                    x,
+                    y: 0,
+                    width: pane_width,
+                    height: area.height,
+                },
+                inner_rect: SurfaceRect {
+                    x: x + inset,
+                    y: inset,
+                    width: pane_width - 2 * inset,
+                    height: area.height - 2 * inset,
+                },
+                focused: index + 1 == panes.len(),
+                ..template.clone()
+            }
+        })
+        .collect();
+    frame.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+    frame.projection_revision = state.snapshot.as_ref().unwrap().revision;
+    frame
+}
+
+const SIZE: (u16, u16) = (100, 24);
+
+fn mixed_targets() -> Vec<crate::api::schema::ParkedRestoreTarget> {
+    vec![restore_target("pane_1", "tab_1", Some("pane_2"))]
+}
+
+fn present_with_targets(
+    state: &mut ClientShellState,
+    focused: &str,
+    panes: &[&str],
+    border: bool,
+    targets: Vec<crate::api::schema::ParkedRestoreTarget>,
+) -> Option<bool> {
+    let sent = tick(state)
+        .actions
+        .into_iter()
+        .find_map(|action| match action {
+            ClientShellAction::PanePresentation {
+                request,
+                restore_preview,
+                ..
+            } => Some((request, restore_preview)),
+            _ => None,
+        });
+    let request = sent.as_ref().map_or_else(
+        || {
+            state
+                .active_parking()
+                .and_then(|parking| parking.current_request().cloned())
+                .unwrap()
+        },
+        |(request, _)| request.clone(),
+    );
+    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    serve_parking(state, &mut projected);
+    let pane = projected
+        .panes
+        .iter()
+        .chain(&projected.parked_panes)
+        .find(|pane| pane.pane_id == focused)
+        .unwrap();
+    projected.focused_workspace_id = Some(pane.workspace_id.clone());
+    projected.focused_tab_id = Some(pane.tab_id.clone());
+    acknowledge_with_targets(
+        state,
+        &ClientEndpointId::Local,
+        &request,
+        Some(focused),
+        projected,
+        targets,
+    );
+    let frame = split_surface(state, SIZE, panes, border);
+    state.set_pane_surface(frame);
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    sent.map(|(_, restore_preview)| restore_preview)
+}
+
+fn support_restore_preview(state: &mut ClientShellState) {
+    state.endpoints[0].methods = Some(
+        ["pane.park", "pane.unpark", "pane.unpark_to", "pane.focus"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    );
+    state.set_endpoint_restore_preview_supported(&ClientEndpointId::Local, true);
+    let settled = request(state);
+    acknowledge(state, &settled, Some("pane_1"));
+}
+
+fn mixed_parked(hide_single_tab: bool, border: bool) -> ClientShellState {
+    let mut projected = snapshot();
+    let mut second = projected.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    projected.panes.push(second);
+    let mut state = state_with_snapshot(projected);
+    state.config.hide_tab_bar_when_single_tab = hide_single_tab;
+    support_restore_preview(&mut state);
+    assert!(state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    ));
+    present_with_targets(&mut state, "pane_2", &["pane_2"], border, mixed_targets());
+    state
+}
+
+fn preview(state: &mut ClientShellState, endpoint_id: ClientEndpointId) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    assert!(state.parking_action(
+        endpoint_id,
+        "pane_1".into(),
+        lawn::ParkingAction::Preview,
+        &mut outcome,
+    ));
+    outcome
+}
+
+fn unpark_to(outcome: &ClientShellInput) -> Option<(String, String, PaneUnparkToParams)> {
+    outcome.actions.iter().find_map(|action| match action {
+        ClientShellAction::Endpoint {
+            boot_id, request, ..
+        } => match &request.method {
+            crate::api::schema::Method::PaneUnparkTo(params) => {
+                Some((boot_id.clone(), request.id.clone(), params.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn click_hit(
+    state: &mut ClientShellState,
+    rect: impl Fn(&ShellHitMap) -> Rect,
+) -> ClientShellInput {
+    let rect = rect(&state.hits);
+    click(state, rect)
+}
+
+fn row_text(state: &mut ClientShellState, y: u16) -> String {
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    frame_rows(&frame)[usize::from(y)].clone()
+}
+
+use crate::api::schema::PaneUnparkToParams;
+
+#[test]
+fn keyboard_restore_waits_until_the_current_restore_plan_is_composed() {
+    for surface_first in [false, true] {
+        let mut state = mixed_parked(false, true);
+        preview(&mut state, ClientEndpointId::Local);
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets(),
+        );
+        let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+        projected.revision += 1;
+        let mut targets = mixed_targets();
+        targets[0].split.as_mut().unwrap().ratio = 0.65;
+        let crate::api::schema::LayoutNode::Split { ratio, .. } =
+            targets[0].layout.as_mut().unwrap()
+        else {
+            panic!("split restore target");
+        };
+        *ratio = 0.65;
+        let expected = targets[0].layout.clone().unwrap();
+        let mut frame = split_surface(&state, SIZE, &["pane_2", "pane_1"], true);
+        frame.projection_revision = projected.revision;
+        if surface_first {
+            state.set_pane_surface(frame.clone());
+            assert!(state.compose(SIZE.0, SIZE.1).is_none());
+        }
+        let sequence = state
+            .active_parking()
+            .unwrap()
+            .current_request()
+            .unwrap()
+            .sequence;
+        state.set_endpoint_pane_identities(
+            &ClientEndpointId::Local,
+            7,
+            PaneIdentities {
+                boot_id: projected.boot_id.clone(),
+                revision: projected.revision,
+                sequence,
+                pane_terminals: projected
+                    .panes
+                    .iter()
+                    .chain(&projected.parked_panes)
+                    .map(|pane| (pane.pane_id.clone(), format!("terminal-{}", pane.pane_id)))
+                    .collect(),
+                parked_restore_targets: targets,
+            },
+        );
+        state.set_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            7,
+            Box::new(projected),
+        );
+        assert!(unpark_to(&binding(
+            &mut state,
+            crate::input::KeybindAction::RestorePane
+        ))
+        .is_none());
+        if !surface_first {
+            assert!(state.compose(SIZE.0, SIZE.1).is_none());
+            state.set_pane_surface(frame);
+            assert!(unpark_to(&binding(
+                &mut state,
+                crate::input::KeybindAction::RestorePane
+            ))
+            .is_none());
+        }
+        state.compose(SIZE.0, SIZE.1).unwrap();
+        let sent = binding(&mut state, crate::input::KeybindAction::RestorePane);
+        assert_eq!(unpark_to(&sent).unwrap().2.layout, expected);
+    }
+}
+
+#[test]
+fn mixed_preview_keeps_the_restored_surface_and_restores_through_its_border() {
+    let mut state = mixed_parked(false, true);
+    let before = state.surface_size(SIZE.0, SIZE.1);
+    preview(&mut state, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(true)
+    );
+    assert!(state.layout(SIZE.0, SIZE.1).parking_header.is_empty());
+    assert_eq!(state.surface_size(SIZE.0, SIZE.1), before);
+    let border = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| hit.pane_id == "pane_1")
+        .unwrap()
+        .rect;
+    let restore = state.hits.restore_pane;
+    let dismiss = state.hits.dismiss_parking_preview;
+    assert_eq!((restore.y, dismiss.y), (border.y, border.y));
+    assert!(restore.x > border.x && dismiss.right() < border.right());
+    let row = row_text(&mut state, border.y);
+    assert!(
+        row.contains("(Parked pane)") && row.contains(" restore  dismiss "),
+        "{row}"
+    );
+    assert_eq!(
+        state
+            .hits
+            .tabs
+            .iter()
+            .map(|(_, tab)| tab.as_str())
+            .collect::<Vec<_>>(),
+        ["tab_1"]
+    );
+    assert!(state.pane_accepts_input("pane_2"));
+
+    let sent = click(&mut state, restore);
+    let (boot_id, request_id, params) = unpark_to(&sent).expect("planned restore");
+    assert_eq!(
+        params,
+        PaneUnparkToParams {
+            pane_id: "pane_1".into(),
+            focus: true,
+            tab_id: "tab_1".into(),
+            layout: mixed_targets()[0].layout.clone().unwrap(),
+        }
+    );
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    assert!(state.hits.restore_pane.is_empty());
+    assert!(unpark_to(&click(&mut state, restore)).is_none());
+    assert!(unpark_to(&binding(
+        &mut state,
+        crate::input::KeybindAction::RestorePane
+    ))
+    .is_none());
+
+    state.handle_endpoint_result(
+        &boot_id,
+        &request_id,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    assert!(
+        state.has_parking_preview(),
+        "preview waits for the snapshot"
+    );
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    assert_eq!(state.hits.restore_pane, restore);
+
+    let request = state
+        .active_parking()
+        .and_then(|parking| parking.current_request().cloned())
+        .unwrap();
+    let mut restored = (**state.snapshot.as_ref().unwrap()).clone();
+    restored.parked_panes.clear();
+    acknowledge_with_targets(
+        &mut state,
+        &ClientEndpointId::Local,
+        &request,
+        Some("pane_1"),
+        restored,
+        Vec::new(),
+    );
+    assert!(!state.has_parking_preview());
+    assert!(!state.active_parking().unwrap().hides_pane("pane_1"));
+    assert_eq!(state.surface_size(SIZE.0, SIZE.1), before);
+}
+
+#[test]
+fn in_place_dismiss_only_changes_presentation() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let dismissed = click_hit(&mut state, |hits| hits.dismiss_parking_preview);
+    assert!(!state.has_parking_preview());
+    assert!(methods(&dismissed).is_empty(), "{:?}", dismissed.actions);
+    assert!(!dismissed
+        .actions
+        .iter()
+        .any(|action| matches!(action, ClientShellAction::ActivateEndpoint { .. })));
+    let policy = tick(&mut state)
+        .actions
+        .into_iter()
+        .find_map(|action| match action {
+            ClientShellAction::PanePresentation {
+                request,
+                restore_preview,
+                ..
+            } => Some((request, restore_preview)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(policy.0.focus_terminal, None);
+    assert!(policy.1);
+}
+
+#[test]
+fn restore_preview_eligibility_falls_back_to_the_full_screen_preview() {
+    let mut bordered = mixed_parked(true, true);
+    preview(&mut bordered, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut bordered,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(true),
+        "a known top border places controls without a tab bar"
+    );
+    assert!(bordered.layout(SIZE.0, SIZE.1).parking_header.is_empty());
+
+    let mut borderless = mixed_parked(true, false);
+    preview(&mut borderless, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut borderless,
+            "pane_1",
+            &["pane_1"],
+            false,
+            mixed_targets()
+        ),
+        Some(false)
+    );
+    assert!(!borderless.layout(SIZE.0, SIZE.1).parking_header.is_empty());
+    assert!(!borderless.active_parking().unwrap().restores_in_place());
+
+    let mut old_server = mixed_parked(false, true);
+    old_server.set_endpoint_restore_preview_supported(&ClientEndpointId::Local, false);
+    present_with_targets(
+        &mut old_server,
+        "pane_2",
+        &["pane_2"],
+        true,
+        mixed_targets(),
+    );
+    preview(&mut old_server, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut old_server,
+            "pane_1",
+            &["pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(false)
+    );
+    let restored = binding(&mut old_server, crate::input::KeybindAction::RestorePane);
+    assert!(unpark_to(&restored).is_none());
+
+    let mut no_layout = mixed_parked(false, true);
+    let mut target = mixed_targets();
+    target[0].layout = None;
+    present_with_targets(&mut no_layout, "pane_2", &["pane_2"], true, target.clone());
+    preview(&mut no_layout, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(&mut no_layout, "pane_1", &["pane_1"], true, target),
+        Some(false)
+    );
+
+    let mut unadvertised = mixed_parked(false, true);
+    unadvertised.set_endpoint_restore_preview_supported(&ClientEndpointId::Local, false);
+    unadvertised.endpoints[0].methods = Some(
+        ["pane.park", "pane.unpark"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    );
+    unadvertised.set_endpoint_restore_preview_supported(&ClientEndpointId::Local, true);
+    present_with_targets(
+        &mut unadvertised,
+        "pane_2",
+        &["pane_2"],
+        true,
+        mixed_targets(),
+    );
+    preview(&mut unadvertised, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut unadvertised,
+            "pane_1",
+            &["pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(false)
+    );
+}
+
+#[test]
+fn losing_every_controls_area_returns_to_the_full_screen_preview() {
+    let mut state = mixed_parked(true, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    assert!(!state.hits.restore_pane.is_empty());
+    let mut borderless = split_surface(&state, SIZE, &["pane_2", "pane_1"], false);
+    borderless.surface_revision += 1;
+    state.set_pane_surface(borderless);
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    let outcome = tick(&mut state);
+    assert!(outcome.resize);
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::PanePresentation {
+            request,
+            restore_preview: false,
+            ..
+        } if request.focus_terminal.as_deref() == Some("terminal-pane_1")
+    )));
+    assert!(!state.layout(SIZE.0, SIZE.1).parking_header.is_empty());
+    assert!(state.has_parking_preview());
+}
+
+#[test]
+fn a_narrow_border_moves_controls_to_the_tab_bar() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let area = state.layout(SIZE.0, SIZE.1).pane_surface;
+    let mut narrow = split_surface(&state, SIZE, &["pane_2", "pane_1"], true);
+    let pane = &mut narrow.panes[1];
+    pane.rect.x = area.width - 10;
+    pane.rect.width = 10;
+    pane.inner_rect.x = pane.rect.x + 1;
+    pane.inner_rect.width = 8;
+    narrow.surface_revision += 1;
+    state.set_pane_surface(narrow);
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    let tab_bar = state.layout(SIZE.0, SIZE.1).tab_bar;
+    assert_eq!(state.hits.restore_pane.y, tab_bar.y);
+    assert!(tick(&mut state).actions.is_empty());
+    assert!(state.active_parking().unwrap().previews_in_place());
+}
+
+#[test]
+fn retained_patches_keep_border_controls() {
+    let mut state = mixed_parked(true, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    let restore = state.hits.restore_pane;
+    let pane = state.pane_surface.as_ref().unwrap().panes[1].clone();
+    let mut update = patch(&state);
+    update.rows.push(crate::protocol::PaneSurfacePatchRow {
+        x: pane.inner_rect.x,
+        y: pane.inner_rect.y,
+        cells: frame.cells[..usize::from(pane.inner_rect.width)].to_vec(),
+    });
+    let ClientPaneSurfacePatchOutcome::Applied(Some(composed)) =
+        state.apply_pane_surface_patch(update)
+    else {
+        panic!("in-place preview keeps the retained fast path")
+    };
+    assert!(composed.rows.iter().all(|row| row.y != restore.y));
+    let patched = super::surface_patch::apply_composed_surface_patch(&frame, composed).unwrap();
+    assert!(frame_rows(&patched)[usize::from(restore.y)].contains(" restore  dismiss "));
+    assert_eq!(state.hits.restore_pane, restore);
+}
+
+#[test]
+fn planned_restore_reenables_after_errors_and_generation_changes() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let restore = state.hits.restore_pane;
+    for code in [
+        "stale_restore_target",
+        "endpoint_timeout",
+        "endpoint_cancelled",
+    ] {
+        let (boot_id, request_id, _) = unpark_to(&click(&mut state, restore)).unwrap();
+        state.handle_endpoint_result(
+            &boot_id,
+            &request_id,
+            Err(ClientShellEndpointError {
+                code: Some(code.into()),
+                message: "no".into(),
+            }),
+        );
+        assert!(state.has_parking_preview(), "{code}");
+        assert!(state.visible_endpoint_notice.take().is_some(), "{code}");
+        state.compose(SIZE.0, SIZE.1).unwrap();
+        assert_eq!(state.hits.restore_pane, restore, "{code}");
+    }
+
+    assert!(unpark_to(&click(&mut state, restore)).is_some());
+    let snapshot = (**state.snapshot.as_ref().unwrap()).clone();
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 8, Box::new(snapshot));
+    for _ in 0..2 {
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets(),
+        );
+    }
+    assert!(state.has_parking_preview());
+    assert!(unpark_to(&click_hit(&mut state, |hits| hits.restore_pane)).is_some());
+}
+
+#[test]
+fn reparking_after_a_restore_reply_starts_a_fresh_preview() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let (boot_id, request_id, _) =
+        unpark_to(&click_hit(&mut state, |hits| hits.restore_pane)).unwrap();
+    state.handle_endpoint_result(
+        &boot_id,
+        &request_id,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    let mut restored = (**state.snapshot.as_ref().unwrap()).clone();
+    restored.parked_panes.clear();
+    let request = state
+        .active_parking()
+        .and_then(|parking| parking.current_request().cloned())
+        .unwrap();
+    acknowledge_with_targets(
+        &mut state,
+        &ClientEndpointId::Local,
+        &request,
+        Some("pane_1"),
+        restored,
+        Vec::new(),
+    );
+    assert!(!state.has_parking_preview());
+    state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    );
+    present_with_targets(&mut state, "pane_2", &["pane_2"], true, mixed_targets());
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    assert!(unpark_to(&click_hit(&mut state, |hits| hits.restore_pane)).is_some());
+}
+
+#[test]
+fn split_drags_wait_until_the_preview_ends() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let mut split = split_surface(&state, SIZE, &["pane_2", "pane_1"], true);
+    let pos = split.panes[1].rect.x;
+    split.splits.push(crate::protocol::PaneSurfaceSplit {
+        direction: crate::protocol::PaneSurfaceSplitDirection::Horizontal,
+        pos,
+        area: split.panes[0].rect,
+        hit_rect: SurfaceRect {
+            x: pos,
+            y: 2,
+            width: 1,
+            height: 4,
+        },
+        path: Vec::new(),
+    });
+    split.surface_revision += 1;
+    state.set_pane_surface(split);
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    let hit = state.hits.pane_splits[0].hit_rect;
+    click(&mut state, hit);
+    assert!(state.chrome_drag.is_none());
+    state.leave_parking_preview();
+    click(&mut state, hit);
+    assert!(matches!(
+        state.chrome_drag,
+        Some(ClientChromeDrag::PaneSplit { .. })
+    ));
+}
+
+fn standalone_parked(separate_workspace: bool) -> ClientShellState {
+    let mut projected = snapshot();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.label = "2".into();
+    tab.number = 2;
+    projected.tabs.push(tab);
+    let mut second = projected.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.tab_id = "tab_2".into();
+    second.focused = false;
+    projected.panes.push(second);
+    if separate_workspace {
+        let mut other = projected.workspaces[0].clone();
+        other.workspace_id = "ws_2".into();
+        other.label = "other".into();
+        other.number = 2;
+        other.focused = false;
+        projected.workspaces.insert(0, other);
+        projected.tabs[0].workspace_id = "ws_2".into();
+        projected.panes[0].workspace_id = "ws_2".into();
+    }
+    let mut state = state_with_snapshot(projected);
+    state.config.hide_tab_bar_when_single_tab = true;
+    support_restore_preview(&mut state);
+    assert!(state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    ));
+    let parked = request(&mut state);
+    let mut projected = (**state.snapshot.as_ref().unwrap()).clone();
+    serve_parking(&state, &mut projected);
+    projected.workspaces[0].parked = separate_workspace;
+    acknowledge_with_targets(
+        &mut state,
+        &ClientEndpointId::Local,
+        &parked,
+        Some("pane_2"),
+        projected,
+        vec![restore_target("pane_1", "tab_1", None)],
+    );
+    preview(&mut state, ClientEndpointId::Local);
+    let targets = vec![restore_target("pane_1", "tab_1", None)];
+    assert_eq!(
+        present_with_targets(&mut state, "pane_1", &["pane_1"], false, targets),
+        Some(true)
+    );
+    state
+}
+
+#[test]
+fn standalone_preview_shows_an_inert_temporary_tab() {
+    let mut state = standalone_parked(false);
+    let layout = state.layout(SIZE.0, SIZE.1);
+    assert!(!layout.parking_header.is_empty());
+    assert!(
+        !layout.tab_bar.is_empty(),
+        "the temporary tab forces the bar"
+    );
+    let row = row_text(&mut state, layout.tab_bar.y);
+    assert!(row.contains("(logs)"), "{row}");
+    assert_eq!(
+        state
+            .hits
+            .tabs
+            .iter()
+            .map(|(_, tab)| tab.as_str())
+            .collect::<Vec<_>>(),
+        ["tab_2"]
+    );
+    let restored = binding(&mut state, crate::input::KeybindAction::RestorePane);
+    let (_, _, params) = unpark_to(&restored).unwrap();
+    assert_eq!(params.tab_id, "tab_1");
+    assert_eq!(
+        params.layout,
+        restore_target("pane_1", "tab_1", None).layout.unwrap()
+    );
+}
+
+#[test]
+fn hidden_workspace_preview_lists_an_inert_temporary_workspace_everywhere() {
+    let mut state = standalone_parked(true);
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    assert!(frame_rows(&frame).join("\n").contains("(other)"));
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| hit.workspace_id == "ws_1"));
+    assert_eq!(state.hits.workspaces.len(), 1);
+
+    state.sidebar_collapsed = true;
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    let rows = frame_rows(&frame);
+    assert!(rows.iter().any(|row| row.starts_with("()")), "{rows:?}");
+    assert!(rows.iter().any(|row| row.starts_with("1 ")), "{rows:?}");
+    assert_eq!(state.hits.workspaces.len(), 1);
+    state.sidebar_collapsed = false;
+
+    let mut mobile = state.compose(44, 20).unwrap();
+    assert!(frame_rows(&mobile)[0].contains("(other)"));
+    click_hit(&mut state, |hits| hits.mobile_switch);
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+    mobile = state.compose(44, 20).unwrap();
+    assert!(frame_rows(&mobile)[2..].join("\n").contains("(other)"));
+    assert!(state.hits.mobile_targets.iter().any(|(_, target)| matches!(
+        target,
+        ClientMobileTarget::Workspace { workspace_id, .. } if workspace_id == "ws_1"
+    )));
+    assert!(
+        !state.hits.mobile_targets.iter().any(|(_, target)| matches!(
+            target,
+            ClientMobileTarget::Workspace { workspace_id, .. } if workspace_id == "ws_2"
+        ))
+    );
+}
+
+fn with_remote(state: &mut ClientShellState) -> ClientEndpointId {
+    let profile = crate::client::endpoint::SavedSshEndpoint {
+        id: crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    let mut remote_endpoint = state.endpoints[0].clone();
+    remote_endpoint.endpoint_id = remote.clone();
+    remote_endpoint.label = "Build".into();
+    state.endpoints[1] = remote_endpoint;
+    remote
+}
+
+#[test]
+fn another_machine_previews_in_place_only_with_known_chrome() {
+    let mut hidden_bar = mixed_parked(true, true);
+    let remote = with_remote(&mut hidden_bar);
+    preview(&mut hidden_bar, remote.clone());
+    let remote_parking = &hidden_bar.endpoints[1].parking;
+    assert!(remote_parking.preview_pane().is_some());
+    assert!(!remote_parking.restores_in_place());
+
+    let mut state = mixed_parked(false, true);
+    let remote = with_remote(&mut state);
+    let opened = preview(&mut state, remote.clone());
+    assert!(opened.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::ActivateEndpoint { endpoint_id, .. } if endpoint_id == &remote
+    )));
+    assert!(state.endpoints[1].parking.restores_in_place());
+    let policy = tick(&mut state)
+        .actions
+        .into_iter()
+        .find_map(|action| match action {
+            ClientShellAction::PanePresentation {
+                endpoint_id,
+                request,
+                restore_preview,
+                ..
+            } if endpoint_id == remote => Some((request, restore_preview)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(policy.1);
+    assert!(state.activate_endpoint_projection(&remote));
+    let projected = (**state.snapshot.as_ref().unwrap()).clone();
+    acknowledge_with_targets(
+        &mut state,
+        &remote,
+        &policy.0,
+        Some("pane_1"),
+        projected,
+        mixed_targets(),
+    );
+    let frame = split_surface(&state, SIZE, &["pane_2", "pane_1"], true);
+    state.set_pane_surface(frame);
+    state.compose(SIZE.0, SIZE.1).unwrap();
+    assert!(!state.hits.restore_pane.is_empty());
+    let restored = click_hit(&mut state, |hits| hits.restore_pane);
+    assert!(restored.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { endpoint_id, request, .. }
+            if endpoint_id == &remote
+                && matches!(request.method, crate::api::schema::Method::PaneUnparkTo(_))
+    )));
+    let dismissed = click_hit(&mut state, |hits| hits.dismiss_parking_preview);
+    assert!(methods(&dismissed).is_empty());
+    assert!(dismissed.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::ActivateEndpoint {
+            endpoint_id: ClientEndpointId::Local,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn in_place_dismiss_from_another_tab_or_workspace_sends_no_focus() {
+    let mut projected = snapshot();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.number = 2;
+    projected.tabs.push(tab);
+    for (pane_id, tab_id) in [("pane_2", "tab_1"), ("pane_3", "tab_2")] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.tab_id = tab_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    let mut state = state_with_snapshot(projected);
+    support_restore_preview(&mut state);
+    assert!(state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    ));
+    present_with_targets(&mut state, "pane_3", &["pane_3"], true, mixed_targets());
+    preview(&mut state, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(true)
+    );
+    let dismissed = click_hit(&mut state, |hits| hits.dismiss_parking_preview);
+    assert!(methods(&dismissed).is_empty(), "{:?}", dismissed.actions);
+
+    let mut state = standalone_parked(true);
+    let dismissed = click_hit(&mut state, |hits| hits.dismiss_parking_preview);
+    assert!(!state.has_parking_preview());
+    assert!(methods(&dismissed).is_empty(), "{:?}", dismissed.actions);
+}
+
+#[test]
+fn mixed_preview_tab_status_counts_only_the_previewed_parked_pane() {
+    let mut projected = snapshot();
+    for pane_id in ["pane_2", "pane_3"] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    projected.agents = vec![
+        agent("pane_1", AgentStatus::Working),
+        agent("pane_2", AgentStatus::Idle),
+        agent("pane_3", AgentStatus::Blocked),
+    ];
+    let mut state = state_with_snapshot(projected);
+    support_restore_preview(&mut state);
+    for pane in ["pane_3", "pane_1"] {
+        assert!(state.parking_action(
+            ClientEndpointId::Local,
+            pane.into(),
+            lawn::ParkingAction::Park,
+            &mut ClientShellInput::default(),
+        ));
+        present_with_targets(&mut state, "pane_2", &["pane_2"], true, mixed_targets());
+    }
+    preview(&mut state, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(true)
+    );
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    let tab = state.hits.tabs[0].0;
+    let rendered = frame.to_ratatui_buffer().unwrap();
+    let icons = (tab.x..tab.right())
+        .map(|x| &rendered[(x, tab.y)])
+        .filter(|cell| cell.symbol() == "●")
+        .map(|cell| cell.fg)
+        .collect::<Vec<_>>();
+    assert_eq!(icons, [state.config.palette.yellow]);
+}
+
+#[test]
+fn clicking_a_normal_pane_in_the_preview_focuses_it_and_ends_the_peek() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    let normal = state
+        .hits
+        .panes
+        .iter()
+        .find(|hit| hit.pane_id == "pane_2")
+        .unwrap()
+        .inner_rect;
+    let clicked = click(&mut state, normal);
+    assert!(!state.has_parking_preview());
+    assert!(methods(&clicked).iter().any(|method| matches!(
+        method,
+        crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"
+    )));
+}
+
+#[test]
+fn a_mode_bar_over_the_bottom_tab_bar_hides_restore_controls_and_their_hits() {
+    let mut state = mixed_parked(false, false);
+    state.config.tab_bar_position = TabBarPositionConfig::Bottom;
+    present_with_targets(&mut state, "pane_2", &["pane_2"], false, mixed_targets());
+    preview(&mut state, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            false,
+            mixed_targets()
+        ),
+        Some(true)
+    );
+    let tab_bar = state.layout(SIZE.0, SIZE.1).tab_bar;
+    assert_eq!(state.hits.restore_pane.y, tab_bar.y);
+    state.endpoint_error = Some("Server unavailable".into());
+    let frame = state.compose(SIZE.0, SIZE.1).unwrap();
+    assert!(!frame_rows(&frame)[usize::from(tab_bar.y)].contains(" restore "));
+    assert!(state.hits.restore_pane.is_empty());
+    assert!(state.hits.dismiss_parking_preview.is_empty());
+}
+
+#[test]
+fn an_earlier_restore_reply_does_not_reenable_a_later_pending_restore() {
+    for result in [
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+        Err(ClientShellEndpointError {
+            code: Some("endpoint_cancelled".into()),
+            message: "cancelled".into(),
+        }),
+    ] {
+        let mut state = mixed_parked(false, true);
+        preview(&mut state, ClientEndpointId::Local);
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets(),
+        );
+        let (boot_id, first, _) =
+            unpark_to(&click_hit(&mut state, |hits| hits.restore_pane)).unwrap();
+        click_hit(&mut state, |hits| hits.dismiss_parking_preview);
+        present_with_targets(&mut state, "pane_2", &["pane_2"], true, mixed_targets());
+        preview(&mut state, ClientEndpointId::Local);
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets(),
+        );
+        let restore = state.hits.restore_pane;
+        let (_, second, _) = unpark_to(&click(&mut state, restore)).unwrap();
+        assert_ne!(first, second);
+        state.handle_endpoint_result(&boot_id, &first, result);
+        state.visible_endpoint_notice = None;
+        state.compose(SIZE.0, SIZE.1).unwrap();
+        assert!(state.hits.restore_pane.is_empty());
+        assert!(unpark_to(&click(&mut state, restore)).is_none());
+    }
+}
+
+#[test]
+fn dropping_pending_requests_reenables_restore() {
+    let mut state = mixed_parked(false, true);
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        true,
+        mixed_targets(),
+    );
+    unpark_to(&click_hit(&mut state, |hits| hits.restore_pane)).unwrap();
+    assert!(state.restore_preview().unwrap().restoring);
+    state.reset_endpoint_projection();
+    assert!(state.pending_requests.is_empty());
+    assert!(!state.restore_preview().unwrap().restoring);
+}
+
+#[test]
+fn tab_bar_controls_cover_tab_scroll_hits() {
+    let mut projected = snapshot();
+    let mut second = projected.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    projected.panes.push(second);
+    for number in 2..=30 {
+        let mut tab = projected.tabs[0].clone();
+        tab.tab_id = format!("tab_{number}");
+        tab.number = number;
+        tab.label = format!("long tab label {number}");
+        tab.focused = false;
+        projected.tabs.push(tab);
+    }
+    let mut state = state_with_snapshot(projected);
+    support_restore_preview(&mut state);
+    assert!(state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    ));
+    present_with_targets(&mut state, "pane_2", &["pane_2"], false, mixed_targets());
+    preview(&mut state, ClientEndpointId::Local);
+    present_with_targets(
+        &mut state,
+        "pane_1",
+        &["pane_2", "pane_1"],
+        false,
+        mixed_targets(),
+    );
+    let tab_bar = state.layout(SIZE.0, SIZE.1).tab_bar;
+    assert_eq!(state.hits.restore_pane.y, tab_bar.y);
+    let row = row_text(&mut state, tab_bar.y);
+    let start = row.chars().position(|c| c == '(').unwrap() as u16;
+    let controls = Rect::new(start, tab_bar.y, tab_bar.right() - start, 1);
+    assert!(!state.hits.tab_scroll_left.is_empty() || !state.hits.tab_scroll_right.is_empty());
+    for hit in [state.hits.tab_scroll_left, state.hits.tab_scroll_right] {
+        assert!(
+            hit.intersection(controls).is_empty(),
+            "{hit:?} {controls:?}"
+        );
+    }
+}
+
+#[test]
+fn restore_preview_needs_an_advertised_unpark_to_method() {
+    let mut state = state();
+    assert!(state.endpoints[0].methods.is_none());
+    state.set_endpoint_restore_preview_supported(&ClientEndpointId::Local, true);
+    assert!(!state.endpoints[0].parking.restore_preview_supported());
+}
+
+#[test]
+fn mobile_header_names_the_existing_destination_tab_during_a_peek() {
+    let mut projected = snapshot();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_2".into();
+    tab.label = "second".into();
+    tab.number = 2;
+    projected.tabs.push(tab);
+    projected.tabs[0].label = "first".into();
+    for (pane_id, tab_id) in [("pane_2", "tab_1"), ("pane_3", "tab_2")] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.tab_id = tab_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    let mut state = state_with_snapshot(projected);
+    support_restore_preview(&mut state);
+    assert!(state.parking_action(
+        ClientEndpointId::Local,
+        "pane_1".into(),
+        lawn::ParkingAction::Park,
+        &mut ClientShellInput::default(),
+    ));
+    present_with_targets(&mut state, "pane_3", &["pane_3"], true, mixed_targets());
+    let mut origin = (**state.snapshot.as_ref().unwrap()).clone();
+    origin.workspaces[0].active_tab_id = "tab_2".into();
+    state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 7, Box::new(origin));
+    preview(&mut state, ClientEndpointId::Local);
+    assert_eq!(
+        present_with_targets(
+            &mut state,
+            "pane_1",
+            &["pane_2", "pane_1"],
+            true,
+            mixed_targets()
+        ),
+        Some(true)
+    );
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().workspaces[0].active_tab_id,
+        "tab_2"
+    );
+    state.compose(44, 20).unwrap();
+    let mobile = split_surface(&state, (44, 20), &["pane_2", "pane_1"], true);
+    state.set_pane_surface(mobile);
+    let frame = state.compose(44, 20).unwrap();
+    let header = frame_rows(&frame)[0].clone();
+    assert!(header.contains("tab first"), "{header}");
 }

@@ -2015,6 +2015,7 @@ impl ClientShellState {
                     .pane_splits
                     .iter()
                     .find(|hit| super::contains(hit.hit_rect, point))
+                    .filter(|_| !self.has_parking_preview())
                     .cloned();
                 if let Some(hit) = split_hit {
                     let Some(tab_id) = self

@@ -10,7 +10,7 @@ use ratatui::{
 use super::render::{display_width, put_segment, put_text};
 use super::*;
 
-const MOBILE_BUTTON_WIDTH: u16 = 10;
+pub(super) const MOBILE_BUTTON_WIDTH: u16 = 10;
 
 struct MobileItem {
     lines: Vec<Line<'static>>,
@@ -86,11 +86,23 @@ fn render_header_status(
         return;
     }
     let palette = &config.palette;
+    let preview = parking.and_then(|parking| parking.restore_preview(snapshot));
     let Some(workspace) = snapshot.focused_workspace_id.as_deref().and_then(|id| {
         snapshot
             .workspaces
             .iter()
-            .find(|workspace| workspace.workspace_id == id)
+            .position(|workspace| workspace.workspace_id == id)
+            .and_then(|index| {
+                super::sidebar::displayed_workspace(
+                    snapshot,
+                    WorkspaceEntry {
+                        index,
+                        temporary: preview.as_ref().is_some_and(|preview| {
+                            preview.temporary_workspace && preview.pane.workspace_id == id
+                        }),
+                    },
+                )
+            })
     }) else {
         put_text(
             buffer,
@@ -102,7 +114,7 @@ fn render_header_status(
         );
         return;
     };
-    let tab_status = compact_tab_status(snapshot, workspace);
+    let tab_status = compact_tab_status(snapshot, &workspace, preview.as_ref());
     let tab_width = display_width(&tab_status).saturating_add(1).min(area.width);
     let name_width = area.width.saturating_sub(tab_width);
     put_text(
@@ -216,20 +228,33 @@ fn mobile_endpoint_state(status: ClientEndpointStatus) -> &'static str {
     }
 }
 
-fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWorkspace) -> String {
-    let tabs = snapshot
+fn compact_tab_status(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    preview: Option<&lawn::RestorePreview<'_>>,
+) -> String {
+    let preview = preview.filter(|preview| preview.pane.workspace_id == workspace.workspace_id);
+    let temporary = preview
+        .filter(|preview| preview.temporary_tab)
+        .map(|preview| format!("({})", preview.target.tab_label));
+    let active_tab_id = preview.map_or(workspace.active_tab_id.as_str(), |preview| {
+        preview.target.tab_id.as_str()
+    });
+    let mut tabs = snapshot
         .tabs
         .iter()
         .filter(|tab| tab.workspace_id == workspace.workspace_id)
+        .map(|tab| (tab.tab_id.as_str(), tab.label.as_str()))
         .collect::<Vec<_>>();
-    let active = tabs
-        .iter()
-        .position(|tab| tab.tab_id == workspace.active_tab_id)
-        .unwrap_or(0);
-    let label = tabs
-        .get(active)
-        .map(|tab| tab.label.as_str())
-        .unwrap_or("1");
+    let active = if let Some(label) = temporary.as_deref() {
+        tabs.push(("", label));
+        tabs.len() - 1
+    } else {
+        tabs.iter()
+            .position(|(tab_id, _)| *tab_id == active_tab_id)
+            .unwrap_or(0)
+    };
+    let label = tabs.get(active).map(|(_, label)| *label).unwrap_or("1");
     if tabs.len() <= 1 {
         format!("tab {label}")
     } else {
@@ -767,9 +792,16 @@ fn mobile_items(
         ClientMobileTarget::NewWorkspace,
         palette,
     ));
+    let active_parking = endpoints
+        .iter()
+        .find(|endpoint| &endpoint.endpoint_id == active_endpoint_id)
+        .map(|endpoint| &endpoint.parking);
     for endpoint in super::aggregate_navigation::cached_endpoint_snapshots(endpoints) {
-        for entry in super::render::workspace_entries(endpoint.snapshot) {
-            let Some(workspace) = endpoint.snapshot.workspaces.get(entry.index) else {
+        let parking = active_parking.filter(|_| endpoint.endpoint_id == active_endpoint_id);
+        let preview = parking.and_then(|parking| parking.restore_preview(endpoint.snapshot));
+        for entry in super::sidebar::displayed_workspace_entries(endpoint.snapshot, parking) {
+            let Some(workspace) = super::sidebar::displayed_workspace(endpoint.snapshot, entry)
+            else {
                 continue;
             };
             let selected = selected_workspace_id.is_some_and(|target| {
@@ -843,7 +875,7 @@ fn mobile_items(
                         crate::ui::truncate_end(
                             &format!(
                                 "  {}{stale_detail}",
-                                compact_tab_status(endpoint.snapshot, workspace)
+                                compact_tab_status(endpoint.snapshot, &workspace, preview.as_ref())
                             ),
                             usize::from(content_width),
                         ),
@@ -854,7 +886,7 @@ fn mobile_items(
                     )),
                 ],
                 background,
-                target: Some(ClientMobileTarget::Workspace {
+                target: (!entry.temporary).then(|| ClientMobileTarget::Workspace {
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
                 }),
@@ -902,6 +934,28 @@ fn mobile_items(
                     endpoint_id: active_endpoint_id.clone(),
                     tab_id: tab.tab_id.clone(),
                 }),
+            });
+        }
+        if let Some(preview) = active_parking
+            .and_then(|parking| parking.restore_preview(snapshot))
+            .filter(|preview| preview.temporary_tab && preview.pane.workspace_id == workspace_id)
+        {
+            items.push(MobileItem {
+                lines: vec![Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        crate::ui::truncate_end(
+                            &format!("tab ({})", preview.target.tab_label),
+                            usize::from(content_width.saturating_sub(3)),
+                        )
+                    ),
+                    Style::default()
+                        .fg(palette.text)
+                        .bg(palette.surface_dim)
+                        .add_modifier(Modifier::BOLD),
+                ))],
+                background: palette.surface_dim,
+                target: None,
             });
         }
     }
