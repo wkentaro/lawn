@@ -58,21 +58,9 @@ fn terminals_walk_every_tab_depth_first() {
 }
 
 #[test]
-fn name_is_readable_for_short_lowercase_sessions() {
+fn every_session_shares_one_document() {
     let app = crate::config::app_dir_name();
-    assert_eq!(name("work"), format!("{app}-session-work"));
-}
-
-#[test]
-fn name_hashes_long_or_uppercase_sessions() {
-    let app = crate::config::app_dir_name();
-    for session in ["a-session-name-that-is-far-too-long", "Work"] {
-        let hashed = name(session);
-        let prefix = format!("{app}-session.");
-        assert!(hashed.starts_with(&prefix), "{hashed}");
-        assert!(hashed.len() <= 32, "{hashed}");
-    }
-    assert_ne!(name("Work"), name("WORK"));
+    assert_eq!(name(), format!("{app}-sessions"));
 }
 
 #[cfg(unix)]

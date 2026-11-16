@@ -64,9 +64,11 @@ fn a_conflicting_edit_retries_on_top_of_the_other_write() {
         .edit(|layout| {
             calls.set(calls.get() + 1);
             if calls.get() == 1 {
-                let mut competing = layout.clone();
-                add_workspace(&mut competing, pane("t2"));
-                let current = test.core.doc_get(&a.name, None).expect("read").version;
+                let (mut competing, current) = a.load_all().expect("read");
+                add_workspace(
+                    competing.entry("shared".to_owned()).or_default(),
+                    pane("t2"),
+                );
                 test.core
                     .doc_set(&a.name, None, &encode(&competing).expect("encode"), current)
                     .expect("competing write");
@@ -104,14 +106,68 @@ fn a_newer_schema_refuses_to_load() {
     };
     let store = Store::new(test.core.clone(), "newer", None);
     test.core
-        .doc_set(
-            &store.name,
-            None,
-            &json!({"schema": 2, "layout": {"workspaces": []}}),
-            0,
-        )
+        .doc_set(&store.name, None, &json!({"schema": 2, "sessions": {}}), 0)
         .expect("write");
     let err = store.load().expect_err("newer schema");
     assert!(err.contains("newer Lawn"), "{err}");
     assert!(store.edit(|_| ()).is_err());
+    assert!(store.edit_all(|_| ()).is_err());
+}
+
+#[test]
+fn sessions_edit_one_document_without_clobbering_each_other() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let a = Store::new(test.core.clone(), "a", None);
+    let b = Store::new(test.core.clone(), "b", None);
+    a.edit(|layout| add_workspace(layout, pane("t1")))
+        .expect("edit a");
+    let (_, written) = b
+        .edit(|layout| add_workspace(layout, pane("t2")))
+        .expect("edit b");
+    assert_eq!(written.layout.terminals().collect::<Vec<_>>(), ["t2"]);
+
+    let (sessions, version) = a.load_all().expect("load all");
+    assert_eq!(version, written.version);
+    assert_eq!(sessions.keys().collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(sessions["a"].terminals().collect::<Vec<_>>(), ["t1"]);
+    assert_eq!(a.load().expect("load a").layout, sessions["a"]);
+}
+
+#[test]
+fn edit_all_changes_several_sessions_in_one_write() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let a = Store::new(test.core.clone(), "a", None);
+    a.edit(|layout| add_workspace(layout, pane("t1")))
+        .expect("edit a");
+    let before = a.load().expect("load").version;
+    let ((), version) = a
+        .edit_all(|sessions| {
+            sessions.remove("a");
+            add_workspace(sessions.entry("b".to_owned()).or_default(), pane("t1"));
+        })
+        .expect("edit all");
+    assert!(version > before);
+    let (sessions, _) = a.load_all().expect("load all");
+    assert_eq!(sessions.keys().collect::<Vec<_>>(), ["b"]);
+
+    let (shown, unchanged) = a
+        .edit_all(|sessions| sessions.values().any(|layout| layout.shows("t1")))
+        .expect("no-op");
+    assert!(shown);
+    assert_eq!(unchanged, version);
+}
+
+#[test]
+fn a_session_that_never_changed_is_not_written() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "idle", None);
+    let (_, loaded) = store.edit(|layout| layout.shows("t1")).expect("no-op");
+    assert_eq!(loaded.version, 0);
+    assert_eq!(store.load_all().expect("load all"), (Sessions::new(), 0));
 }
