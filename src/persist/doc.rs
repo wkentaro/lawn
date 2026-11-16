@@ -28,12 +28,13 @@ pub(super) fn name() -> String {
 /// its `-`, never has.
 fn name_for(session: &str) -> String {
     use sha2::{Digest, Sha256};
-    let readable = format!("lawn-layout-{session}");
+    let app = crate::config::app_dir_name();
+    let readable = format!("{app}-layout-{session}");
     if readable.len() <= 32 && !session.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return readable;
     }
     let digest = format!("{:x}", Sha256::digest(session.as_bytes()));
-    format!("lawn-layout.{}", &digest[..16])
+    format!("{app}-layout.{}", &digest[..16])
 }
 
 /// The layout the document holds, `Some(None)` once it was cleared. `None`
@@ -149,7 +150,8 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(names[0], "lawn-layout-default");
+        let app = crate::config::app_dir_name();
+        assert_eq!(names[0], format!("{app}-layout-default"));
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(unique.len(), names.len(), "{names:?}");
     }
