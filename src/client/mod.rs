@@ -18,7 +18,6 @@ mod catalog_reload;
 mod clipboard_forwarding;
 mod clipboard_images;
 mod config_reload;
-mod core_render;
 #[cfg(unix)]
 mod direct_graphics;
 pub(crate) mod endpoint;
@@ -565,8 +564,6 @@ async fn run_client_loop(
     let stdin_tx = event_tx.clone();
 
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
-    let mut core_render = core_render::CoreRender::from_env(event_tx.clone())
-        .filter(|_| state.shell.is_some() && !is_remote_client);
 
     // Spawn the stdin reader thread.
     let will_query_host_terminal_theme = state.attach_escape.is_none();
@@ -832,7 +829,6 @@ async fn run_client_loop(
                 shell.timer_delay(std::time::Instant::now())
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
-        follow_core_panes(&mut state, core_render.as_mut());
         let immediate_event = scheduled_activation.take();
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
@@ -1605,12 +1601,12 @@ async fn run_client_loop(
                         if !endpoint_active {
                             continue;
                         }
-                        if let Some(shell) = &mut state.shell {
+                        let composed = if let Some(shell) = &mut state.shell {
                             shell.set_pane_surface(surface);
-                        }
-                        let composed = state.shell.as_mut().and_then(|shell| {
                             shell.compose(state.reported_size.0, state.reported_size.1)
-                        });
+                        } else {
+                            None
+                        };
                         apply_client_shell_input_source_changes(
                             &mut state,
                             &mut prefix_input_source,
@@ -2329,54 +2325,6 @@ async fn run_client_loop(
                     &endpoint_id,
                     io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
                 );
-            }
-            ClientLoopEvent::CorePaneFound {
-                pane_id,
-                generation,
-                pane,
-            } => {
-                let accepted = match (core_render.as_mut(), &pane) {
-                    (Some(core_render), Some(_)) => core_render.accept(&pane_id, generation),
-                    (Some(core_render), None) => {
-                        core_render.retry_later(&pane_id, generation);
-                        false
-                    }
-                    (None, _) => false,
-                };
-                let composed = state.shell.as_mut().and_then(|shell| {
-                    let pane = pane.filter(|_| accepted)?;
-                    shell.core_panes.insert(pane_id, *pane);
-                    shell.compose(state.reported_size.0, state.reported_size.1)
-                });
-                if let Some(frame) = composed {
-                    state.present_frame(frame);
-                }
-            }
-            ClientLoopEvent::CorePaneEnded { pane_id } => {
-                if let Some(core_render) = core_render.as_mut() {
-                    core_render.forget(&pane_id);
-                }
-                let composed = state.shell.as_mut().and_then(|shell| {
-                    shell.core_panes.remove(&pane_id)?;
-                    shell.compose(state.reported_size.0, state.reported_size.1)
-                });
-                if let Some(frame) = composed {
-                    state.present_frame(frame);
-                }
-            }
-            ClientLoopEvent::CorePaneOutput => {
-                if let Some(core_render) = core_render.as_ref() {
-                    core_render.take_output();
-                }
-                let composed = state.shell.as_mut().and_then(|shell| {
-                    shell
-                        .take_drawn_core_changes()
-                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
-                        .flatten()
-                });
-                if let Some(frame) = composed {
-                    state.present_frame(frame);
-                }
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();

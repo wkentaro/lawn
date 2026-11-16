@@ -7,7 +7,6 @@ use crate::hc::{Attached, Core, Stream};
 
 mod io;
 pub(super) use io::CoreIo;
-pub(crate) use io::CoreRole;
 
 /// The cwd of a terminal record's foreground process.
 fn foreground_cwd(record: &serde_json::Value) -> Option<std::path::PathBuf> {
@@ -316,17 +315,6 @@ fn reattach_params(address: &str, rows: u16, cols: u16) -> serde_json::Value {
     serde_json::json!({"terminal": address, "cols": cols, "rows": rows, "history": u32::MAX})
 }
 
-fn observe_params(address: &str, rows: u16, cols: u16) -> serde_json::Value {
-    serde_json::json!({
-        "terminal": address,
-        "cols": cols,
-        "rows": rows,
-        "history": 0,
-        "observe": true,
-        "resize_notifications": true,
-    })
-}
-
 pub(crate) fn closed_core_terminals<'a>(
     addresses: impl IntoIterator<Item = &'a str>,
 ) -> std::collections::HashSet<String> {
@@ -535,77 +523,10 @@ impl PaneRuntime {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn observe_core(
-        pane_id: PaneId,
-        address: &str,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-    ) -> std::io::Result<Self> {
-        let core = crate::hc::backend()
-            .ok_or_else(|| std::io::Error::other("lawn is not running on herdr-core"))?
-            .map_err(std::io::Error::other)?;
-        let attached = core
-            .attach(observe_params(address, rows, cols))
-            .map_err(reattach_error)?;
-        Self::attach_core_as(
-            CoreRole::Observer,
-            pane_id,
-            core,
-            attached,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            crate::terminal_theme::TerminalTheme::default(),
-            None,
-            events,
-            render_notify,
-            render_dirty,
-            None,
-        )
-    }
-
     /// A pane showing a core terminal through an attach made at `rows`×`cols`.
     // Same construction inputs as `spawn_command_builder`, minus the command.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn attach_core(
-        pane_id: PaneId,
-        core: Arc<Core>,
-        attached: Attached,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-        history_ansi: Option<&str>,
-    ) -> std::io::Result<Self> {
-        Self::attach_core_as(
-            CoreRole::Viewer,
-            pane_id,
-            core,
-            attached,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            events,
-            render_notify,
-            render_dirty,
-            history_ansi,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn attach_core_as(
-        role: CoreRole,
         pane_id: PaneId,
         core: Arc<Core>,
         attached: Attached,
@@ -630,7 +551,7 @@ impl PaneRuntime {
             .unwrap_or_default()
             .to_owned();
         // From here on, failing drops `io`, which detaches the stream.
-        let io = CoreIo::new(core.clone(), channel, address, rows, cols, role)
+        let io = CoreIo::new(core.clone(), channel, address, rows, cols)
             .inspect_err(|_| core.detach(channel))?;
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
         let pane_terminal = new_pane_terminal(
@@ -1374,101 +1295,6 @@ mod tests {
         test.core
             .call("terminal.kill", json!({"terminal": address}))
             .expect("kill");
-    }
-
-    #[test]
-    fn an_observer_asks_for_the_screen_without_history() {
-        let params = observe_params("t3", 24, 80);
-        assert_eq!(params["history"], 0);
-        assert_eq!(params["observe"], true);
-        assert_eq!(params["resize_notifications"], true);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn an_observer_follows_the_terminal_without_steering_it() {
-        let Some(test) = crate::hc::test_support::TestCore::start() else {
-            return;
-        };
-        test.share();
-        crate::hc::use_core_for_test();
-        let address = test
-            .core
-            .run(json!({
-                "argv": ["sh", "-c", "stty -echo; echo ready; read line; echo got-$line; sleep 30"],
-                "no_parent": true,
-                "size": {"cols": 80, "rows": 24},
-            }))
-            .expect("run");
-        let attached = test
-            .core
-            .attach(json!({"terminal": address, "cols": 100, "rows": 30}))
-            .expect("attach");
-        let (events, _viewer_events) = mpsc::channel(8);
-        let viewer = PaneRuntime::attach_core(
-            PaneId::from_raw(7),
-            test.core.clone(),
-            attached,
-            30,
-            100,
-            1 << 20,
-            crate::terminal_theme::TerminalTheme::default(),
-            None,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
-            None,
-        )
-        .expect("attach_core");
-        let (events, _observer_events) = mpsc::channel(8);
-        let observer = PaneRuntime::observe_core(
-            PaneId::from_raw(8),
-            &address,
-            20,
-            60,
-            1 << 20,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
-        )
-        .expect("observe_core");
-        let size = || {
-            let record = test
-                .core
-                .call("terminal.get", json!({"terminal": address}))
-                .expect("terminal.get");
-            (record["cols"].as_u64(), record["rows"].as_u64())
-        };
-
-        wait_for("the observer to see the program", || {
-            observer.visible_text().contains("ready")
-                && observer.terminal_dimensions() == Some((100, 30))
-        })
-        .await;
-        assert_eq!(size(), (Some(100), Some(30)));
-
-        viewer
-            .try_send_bytes(Bytes::from_static(b"hi\r"))
-            .expect("send");
-        wait_for("the observer to see the answer", || {
-            observer.visible_text().contains("got-hi")
-        })
-        .await;
-
-        viewer.resize(28, 90, 0, 0);
-        wait_for("the observer to follow the resize", || {
-            observer.terminal_dimensions() == Some((90, 28))
-        })
-        .await;
-
-        observer.shutdown();
-        assert_eq!(size(), (Some(90), Some(28)));
-        let record = test
-            .core
-            .call("terminal.get", json!({"terminal": address}))
-            .expect("terminal.get");
-        assert_eq!(record["state"], "live");
-        viewer.shutdown();
     }
 
     #[cfg(unix)]

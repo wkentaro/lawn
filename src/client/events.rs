@@ -33,14 +33,5 @@ pub(super) enum ClientLoopEvent {
         /// latest target have the same identity after restoration.
         force: bool,
     },
-    CorePaneFound {
-        pane_id: String,
-        generation: u64,
-        pane: Option<Box<core_render::CorePane>>,
-    },
-    CorePaneEnded {
-        pane_id: String,
-    },
-    CorePaneOutput,
     Timer,
 }

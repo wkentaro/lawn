@@ -248,30 +248,6 @@ impl TerminalRuntime {
         .map(Self)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn observe_core(
-        pane_id: PaneId,
-        address: &str,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-    ) -> std::io::Result<Self> {
-        crate::pane::PaneRuntime::observe_core(
-            pane_id,
-            address,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            events,
-            render_notify,
-            render_dirty,
-        )
-        .map(Self)
-    }
-
     pub fn core_address(&self) -> Option<&str> {
         self.0.core_address()
     }

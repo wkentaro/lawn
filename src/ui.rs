@@ -9,7 +9,6 @@ mod sidebar;
 mod status;
 mod tab_surface;
 mod text;
-mod virtual_render;
 mod widgets;
 
 pub(crate) use self::onboarding::{
@@ -48,7 +47,6 @@ pub(crate) use self::tab_surface::{
     TabSurfaceTarget, TabSurfaceView,
 };
 pub(crate) use self::text::truncate_end;
-pub(crate) use self::virtual_render::{render_terminal_virtual, CursorTrackingBackend};
 pub(crate) use self::widgets::{centered_popup_rect, modal_stack_areas};
 
 use crate::app::AppState;
