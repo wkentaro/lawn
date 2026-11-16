@@ -171,10 +171,7 @@ impl AppState {
 
     /// The first workspace that is not parked, from `start` on, wrapping around.
     pub(crate) fn shown_workspace_from(&self, start: usize) -> Option<usize> {
-        let count = self.workspaces.len();
-        (0..count)
-            .map(|offset| (start + offset) % count)
-            .find(|&idx| !self.workspaces[idx].parked)
+        crate::session_model::shown_workspace_from(&self.workspaces, start)
     }
 
     pub(crate) fn unpark_pane(

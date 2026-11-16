@@ -1,3 +1,7 @@
+mod relocation;
+
+pub(crate) use relocation::{relocate_tab, remove_empty_workspace, shown_workspace_from};
+
 use crate::workspace::decode_public_number;
 
 pub(crate) trait Workspace {
@@ -165,7 +169,7 @@ impl Workspace for crate::persist::WorkspaceSnapshot {
 mod tests {
     use super::*;
 
-    fn captured(state: &crate::app::AppState) -> crate::persist::SessionSnapshot {
+    pub(super) fn captured(state: &crate::app::AppState) -> crate::persist::SessionSnapshot {
         crate::persist::capture(
             &state.workspaces,
             &state.terminals,
