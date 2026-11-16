@@ -832,7 +832,7 @@ async fn run_client_loop(
                 shell.timer_delay(std::time::Instant::now())
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
-        follow_core_pane(&mut state, core_render.as_mut());
+        follow_core_panes(&mut state, core_render.as_mut());
         let immediate_event = scheduled_activation.take();
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
@@ -2330,22 +2330,22 @@ async fn run_client_loop(
                     io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
                 );
             }
-            ClientLoopEvent::CorePaneFound { pane_id, pane } => {
-                let accepted = core_render
-                    .as_ref()
-                    .is_some_and(|core_render| core_render.accept(&pane_id));
-                if pane.is_none() {
-                    if let Some(core_render) = core_render.as_mut() {
-                        core_render.retry_later(&pane_id);
+            ClientLoopEvent::CorePaneFound {
+                pane_id,
+                generation,
+                pane,
+            } => {
+                let accepted = match (core_render.as_mut(), &pane) {
+                    (Some(core_render), Some(_)) => core_render.accept(&pane_id, generation),
+                    (Some(core_render), None) => {
+                        core_render.retry_later(&pane_id, generation);
+                        false
                     }
-                }
+                    (None, _) => false,
+                };
                 let composed = state.shell.as_mut().and_then(|shell| {
-                    let focused = shell
-                        .focused_surface_pane()
-                        .is_some_and(|(focused, _)| focused == pane_id);
-                    let pane = pane.filter(|_| accepted && focused)?;
-                    pane.take_output();
-                    shell.core_pane = Some(*pane);
+                    let pane = pane.filter(|_| accepted)?;
+                    shell.core_panes.insert(pane_id, *pane);
                     shell.compose(state.reported_size.0, state.reported_size.1)
                 });
                 if let Some(frame) = composed {
@@ -2357,14 +2357,7 @@ async fn run_client_loop(
                     core_render.forget(&pane_id);
                 }
                 let composed = state.shell.as_mut().and_then(|shell| {
-                    let ended = shell
-                        .core_pane
-                        .as_ref()
-                        .is_some_and(|core_pane| core_pane.pane_id() == pane_id);
-                    if !ended {
-                        return None;
-                    }
-                    shell.core_pane = None;
+                    shell.core_panes.remove(&pane_id)?;
                     shell.compose(state.reported_size.0, state.reported_size.1)
                 });
                 if let Some(frame) = composed {
@@ -2372,10 +2365,12 @@ async fn run_client_loop(
                 }
             }
             ClientLoopEvent::CorePaneOutput => {
+                if let Some(core_render) = core_render.as_ref() {
+                    core_render.take_output();
+                }
                 let composed = state.shell.as_mut().and_then(|shell| {
-                    shell.core_pane.as_ref()?.take_output();
                     shell
-                        .core_pane_drawn()
+                        .take_drawn_core_changes()
                         .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
                         .flatten()
                 });

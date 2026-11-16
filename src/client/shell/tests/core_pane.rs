@@ -51,13 +51,15 @@ async fn a_core_pane_draws_its_terminal_only_while_it_matches_the_pane() {
         .expect("composed frame")
         .cursor
         .clone();
-    state.core_pane = crate::client::core_render::CorePane::observe(
+    let core_pane = crate::client::core_render::CorePane::observe(
         "pane_1".into(),
         &address,
         (4, 2),
         loop_events,
-    );
-    assert!(state.core_pane.is_some());
+        Default::default(),
+    )
+    .expect("observe");
+    state.core_panes.insert("pane_1".into(), core_pane);
 
     let frame = compose_until(&mut state, |rows| {
         shows(rows, "CORE") && !shows(rows, "LIVE")
@@ -79,6 +81,63 @@ async fn a_core_pane_draws_its_terminal_only_while_it_matches_the_pane() {
         .expect("kill");
     compose_until(&mut state, |rows| {
         shows(rows, "LIVE") && !shows(rows, "CORE")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn every_pane_of_the_tab_draws_from_its_own_terminal() {
+    let Some(test) = crate::hc::test_support::TestCore::start() else {
+        return;
+    };
+    test.share();
+    crate::hc::use_core_for_test();
+    let run = |text: &str| {
+        let address = test
+            .core
+            .run(serde_json::json!({
+                "argv": ["sh", "-c", format!("printf {text}; sleep 30")],
+                "no_parent": true,
+                "size": {"cols": 4, "rows": 2},
+            }))
+            .expect("run");
+        test.core
+            .attach(serde_json::json!({"terminal": address, "cols": 4, "rows": 2}))
+            .expect("attach");
+        address
+    };
+    let (focused, other) = (run("AAAA"), run("BBBB"));
+    let mut surface = surface();
+    let buffer = Buffer::with_lines(["LIVE PANE", "LIVE PANE"]);
+    surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+    let mut second = surface.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    second.rect.x = 5;
+    second.inner_rect.x = 5;
+    surface.panes.push(second);
+    let (loop_events, _loop_events_rx) = tokio::sync::mpsc::channel(8);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface);
+    assert_eq!(
+        state.surface_panes(),
+        [("pane_1", (4, 2)), ("pane_2", (4, 2))]
+    );
+    for (pane_id, address) in [("pane_1", &focused), ("pane_2", &other)] {
+        let core_pane = crate::client::core_render::CorePane::observe(
+            pane_id.into(),
+            address,
+            (4, 2),
+            loop_events.clone(),
+            Default::default(),
+        )
+        .expect("observe");
+        state.core_panes.insert(pane_id.into(), core_pane);
+    }
+
+    compose_until(&mut state, |rows| {
+        shows(rows, "AAAA BBBB") && !shows(rows, "LIVE") && !shows(rows, "PANE")
     })
     .await;
 }

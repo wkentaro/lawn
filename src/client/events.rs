@@ -35,6 +35,7 @@ pub(super) enum ClientLoopEvent {
     },
     CorePaneFound {
         pane_id: String,
+        generation: u64,
         pane: Option<Box<core_render::CorePane>>,
     },
     CorePaneEnded {
