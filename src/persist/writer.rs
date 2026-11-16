@@ -54,8 +54,9 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
     ) {
-        if let Err(err) = self.try_save(snapshot, history) {
-            crate::logging::session_save_failed(&self.path, &err.to_string());
+        match self.try_save(snapshot, history) {
+            Ok(()) => save_doc(Some(snapshot)),
+            Err(err) => crate::logging::session_save_failed(&self.path, &err.to_string()),
         }
     }
 
@@ -71,7 +72,6 @@ impl SessionWriter {
         if preserved {
             self.prune_recovery();
         }
-        save_doc(Some(snapshot));
         self.preserve_snapshot_history(true);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = super::io::save_history_to_path(&history_path, history) {

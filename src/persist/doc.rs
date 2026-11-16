@@ -101,16 +101,24 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
 
 /// Clears a deleted session's layout, so reusing its name starts fresh.
 pub(crate) fn clear(session: &str) -> Result<(), String> {
+    set_current(&name_for(session), &serde_json::Value::Null)
+}
+
+pub(super) fn replace(snapshot: &SessionSnapshot) -> Result<(), String> {
+    let value = serde_json::to_value(snapshot).map_err(|err| err.to_string())?;
+    set_current(&name(), &value)
+}
+
+fn set_current(name: &str, value: &serde_json::Value) -> Result<(), String> {
     let Some(core) = crate::hc::backend() else {
         return Ok(());
     };
     let core = core.map_err(|err| err.to_string())?;
-    let name = name_for(session);
     let current = core
-        .doc_get(&name, None)
+        .doc_get(name, None)
         .map_err(|err| err.to_string())?
         .version;
-    core.doc_set(&name, None, &serde_json::Value::Null, current)
+    core.doc_set(name, None, value, current)
         .map(drop)
         .map_err(|err| err.to_string())
 }
@@ -203,6 +211,32 @@ mod tests {
             matches!(load(), Some(None)),
             "a deleted session starts fresh"
         );
+    }
+
+    #[test]
+    fn a_restore_replaces_whatever_layout_the_document_holds() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let config = std::env::temp_dir().join(format!("lawn-restore-doc-{}", std::process::id()));
+        std::env::set_var("XDG_CONFIG_HOME", &config);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        let newer = serde_json::json!({"version": u32::MAX, "workspaces": [], "selected": 0});
+        test.core
+            .doc_set(&name(), None, &newer, 0)
+            .expect("doc.set");
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
+        let source = crate::session::data_dir().join("saved.json");
+        let saved = serde_json::to_string(&snapshot(31)).expect("json");
+        std::fs::write(&source, saved).expect("write");
+
+        super::super::io::restore_from(&source).expect("restore");
+
+        let loaded = load().expect("written").expect("not cleared");
+        assert_eq!(loaded.sidebar_width, Some(31), "the document wins on load");
+        std::fs::remove_dir_all(config).expect("clean up");
     }
 
     #[test]

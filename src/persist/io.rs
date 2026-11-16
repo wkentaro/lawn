@@ -151,7 +151,10 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
     let snapshot = parse_snapshot(&content).map_err(not_a_snapshot)?;
     super::SessionWriter::new(true)
         .try_save(&snapshot, None)
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    super::doc::replace(&snapshot).map_err(|err| {
+        format!("session.json was restored, but not the herdr core layout document: {err}")
+    })
 }
 
 pub fn load_history() -> Option<SessionHistorySnapshot> {
