@@ -16,14 +16,7 @@ struct Attachment {
     channel: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CoreRole {
-    Viewer,
-    Observer,
-}
-
 struct Routing {
-    role: CoreRole,
     current: Option<Arc<Attachment>>,
     events_channel: Option<u32>,
     size: (u16, u16),
@@ -90,11 +83,8 @@ impl Connection {
         output: &PaneOutput,
         address: &str,
     ) -> Option<std::thread::JoinHandle<()>> {
-        {
-            let routing = self.lock();
-            if routing.role == CoreRole::Observer || !Self::is_current(&routing, attachment) {
-                return None;
-            }
+        if !Self::is_current(&self.lock(), attachment) {
+            return None;
         }
         match follow_core_terminal(
             &attachment.core,
@@ -123,14 +113,13 @@ impl Connection {
     fn reconnect(&self, address: &str) -> Result<Option<(Arc<Attachment>, Attached)>, HcError> {
         let mut delay = Duration::from_millis(100);
         loop {
-            let (size, role) = {
+            let size = {
                 let routing = self.lock();
                 if routing.stopped {
                     return Ok(None);
                 }
-                (routing.size, routing.role)
+                routing.size
             };
-            let observe = role == CoreRole::Observer;
             let result = crate::hc::backend()
                 .unwrap_or_else(|| Err(HcError::Unavailable("core panes are disabled".into())))
                 .and_then(|core| {
@@ -139,8 +128,6 @@ impl Connection {
                         "rows": size.0,
                         "cols": size.1,
                         "resumed": true,
-                        "observe": observe,
-                        "resize_notifications": observe,
                     })) {
                         Err(error) if error.kind() == Some("finished") => core.finished(address),
                         attached => attached,
@@ -159,7 +146,7 @@ impl Connection {
                         attachment.core.detach(attachment.channel);
                         return Ok(None);
                     }
-                    if !observe && routing.size != size {
+                    if routing.size != size {
                         attachment
                             .core
                             .resize(attachment.channel, routing.size.1, routing.size.0);
@@ -207,11 +194,9 @@ impl CoreIo {
         address: String,
         rows: u16,
         cols: u16,
-        role: CoreRole,
     ) -> std::io::Result<Self> {
         let connection = Arc::new(Connection {
             routing: Mutex::new(Routing {
-                role,
                 current: Some(Arc::new(Attachment { core, channel })),
                 events_channel: None,
                 size: (rows, cols),
@@ -275,7 +260,6 @@ impl CoreIo {
         output: PaneOutput,
         ended: Arc<std::sync::atomic::AtomicBool>,
     ) -> std::io::Result<()> {
-        let role = self.role();
         let connection = self.connection.clone();
         let address = self.address.clone();
         let Some(mut attachment) = connection.lock().current.clone() else {
@@ -289,19 +273,17 @@ impl CoreIo {
                 match stream.blocking_recv() {
                     Some(Stream::Data(bytes)) => {
                         let result = output.process(&bytes);
-                        if role == CoreRole::Viewer {
-                            for response in result.terminal_responses {
-                                attachment
-                                    .core
-                                    .automatic_input(attachment.channel, &response);
-                            }
+                        for response in result.terminal_responses {
+                            attachment
+                                .core
+                                .automatic_input(attachment.channel, &response);
                         }
                         attachment.core.credit(
                             attachment.channel,
                             u32::try_from(bytes.len()).unwrap_or(u32::MAX),
                         );
                     }
-                    Some(Stream::Resize { cols, rows }) => output.resize(rows, cols),
+                    Some(Stream::Resize { .. }) => {}
                     Some(item @ Stream::Closed(_)) => break exit_reason(&item),
                     _ => {
                         connection.detach(false);
@@ -385,18 +367,11 @@ impl CoreIo {
         Ok(done)
     }
 
-    fn role(&self) -> CoreRole {
-        self.connection.lock().role
-    }
-
     pub(in crate::pane) fn address(&self) -> &str {
         &self.address
     }
 
     pub(in crate::pane) fn respond(&self, bytes: &[u8]) {
-        if self.role() == CoreRole::Observer {
-            return;
-        }
         if let Some(attachment) = self.connection.current() {
             attachment.core.automatic_input(attachment.channel, bytes);
         }
@@ -411,9 +386,6 @@ impl CoreIo {
     }
 
     pub(in crate::pane) fn kill(&self) {
-        if self.role() == CoreRole::Observer {
-            return;
-        }
         let current = self.connection.current();
         let address = self.address.clone();
         if let Err(error) = crate::thread_spawn::spawn_named("hc-kill", move || {
