@@ -70,6 +70,29 @@ pub struct WorkspaceSnapshot {
     pub parked: bool,
 }
 
+impl WorkspaceSnapshot {
+    pub(crate) fn tab_number(&self, tab: usize) -> usize {
+        self.public_tab_numbers.get(tab).copied().unwrap_or(tab + 1)
+    }
+
+    pub(crate) fn next_tab_number(&self) -> usize {
+        self.public_tab_numbers
+            .iter()
+            .copied()
+            .max()
+            .and_then(|max| max.checked_add(1))
+            .unwrap_or(1)
+            .max(self.next_public_tab_number)
+    }
+
+    pub(crate) fn visible_tab_count(&self) -> usize {
+        self.tabs
+            .iter()
+            .take_while(|tab| tab.parked_from.is_none())
+            .count()
+    }
+}
+
 #[derive(Deserialize)]
 struct LegacyWorkspaceSnapshot {
     #[serde(default)]

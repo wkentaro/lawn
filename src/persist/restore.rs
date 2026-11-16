@@ -350,18 +350,11 @@ fn restore_workspace(
         })
         .collect();
     let mut public_pane_numbers = HashMap::new();
-    let mut next_public_tab_number = snap
-        .public_tab_numbers
-        .iter()
-        .copied()
-        .max()
-        .and_then(|max| max.checked_add(1))
-        .unwrap_or(1)
-        .max(snap.next_public_tab_number);
+    let mut next_public_tab_number = snap.next_tab_number();
     let mut failed_imports = 0;
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
-        let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
+        let tab_number = snap.tab_number(idx);
         let (restored_tab, tab_failed_imports) = restore_tab(
             tab_snap,
             history.and_then(|history| history.tabs.get(idx)),

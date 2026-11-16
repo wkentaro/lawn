@@ -1,6 +1,3 @@
-//! Layout commands that work with no server running, by editing the herdr
-//! core layout document. Ids and labels follow the server's rules.
-
 use crate::api::schema::{
     AgentStatus, ErrorBody, ErrorResponse, Method, Request, ResponseResult, SuccessResponse,
     TabInfo, WorkspaceInfo,
@@ -40,7 +37,6 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             (answer, changed)
         }),
         Method::TabList(params) => crate::persist::doc::edit(|snapshot| {
-            // Like the server: one workspace's tabs, or every workspace's.
             let workspaces = match params.workspace_id.as_deref() {
                 Some(workspace_id) => match workspace_index(snapshot, workspace_id) {
                     Some(index) => index..index + 1,
@@ -50,7 +46,7 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             };
             let answer: Answer = workspaces
                 .flat_map(|index| {
-                    (0..visible_tab_count(&snapshot.workspaces[index])).map(move |tab| (index, tab))
+                    (0..snapshot.workspaces[index].visible_tab_count()).map(move |tab| (index, tab))
                 })
                 .map(|(index, tab)| tab_info(snapshot, index, tab))
                 .collect::<Option<Vec<_>>>()
@@ -59,11 +55,7 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
         }),
         Method::TabRename(params) => crate::persist::doc::edit(|snapshot| {
             let Some((workspace, tab)) = tab_index(snapshot, &params.tab_id) else {
-                let missing = ErrorBody {
-                    code: "tab_not_found".into(),
-                    message: format!("tab {} not found", params.tab_id),
-                };
-                return (Some(Err(missing)), false);
+                return (Some(Err(tab_not_found(&params.tab_id))), false);
             };
             snapshot.workspaces[workspace].tabs[tab].custom_name = Some(params.label.clone());
             let answer: Answer =
@@ -90,7 +82,19 @@ fn workspace_not_found(workspace_id: &str) -> ErrorBody {
     }
 }
 
-// Keep in sync with `App::parse_workspace_id` (src/app/ids.rs).
+fn tab_not_found(tab_id: &str) -> ErrorBody {
+    ErrorBody {
+        code: "tab_not_found".into(),
+        message: format!("tab {tab_id} not found"),
+    }
+}
+
+fn active_tab(workspace: &WorkspaceSnapshot) -> usize {
+    workspace
+        .active_tab
+        .min(workspace.tabs.len().saturating_sub(1))
+}
+
 fn workspace_index(snapshot: &SessionSnapshot, id: &str) -> Option<usize> {
     snapshot
         .workspaces
@@ -101,10 +105,9 @@ fn workspace_index(snapshot: &SessionSnapshot, id: &str) -> Option<usize> {
         .filter(|&index| index < snapshot.workspaces.len())
 }
 
-// Keep in sync with `App::parse_tab_id` (src/app/ids.rs).
 fn tab_index(snapshot: &SessionSnapshot, id: &str) -> Option<(usize, usize)> {
     let visible = |workspace: usize, tab: usize| {
-        (tab < visible_tab_count(&snapshot.workspaces[workspace])).then_some((workspace, tab))
+        (tab < snapshot.workspaces[workspace].visible_tab_count()).then_some((workspace, tab))
     };
     if let Some(rest) = id.strip_prefix("t_") {
         let (workspace_raw, tab_raw) = rest.rsplit_once('_')?;
@@ -116,41 +119,22 @@ fn tab_index(snapshot: &SessionSnapshot, id: &str) -> Option<(usize, usize)> {
     let tab = match tab_raw.strip_prefix('t') {
         Some(encoded) => {
             let number = decode_public_number(encoded)?;
-            let tabs = &snapshot.workspaces[workspace];
-            (0..tabs.tabs.len()).position(|tab| tab_number(tabs, tab) == number)?
+            let workspace = &snapshot.workspaces[workspace];
+            (0..workspace.tabs.len()).position(|tab| workspace.tab_number(tab) == number)?
         }
         None => tab_raw.parse::<usize>().ok()?.checked_sub(1)?,
     };
     visible(workspace, tab)
 }
 
-// Keep in sync with `Workspace::visible_tab_count` (src/workspace.rs).
-fn visible_tab_count(workspace: &WorkspaceSnapshot) -> usize {
-    workspace
-        .tabs
-        .iter()
-        .take_while(|tab| tab.parked_from.is_none())
-        .count()
-}
-
-// Keep in sync with how restore numbers tabs (src/persist/restore.rs).
-fn tab_number(workspace: &WorkspaceSnapshot, tab: usize) -> usize {
-    workspace
-        .public_tab_numbers
-        .get(tab)
-        .copied()
-        .unwrap_or(tab + 1)
-}
-
-// Keep in sync with `App::workspace_info` (src/app/creation.rs).
 fn workspace_info(snapshot: &SessionSnapshot, index: usize) -> Option<WorkspaceInfo> {
     let workspace = &snapshot.workspaces[index];
     let id = workspace.id.clone()?;
-    // No visible tab: name the next tab, which no parked tab holds.
-    let active_tab_number = if workspace.active_tab < visible_tab_count(workspace) {
-        tab_number(workspace, workspace.active_tab)
+    let active_tab = active_tab(workspace);
+    let active_tab_number = if active_tab < workspace.visible_tab_count() {
+        workspace.tab_number(active_tab)
     } else {
-        workspace.next_public_tab_number
+        workspace.next_tab_number()
     };
     Some(WorkspaceInfo {
         number: index + 1,
@@ -160,32 +144,30 @@ fn workspace_info(snapshot: &SessionSnapshot, index: usize) -> Option<WorkspaceI
             .unwrap_or_else(|| derive_label_from_cwd(&workspace.identity_cwd)),
         focused: snapshot.active == Some(index),
         pane_count: workspace.public_pane_numbers.len(),
-        tab_count: visible_tab_count(workspace),
+        tab_count: workspace.visible_tab_count(),
         active_tab_id: public_tab_id_for_number(&id, active_tab_number),
-        // Agent state lives in the running program, not the layout.
         agent_status: AgentStatus::Unknown,
         tokens: Default::default(),
         worktree: None,
-        parked: workspace.parked,
+        parked: workspace.parked && workspace.tabs.iter().any(|tab| tab.parked_from.is_some()),
         workspace_id: id,
     })
 }
 
-// Keep in sync with `App::tab_info` and `Workspace::tab_display_name`.
-fn tab_info(snapshot: &SessionSnapshot, workspace: usize, tab: usize) -> Option<TabInfo> {
-    let tabs = &snapshot.workspaces[workspace];
-    let id = tabs.id.clone()?;
-    let number = tab_number(tabs, tab);
+fn tab_info(snapshot: &SessionSnapshot, workspace_index: usize, tab: usize) -> Option<TabInfo> {
+    let workspace = &snapshot.workspaces[workspace_index];
+    let id = workspace.id.clone()?;
+    let number = workspace.tab_number(tab);
     Some(TabInfo {
         tab_id: public_tab_id_for_number(&id, number),
         workspace_id: id,
         number,
-        label: tabs.tabs[tab]
+        label: workspace.tabs[tab]
             .custom_name
             .clone()
             .unwrap_or_else(|| (tab + 1).to_string()),
-        focused: snapshot.active == Some(workspace) && tabs.active_tab == tab,
-        pane_count: tabs.tabs[tab].panes.len(),
+        focused: snapshot.active == Some(workspace_index) && active_tab(workspace) == tab,
+        pane_count: workspace.tabs[tab].panes.len(),
         agent_status: AgentStatus::Unknown,
     })
 }
@@ -237,7 +219,6 @@ mod tests {
         assert_eq!(workspace_index(&snapshot, "1"), Some(0));
         assert_eq!(workspace_index(&snapshot, "w_1"), Some(0));
         assert_eq!(workspace_index(&snapshot, "2"), None);
-        // Tab ids carry the tab's number; plain numbers and `t_` its place.
         assert_eq!(tab_index(&snapshot, "w1:t3"), Some((0, 1)));
         assert_eq!(tab_index(&snapshot, "w1:2"), Some((0, 1)));
         assert_eq!(tab_index(&snapshot, "t_w1_2"), Some((0, 1)));
@@ -259,6 +240,29 @@ mod tests {
             ("project", 2)
         );
         assert_eq!(workspace.active_tab_id, "w1:t3");
+
+        let mut stale = snapshot;
+        stale.workspaces[0].active_tab = 2;
+        stale.workspaces[0].next_public_tab_number = 0;
+        let workspace = workspace_info(&stale, 0).expect("workspace");
+        assert_eq!(
+            workspace.active_tab_id, "w1:t5",
+            "the tab restore would number next"
+        );
+
+        stale.workspaces[0].tabs.pop();
+        stale.workspaces[0].active_tab = 9;
+        stale.workspaces[0].parked = true;
+        let workspace = workspace_info(&stale, 0).expect("workspace");
+        assert_eq!(
+            workspace.active_tab_id, "w1:t3",
+            "restore clamps the active tab"
+        );
+        assert!(
+            !workspace.parked,
+            "restore unparks a workspace with no parked tab"
+        );
+        assert!(tab_info(&stale, 0, 1).expect("tab").focused);
     }
 
     #[test]
