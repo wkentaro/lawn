@@ -185,6 +185,28 @@ pub(crate) fn clear_explicit_session_for_test() {
     EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
 }
 
+pub(crate) fn own_session(name: Option<&str>) -> std::io::Result<std::fs::File> {
+    let name = name.unwrap_or(DEFAULT_SESSION_NAME);
+    validate_name(name)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    let directory = crate::config::config_dir().join("session-locks");
+    std::fs::create_dir_all(&directory)?;
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(format!("{name}.lock")))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("session {name} is already running or being edited"),
+        )),
+        Err(std::fs::TryLockError::Error(err)) => Err(err),
+    }
+}
+
 pub fn data_dir() -> PathBuf {
     data_dir_for(active_name().as_deref())
 }
@@ -339,6 +361,13 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
         return Err("deleting the default session is not supported".to_string());
     }
     validate_name(name)?;
+    let _owner = own_session(Some(name)).map_err(|err| {
+        if err.kind() == std::io::ErrorKind::AddrInUse {
+            format!("session {name} is running or being edited; stop it before deleting")
+        } else {
+            err.to_string()
+        }
+    })?;
     let Some(dir) = exact_session_dir_for_delete(name)? else {
         return Ok(session_info(Some(name)));
     };

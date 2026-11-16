@@ -833,13 +833,34 @@ fn live_handoff_preserves_named_session_socket_paths() {
     let spawned = spawn_named_session_server(&config_home, &runtime_dir, "work");
     wait_for_socket(&api_socket, Duration::from_secs(10));
     register_runtime_dir(&runtime_dir);
-
-    assert_ok(request(
+    let owner = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(config_home.join("lawn-dev/session-locks/work.lock"))
+        .unwrap();
+    let checking = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let keep_checking = checking.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let checker = thread::spawn(move || {
+        ready_tx.send(()).unwrap();
+        while keep_checking.load(Ordering::Acquire) {
+            assert!(matches!(
+                owner.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+            thread::yield_now();
+        }
+    });
+    ready_rx.recv().unwrap();
+    let response = request(
         &api_socket,
         serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
-    ));
+    );
     drop(spawned);
     wait_for_api(&api_socket, Duration::from_secs(10));
+    checking.store(false, Ordering::Release);
+    checker.join().unwrap();
+    assert_ok(response);
     wait_for_socket(&client_socket, Duration::from_secs(5));
     assert!(
         !config_home.join("lawn-dev/herdr.sock").exists(),
@@ -2085,6 +2106,15 @@ fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
         failed.get("error").is_some(),
         "{failure_point} handoff should fail: {failed}"
     );
+    let owner = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(config_home.join("lawn-dev/session-locks/default.lock"))
+        .unwrap();
+    assert!(matches!(
+        owner.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
     wait_for_api(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(5));
     assert_eq!(unsafe { libc::kill(child_pid as libc::pid_t, 0) }, 0);

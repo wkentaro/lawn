@@ -18,6 +18,8 @@ Herdr uses several state paths for different situations.
 
 Normal detach keeps the Herdr server running. Panes, shells, agents, servers, tests, and command processes keep running inside that server.
 
+Each session directory has one owner, even when API or client sockets use custom paths. A second server cannot open it, and session deletion refuses while it is owned. Servers require filesystem locking; a locking failure stops startup. Ownership files live in `session-locks/` under the config directory and must not be removed while a process may hold them.
+
 Detach the client with `ctrl+b q`. Reattach later:
 
 ```bash
@@ -119,6 +121,8 @@ If native agent session restore applies to a pane, Herdr resumes the agent sessi
 Live handoff is for update and remote attach flows that need to replace a running Herdr server. It asks the old server to transfer live panes to the new server, so pane processes can keep running across the server replacement.
 
 Unlike snapshot restore, pane history replay, and native agent session restore, handoff tries to keep the current processes alive rather than reconstructing state after the old server stops.
+
+Both servers must support transferring session ownership. Handoff refuses a legacy source or replacement without that support. Before the first upgrade, stop every older server using the affected session directories, including servers on custom sockets, then start the new version. Do not reopen those directories with an older binary. Stopping a PTY server ends its pane processes.
 
 A successful handoff preserves long-lived server-owned session state: pane PTYs and processes, agent identity and durable metadata, and plugin/session state needed by the replacement server. It does not preserve transient coordination across the replacement boundary. In-flight CLI or API requests, waits, subscription streams, client sockets, and pane-to-pane messages may be interrupted; clients should reconnect and retry them.
 

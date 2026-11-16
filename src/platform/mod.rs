@@ -5,6 +5,10 @@
 
 #[cfg(unix)]
 pub(crate) mod ssh_agent;
+#[cfg(unix)]
+mod unix_session;
+#[cfg(unix)]
+pub(crate) use unix_session::adopt_handoff_file;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 // Native adapters construct only the event classifications their OS can report.
