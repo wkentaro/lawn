@@ -170,6 +170,17 @@ pub fn restore_from(source: &Path) -> Result<(), String> {
     })
 }
 
+pub(super) fn carry_history(from: Option<String>, to: &SessionSnapshot) -> std::io::Result<()> {
+    let Some(mut history) = load_history() else {
+        return Ok(());
+    };
+    if from.is_none() || history.layout_fingerprint != from {
+        return Ok(());
+    }
+    history.layout_fingerprint = super::snapshot::layout_fingerprint(to);
+    save_history_to_path(&session_history_path(), Some(&history))
+}
+
 pub fn load_history() -> Option<SessionHistorySnapshot> {
     let path = session_history_path();
     if !path.exists() {

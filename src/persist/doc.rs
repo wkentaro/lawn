@@ -162,6 +162,7 @@ pub(crate) fn edit<T>(
             return Ok(None);
         }
         let mut snapshot = parse_snapshot(&doc.value.to_string())?;
+        let loaded = super::snapshot::layout_fingerprint(&snapshot);
         let (out, changed) = change(&mut snapshot);
         if !changed {
             return Ok(Some(out));
@@ -181,7 +182,12 @@ pub(crate) fn edit<T>(
         }
         let value = serde_json::to_value(&snapshot).map_err(|err| err.to_string())?;
         match core.doc_set(&name, None, &value, doc.version) {
-            Ok(_) => return Ok(Some(out)),
+            Ok(_) => {
+                if let Err(err) = super::io::carry_history(loaded, &snapshot) {
+                    tracing::warn!(%err, "cannot keep pane history with the edited layout");
+                }
+                return Ok(Some(out));
+            }
             Err(err) if err.kind() == Some("conflict") => continue,
             Err(err) => return Err(err.to_string()),
         }
@@ -503,6 +509,54 @@ mod tests {
 
         let loaded = load().expect("written").expect("not cleared");
         assert_eq!(loaded.sidebar_width, Some(31), "the document wins on load");
+    }
+
+    #[test]
+    fn an_edit_keeps_the_pane_history_that_matched_its_layout() {
+        use super::super::snapshot::{layout_fingerprint, SessionHistorySnapshot};
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
+        let history_path = crate::session::data_dir().join("session-history.json");
+        let write_history = |fingerprint: Option<String>| {
+            let history = SessionHistorySnapshot {
+                version: super::super::snapshot::SNAPSHOT_VERSION,
+                layout_fingerprint: fingerprint,
+                workspaces: vec![],
+            };
+            super::super::io::save_history_to_path(&history_path, Some(&history)).expect("history");
+        };
+        let widen = |width| {
+            edit(|snapshot| {
+                snapshot.sidebar_width = Some(width);
+                ((), true)
+            })
+        };
+        test.core
+            .doc_set(
+                &name(),
+                None,
+                &serde_json::to_value(snapshot(31)).expect("json"),
+                0,
+            )
+            .expect("doc.set");
+        write_history(layout_fingerprint(&snapshot(31)));
+
+        assert_eq!(widen(40), Ok(Some(())));
+
+        let carried = super::super::io::load_history().expect("history");
+        assert_eq!(
+            carried.layout_fingerprint,
+            layout_fingerprint(&snapshot(40))
+        );
+
+        write_history(Some("another layout".into()));
+        assert_eq!(widen(50), Ok(Some(())));
+        let kept = super::super::io::load_history().expect("history");
+        assert_eq!(kept.layout_fingerprint.as_deref(), Some("another layout"));
     }
 
     #[test]
