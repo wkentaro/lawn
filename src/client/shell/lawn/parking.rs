@@ -1,12 +1,25 @@
 use super::parking_store;
 use super::*;
+use crate::api::schema::{PaneUnparkToParams, ParkedRestoreTarget};
 use std::collections::BTreeSet;
+
+pub(in crate::client::shell) struct RestorePreview<'a> {
+    pub(in crate::client::shell) pane: &'a crate::protocol::ClientShellPane,
+    pub(in crate::client::shell) target: &'a ParkedRestoreTarget,
+    pub(in crate::client::shell) temporary_tab: bool,
+    pub(in crate::client::shell) temporary_workspace: bool,
+    pub(in crate::client::shell) restoring: bool,
+}
 
 /// Client view of server-owned parking: which panes are parked, and the
 /// presentation policy this client uses to peek at one of them.
 #[derive(Clone, Debug, Default)]
 pub(in crate::client::shell) struct PaneParking {
     pub(in crate::client::shell) supported: bool,
+    restore_preview: bool,
+    planned: bool,
+    restoring: Option<u64>,
+    restore_attempts: u64,
     /// Pre-server `parking.json`. It is removed once a snapshot shows all
     /// of its live terminals parked; until then each connection retries.
     legacy_path: Option<PathBuf>,
@@ -54,12 +67,29 @@ impl PaneParking {
             self.repaint = true;
             if !supported {
                 self.preview = None;
+                self.planned = false;
+                self.restoring = None;
                 self.preview_return = None;
                 self.focus = None;
                 self.terminal_panes.clear();
                 self.hidden_panes.clear();
                 self.pending_parks.clear();
             }
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::client::shell) fn restore_preview_supported(&self) -> bool {
+        self.restore_preview
+    }
+
+    pub(in crate::client::shell) fn set_restore_preview_supported(&mut self, supported: bool) {
+        if self.restore_preview != supported {
+            self.restore_preview = supported;
+            self.planned = false;
+            self.restoring = None;
+            self.dirty = self.supported;
+            self.repaint = true;
         }
     }
 
@@ -87,9 +117,66 @@ impl PaneParking {
     pub(in crate::client::shell) fn accepts_input(&self, pane: &str) -> bool {
         self.ready()
             && match self.preview_pane() {
-                Some(preview) => preview == pane,
+                Some(preview) => {
+                    preview == pane || (self.previews_in_place() && !self.hides_pane(pane))
+                }
                 None => !self.hides_pane(pane),
             }
+    }
+
+    pub(in crate::client::shell) fn restore_target(
+        &self,
+        pane: &str,
+    ) -> Option<&ParkedRestoreTarget> {
+        if !self.restore_preview {
+            return None;
+        }
+        self.identities
+            .as_ref()?
+            .1
+            .parked_restore_targets
+            .iter()
+            .find(|target| target.pane_id == pane && target.layout.is_some())
+    }
+
+    fn planned_target(&self) -> Option<&ParkedRestoreTarget> {
+        self.planned
+            .then(|| self.restore_target(self.preview_pane()?))
+            .flatten()
+    }
+
+    pub(in crate::client::shell) fn previews_in_place(&self) -> bool {
+        self.planned_target()
+            .is_some_and(|target| target.split.is_some())
+    }
+
+    pub(in crate::client::shell) fn restore_preview<'a>(
+        &'a self,
+        snapshot: &'a ClientShellSnapshot,
+    ) -> Option<RestorePreview<'a>> {
+        let target = self.planned_target()?;
+        let pane = snapshot.panes.iter().find(|pane| {
+            pane.pane_id == target.pane_id
+                && Some(pane.pane_id.as_str()) == snapshot.focused_pane_id.as_deref()
+        })?;
+        Some(RestorePreview {
+            pane,
+            target,
+            temporary_tab: !snapshot.tabs.iter().any(|tab| tab.tab_id == target.tab_id),
+            temporary_workspace: snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == pane.workspace_id && workspace.parked),
+            restoring: self.restoring.is_some(),
+        })
+    }
+
+    pub(in crate::client::shell) fn restores_in_place(&self) -> bool {
+        self.planned_target().is_some()
+    }
+
+    pub(in crate::client::shell) fn restore_preview_request(&self) -> bool {
+        self.restore_preview && (self.preview.is_none() || self.planned)
     }
 
     pub(in crate::client::shell) fn preview_pane(&self) -> Option<&str> {
@@ -222,6 +309,7 @@ impl PaneParking {
             self.identities = None;
             self.terminal_panes.clear();
             self.preview_return = None;
+            self.restoring = None;
             self.pending_parks.clear();
             self.migration_sent = false;
             self.failed = false;
@@ -302,6 +390,8 @@ impl PaneParking {
         }
         if self.preview.is_none() {
             self.preview_return = None;
+            self.planned = false;
+            self.restoring = None;
         }
         self.identities = Some((generation, ids));
     }
@@ -351,12 +441,15 @@ impl PaneParking {
         match error.code.as_str() {
             "pane_not_found" => {
                 self.preview = None;
+                self.planned = false;
+                self.restoring = None;
                 self.preview_return = None;
                 self.focus = None;
                 self.dirty = true;
             }
             "wrong_boot" => {
                 self.preview_return = None;
+                self.restoring = None;
                 self.boot_id = Some(error.boot_id);
                 self.sequence = 0;
                 self.identities = None;
@@ -374,6 +467,8 @@ impl PaneParking {
         self.hidden_panes.insert(pane.to_owned());
         self.pending_parks.insert(pane.to_owned());
         self.preview = None;
+        self.planned = false;
+        self.restoring = None;
         self.preview_return = None;
         self.focus = None;
         self.dirty = true;
@@ -394,11 +489,19 @@ impl PaneParking {
         }
     }
 
-    pub(in crate::client::shell) fn preview(&mut self, terminal: &str) -> Result<(), String> {
+    pub(in crate::client::shell) fn preview(
+        &mut self,
+        terminal: &str,
+        in_place: bool,
+    ) -> Result<(), String> {
         if !self.available() || !self.terminal_panes.contains_key(terminal) {
             return Err("This pane is no longer available".into());
         }
+        if self.preview.as_deref() != Some(terminal) {
+            self.restoring = None;
+        }
         self.preview = Some(terminal.into());
+        self.planned = in_place;
         self.focus = None;
         self.dirty = true;
         Ok(())
@@ -413,10 +516,51 @@ impl PaneParking {
             .clone();
         self.hidden_panes.remove(&pane);
         self.preview = None;
+        self.planned = false;
+        self.restoring = None;
         self.preview_return = None;
         self.focus = Some(terminal.into());
         self.dirty = true;
         Ok(())
+    }
+
+    pub(in crate::client::shell) fn begin_planned_restore(
+        &mut self,
+        pane: &str,
+    ) -> Option<(PaneUnparkToParams, u64)> {
+        if self.restoring.is_some() || !self.available() || self.preview_pane() != Some(pane) {
+            return None;
+        }
+        let target = self.planned_target()?;
+        let params = PaneUnparkToParams {
+            pane_id: target.pane_id.clone(),
+            focus: true,
+            tab_id: target.tab_id.clone(),
+            layout: target.layout.clone()?,
+        };
+        self.restore_attempts += 1;
+        self.restoring = Some(self.restore_attempts);
+        self.repaint = true;
+        Some((params, self.restore_attempts))
+    }
+
+    pub(in crate::client::shell) fn leave_in_place(&mut self) {
+        if std::mem::take(&mut self.planned) {
+            self.dirty = true;
+            self.repaint = true;
+        }
+    }
+
+    pub(in crate::client::shell) fn finish_planned_restore(&mut self, attempt: u64) {
+        if self.restoring == Some(attempt) {
+            self.cancel_planned_restore();
+        }
+    }
+
+    pub(in crate::client::shell) fn cancel_planned_restore(&mut self) {
+        if self.restoring.take().is_some() {
+            self.repaint = true;
+        }
     }
 
     #[cfg(test)]
@@ -426,6 +570,8 @@ impl PaneParking {
 
     pub(in crate::client::shell) fn leave_preview(&mut self) {
         self.preview_return = None;
+        self.planned = false;
+        self.restoring = None;
         if self.preview.take().is_some() {
             self.dirty = true;
         }
@@ -516,7 +662,7 @@ mod tests {
             Some("pane_2"),
         );
         assert!(model.available());
-        model.preview("terminal-pane_1").unwrap();
+        model.preview("terminal-pane_1", false).unwrap();
         assert!(!model.ready());
         let request = model.poll().unwrap();
         snapshot.revision += 1;
@@ -563,7 +709,7 @@ mod tests {
             &["pane_1"],
             Some("pane_2"),
         );
-        model.preview("terminal-pane_1").unwrap();
+        model.preview("terminal-pane_1", false).unwrap();
         let peek = model.poll().unwrap();
         assert_eq!(peek.focus_terminal.as_deref(), Some("terminal-pane_1"));
         assert!(peek.hidden_terminals.is_empty());

@@ -17,6 +17,7 @@ pub(super) fn dispatch_client_shell_actions(
                 endpoint_id,
                 generation,
                 request,
+                restore_preview,
                 releases,
             } => {
                 let current = endpoints
@@ -26,6 +27,10 @@ pub(super) fn dispatch_client_shell_actions(
                             && connection.negotiation.supports_capability(
                                 crate::protocol::endpoint::pane_presentation::CAPABILITY,
                             )
+                            && (!restore_preview
+                                || connection.negotiation.supports_capability(
+                                    crate::protocol::endpoint::pane_presentation::RESTORE_PREVIEW_CAPABILITY,
+                                ))
                     });
                 if current {
                     for release in releases {
@@ -36,7 +41,12 @@ pub(super) fn dispatch_client_shell_actions(
                     endpoints.send_to(
                         &endpoint_id,
                         &ClientMessage::EndpointControl {
-                            kind: crate::protocol::endpoint::pane_presentation::SET_KIND.into(),
+                            kind: if restore_preview {
+                                crate::protocol::endpoint::pane_presentation::RESTORE_PREVIEW_SET_KIND
+                            } else {
+                                crate::protocol::endpoint::pane_presentation::SET_KIND
+                            }
+                            .into(),
                             data,
                         },
                     );

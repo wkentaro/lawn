@@ -528,6 +528,18 @@ async fn run_client_loop(
                     })
                 }),
         );
+        shell.set_endpoint_restore_preview_supported(
+            &endpoint::ClientEndpointId::Local,
+            initial
+                .as_ref()
+                .and_then(|(_, handshake)| handshake.endpoint_capabilities.as_ref())
+                .is_some_and(|capabilities| {
+                    capabilities.iter().any(|capability| {
+                        capability
+                            == crate::protocol::endpoint::pane_presentation::RESTORE_PREVIEW_CAPABILITY
+                    })
+                }),
+        );
         if local_unavailable {
             shell.set_endpoint_status(
                 &endpoint::ClientEndpointId::Local,
@@ -1405,6 +1417,12 @@ async fn run_client_loop(
                             &endpoint_id,
                             negotiation.supports_capability(
                                 crate::protocol::endpoint::pane_presentation::CAPABILITY,
+                            ),
+                        );
+                        shell.set_endpoint_restore_preview_supported(
+                            &endpoint_id,
+                            negotiation.supports_capability(
+                                crate::protocol::endpoint::pane_presentation::RESTORE_PREVIEW_CAPABILITY,
                             ),
                         );
                         shell.set_endpoint_agent_view_projection_supported(

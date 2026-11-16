@@ -250,6 +250,7 @@ pub(crate) enum ClientShellAction {
         endpoint_id: ClientEndpointId,
         generation: Option<u64>,
         request: crate::protocol::endpoint::pane_presentation::SetPanePresentation,
+        restore_preview: bool,
         releases: Vec<ClientMessage>,
     },
     Endpoint {
@@ -565,6 +566,9 @@ pub(super) enum PendingEndpointKind {
     },
     PanePark {
         pane_id: String,
+    },
+    PaneUnparkTo {
+        attempt: u64,
     },
     WordSelection {
         pane_id: String,
@@ -907,6 +911,7 @@ pub(super) fn release_notes_state(
 #[derive(Clone, Copy)]
 pub(super) struct WorkspaceEntry {
     pub(super) index: usize,
+    pub(super) temporary: bool,
 }
 
 impl ClientShellState {
@@ -1088,14 +1093,20 @@ impl ClientShellState {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
+        let temporary_tab = self
+            .restore_preview()
+            .is_some_and(|preview| preview.temporary_tab);
         let mut layout = self.config.layout(
             cols,
             rows,
             self.sidebar_collapsed,
-            self.focused_tab_count(),
+            self.focused_tab_count() == 1 && !temporary_tab,
             self.sidebar_width,
         );
-        if self.has_parking_preview() && layout.pane_surface.height > 1 {
+        let in_place = self
+            .active_parking()
+            .is_some_and(lawn::PaneParking::previews_in_place);
+        if self.has_parking_preview() && !in_place && layout.pane_surface.height > 1 {
             layout.parking_header = Rect::new(
                 layout.pane_surface.x,
                 layout.pane_surface.y,
@@ -1117,6 +1128,9 @@ impl ClientShellState {
     }
 
     pub(super) fn reset_endpoint_projection(&mut self) {
+        for endpoint in &mut self.endpoints {
+            endpoint.parking.cancel_planned_restore();
+        }
         self.hits = ShellHitMap::default();
         self.pane_surface = None;
         self.pending_pane_surface = None;

@@ -34,9 +34,28 @@ Open Parked from the sidebar or your configured `open_parked` shortcut. On mobil
 use Parked in the switcher's menu. Its switcher lists terminals by workspace.
 Search across names, machines, and paths. Select a terminal for a read-only
 preview, then press Enter or click Open for an interactive peek. You can type,
-paste, or respond while the terminal stays parked. Restore in the top-right
-returns it to its original workspace and tab. Dismiss, Escape, or a close shortcut
-closes only the peek and returns to the workspace you were using.
+paste, or respond while the terminal stays parked.
+
+When the server supports restore-layout previews, the peek shows the split that
+Restore will keep. Normal panes in the destination tab stay visible and may
+resize temporarily. Only the parked pane's name is parenthesized. If its tab or
+workspace is hidden, a parenthesized entry appears only while you peek. Existing
+visible parents are reused.
+
+For a split preview, Restore and Dismiss appear on the parked pane's top border,
+or in existing tab or mobile controls when the border has too little room. A
+standalone preview keeps the full-screen header with Restore in the top-right.
+Restore keeps the displayed layout and removes the preview decoration after the
+server confirms it. If the destination
+changes, Restore leaves the pane parked and reports the change. Dismiss, Escape,
+or a close shortcut closes only the peek and returns to the original layout,
+focus, and zoom. Clicking a normal pane also ends the peek.
+
+Older servers keep the full-screen peek. The client also uses it when the tab bar
+is hidden and no pane border or mobile header is known to be available for the
+controls. A split preview also switches to full-screen if resizing or layout
+changes leave no room for its controls. This fallback keeps Restore in the
+top-right.
 
 Closing a workspace also closes the terminals parked in it. The confirmation
 counts them, for example `2 panes, 1 parked`.
