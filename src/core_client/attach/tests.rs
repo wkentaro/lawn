@@ -48,10 +48,12 @@ fn committed_text_reaches_the_program_as_text_while_typed_keys_stay_reports() {
     let kitty = HostKeys {
         kitty: true,
         all: true,
+        erase_is_ctrl_h: false,
     };
     let legacy = HostKeys {
         kitty: false,
         all: true,
+        erase_is_ctrl_h: false,
     };
 
     assert_eq!(committed(kitty, b"\x1b[97;;97u"), [None]);
@@ -110,4 +112,27 @@ fn a_zero_sized_sample_keeps_the_last_size_until_a_valid_one_follows() {
         seen.push(sample.expect("a zero-sized sample is not a lost host"));
     }
     assert_eq!(seen, [size(100, 30)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_ctrl_h_erase_host_sends_backspace_and_alt_backspace() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let key = |bytes: &[u8]| match crate::raw_input::parse_framed_input(bytes).pop() {
+        Some(crate::raw_input::RawInputEvent::Key(key)) => key,
+        other => panic!("{bytes:?} is not a key: {other:?}"),
+    };
+
+    let plain = key(b"\x08").with_host_erase(true);
+    assert_eq!(
+        (plain.code, plain.modifiers),
+        (KeyCode::Backspace, KeyModifiers::empty())
+    );
+    let alt = key(b"\x1b\x08").with_host_erase(true);
+    assert_eq!(
+        (alt.code, alt.modifiers),
+        (KeyCode::Backspace, KeyModifiers::ALT)
+    );
+    let untouched = key(b"\x08").with_host_erase(false);
+    assert_ne!(untouched.code, KeyCode::Backspace);
 }

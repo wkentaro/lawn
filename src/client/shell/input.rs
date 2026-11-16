@@ -127,21 +127,8 @@ impl ClientShellState {
         self.host_erase_is_ctrl_h = erase == Some(0x08);
     }
 
-    /// A raw 0x08 (or ESC 0x08) from a host whose erase character is `^H` is
-    /// its Backspace key (#3244).
     fn host_erase_key(&self, key: crate::input::TerminalKey) -> crate::input::TerminalKey {
-        if !self.host_erase_is_ctrl_h {
-            return key;
-        }
-        let alt = match key.vt_bytes() {
-            Some([0x08]) => KeyModifiers::empty(),
-            Some([0x1b, 0x08]) => KeyModifiers::ALT,
-            _ => return key,
-        };
-        let bytes = key.vt_bytes().map(<[u8]>::to_vec).unwrap_or_default();
-        crate::input::TerminalKey::new(KeyCode::Backspace, alt)
-            .with_kind(key.kind)
-            .with_vt_bytes(bytes)
+        key.with_host_erase(self.host_erase_is_ctrl_h)
     }
 
     #[cfg(test)]

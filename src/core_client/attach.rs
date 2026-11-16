@@ -196,6 +196,8 @@ mod unix {
         pub(in crate::core_client) kitty: bool,
         /// The host reports every key as an escape code.
         pub(in crate::core_client) all: bool,
+        /// The host tty's erase character is `^H`, so 0x08 is Backspace.
+        pub(in crate::core_client) erase_is_ctrl_h: bool,
     }
 
     impl HostKeys {
@@ -226,6 +228,7 @@ mod unix {
         let mut keys = HostKeys {
             kitty: guard.host_escape_disambiguation_active(),
             all: false,
+            erase_is_ctrl_h: crate::platform::terminal_erase_byte() == Some(0x08),
         };
         let mut out = io::stdout();
         let mut due = Some(Instant::now());
@@ -346,7 +349,7 @@ mod unix {
             RawInputEvent::Key(key) if detaches(&key) => return false,
             RawInputEvent::Key(key) => match keys.committed_text(&key) {
                 Some(text) => view.text(text),
-                None => view.key(key),
+                None => view.key(key.with_host_erase(keys.erase_is_ctrl_h)),
             },
             RawInputEvent::Text(text) => view.text(text.as_str()),
             RawInputEvent::Paste(text) => view.paste(text),

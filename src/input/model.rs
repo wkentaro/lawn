@@ -201,6 +201,23 @@ impl TerminalKey {
     /// reports key releases, sends typed keys as reports, so any plain text is
     /// a commit. A legacy host sends both as plain text; non-ASCII text has no
     /// key in the keyboard model, so only that is a commit there.
+    /// A raw 0x08 (or ESC 0x08) from a host whose erase character is `^H` is
+    /// its Backspace key (#3244).
+    pub(crate) fn with_host_erase(self, erase_is_ctrl_h: bool) -> Self {
+        if !erase_is_ctrl_h {
+            return self;
+        }
+        let alt = match self.vt_bytes() {
+            Some([0x08]) => KeyModifiers::empty(),
+            Some([0x1b, 0x08]) => KeyModifiers::ALT,
+            _ => return self,
+        };
+        let bytes = self.vt_bytes().map(<[u8]>::to_vec).unwrap_or_default();
+        Self::new(KeyCode::Backspace, alt)
+            .with_kind(self.kind)
+            .with_vt_bytes(bytes)
+    }
+
     pub(crate) fn committed_text(&self, kitty_host: bool) -> Option<&str> {
         if self.kind != crossterm::event::KeyEventKind::Press {
             return None;
