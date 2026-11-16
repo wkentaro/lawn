@@ -55,6 +55,8 @@ mod render_signal;
 mod selection;
 mod server;
 mod session;
+#[cfg_attr(not(all(test, unix)), allow(dead_code))]
+mod session_doc;
 mod session_model;
 mod sound;
 mod terminal;
