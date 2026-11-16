@@ -291,8 +291,11 @@ mod tests {
             ))
         };
         assert!(handle(&rename("x")).is_none(), "no layout yet");
-        let name = crate::persist::doc::edit(|_| ((), false)).ok();
-        assert_eq!(name, Some(None));
+        assert!(
+            !crate::session::data_dir().exists(),
+            "a session without a layout stays absent"
+        );
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
         let value = serde_json::to_value(snapshot()).expect("json");
         test.core
             .doc_set(&crate::persist::doc::name(), None, &value, 0)

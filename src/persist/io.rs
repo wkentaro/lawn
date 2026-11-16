@@ -8,7 +8,6 @@ use super::snapshot::{
     SessionSnapshot, SNAPSHOT_VERSION,
 };
 
-/// Opens the lock file at `path`, creating it and its directory.
 pub(super) fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

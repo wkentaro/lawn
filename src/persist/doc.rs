@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use super::snapshot::{parse_snapshot, SessionSnapshot};
 
@@ -11,44 +12,49 @@ fn version() -> std::sync::MutexGuard<'static, Option<u64>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The layout lock, which the server holds from startup until it exits. An
-/// offline edit takes it too, so it lands before a server loads the layout
-/// or not at all.
-static OWNER: Mutex<Option<File>> = Mutex::new(None);
+fn lock_path() -> std::path::PathBuf {
+    crate::session::data_dir().join("layout.lock")
+}
 
 fn lock_file() -> std::io::Result<File> {
-    super::io::open_lock_file(&crate::session::data_dir().join("layout.lock"))
+    super::io::open_lock_file(&lock_path())
 }
 
-/// Takes this session's layout for the server before it restores anything,
-/// waiting out an offline edit in progress but not another server.
-pub(crate) fn own() -> std::io::Result<()> {
-    own_within(std::time::Duration::from_secs(5))
-}
-
-fn own_within(wait: std::time::Duration) -> std::io::Result<()> {
-    let mut owner = OWNER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if owner.is_some() {
-        return Ok(());
+pub(crate) fn own() -> std::io::Result<Option<File>> {
+    if !crate::hc::enabled() {
+        return Ok(None);
     }
+    own_within(Duration::from_secs(5)).map(Some)
+}
+
+fn own_within(wait: Duration) -> std::io::Result<File> {
     let file = lock_file()?;
-    let deadline = std::time::Instant::now() + wait;
+    let deadline = Instant::now() + wait;
     loop {
         match file.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
             }
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(std::io::Error::other("another Lawn server holds it"));
+                let path = lock_path();
+                return Err(std::io::Error::other(format!(
+                    "another Lawn process is using {}",
+                    path.display()
+                )));
             }
-            Err(std::fs::TryLockError::Error(err)) => return Err(err),
+            Err(std::fs::TryLockError::Error(err)) => {
+                tracing::warn!(%err, "cannot lock the layout; starting without it");
+                return Ok(file);
+            }
         }
     }
-    *owner = Some(file);
-    Ok(())
+}
+
+fn reachable_core() -> Option<std::sync::Arc<crate::hc::Core>> {
+    crate::hc::backend()?
+        .inspect_err(|err| tracing::warn!(%err, "cannot read the layout from herdr core"))
+        .ok()
 }
 
 pub(crate) fn name() -> String {
@@ -70,9 +76,7 @@ fn name_for(session: &str) -> String {
 
 pub(super) fn load() -> Option<Option<SessionSnapshot>> {
     *version() = None;
-    let core = crate::hc::backend()?
-        .inspect_err(|err| tracing::warn!(%err, "cannot read the layout from herdr core"))
-        .ok()?;
+    let core = reachable_core()?;
     let name = name();
     let doc = core
         .doc_get(&name, None)
@@ -144,17 +148,14 @@ pub(super) fn save(snapshot: Option<&SessionSnapshot>) -> Result<(), String> {
 pub(crate) fn edit<T>(
     mut change: impl FnMut(&mut SessionSnapshot) -> (T, bool),
 ) -> Result<Option<T>, String> {
-    let Some(core) = crate::hc::backend() else {
+    if !crate::session::data_dir().exists() {
+        return Ok(None);
+    }
+    let Some(core) = reachable_core() else {
         return Ok(None);
     };
-    let core = core.map_err(|err| err.to_string())?;
-    let lock = lock_file().map_err(|err| err.to_string())?;
-    match lock.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
-        Err(std::fs::TryLockError::Error(err)) => return Err(err.to_string()),
-    }
     let name = name();
+    let mut lock = None;
     for _ in 0..8 {
         let doc = core.doc_get(&name, None).map_err(|err| err.to_string())?;
         if doc.version == 0 || doc.value.is_null() {
@@ -164,6 +165,19 @@ pub(crate) fn edit<T>(
         let (out, changed) = change(&mut snapshot);
         if !changed {
             return Ok(Some(out));
+        }
+        if lock.is_none() {
+            let file = lock_file().map_err(|err| err.to_string())?;
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::Error(err))
+                    if err.kind() != std::io::ErrorKind::Unsupported =>
+                {
+                    return Err(err.to_string())
+                }
+                Err(_) => return Ok(None),
+            }
+            lock = Some(file);
         }
         let value = serde_json::to_value(&snapshot).map_err(|err| err.to_string())?;
         match core.doc_set(&name, None, &value, doc.version) {
@@ -781,6 +795,7 @@ mod tests {
         };
         test.share();
         crate::hc::use_core_for_test();
+        std::fs::create_dir_all(crate::session::data_dir()).expect("the session ran");
         let value = serde_json::to_value(snapshot(31)).expect("json");
         test.core
             .doc_set(&name(), None, &value, 0)
@@ -793,11 +808,12 @@ mod tests {
         };
 
         assert_eq!(widen(), Ok(Some(())), "no server yet");
-        own().expect("the server starts");
-        own().expect("and keeps its lock");
+        let _server = own().expect("the server starts").expect("core panes");
         let loaded = load().expect("written").expect("not cleared");
         assert_eq!(loaded.sidebar_width, Some(40), "the server starts with it");
         assert_eq!(widen(), Ok(None), "the server owns the layout now");
+        let width = edit(|snapshot| (snapshot.sidebar_width, false));
+        assert_eq!(width, Ok(Some(Some(40))), "reading needs no lock");
         save(Some(&snapshot(32))).expect("the server keeps saving");
     }
 
@@ -805,14 +821,13 @@ mod tests {
     fn a_second_server_gives_up_instead_of_waiting() {
         let dir = std::env::temp_dir().join(format!("lawn-lock-{}", std::process::id()));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
-        let running = lock_file().expect("lock file");
-        running.lock().expect("the first server");
+        let running = own_within(Duration::ZERO).expect("the first server");
 
-        let err = own_within(std::time::Duration::from_millis(100)).expect_err("taken");
-        assert!(err.to_string().contains("another Lawn server"), "{err}");
+        let err = own_within(Duration::from_millis(100)).expect_err("taken");
+        assert!(err.to_string().contains("another Lawn process"), "{err}");
 
         drop(running);
-        own_within(std::time::Duration::ZERO).expect("free once it exits");
+        own_within(Duration::ZERO).expect("free once it exits");
         std::fs::remove_dir_all(dir).expect("clean up");
     }
 }

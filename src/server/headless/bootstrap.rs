@@ -55,15 +55,14 @@ pub fn run_server() -> io::Result<()> {
         }
         Err(err) => return Err(err),
     };
-    // After the socket, so a duplicate server stops above; before the
-    // restore, so an offline edit lands first or not at all. PTY panes keep
-    // no layout document.
-    if crate::hc::enabled() {
-        if let Err(err) = crate::persist::doc::own() {
+    let _layout_lock = match crate::persist::doc::own() {
+        Ok(lock) => lock,
+        Err(err) => {
             eprintln!("error: cannot lock this session's layout: {err}");
+            drop(_api_server);
             std::process::exit(1);
         }
-    }
+    };
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
