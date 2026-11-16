@@ -856,6 +856,8 @@ herdr agent wait w1:p1 --until blocked
 }
 ```
 
+herdr-core で動いているペインには、そのコアターミナルのアドレス (`t7` など) を示す `core_terminal` も含まれます。それ以外のペインでは省略されます。
+
 `server.agent_manifests` は、ルールをリロードせずに、アクティブなエージェント検出マニフェストのソースとリモート更新の診断情報を返します:
 
 ```json

@@ -544,6 +544,8 @@ pub struct PaneInfo {
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_terminal: Option<String>,
     pub revision: u64,
 }
 

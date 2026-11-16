@@ -180,6 +180,7 @@ fn pane_scroll_result(
                 max_offset_from_bottom,
                 viewport_rows,
             }),
+            core_terminal: None,
             revision: 0,
         },
     }
