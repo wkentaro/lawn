@@ -2960,6 +2960,57 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn pane_info_names_the_core_terminal_a_pane_shows() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        let (mut app, pane_id) = app_with_test_workspace();
+        let get = |app: &mut App| {
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "get".into(),
+                method: crate::api::schema::Method::PaneGet(PaneTarget {
+                    pane_id: pane_id.clone(),
+                }),
+            });
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::PaneInfo { pane } = success.result else {
+                panic!("expected pane info, got {response}");
+            };
+            pane
+        };
+        assert_eq!(get(&mut app).core_terminal, None);
+
+        let internal = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal = app.state.workspaces[0]
+            .terminal_id(internal)
+            .unwrap()
+            .clone();
+        let address = test
+            .core
+            .run(serde_json::json!({"argv": ["sh", "-c", "read line"], "no_parent": true}))
+            .unwrap();
+        let runtime = crate::terminal::TerminalRuntime::reattach_core(
+            internal,
+            &address,
+            24,
+            80,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            app.event_tx.clone(),
+            app.render_notify.clone(),
+            app.render_dirty.clone(),
+        )
+        .unwrap();
+        app.terminal_runtimes.insert(terminal, runtime);
+
+        assert_eq!(get(&mut app).core_terminal, Some(address));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn api_core_pane_sends_fail_while_disconnected_without_replaying() {
         async fn wait_for(mut ready: impl FnMut() -> bool) {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {

@@ -812,6 +812,12 @@
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
+            "core_terminal": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -8737,6 +8743,12 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "core_terminal": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "cwd": {
               "type": [

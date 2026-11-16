@@ -297,9 +297,13 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<crate::api::schema::PaneInfo> {
         let mut pane = self.pane_metadata(ws_idx, pane_id)?;
-        pane.scroll = self
-            .state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+        let runtime =
+            self.state
+                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id);
+        pane.core_terminal = runtime
+            .and_then(|runtime| runtime.core_address())
+            .map(str::to_owned);
+        pane.scroll = runtime
             .and_then(|runtime| runtime.scroll_metrics())
             .map(|metrics| crate::api::schema::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
@@ -348,6 +352,7 @@ impl App {
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll: None,
+            core_terminal: None,
             revision: terminal.revision,
         })
     }
