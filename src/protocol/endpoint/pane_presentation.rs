@@ -6,6 +6,8 @@ pub const CAPABILITY: &str = "pane_presentation_v1";
 pub const SET_KIND: &str = "endpoint.pane-presentation.set.v1";
 pub const IDENTITIES_KIND: &str = "endpoint.pane-presentation.v1";
 pub const ERROR_KIND: &str = "endpoint.pane-presentation.error.v1";
+pub const RESTORE_PREVIEW_CAPABILITY: &str = "pane_restore_preview_v1";
+pub const RESTORE_PREVIEW_SET_KIND: &str = "endpoint.pane-presentation.restore-preview.set.v1";
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_TERMINALS: usize = 4096;
@@ -25,12 +27,14 @@ pub struct SetPanePresentation {
     pub focus_terminal: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PaneIdentities {
     pub boot_id: String,
     pub revision: u64,
     pub sequence: u64,
     pub pane_terminals: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked_restore_targets: Vec<crate::api::schema::ParkedRestoreTarget>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +93,18 @@ mod tests {
         assert!(request.hidden_terminals.is_empty());
         assert!(request.read_only_terminals.is_empty());
         assert!(request.preview_terminal.is_none());
+    }
+
+    #[test]
+    fn restore_targets_are_optional_in_pane_identities() {
+        let identities: PaneIdentities = serde_json::from_str(
+            r#"{"boot_id":"boot","revision":1,"sequence":2,"pane_terminals":{}}"#,
+        )
+        .unwrap();
+        assert!(identities.parked_restore_targets.is_empty());
+        assert!(!serde_json::to_string(&identities)
+            .unwrap()
+            .contains("parked_restore_targets"));
     }
 
     #[test]

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::agents::AgentInfo;
-use super::panes::{PaneInfo, PaneLayoutSnapshot};
+use super::common::SplitDirection;
+use super::panes::{LayoutNode, PaneInfo, PaneLayoutSnapshot};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 
@@ -24,4 +25,24 @@ pub struct SessionSnapshot {
     /// `tab_id` names no tab in `tabs`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parked_panes: Vec<PaneInfo>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parked_restore_targets: Vec<ParkedRestoreTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ParkedRestoreTarget {
+    pub pane_id: String,
+    pub tab_id: String,
+    pub tab_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split: Option<ParkedRestoreSplit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<LayoutNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ParkedRestoreSplit {
+    pub target_pane_id: String,
+    pub direction: SplitDirection,
+    pub ratio: f32,
 }

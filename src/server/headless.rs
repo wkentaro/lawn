@@ -2355,7 +2355,10 @@ impl HeadlessServer {
                 true
             }
             ServerEvent::ClientPanePresentation { client_id, data } => {
-                self.set_client_pane_presentation(client_id, &data)
+                self.set_client_pane_presentation(client_id, &data, false)
+            }
+            ServerEvent::ClientPaneRestorePreview { client_id, data } => {
+                self.set_client_pane_presentation(client_id, &data, true)
             }
             ServerEvent::ClientShellPresentationSync { client_id, token } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {

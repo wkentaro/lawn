@@ -423,7 +423,10 @@ pub(crate) enum ServerEvent {
         writer: ClientWriter,
     },
     /// A client sent an input message.
-    ClientInput { client_id: u64, data: Vec<u8> },
+    ClientInput {
+        client_id: u64,
+        data: Vec<u8>,
+    },
     /// A client reported the one armed Kitty regular-file response.
     GraphicsTransmissionResult {
         client_id: u64,
@@ -456,7 +459,10 @@ pub(crate) enum ServerEvent {
         takeover: bool,
     },
     /// A client requested read-only observation of one terminal.
-    ClientObserveTerminal { client_id: u64, target: String },
+    ClientObserveTerminal {
+        client_id: u64,
+        target: String,
+    },
     /// A client requested writable control of one terminal.
     ClientControlTerminal {
         client_id: u64,
@@ -518,13 +524,29 @@ pub(crate) enum ServerEvent {
         update: crate::protocol::ClientHostThemeUpdate,
     },
     /// A client-owned shell reported whether its outer terminal has focus.
-    ClientShellFocus { client_id: u64, focused: bool },
+    ClientShellFocus {
+        client_id: u64,
+        focused: bool,
+    },
     /// A client-owned shell updated its local mouse-capture preference.
-    ClientShellMouseCapture { client_id: u64, enabled: bool },
+    ClientShellMouseCapture {
+        client_id: u64,
+        enabled: bool,
+    },
     /// The committed shell asks the server to replay presentation effects before input resumes.
-    ClientShellPresentationSync { client_id: u64, token: String },
+    ClientShellPresentationSync {
+        client_id: u64,
+        token: String,
+    },
     /// Replaces one connection's optional pane visibility and input policy.
-    ClientPanePresentation { client_id: u64, data: String },
+    ClientPanePresentation {
+        client_id: u64,
+        data: String,
+    },
+    ClientPaneRestorePreview {
+        client_id: u64,
+        data: String,
+    },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
         client_id: u64,
@@ -548,11 +570,17 @@ pub(crate) enum ServerEvent {
         data: Vec<u8>,
     },
     /// A client detached gracefully.
-    ClientDetach { client_id: u64 },
+    ClientDetach {
+        client_id: u64,
+    },
     /// A client connection was lost.
-    ClientDisconnected { client_id: u64 },
+    ClientDisconnected {
+        client_id: u64,
+    },
     /// A client writer drained its render slot and can accept another render.
-    ClientWriterDrained { client_id: u64 },
+    ClientWriterDrained {
+        client_id: u64,
+    },
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
 }
@@ -1345,6 +1373,12 @@ fn client_read_loop_with_endpoint_controls(
                 if kind == crate::protocol::endpoint::pane_presentation::SET_KIND =>
             {
                 ServerEvent::ClientPanePresentation { client_id, data }
+            }
+            ClientMessage::EndpointControl { kind, data }
+                if kind
+                    == crate::protocol::endpoint::pane_presentation::RESTORE_PREVIEW_SET_KIND =>
+            {
+                ServerEvent::ClientPaneRestorePreview { client_id, data }
             }
             ClientMessage::EndpointControl { kind, data }
                 if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND =>

@@ -1067,22 +1067,25 @@ impl Workspace {
 
     /// Returns a parked pane to the tab it left, else shows its parked tab.
     pub(crate) fn unpark_pane(&mut self, pane_id: PaneId, focus: bool) -> Option<()> {
+        let split = match self.unpark_plan(pane_id)? {
+            UnparkPlan::Split(split) => self
+                .visible_tabs()
+                .iter()
+                .position(|tab| tab.number == split.tab_number)
+                .map(|origin_idx| (origin_idx, split)),
+            UnparkPlan::Standalone { .. } => None,
+        };
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let origin_number = self.tabs[tab_idx].parked_from?;
         let mut tab = self.tabs.remove(tab_idx);
         self.adjust_active_tab_after_removal(tab_idx);
-        let origin_idx = self.tabs[..self.visible_tab_count()]
-            .iter()
-            .position(|tab| tab.number == origin_number);
-        if let Some(origin_idx) = origin_idx {
+        if let Some((origin_idx, split)) = split {
             let moved = tab.take_pane_for_move(pane_id)?;
-            let target = self.tabs[origin_idx].layout.focused();
             match self.insert_moved_pane_into_tab(
                 origin_idx,
-                target,
+                split.anchor,
                 moved,
-                Direction::Horizontal,
-                0.5,
+                split.direction,
+                split.ratio,
                 focus,
             ) {
                 Ok(_) => return Some(()),
@@ -1101,6 +1104,46 @@ impl Workspace {
         tab.parked_from = None;
         self.push_visible_tab(tab);
         Some(())
+    }
+
+    pub(crate) fn unpark_plan(&self, pane_id: PaneId) -> Option<UnparkPlan> {
+        let parked = &self.tabs[self.find_tab_index_for_pane(pane_id)?];
+        let origin_number = parked.parked_from?;
+        Some(
+            match self
+                .visible_tabs()
+                .iter()
+                .find(|tab| tab.number == origin_number)
+            {
+                Some(origin) => UnparkPlan::Split(UnparkSplit {
+                    tab_number: origin.number,
+                    anchor: origin.layout.focused(),
+                    direction: Direction::Horizontal,
+                    ratio: 0.5,
+                }),
+                None => UnparkPlan::Standalone {
+                    tab_number: parked.number,
+                },
+            },
+        )
+    }
+
+    pub(crate) fn unpark_layout(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<(UnparkPlan, crate::layout::TileLayout)> {
+        let plan = self.unpark_plan(pane_id)?;
+        let tab = self
+            .tabs
+            .iter()
+            .find(|tab| tab.number == plan.tab_number())?;
+        let mut layout = tab.layout.clone();
+        if let UnparkPlan::Split(split) = plan {
+            layout
+                .insert_pane_near(split.anchor, pane_id, split.direction, split.ratio, false)
+                .then_some(())?;
+        }
+        Some((plan, layout))
     }
 
     pub fn find_tab_index_for_pane(&self, pane_id: PaneId) -> Option<usize> {
@@ -1176,6 +1219,29 @@ impl Workspace {
         self.close_active_tab();
         false
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum UnparkPlan {
+    Split(UnparkSplit),
+    Standalone { tab_number: usize },
+}
+
+impl UnparkPlan {
+    pub(crate) fn tab_number(self) -> usize {
+        match self {
+            Self::Split(split) => split.tab_number,
+            Self::Standalone { tab_number } => tab_number,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UnparkSplit {
+    pub tab_number: usize,
+    pub anchor: PaneId,
+    pub direction: Direction,
+    pub ratio: f32,
 }
 
 pub(crate) struct TakenPane {
@@ -1653,5 +1719,128 @@ mod tests {
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
         ws.assert_invariants_for_test();
+    }
+
+    fn tab_channels(ws: &Workspace) -> TabChannels {
+        let tab = &ws.tabs[0];
+        (
+            tab.events.clone(),
+            tab.render_notify.clone(),
+            tab.render_dirty.clone(),
+        )
+    }
+
+    fn tab_index_for_number(ws: &Workspace, number: usize) -> usize {
+        ws.tabs
+            .iter()
+            .position(|tab| tab.number == number)
+            .expect("tab number should exist")
+    }
+
+    #[test]
+    fn unpark_plan_splits_beside_the_origin_focus_and_restore_follows_it() {
+        let mut ws = Workspace::test_adversarial_identity_state();
+        let origin_idx = ws.tabs.len() - 1;
+        let origin_number = ws.tabs[origin_idx].number;
+        let parked = ws.tabs[origin_idx].layout.focused();
+        let channels = tab_channels(&ws);
+        ws.park_pane(parked, channels.clone()).unwrap();
+        ws.assert_invariants_for_test();
+        let anchor = ws.tabs[origin_idx].layout.focused();
+        let plan = ws.unpark_plan(parked).unwrap();
+        assert_eq!(
+            plan,
+            UnparkPlan::Split(UnparkSplit {
+                tab_number: origin_number,
+                anchor,
+                direction: Direction::Horizontal,
+                ratio: 0.5,
+            })
+        );
+
+        ws.switch_tab(1);
+        ws.test_add_tab(Some("unrelated"));
+        assert_eq!(ws.unpark_plan(parked), Some(plan));
+        let other = ws.tabs[origin_idx]
+            .layout
+            .pane_ids()
+            .into_iter()
+            .find(|pane| *pane != anchor)
+            .unwrap();
+        ws.tabs[origin_idx].layout.focus_pane(other);
+        assert_ne!(ws.unpark_plan(parked), Some(plan));
+        ws.tabs[origin_idx].layout.focus_pane(anchor);
+        assert_eq!(ws.unpark_plan(parked), Some(plan));
+
+        let active = ws.active_tab;
+        ws.unpark_pane(parked, false).unwrap();
+        ws.assert_invariants_for_test();
+        let origin = &ws.tabs[tab_index_for_number(&ws, origin_number)];
+        assert_eq!(origin.layout.focused(), anchor);
+        assert!(origin
+            .layout
+            .pane_ids()
+            .windows(2)
+            .any(|pair| pair == [anchor, parked]));
+        assert_eq!(ws.active_tab, active);
+        assert_eq!(ws.unpark_plan(parked), None);
+        assert!(ws.parked_tabs().is_empty());
+    }
+
+    #[test]
+    fn unpark_plan_restores_a_parked_last_pane_as_its_own_tab() {
+        let mut ws = Workspace::test_adversarial_identity_state();
+        let alone_idx = ws.active_tab;
+        let alone_number = ws.tabs[alone_idx].number;
+        let pane = ws.tabs[alone_idx].root_pane;
+        let channels = tab_channels(&ws);
+        ws.park_pane(pane, channels).unwrap();
+        ws.assert_invariants_for_test();
+        assert_eq!(
+            ws.unpark_plan(pane),
+            Some(UnparkPlan::Standalone {
+                tab_number: alone_number
+            })
+        );
+
+        ws.unpark_pane(pane, true).unwrap();
+        ws.assert_invariants_for_test();
+        let restored = ws.visible_tab_count() - 1;
+        assert_eq!(ws.tabs[restored].number, alone_number);
+        assert_eq!(ws.tabs[restored].root_pane, pane);
+    }
+
+    #[test]
+    fn unpark_plan_falls_back_to_its_own_tab_when_the_origin_vanishes() {
+        let mut ws = Workspace::test_adversarial_identity_state();
+        let origin_idx = ws.tabs.len() - 1;
+        let parked = ws.tabs[origin_idx].layout.focused();
+        let channels = tab_channels(&ws);
+        ws.park_pane(parked, channels).unwrap();
+        let parked_number = ws.tabs[ws.find_tab_index_for_pane(parked).unwrap()].number;
+        assert!(matches!(ws.unpark_plan(parked), Some(UnparkPlan::Split(_))));
+
+        assert!(ws.close_tab(origin_idx));
+        ws.assert_invariants_for_test();
+        assert_eq!(
+            ws.unpark_plan(parked),
+            Some(UnparkPlan::Standalone {
+                tab_number: parked_number
+            })
+        );
+
+        let visible = ws.visible_tab_count();
+        ws.unpark_pane(parked, false).unwrap();
+        ws.assert_invariants_for_test();
+        assert_eq!(ws.visible_tab_count(), visible + 1);
+        assert_eq!(ws.tabs[visible].number, parked_number);
+        assert_eq!(ws.tabs[visible].root_pane, parked);
+    }
+
+    #[test]
+    fn unpark_plan_is_none_for_visible_or_unknown_panes() {
+        let ws = Workspace::test_adversarial_identity_state();
+        assert_eq!(ws.unpark_plan(ws.tabs[0].root_pane), None);
+        assert_eq!(ws.unpark_plan(PaneId::alloc()), None);
     }
 }

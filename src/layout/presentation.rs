@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct PresentedLayout {
     pub(crate) panes: Vec<PaneInfo>,
     pub(crate) splits: Vec<SplitBorder>,
+    pub(crate) unzoomed: bool,
 }
 
 struct Visibility {

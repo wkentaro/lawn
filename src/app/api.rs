@@ -980,6 +980,7 @@ impl App {
             Method::PanePark(target) => return self.handle_pane_park(request.id, target),
             Method::WorkspacePark(target) => return self.handle_workspace_park(request.id, target),
             Method::PaneUnpark(params) => return self.handle_pane_unpark(request.id, params),
+            Method::PaneUnparkTo(params) => return self.handle_pane_unpark_to(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
             Method::PaneProcessInfo(params) => {

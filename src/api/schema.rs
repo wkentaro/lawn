@@ -100,6 +100,7 @@ operations::define_operations! {
     PaneMove(PaneMoveParams) => "pane.move", true, true;
     PanePark(PaneTarget) => "pane.park", true, true;
     PaneUnpark(PaneUnparkParams) => "pane.unpark", true, true;
+    PaneUnparkTo(PaneUnparkToParams) => "pane.unpark_to", true, true;
     PaneZoom(PaneZoomParams) => "pane.zoom", true, true;
     PaneLayout(PaneLayoutParams) => "pane.layout", false, false;
     PaneProcessInfo(PaneProcessInfoParams) => "pane.process_info", false, false;
