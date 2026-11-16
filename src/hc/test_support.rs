@@ -39,6 +39,10 @@ impl TestCore {
         })
     }
 
+    pub(crate) fn config_home(&self) -> std::path::PathBuf {
+        self.state.join("config")
+    }
+
     /// Makes this core the one `backend()` returns, for code that looks it up.
     pub(crate) fn share(&self) {
         *SHARED

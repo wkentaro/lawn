@@ -107,7 +107,6 @@ impl SessionWriter {
     }
 }
 
-/// The file stays the backup; a failed document write keeps the last one.
 fn save_doc(snapshot: Option<&SessionSnapshot>) {
     if let Err(err) = super::doc::save(snapshot) {
         tracing::warn!(%err, "failed to save the layout to herdr core");

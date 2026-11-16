@@ -34,6 +34,8 @@ If the Herdr server stops and starts again, the original pane processes are gone
 
 Snapshot restore does not preserve running shells, servers, tests, or arbitrary processes. Panes that cannot use a stronger restore path come back as new shells in their saved directories.
 
+With core-backed panes, the core layout document becomes authoritative after its first save. `session.json` remains a local backup. Layouts above the core's 1 MiB document limit use a versioned reference to a fingerprint-verified file in `session-layouts/` beside `session.json`. Keep referenced files with the session directory; use `session restore` instead of editing or copying only the core document. Unreferenced payloads are pruned, and readers retry if a newer document replaced the payload they were about to read.
+
 If a saved directory is unavailable or the shell cannot start, the pane stays in the layout with an error instead of disappearing or moving to your home directory. Its saved directory and agent session reference remain intact. Fix the directory or shell configuration and restart the server to retry, or explicitly close the pane to remove it.
 
 When saving, Herdr prefers the live shell's directory where the operating system exposes it, and retains the last confirmed directory after the shell exits. Shell-reported directories remain the fallback on other platforms.

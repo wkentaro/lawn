@@ -414,13 +414,16 @@ fn capture_tab(
 }
 
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
+    layout_fingerprint_value(serde_json::to_value(snapshot).ok()?)
+}
+
+pub(super) fn layout_fingerprint_value(mut value: serde_json::Value) -> Option<String> {
     use sha2::{Digest, Sha256};
 
-    let mut value = serde_json::to_value(snapshot).ok()?;
-    // Sets serialize as arrays; normalize their order as well as JSON object keys.
-    let mut collapsed: Vec<_> = snapshot.collapsed_space_keys.iter().collect();
-    collapsed.sort_unstable();
-    value["collapsed_space_keys"] = serde_json::to_value(collapsed).ok()?;
+    value
+        .get_mut("collapsed_space_keys")?
+        .as_array_mut()?
+        .sort_unstable_by(|left, right| left.as_str().cmp(&right.as_str()));
     let bytes = serde_json::to_vec(&value).ok()?;
     Some(format!("{:x}", Sha256::digest(bytes)))
 }

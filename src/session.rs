@@ -351,7 +351,6 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
         ));
     }
     let info = session_info(Some(name));
-    // The document wins over the files, so a failed clear keeps them too.
     crate::persist::doc::clear(name)?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(info),
