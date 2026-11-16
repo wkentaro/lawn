@@ -38,12 +38,12 @@ pub struct SessionHistorySnapshot {
     pub workspaces: Vec<WorkspaceHistorySnapshot>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct WorkspaceHistorySnapshot {
     pub tabs: Vec<TabHistorySnapshot>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct TabHistorySnapshot {
     pub panes: HashMap<u32, PaneHistorySnapshot>,
 }
@@ -71,6 +71,32 @@ pub struct WorkspaceSnapshot {
 }
 
 impl WorkspaceSnapshot {
+    pub(crate) fn move_tab(&mut self, source: usize, insert: usize) -> bool {
+        let visible = self.visible_tab_count();
+        let Some(target) =
+            crate::session_model::move_item(&mut self.tabs[..visible], source, insert)
+        else {
+            return false;
+        };
+        for index in self.public_tab_numbers.len()..self.tabs.len() {
+            self.public_tab_numbers.push(index + 1);
+        }
+        crate::session_model::move_item(&mut self.public_tab_numbers[..visible], source, insert);
+        if let Some(pane) = self
+            .tabs
+            .first()
+            .and_then(|tab| tab.root_pane.and_then(|id| tab.panes.get(&id)))
+        {
+            self.identity_cwd.clone_from(&pane.cwd);
+        }
+        self.active_tab = if self.active_tab < self.tabs.len() {
+            crate::session_model::index_after_move(self.active_tab, source, target)
+        } else {
+            target
+        };
+        true
+    }
+
     pub(crate) fn tab_number(&self, tab: usize) -> usize {
         self.public_tab_numbers.get(tab).copied().unwrap_or(tab + 1)
     }

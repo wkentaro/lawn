@@ -12,12 +12,11 @@ use super::responses::{encode_error, encode_success};
 
 impl App {
     pub(super) fn handle_pane_park(&mut self, id: String, target: PaneTarget) -> String {
-        let channels = self.tab_channels();
         let parked = self
             .parse_pane_id(&target.pane_id)
             .and_then(|(ws_idx, pane_id)| {
                 let layout_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
-                self.state.park_pane(ws_idx, pane_id, channels)?;
+                self.state.park_pane(ws_idx, pane_id)?;
                 Some((ws_idx, pane_id, layout_target))
             });
         let Some((ws_idx, pane_id, layout_target)) = parked else {
@@ -653,8 +652,7 @@ mod tests {
                 pane_state: crate::pane::PaneState::new(terminal.id.clone()),
             };
             app.state.terminals.insert(terminal.id.clone(), terminal);
-            let channels = app.tab_channels();
-            app.state.workspaces[0].add_parked_pane(moved, origin, channels);
+            app.state.workspaces[0].add_parked_pane(moved, origin);
             app.state.assert_invariants_for_test();
             app.public_pane_id(0, pane_id).unwrap()
         };

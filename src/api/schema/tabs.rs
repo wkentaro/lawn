@@ -55,10 +55,12 @@ cli_params! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct TabMoveParams {
-    pub tab_id: String,
-    pub insert_index: usize,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct TabMoveParams => TabMoveProjection {
+        pub tab_id: String => Field::new(String::new()).input(tab_id()),
+        pub insert_index: usize => Field::new(0).input(bindings::insert_index()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -6,7 +6,7 @@ use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::layout::PaneId;
 use crate::pane::{CoreTerminal, PaneState};
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
-use crate::workspace::{MovedPane, TabChannels};
+use crate::workspace::MovedPane;
 
 impl App {
     /// Starts parking the core terminals no pane shows, when panes run in core.
@@ -99,8 +99,7 @@ impl App {
         };
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
         self.state.terminals.insert(terminal.id.clone(), terminal);
-        let channels = self.tab_channels();
-        self.state.workspaces[ws_idx].add_parked_pane(moved, origin, channels);
+        self.state.workspaces[ws_idx].add_parked_pane(moved, origin);
         self.state.remove_alias_shadowed_by_new_pane(pane_id);
         self.schedule_session_save();
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
@@ -115,15 +114,8 @@ impl App {
 impl AppState {
     /// Hides a pane in a parked tab. It stays in its workspace with its
     /// terminal running, and the workspace stays even without visible tabs.
-    pub(crate) fn park_pane(
-        &mut self,
-        ws_idx: usize,
-        pane_id: PaneId,
-        channels: TabChannels,
-    ) -> Option<()> {
-        self.workspaces
-            .get_mut(ws_idx)?
-            .park_pane(pane_id, channels)?;
+    pub(crate) fn park_pane(&mut self, ws_idx: usize, pane_id: PaneId) -> Option<()> {
+        self.workspaces.get_mut(ws_idx)?.park_pane(pane_id)?;
         if self
             .previous_pane_focus
             .as_ref()
@@ -138,11 +130,7 @@ impl AppState {
     /// Parks every pane of a workspace and hides the workspace itself until a
     /// pane comes back. Focus moves to the next workspace still shown.
     /// Returns the panes it parked.
-    pub(crate) fn park_workspace(
-        &mut self,
-        ws_idx: usize,
-        channels: TabChannels,
-    ) -> Option<Vec<PaneId>> {
+    pub(crate) fn park_workspace(&mut self, ws_idx: usize) -> Option<Vec<PaneId>> {
         let panes: Vec<PaneId> = self
             .workspaces
             .get(ws_idx)?
@@ -151,7 +139,7 @@ impl AppState {
             .flat_map(|tab| tab.layout.pane_ids())
             .collect();
         for &pane_id in &panes {
-            self.park_pane(ws_idx, pane_id, channels.clone())?;
+            self.park_pane(ws_idx, pane_id)?;
         }
         let workspace = &mut self.workspaces[ws_idx];
         if workspace.parked_tabs().is_empty() {
@@ -183,10 +171,7 @@ impl AppState {
 
     /// The first workspace that is not parked, from `start` on, wrapping around.
     pub(crate) fn shown_workspace_from(&self, start: usize) -> Option<usize> {
-        let count = self.workspaces.len();
-        (0..count)
-            .map(|offset| (start + offset) % count)
-            .find(|&idx| !self.workspaces[idx].parked)
+        crate::session_model::shown_workspace_from(&self.workspaces, start)
     }
 
     pub(crate) fn unpark_pane(

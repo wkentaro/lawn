@@ -815,9 +815,6 @@ fn restore_tab(
                 runtimes: HashMap::new(),
                 zoomed: snap.zoomed,
                 parked_from: snap.parked_from,
-                events: runtime_context.events.clone(),
-                render_notify: runtime_context.render_notify.clone(),
-                render_dirty: runtime_context.render_dirty.clone(),
             },
             terminals,
             terminal_runtimes,
@@ -1784,16 +1781,7 @@ mod tests {
         let mut workspace = crate::workspace::Workspace::test_new("parked");
         let parked = workspace.test_split(Direction::Horizontal);
         let (events, _event_rx) = mpsc::channel(4);
-        workspace
-            .park_pane(
-                parked,
-                (
-                    events.clone(),
-                    Arc::new(Notify::new()),
-                    Arc::new(RenderSignal::new()),
-                ),
-            )
-            .expect("pane parks");
+        workspace.park_pane(parked).expect("pane parks");
         let pane_number = workspace.public_pane_number(parked);
         let tab_number = workspace.tabs[1].number;
         let snapshot = super::super::snapshot::capture(

@@ -108,6 +108,25 @@ pub(crate) fn edit<T>(
     write: bool,
     mut change: impl FnMut(&mut SessionSnapshot) -> (T, bool),
 ) -> Result<Option<T>, String> {
+    edit_layout(write, |snapshot| {
+        let (out, changed) = change(snapshot);
+        (out, changed, None)
+    })
+}
+
+pub(crate) fn edit_order<T>(
+    mut change: impl FnMut(&mut SessionSnapshot) -> (T, Option<crate::session_model::LayoutMove>),
+) -> Result<Option<T>, String> {
+    edit_layout(true, |snapshot| {
+        let (out, order) = change(snapshot);
+        (out, order.is_some(), order)
+    })
+}
+
+fn edit_layout<T>(
+    write: bool,
+    mut change: impl FnMut(&mut SessionSnapshot) -> (T, bool, Option<crate::session_model::LayoutMove>),
+) -> Result<Option<T>, String> {
     if !crate::hc::enabled() {
         return Ok(None);
     }
@@ -140,7 +159,7 @@ pub(crate) fn edit<T>(
         } else {
             None
         };
-        let (out, changed) = change(&mut snapshot);
+        let (out, changed, order) = change(&mut snapshot);
         if !write || !changed {
             return Ok(Some(out));
         }
@@ -164,7 +183,7 @@ pub(crate) fn edit<T>(
         }
         match result {
             Ok(_) => {
-                if let Err(err) = super::io::carry_history(loaded, &snapshot) {
+                if let Err(err) = super::io::carry_history(loaded, &snapshot, order) {
                     tracing::warn!(%err, "cannot keep pane history with the edited layout");
                 }
                 return Ok(Some(out));

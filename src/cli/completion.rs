@@ -188,6 +188,19 @@ mod tests {
     }
 
     #[test]
+    fn completions_include_workspace_and_tab_moves() {
+        let root = crate::cli::spec::command();
+        for family in ["workspace", "tab"] {
+            let command = root.find_subcommand(family).unwrap();
+            assert!(command.find_subcommand("move").is_some());
+            for shell in super::SUPPORTED_SHELLS {
+                let shell = super::parse_shell(shell).unwrap();
+                assert!(script(shell, command).contains("move"), "{family}: {shell}");
+            }
+        }
+    }
+
+    #[test]
     fn projection_preserves_completion_metadata_without_execution_relations() {
         let mut source = clap::Command::new("demo")
             .visible_alias("visible")

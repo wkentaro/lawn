@@ -55,6 +55,7 @@ mod render_signal;
 mod selection;
 mod server;
 mod session;
+mod session_model;
 mod sound;
 mod terminal;
 mod terminal_effects;

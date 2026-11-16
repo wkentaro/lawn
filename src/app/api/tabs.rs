@@ -142,22 +142,17 @@ impl App {
     }
 
     pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> String {
-        let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
+        let Some((ws_idx, tab_idx)) = crate::session_model::rename_tab(
+            &mut self.state.workspaces,
+            &params.tab_id,
+            &params.label,
+        ) else {
             return tab_not_found(id, &params.tab_id);
         };
         let workspace_id = self.state.workspaces[ws_idx].id.clone();
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
             crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
-        let Some(tab) = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
-        else {
-            return tab_not_found(id, &params.tab_id);
-        };
-        tab.set_custom_name(params.label.clone());
         crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
@@ -233,52 +228,41 @@ impl App {
                 "tab is already in the target workspace",
             );
         }
-        let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
-            return tab_not_found(id, &params.tab_id);
-        };
-        let previous_workspace_id = self.public_workspace_id(source_ws_idx);
-        let moved_pane_ids = self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
-            .layout
-            .pane_ids();
-        let previous_pane_ids: Vec<_> = moved_pane_ids
-            .iter()
-            .filter_map(|&pane_id| {
-                self.public_pane_id(source_ws_idx, pane_id)
-                    .map(|public_id| (public_id, pane_id))
-            })
-            .collect();
         let mut previous_focus = self.state.current_pane_focus_target();
-
-        let Some(tab) = self.state.workspaces[source_ws_idx].take_tab(source_tab_idx) else {
+        let Some(relocated) = crate::session_model::relocate_tab(
+            &mut self.state.workspaces,
+            (source_ws_idx, source_tab_idx),
+            target_ws_idx,
+            params.insert_index,
+            self.state.active,
+            self.state.selected,
+        ) else {
             return tab_not_found(id, &params.tab_id);
         };
-        let focused_pane_id = tab.layout.focused();
-        self.state.public_pane_id_aliases.extend(previous_pane_ids);
-
-        let mut closed_workspace_id = None;
-        let mut target_ws_idx = target_ws_idx;
-        if self.state.workspaces[source_ws_idx].tabs.is_empty() {
-            self.state
-                .remove_emptied_workspace(source_ws_idx, Some(target_ws_idx));
-            closed_workspace_id = Some(previous_workspace_id.clone());
-            if target_ws_idx > source_ws_idx {
-                target_ws_idx -= 1;
-            }
-        }
-
-        let target_tab_idx =
-            self.state.workspaces[target_ws_idx].insert_moved_tab(tab, params.insert_index);
-        for pane_id in &moved_pane_ids {
+        self.state.active = relocated.active;
+        self.state.selected = relocated.selected;
+        self.state
+            .public_pane_id_aliases
+            .extend(relocated.previous_pane_ids);
+        for pane_id in &relocated.pane_ids {
             self.state.remove_alias_shadowed_by_new_pane(*pane_id);
         }
+        let target_ws_idx = relocated.workspace_index;
+        let target_tab_idx = relocated.tab_index;
         let target_workspace_id = self.public_workspace_id(target_ws_idx);
-        self.state
-            .retarget_moved_panes(&moved_pane_ids, &target_workspace_id, &mut previous_focus);
+        self.state.retarget_moved_panes(
+            &relocated.pane_ids,
+            &target_workspace_id,
+            &mut previous_focus,
+        );
         if params.focus {
             self.state
                 .switch_workspace_tab(target_ws_idx, target_tab_idx);
-            self.state
-                .record_pane_focus_change(previous_focus, target_ws_idx, focused_pane_id);
+            self.state.record_pane_focus_change(
+                previous_focus,
+                target_ws_idx,
+                relocated.focused_pane,
+            );
             self.state.mode = Mode::Terminal;
         }
         self.state.mark_session_dirty();
@@ -290,11 +274,12 @@ impl App {
         self.emit_event(EventEnvelope {
             event: EventKind::TabClosed,
             data: EventData::TabClosed {
-                tab_id: previous_tab_id,
-                workspace_id: previous_workspace_id,
+                tab_id: relocated.previous_tab_id,
+                workspace_id: relocated.previous_workspace_id.clone(),
             },
         });
-        if let Some(workspace_id) = closed_workspace_id {
+        if relocated.removed_workspace {
+            let workspace_id = relocated.previous_workspace_id;
             self.emit_event(EventEnvelope {
                 event: EventKind::WorkspaceClosed,
                 data: EventData::WorkspaceClosed {
@@ -570,6 +555,90 @@ mod tests {
             .map(|(_, event)| event.event)
             .collect();
         assert!(events.contains(&EventKind::WorkspaceClosed), "{events:?}");
+    }
+
+    #[test]
+    fn api_tab_move_without_focus_repairs_selection_before_reviving_the_target() {
+        for source_index in [0, 2] {
+            let mut app = tab_move_test_app(crate::api::EventHub::default());
+            let source = Workspace::test_new("source");
+            let mut target = Workspace::test_new("target");
+            target.tabs[0].parked_from = Some(1);
+            target.parked = true;
+            app.state.workspaces = if source_index == 0 {
+                vec![source, Workspace::test_new("middle"), target]
+            } else {
+                vec![target, Workspace::test_new("middle"), source]
+            };
+            app.state.ensure_test_terminals();
+            app.state.active = Some(source_index);
+            app.state.selected = source_index;
+            let target_index = 2 - source_index;
+            let middle_id = app.public_workspace_id(1);
+            let tab_id = app.public_tab_id(source_index, 0).unwrap();
+            let workspace_id = app.public_workspace_id(target_index);
+
+            let response = app.handle_tab_move_to_workspace(
+                "req".into(),
+                TabMoveToWorkspaceParams {
+                    tab_id,
+                    workspace_id: workspace_id.clone(),
+                    insert_index: None,
+                    focus: false,
+                },
+            );
+
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::TabInfo { tab } = success.result else {
+                panic!("expected tab info, got {response}");
+            };
+            assert_eq!(tab.workspace_id, workspace_id);
+            assert!(!tab.focused);
+            assert_eq!(
+                app.public_workspace_id(app.state.active.unwrap()),
+                middle_id
+            );
+            assert_eq!(app.public_workspace_id(app.state.selected), middle_id);
+            let target = app.parse_workspace_id(&workspace_id).unwrap();
+            assert!(!app.state.workspaces[target].parked);
+            assert_eq!(app.state.workspaces[target].visible_tab_count(), 1);
+            assert_eq!(app.state.workspaces[target].parked_tabs().len(), 1);
+            app.state.assert_invariants_for_test();
+        }
+    }
+
+    #[test]
+    fn api_tab_move_without_focus_revives_the_only_remaining_workspace() {
+        let mut app = tab_move_test_app(crate::api::EventHub::default());
+        let mut target = Workspace::test_new("target");
+        target.tabs[0].parked_from = Some(1);
+        target.parked = true;
+        app.state.workspaces = vec![Workspace::test_new("source"), target];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let workspace_id = app.public_workspace_id(1);
+
+        let response = app.handle_tab_move_to_workspace(
+            "req".into(),
+            TabMoveToWorkspaceParams {
+                tab_id,
+                workspace_id: workspace_id.clone(),
+                insert_index: None,
+                focus: false,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabInfo { tab } = success.result else {
+            panic!("expected tab info, got {response}");
+        };
+        assert_eq!(tab.workspace_id, workspace_id);
+        assert!(tab.focused);
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.selected, 0);
+        app.state.assert_invariants_for_test();
     }
 
     #[test]

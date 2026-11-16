@@ -3,7 +3,8 @@ use crate::api::schema::{
     TabInfo, WorkspaceInfo,
 };
 use crate::persist::{SessionSnapshot, WorkspaceSnapshot};
-use crate::workspace::{decode_public_number, derive_label_from_cwd, public_tab_id_for_number};
+use crate::session_model::workspace_index;
+use crate::workspace::{derive_label_from_cwd, public_tab_id_for_number};
 
 pub(super) fn owns_the_target() -> bool {
     !super::target::is_remote() && crate::session::uses_own_socket()
@@ -21,18 +22,81 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             (answer, false)
         }),
         Method::WorkspaceRename(params) => crate::persist::doc::edit(true, |snapshot| {
-            let Some(index) = workspace_index(snapshot, &params.workspace_id) else {
+            let Some(index) = crate::session_model::rename_workspace(
+                &mut snapshot.workspaces,
+                &params.workspace_id,
+                &params.label,
+            ) else {
                 return (Some(Err(workspace_not_found(&params.workspace_id))), false);
             };
-            snapshot.workspaces[index].custom_name = Some(params.label.clone());
             let answer: Answer = workspace_info(snapshot, index)
                 .map(|workspace| Ok(ResponseResult::WorkspaceInfo { workspace }));
             let changed = answer.is_some();
             (answer, changed)
         }),
+        Method::WorkspaceMove(params) => crate::persist::doc::edit_order(|snapshot| {
+            let Some(index) = workspace_index(&snapshot.workspaces, &params.workspace_id) else {
+                return (Some(Err(workspace_not_found(&params.workspace_id))), None);
+            };
+            if params.insert_index > snapshot.workspaces.len() {
+                return (
+                    Some(Err(move_out_of_bounds(
+                        "workspace_move_failed",
+                        params.insert_index,
+                    ))),
+                    None,
+                );
+            }
+            let moved = crate::session_model::move_workspace(
+                &mut snapshot.workspaces,
+                &mut snapshot.active,
+                &mut snapshot.selected,
+                index,
+                params.insert_index,
+            );
+            let answer: Answer = (0..snapshot.workspaces.len())
+                .map(|index| workspace_info(snapshot, index))
+                .collect::<Option<Vec<_>>>()
+                .map(|workspaces| Ok(ResponseResult::WorkspaceList { workspaces }));
+            let order = (moved && answer.is_some()).then_some(
+                crate::session_model::LayoutMove::Workspace {
+                    source: index,
+                    insert: params.insert_index,
+                },
+            );
+            (answer, order)
+        }),
+        Method::TabMove(params) => crate::persist::doc::edit_order(|snapshot| {
+            let Some((workspace, tab)) =
+                crate::session_model::tab_index(&snapshot.workspaces, &params.tab_id)
+            else {
+                return (Some(Err(tab_not_found(&params.tab_id))), None);
+            };
+            if params.insert_index > snapshot.workspaces[workspace].visible_tab_count() {
+                return (
+                    Some(Err(move_out_of_bounds(
+                        "tab_move_failed",
+                        params.insert_index,
+                    ))),
+                    None,
+                );
+            }
+            let moved = snapshot.workspaces[workspace].move_tab(tab, params.insert_index);
+            let answer: Answer = (0..snapshot.workspaces[workspace].visible_tab_count())
+                .map(|tab| tab_info(snapshot, workspace, tab))
+                .collect::<Option<Vec<_>>>()
+                .map(|tabs| Ok(ResponseResult::TabList { tabs }));
+            let order =
+                (moved && answer.is_some()).then_some(crate::session_model::LayoutMove::Tab {
+                    workspace,
+                    source: tab,
+                    insert: params.insert_index,
+                });
+            (answer, order)
+        }),
         Method::TabList(params) => crate::persist::doc::edit(false, |snapshot| {
             let workspaces = match params.workspace_id.as_deref() {
-                Some(workspace_id) => match workspace_index(snapshot, workspace_id) {
+                Some(workspace_id) => match workspace_index(&snapshot.workspaces, workspace_id) {
                     Some(index) => index..index + 1,
                     None => return (Some(Err(workspace_not_found(workspace_id))), false),
                 },
@@ -48,10 +112,13 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
             (answer, false)
         }),
         Method::TabRename(params) => crate::persist::doc::edit(true, |snapshot| {
-            let Some((workspace, tab)) = tab_index(snapshot, &params.tab_id) else {
+            let Some((workspace, tab)) = crate::session_model::rename_tab(
+                &mut snapshot.workspaces,
+                &params.tab_id,
+                &params.label,
+            ) else {
                 return (Some(Err(tab_not_found(&params.tab_id))), false);
             };
-            snapshot.workspaces[workspace].tabs[tab].custom_name = Some(params.label.clone());
             let answer: Answer =
                 tab_info(snapshot, workspace, tab).map(|tab| Ok(ResponseResult::TabInfo { tab }));
             let changed = answer.is_some();
@@ -67,6 +134,13 @@ pub(super) fn handle(request: &Request) -> Option<std::io::Result<serde_json::Va
         Err(err) => return Some(Err(std::io::Error::other(err))),
     };
     Some(response.map_err(std::io::Error::other))
+}
+
+fn move_out_of_bounds(code: &str, index: usize) -> ErrorBody {
+    ErrorBody {
+        code: code.into(),
+        message: format!("insert_index {index} is out of bounds"),
+    }
 }
 
 fn workspace_not_found(workspace_id: &str) -> ErrorBody {
@@ -87,38 +161,6 @@ fn active_tab(workspace: &WorkspaceSnapshot) -> usize {
     workspace
         .active_tab
         .min(workspace.tabs.len().saturating_sub(1))
-}
-
-fn workspace_index(snapshot: &SessionSnapshot, id: &str) -> Option<usize> {
-    snapshot
-        .workspaces
-        .iter()
-        .position(|workspace| workspace.id.as_deref() == Some(id))
-        .or_else(|| id.strip_prefix("w_")?.parse::<usize>().ok()?.checked_sub(1))
-        .or_else(|| id.parse::<usize>().ok()?.checked_sub(1))
-        .filter(|&index| index < snapshot.workspaces.len())
-}
-
-fn tab_index(snapshot: &SessionSnapshot, id: &str) -> Option<(usize, usize)> {
-    let visible = |workspace: usize, tab: usize| {
-        (tab < snapshot.workspaces[workspace].visible_tab_count()).then_some((workspace, tab))
-    };
-    if let Some(rest) = id.strip_prefix("t_") {
-        let (workspace_raw, tab_raw) = rest.rsplit_once('_')?;
-        let workspace = workspace_index(snapshot, workspace_raw)?;
-        return visible(workspace, tab_raw.parse::<usize>().ok()?.checked_sub(1)?);
-    }
-    let (workspace_raw, tab_raw) = id.rsplit_once(':')?;
-    let workspace = workspace_index(snapshot, workspace_raw)?;
-    let tab = match tab_raw.strip_prefix('t') {
-        Some(encoded) => {
-            let number = decode_public_number(encoded)?;
-            let workspace = &snapshot.workspaces[workspace];
-            (0..workspace.tabs.len()).position(|tab| workspace.tab_number(tab) == number)?
-        }
-        None => tab_raw.parse::<usize>().ok()?.checked_sub(1)?,
-    };
-    visible(workspace, tab)
 }
 
 fn workspace_info(snapshot: &SessionSnapshot, index: usize) -> Option<WorkspaceInfo> {
@@ -174,6 +216,7 @@ fn tab_info(snapshot: &SessionSnapshot, workspace_index: usize, tab: usize) -> O
 mod tests {
     use super::*;
     use crate::persist::{LayoutSnapshot, TabSnapshot};
+    use crate::session_model::tab_index;
 
     fn tab(name: Option<&str>, parked: bool) -> TabSnapshot {
         TabSnapshot {
@@ -211,17 +254,91 @@ mod tests {
     }
 
     #[test]
-    fn ids_resolve_the_way_the_server_resolves_them() {
+    fn live_and_saved_identity_resolution_match() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state = crate::app::AppState::test_with_adversarial_identity_state();
+        app.state.assert_invariants_for_test();
+        let mut alias = crate::workspace::Workspace::test_new("alias");
+        alias.id = "w_1".into();
+        app.state.workspaces.push(alias);
+        let mut numeric = crate::workspace::Workspace::test_new("numeric");
+        numeric.id = "1".into();
+        app.state.workspaces.push(numeric);
+        app.state.ensure_test_terminals();
+
+        for parked in [false, true] {
+            let last = app.state.workspaces[0].tabs.last_mut().unwrap();
+            last.parked_from = parked.then_some(1);
+            let snapshot = crate::persist::capture(
+                &app.state.workspaces,
+                &app.state.terminals,
+                &app.terminal_runtimes,
+                app.state.active,
+                app.state.selected,
+            );
+            let ids = app
+                .state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.id.clone())
+                .chain(["0", "2", "3", "4", "w_0", "w_2", "w_4", "missing"].map(String::from));
+            for id in ids {
+                assert_eq!(
+                    workspace_index(&snapshot.workspaces, &id),
+                    app.parse_workspace_id(&id),
+                    "{id}"
+                );
+                for number in 0..8 {
+                    for tab_id in [
+                        format!("{id}:t{}", crate::workspace::encode_public_number(number)),
+                        format!("{id}:{number}"),
+                        format!("t_{id}_{number}"),
+                    ] {
+                        assert_eq!(
+                            tab_index(&snapshot.workspaces, &tab_id),
+                            app.parse_tab_id(&tab_id),
+                            "{tab_id}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_snapshot_identity_reads_do_not_allocate_ids() {
+        let mut snapshot = snapshot();
+        snapshot.workspaces[0].id = None;
+        assert_eq!(workspace_index(&snapshot.workspaces, "1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w_1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w1"), None);
+        assert_eq!(tab_index(&snapshot.workspaces, "1:t3"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "1:t4"), None);
+        assert!(workspace_info(&snapshot, 0).is_none());
+        snapshot.workspaces[0].tabs.clear();
+        assert_eq!(tab_index(&snapshot.workspaces, "1:1"), None);
+        assert!(snapshot.workspaces[0].id.is_none());
+    }
+
+    #[test]
+    fn saved_ids_keep_public_numbers_and_restore_defaults() {
         let snapshot = snapshot();
-        assert_eq!(workspace_index(&snapshot, "w1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "w_1"), Some(0));
-        assert_eq!(workspace_index(&snapshot, "2"), None);
-        assert_eq!(tab_index(&snapshot, "w1:t3"), Some((0, 1)));
-        assert_eq!(tab_index(&snapshot, "w1:2"), Some((0, 1)));
-        assert_eq!(tab_index(&snapshot, "t_w1_2"), Some((0, 1)));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "w_1"), Some(0));
+        assert_eq!(workspace_index(&snapshot.workspaces, "2"), None);
+        assert_eq!(tab_index(&snapshot.workspaces, "w1:t3"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "w1:2"), Some((0, 1)));
+        assert_eq!(tab_index(&snapshot.workspaces, "t_w1_2"), Some((0, 1)));
         assert_eq!(
-            tab_index(&snapshot, "w1:t4"),
+            tab_index(&snapshot.workspaces, "w1:t4"),
             None,
             "parked tabs are hidden"
         );
@@ -375,6 +492,168 @@ mod tests {
         assert_eq!(
             loaded.workspaces[0].tabs[1].custom_name.as_deref(),
             Some("tab renamed")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn offline_moves_preserve_identity_focus_and_ownership() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
+        assert!(crate::persist::load().is_none());
+        let mut saved = snapshot();
+        let mut second = snapshot().workspaces.remove(0);
+        second.id = Some("w2".into());
+        saved.workspaces.push(second);
+        saved.selected = 1;
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut history =
+            serde_json::to_value(crate::persist::capture_history(&saved, &[], &runtimes)).unwrap();
+        history["workspaces"] = serde_json::json!([
+            {"tabs": [
+                {"panes": {"1": {"ansi": "w1:t1", "lines": 1}}},
+                {"panes": {"1": {"ansi": "w1:t3", "lines": 1}}},
+                {"panes": {"1": {"ansi": "parked", "lines": 1}}}
+            ]},
+            {"tabs": [{"panes": {"1": {"ansi": "w2:t1", "lines": 1}}}]}
+        ]);
+        let history = serde_json::from_value(history).unwrap();
+        crate::persist::SessionWriter::new(false).save(&saved, Some(&history));
+        let request = |method| Request {
+            id: "move".into(),
+            method,
+        };
+        let workspace_move = request(Method::WorkspaceMove(
+            crate::api::schema::WorkspaceMoveParams {
+                workspace_id: "w1".into(),
+                insert_index: 2,
+            },
+        ));
+        let owner = crate::session::own_session(Some("work")).unwrap();
+        assert!(super::super::send_request(&workspace_move).is_err());
+        drop(owner);
+        assert_eq!(
+            super::super::workspace::run_workspace_command(&["move", "w1", "2"].map(String::from))
+                .unwrap(),
+            0
+        );
+        let moved = super::super::send_request(&workspace_move).unwrap();
+        assert_eq!(moved["result"]["workspaces"][0]["workspace_id"], "w2");
+        assert_eq!(moved["result"]["workspaces"][1]["workspace_id"], "w1");
+        let tab_move = request(Method::TabMove(crate::api::schema::TabMoveParams {
+            tab_id: "w1:t1".into(),
+            insert_index: 2,
+        }));
+        assert_eq!(
+            super::super::tab::run_tab_command(&["move", "w1:t1", "2"].map(String::from)).unwrap(),
+            0
+        );
+        let moved = super::super::send_request(&tab_move).unwrap();
+        assert_eq!(moved["result"]["tabs"][0]["tab_id"], "w1:t3");
+        assert_eq!(moved["result"]["tabs"][1]["tab_id"], "w1:t1");
+        assert_eq!(moved["result"]["tabs"].as_array().unwrap().len(), 2);
+        let current = test
+            .core
+            .doc_get(&crate::persist::doc::name(), None)
+            .unwrap();
+        assert_eq!(current.value["active"], 1);
+        assert_eq!(current.value["selected"], 0);
+        assert_eq!(current.value["workspaces"][1]["active_tab"], 0);
+        assert_eq!(
+            current.value["workspaces"][1]["public_tab_numbers"],
+            serde_json::json!([3, 1, 4])
+        );
+        let history = serde_json::to_value(crate::persist::load_history().unwrap()).unwrap();
+        assert_eq!(
+            history["workspaces"][0]["tabs"][0]["panes"]["1"]["ansi"],
+            "w2:t1"
+        );
+        assert_eq!(
+            history["workspaces"][1]["tabs"][0]["panes"]["1"]["ansi"],
+            "w1:t3"
+        );
+        assert_eq!(
+            history["workspaces"][1]["tabs"][1]["panes"]["1"]["ansi"],
+            "w1:t1"
+        );
+        assert_eq!(
+            history["workspaces"][1]["tabs"][2]["panes"]["1"]["ansi"],
+            "parked"
+        );
+        let version = current.version;
+        super::super::send_request(&tab_move).unwrap();
+        let invalid = super::super::send_request(&request(Method::TabMove(
+            crate::api::schema::TabMoveParams {
+                tab_id: "w1:t4".into(),
+                insert_index: 0,
+            },
+        )))
+        .unwrap();
+        assert_eq!(invalid["error"]["code"], "tab_not_found");
+        let current = test
+            .core
+            .doc_get(&crate::persist::doc::name(), None)
+            .unwrap();
+        assert_eq!(
+            current.version, version,
+            "no-op and invalid moves do not publish"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn offline_moves_pad_sparse_history_before_reordering() {
+        let Some(test) = crate::hc::test_support::TestCore::start() else {
+            return;
+        };
+        test.share();
+        crate::hc::use_core_for_test();
+        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
+        assert!(crate::persist::load().is_none());
+        let mut saved = snapshot();
+        let mut second = snapshot().workspaces.remove(0);
+        second.id = Some("w2".into());
+        saved.workspaces.push(second);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut history =
+            serde_json::to_value(crate::persist::capture_history(&saved, &[], &runtimes)).unwrap();
+        history["workspaces"] = serde_json::json!([
+            {"tabs": [{"panes": {"1": {"ansi": "w1:t1", "lines": 1}}}]}
+        ]);
+        crate::persist::SessionWriter::new(false)
+            .save(&saved, Some(&serde_json::from_value(history).unwrap()));
+        for method in [
+            Method::WorkspaceMove(crate::api::schema::WorkspaceMoveParams {
+                workspace_id: "w1".into(),
+                insert_index: 2,
+            }),
+            Method::TabMove(crate::api::schema::TabMoveParams {
+                tab_id: "w1:t1".into(),
+                insert_index: 2,
+            }),
+        ] {
+            let response = super::super::send_request(&Request {
+                id: "sparse".into(),
+                method,
+            })
+            .unwrap();
+            assert!(response.get("result").is_some(), "{response}");
+        }
+        let history = serde_json::to_value(crate::persist::load_history().unwrap()).unwrap();
+        assert_eq!(
+            history["workspaces"],
+            serde_json::json!([
+                {"tabs": []},
+                {"tabs": [
+                    {"panes": {}},
+                    {"panes": {"1": {"ansi": "w1:t1", "lines": 1}}},
+                    {"panes": {}}
+                ]}
+            ])
         );
     }
 

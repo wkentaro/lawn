@@ -5,7 +5,7 @@ use clap::{Arg, ArgMatches, Command};
 
 use crate::api::schema::workspaces::{
     WorkspaceCloseProjection, WorkspaceCreateProjection, WorkspaceMetadataProjection,
-    WorkspaceRenameProjection,
+    WorkspaceMoveProjection, WorkspaceRenameProjection,
 };
 use crate::api::schema::{EmptyParams, Method, Request, WorkspaceTarget};
 
@@ -18,6 +18,17 @@ pub(crate) fn workspace_id() -> Input<String> {
         *slot = super::normalize_workspace_id(value);
         Ok(())
     })
+}
+
+pub(crate) fn insert_index() -> Input<usize> {
+    Input::positional("insert_index", 1, |slot, value| {
+        *slot = value
+            .parse()
+            .map_err(|_| ParseError::Usage("insert_index must be a nonnegative integer".into()))?;
+        Ok(())
+    })
+    .value_name("INSERT_INDEX")
+    .help("Zero-based insertion boundary in the current order")
 }
 
 pub(crate) fn label() -> Input<String> {
@@ -126,7 +137,7 @@ impl Leaf {
     }
 }
 
-pub(crate) const LEAVES: [Leaf; 7] = [
+pub(crate) const LEAVES: [Leaf; 8] = [
     Leaf {
         name: "list",
         about: "List workspaces",
@@ -176,6 +187,14 @@ pub(crate) const LEAVES: [Leaf; 7] = [
         },
     },
     Leaf {
+        name: "move",
+        about: "Reorder a workspace",
+        id: "cli:workspace:move",
+        quiet: false,
+        arguments: WorkspaceMoveProjection::arguments,
+        method: |matches| WorkspaceMoveProjection::from_matches(matches).map(Method::WorkspaceMove),
+    },
+    Leaf {
         name: "report-metadata",
         about: "Report display-only workspace metadata",
         id: "cli:request",
@@ -213,6 +232,34 @@ mod tests {
             .find(|leaf| leaf.name == command)
             .unwrap()
             .request(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn workspace_move_projection_requires_an_id_and_insertion_boundary() {
+        assert_eq!(
+            serde_json::to_value(request("move", &["2", "0"]).unwrap()).unwrap(),
+            serde_json::json!({
+                "id": "cli:workspace:move", "method": "workspace.move",
+                "params": {"workspace_id": "2", "insert_index": 0}
+            })
+        );
+        for args in [
+            vec![],
+            vec!["w1"],
+            vec!["w1", "-1"],
+            vec!["w1", "x"],
+            vec!["w1", "0", "extra"],
+        ] {
+            assert!(request("move", &args).is_err(), "argv: {args:?}");
+        }
+        let mut root = command();
+        let help = root
+            .find_subcommand_mut("move")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("<WORKSPACE_ID> <INSERT_INDEX>"));
+        assert!(help.contains("Zero-based insertion boundary"));
     }
 
     #[test]

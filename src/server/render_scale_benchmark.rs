@@ -646,8 +646,7 @@ fn print_restore_preview_profiles() {
             .pane_ids()
             .last()
             .unwrap();
-        let channels = pipeline.app.tab_channels();
-        pipeline.app.state.park_pane(0, parked, channels).unwrap();
+        pipeline.app.state.park_pane(0, parked).unwrap();
         let locations = super::pane_presentation::terminal_locations(&pipeline.app.state);
         let terminal = pipeline.app.state.workspaces[0]
             .terminal_id(parked)
