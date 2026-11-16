@@ -2275,6 +2275,20 @@ struct PaneOutput {
 }
 
 impl PaneOutput {
+    fn resize(&self, rows: u16, cols: u16) {
+        let content_write_guard = match self.content_write_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
+        self.terminal.resize(rows, cols, 0, 0);
+        self.content_seq.fetch_add(1, Ordering::Release);
+        drop(content_write_guard);
+        if self.render_dirty.request_pty(self.pane_id) {
+            self.render_notify.notify_one();
+        }
+    }
+
     fn process(&self, bytes: &[u8]) -> PtyReadResult {
         let pane_id = self.pane_id;
         let content_write_guard = match self.content_write_lock.lock() {

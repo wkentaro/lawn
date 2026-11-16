@@ -18,6 +18,7 @@ mod catalog_reload;
 mod clipboard_forwarding;
 mod clipboard_images;
 mod config_reload;
+mod core_render;
 #[cfg(unix)]
 mod direct_graphics;
 pub(crate) mod endpoint;
@@ -564,6 +565,8 @@ async fn run_client_loop(
     let stdin_tx = event_tx.clone();
 
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
+    let mut core_render = core_render::CoreRender::from_env(event_tx.clone())
+        .filter(|_| state.shell.is_some() && !is_remote_client);
 
     // Spawn the stdin reader thread.
     let will_query_host_terminal_theme = state.attach_escape.is_none();
@@ -829,6 +832,7 @@ async fn run_client_loop(
                 shell.timer_delay(std::time::Instant::now())
             });
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
+        follow_core_pane(&mut state, core_render.as_mut());
         let immediate_event = scheduled_activation.take();
         #[cfg(windows)]
         let event = if let Some(event) = immediate_event {
@@ -1601,12 +1605,12 @@ async fn run_client_loop(
                         if !endpoint_active {
                             continue;
                         }
-                        let composed = if let Some(shell) = &mut state.shell {
+                        if let Some(shell) = &mut state.shell {
                             shell.set_pane_surface(surface);
+                        }
+                        let composed = state.shell.as_mut().and_then(|shell| {
                             shell.compose(state.reported_size.0, state.reported_size.1)
-                        } else {
-                            None
-                        };
+                        });
                         apply_client_shell_input_source_changes(
                             &mut state,
                             &mut prefix_input_source,
@@ -2325,6 +2329,59 @@ async fn run_client_loop(
                     &endpoint_id,
                     io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
                 );
+            }
+            ClientLoopEvent::CorePaneFound { pane_id, pane } => {
+                let accepted = core_render
+                    .as_ref()
+                    .is_some_and(|core_render| core_render.accept(&pane_id));
+                if pane.is_none() {
+                    if let Some(core_render) = core_render.as_mut() {
+                        core_render.retry_later(&pane_id);
+                    }
+                }
+                let composed = state.shell.as_mut().and_then(|shell| {
+                    let focused = shell
+                        .focused_surface_pane()
+                        .is_some_and(|(focused, _)| focused == pane_id);
+                    let pane = pane.filter(|_| accepted && focused)?;
+                    pane.take_output();
+                    shell.core_pane = Some(*pane);
+                    shell.compose(state.reported_size.0, state.reported_size.1)
+                });
+                if let Some(frame) = composed {
+                    state.present_frame(frame);
+                }
+            }
+            ClientLoopEvent::CorePaneEnded { pane_id } => {
+                if let Some(core_render) = core_render.as_mut() {
+                    core_render.forget(&pane_id);
+                }
+                let composed = state.shell.as_mut().and_then(|shell| {
+                    let ended = shell
+                        .core_pane
+                        .as_ref()
+                        .is_some_and(|core_pane| core_pane.pane_id() == pane_id);
+                    if !ended {
+                        return None;
+                    }
+                    shell.core_pane = None;
+                    shell.compose(state.reported_size.0, state.reported_size.1)
+                });
+                if let Some(frame) = composed {
+                    state.present_frame(frame);
+                }
+            }
+            ClientLoopEvent::CorePaneOutput => {
+                let composed = state.shell.as_mut().and_then(|shell| {
+                    shell.core_pane.as_ref()?.take_output();
+                    shell
+                        .core_pane_drawn()
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten()
+                });
+                if let Some(frame) = composed {
+                    state.present_frame(frame);
+                }
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();
