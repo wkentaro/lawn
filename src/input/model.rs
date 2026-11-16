@@ -195,6 +195,23 @@ impl TerminalKey {
         }
     }
 
+    /// The text an input method or compose committed, for a key read from a
+    /// host that reports every key as an escape code. Such text must reach the
+    /// program as text, not as an invented key report. A Kitty host, one that
+    /// reports key releases, sends typed keys as reports, so any plain text is
+    /// a commit. A legacy host sends both as plain text; non-ASCII text has no
+    /// key in the keyboard model, so only that is a commit there.
+    pub(crate) fn committed_text(&self, kitty_host: bool) -> Option<&str> {
+        if self.kind != crossterm::event::KeyEventKind::Press {
+            return None;
+        }
+        let plain_text = self
+            .vt_bytes()
+            .is_some_and(|bytes| bytes.first().is_some_and(|byte| *byte != 0x1b));
+        let text = self.generated_text.as_deref().filter(|_| plain_text)?;
+        (kitty_host || !text.is_ascii()).then_some(text)
+    }
+
     pub(crate) fn windows_record(&self) -> Option<WindowsKeyRecord> {
         #[cfg(any(windows, test))]
         match self.source {

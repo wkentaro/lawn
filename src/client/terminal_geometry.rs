@@ -114,6 +114,16 @@ pub(super) fn initial_terminal_geometry(
     )
 }
 
+/// The host's `(cols, rows, cell_width_px, cell_height_px)` as a direct
+/// attach reads it, with a zero cell size when the host lacks a coherent
+/// pixel extent.
+#[cfg(unix)]
+pub(crate) fn host_terminal_geometry() -> io::Result<(u16, u16, u32, u32)> {
+    let (cols, rows, cell_width_px, cell_height_px, _) =
+        current_terminal_geometry(true, false, &AtomicU64::new(0), None)?;
+    Ok((cols, rows, cell_width_px, cell_height_px))
+}
+
 pub(super) fn resize_report_required(
     signalled: bool,
     new_size: (u16, u16, u32, u32, bool),

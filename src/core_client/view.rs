@@ -17,6 +17,24 @@ use crate::terminal::TerminalRuntime;
 
 const EVENT_QUEUE: usize = 64;
 
+/// The host's grid, and its cell size in pixels, zero when unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Geometry {
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+    pub(crate) cell_width_px: u32,
+    pub(crate) cell_height_px: u32,
+}
+
+/// What the terminal asks of the host beyond its screen.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Event {
+    /// The program copied these bytes with OSC 52.
+    Copy(Vec<u8>),
+    /// The program has ended.
+    Ended,
+}
+
 /// One herdr-core terminal, parsed in this process and drawn row by row as
 /// its screen changes.
 pub(crate) struct View {
@@ -29,9 +47,9 @@ pub(crate) struct View {
 }
 
 impl View {
-    /// Attaches to `address` at `cols`×`rows`, steering the terminal's size.
+    /// Attaches to `address` at `geometry`, steering the terminal's size.
     /// Needs a tokio runtime.
-    pub(crate) fn attach(core: Arc<Core>, address: &str, cols: u16, rows: u16) -> io::Result<Self> {
+    pub(crate) fn attach(core: Arc<Core>, address: &str, geometry: Geometry) -> io::Result<Self> {
         let output = Arc::new(Notify::new());
         let dirty = Arc::new(RenderSignal::new());
         let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
@@ -39,13 +57,15 @@ impl View {
             PaneId::from_raw(0),
             core,
             address,
-            rows,
-            cols,
+            geometry.rows,
+            geometry.cols,
             events_tx,
             output.clone(),
             dirty.clone(),
         )?;
-        Ok(Self::new(runtime, events, output, dirty))
+        let mut view = Self::new(runtime, events, output, dirty);
+        view.resize(geometry);
+        Ok(view)
     }
 
     fn new(
@@ -70,8 +90,13 @@ impl View {
         (cols, rows)
     }
 
-    pub(crate) fn resize(&mut self, cols: u16, rows: u16) {
-        self.runtime.resize(rows, cols, 0, 0);
+    pub(crate) fn resize(&mut self, geometry: Geometry) {
+        self.runtime.resize(
+            geometry.rows,
+            geometry.cols,
+            geometry.cell_width_px,
+            geometry.cell_height_px,
+        );
         self.repaint = true;
     }
 
@@ -81,13 +106,16 @@ impl View {
         async move { output.notified().await }
     }
 
-    /// Resolves once the terminal's program has ended.
-    pub(crate) async fn ended(&mut self) {
+    /// Resolves with the next thing the terminal asks of the host.
+    pub(crate) async fn event(&mut self) -> Event {
         while let Some(event) = self.events.recv().await {
-            if matches!(event, AppEvent::PaneDied { .. }) {
-                return;
+            match event {
+                AppEvent::ClipboardWrite { content } => return Event::Copy(content),
+                AppEvent::PaneDied { .. } => return Event::Ended,
+                _ => {}
             }
         }
+        Event::Ended
     }
 
     /// The rows that changed since the last draw, full width. Empty while
@@ -188,11 +216,15 @@ impl View {
     }
 
     pub(crate) fn mouse(&self, event: MouseEvent) {
+        self.send(self.mouse_report(event).unwrap_or_default());
+    }
+
+    fn mouse_report(&self, event: MouseEvent) -> Option<Vec<u8>> {
         let position = crate::input::mouse::Position::Cell {
             column: event.column,
             row: event.row,
         };
-        let bytes = match event.kind {
+        match event.kind {
             MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => self
                 .runtime
                 .encode_mouse_button(event.kind, position, event.modifiers),
@@ -207,8 +239,7 @@ impl View {
                 .runtime
                 .encode_mouse_wheel(event.kind, position, event.modifiers)
                 .or_else(|| self.runtime.encode_alternate_scroll(event.kind)),
-        };
-        self.send(bytes.unwrap_or_default());
+        }
     }
 
     pub(crate) fn focus(&self, focused: bool) {

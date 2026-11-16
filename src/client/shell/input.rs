@@ -109,26 +109,18 @@ impl ClientShellState {
 
     /// While the pane asks for every key as an escape code, committed text
     /// (IME, compose) must reach it as text, not as invented key reports.
-    /// On a Kitty host switched to report-all, typed keys arrive as reports,
-    /// so any plain text is a commit (kitty sends those as text too). A legacy
-    /// host sends both as plain text; non-ASCII text has no key in the
-    /// keyboard model, so only that is treated as a commit there.
     /// Only text bound for the focused pane is a commit. In prefix, navigate
     /// and other Herdr-owned input, plain text is still a key that may run a
     /// binding (#5255).
     fn host_text_commit(&self, key: &crate::input::TerminalKey) -> Option<String> {
         if !self.host_reports_all_keys
-            || key.kind != KeyEventKind::Press
             || self.mode != ClientShellMode::Terminal
             || self.overlay.is_some()
         {
             return None;
         }
-        let plain_text = key
-            .vt_bytes()
-            .is_some_and(|bytes| bytes.first().is_some_and(|byte| *byte != 0x1b));
-        let text = key.generated_text.as_ref().filter(|_| plain_text)?;
-        (self.host_reports_key_releases || !text.is_ascii()).then(|| text.clone())
+        key.committed_text(self.host_reports_key_releases)
+            .map(str::to_owned)
     }
 
     pub(crate) fn set_host_erase_byte(&mut self, erase: Option<u8>) {

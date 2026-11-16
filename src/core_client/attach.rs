@@ -30,13 +30,13 @@ fn run(terminal: &str) -> io::Result<()> {
     let core = crate::hc::backend()
         .unwrap_or_else(crate::hc::Core::connect)
         .map_err(io::Error::other)?;
-    let (cols, rows) = crossterm::terminal::size()?;
+    let geometry = unix::host_geometry()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
         let stop = unix::Stop::register()?;
-        let view = super::view::View::attach(core, terminal, cols, rows)?;
+        let view = super::view::View::attach(core, terminal, geometry)?;
         let mut guard = crate::client::terminal_setup::setup_terminal(false)?;
         let restore = guard.panic_restore();
         let hook = std::panic::take_hook();
@@ -62,7 +62,7 @@ mod unix {
     use tokio::time::Instant;
 
     use super::super::screen::Screen;
-    use super::super::view::View;
+    use super::super::view::{Event, Geometry, View};
     use crate::client::terminal_setup::{set_mouse_capture, TerminalGuard};
     use crate::input::TerminalKey;
     use crate::raw_input::RawInputEvent;
@@ -96,6 +96,37 @@ mod unix {
         }
     }
 
+    pub(super) fn host_geometry() -> io::Result<Geometry> {
+        let (cols, rows, cell_width_px, cell_height_px) = crate::client::host_terminal_geometry()?;
+        Ok(Geometry {
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+        })
+    }
+
+    /// How the host reports keys, which tells committed text from typed keys.
+    #[derive(Debug, Clone, Copy)]
+    pub(in crate::core_client) struct HostKeys {
+        /// The host reports key releases, so it speaks the Kitty keyboard
+        /// protocol.
+        pub(in crate::core_client) kitty: bool,
+        /// The host reports every key as an escape code.
+        pub(in crate::core_client) all: bool,
+    }
+
+    impl HostKeys {
+        /// The text an input method committed, which must reach the program
+        /// as text rather than through the key encoder.
+        pub(in crate::core_client) fn committed_text<'k>(
+            &self,
+            key: &'k TerminalKey,
+        ) -> Option<&'k str> {
+            self.all.then(|| key.committed_text(self.kitty)).flatten()
+        }
+    }
+
     pub(super) async fn show(
         mut view: View,
         guard: &mut TerminalGuard,
@@ -109,12 +140,13 @@ mod unix {
         )?;
         let mut resized = signal(SignalKind::window_change())?;
         let mut screen = Screen::default();
-        let mut all_keys = false;
+        let mut keys = HostKeys {
+            kitty: guard.host_escape_disambiguation_active(),
+            all: false,
+        };
         let mut out = io::stdout();
-        let mut host = crossterm::terminal::size()?;
-        if host != view.size() {
-            view.resize(host.0, host.1);
-        }
+        let mut host = host_geometry()?;
+        view.resize(host);
         let mut due = Some(Instant::now());
         let mut last_draw = Instant::now();
         loop {
@@ -124,9 +156,14 @@ mod unix {
                     due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
                 }
                 () = wait(due) => {
-                    screen.present(&mut out, host, view.draw(), view.cursor())?;
+                    screen.present(
+                        &mut out,
+                        (host.cols, host.rows),
+                        view.draw(),
+                        view.cursor(),
+                    )?;
                     follow_mouse_reporting(&view, &mouse_capture)?;
-                    follow_key_reporting(&view, &mut all_keys, &mut out)?;
+                    follow_key_reporting(&view, &mut keys.all, &mut out)?;
                     last_draw = Instant::now();
                     due = None;
                 }
@@ -135,17 +172,22 @@ mod unix {
                         return Ok(());
                     };
                     for event in events {
-                        if !forward(&view, event) {
+                        if !forward(&view, keys, event) {
                             return Ok(());
                         }
                     }
                 }
                 _ = resized.recv() => {
-                    host = crossterm::terminal::size()?;
-                    view.resize(host.0, host.1);
+                    host = host_geometry()?;
+                    view.resize(host);
                     due = Some(Instant::now());
                 }
-                () = view.ended() => return Ok(()),
+                event = view.event() => match event {
+                    Event::Copy(content) => {
+                        crate::selection::write_osc52_bytes(&content);
+                    }
+                    Event::Ended => return Ok(()),
+                },
                 () = stop.recv() => return Ok(()),
             }
         }
@@ -185,10 +227,13 @@ mod unix {
     }
 
     /// Hands one input event to the view. False means detach.
-    fn forward(view: &View, event: RawInputEvent) -> bool {
+    fn forward(view: &View, keys: HostKeys, event: RawInputEvent) -> bool {
         match event {
             RawInputEvent::Key(key) if detaches(&key) => return false,
-            RawInputEvent::Key(key) => view.key(key),
+            RawInputEvent::Key(key) => match keys.committed_text(&key) {
+                Some(text) => view.text(text),
+                None => view.key(key),
+            },
             RawInputEvent::Text(text) => view.text(text.as_str()),
             RawInputEvent::Paste(text) => view.paste(text),
             RawInputEvent::Mouse(mouse) => view.mouse(mouse),
@@ -272,7 +317,7 @@ mod unix {
 }
 
 #[cfg(all(test, unix))]
-pub(super) use unix::detaches;
+pub(super) use unix::{detaches, HostKeys};
 
 #[cfg(test)]
 mod tests;

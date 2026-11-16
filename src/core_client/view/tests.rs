@@ -49,7 +49,12 @@ async fn a_resize_damages_every_row() {
     let mut view = view(20, 4);
     view.draw();
 
-    view.resize(30, 6);
+    view.resize(Geometry {
+        cols: 30,
+        rows: 6,
+        cell_width_px: 0,
+        cell_height_px: 0,
+    });
     let rows = view.draw();
 
     assert_eq!(damaged(&rows), [0, 1, 2, 3, 4, 5]);
@@ -141,7 +146,13 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
             "no_parent": true,
         }))
         .expect("run");
-    let mut view = View::attach(test.core.clone(), &address, 40, 5).expect("attach");
+    let geometry = Geometry {
+        cols: 40,
+        rows: 5,
+        cell_width_px: 0,
+        cell_height_px: 0,
+    };
+    let mut view = View::attach(test.core.clone(), &address, geometry).expect("attach");
     let mut screen = vec![String::new(); 5];
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -154,7 +165,57 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
     })
     .await
     .unwrap_or_else(|_| panic!("the view never showed the output; saw {screen:?}"));
-    tokio::time::timeout(std::time::Duration::from_secs(10), view.ended())
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while view.event().await != Event::Ended {}
+    })
+    .await
+    .expect("the view sees the program end");
+}
+
+#[tokio::test]
+async fn pixel_mouse_reports_use_the_host_cell_size() {
+    let mut view = view(20, 4);
+    view.resize(Geometry {
+        cols: 20,
+        rows: 4,
+        cell_width_px: 10,
+        cell_height_px: 20,
+    });
+    feed(&view, b"\x1b[?1000h\x1b[?1006h\x1b[?1016h");
+
+    let report = view.mouse_report(MouseEvent {
+        kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: 3,
+        row: 2,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+
+    assert_eq!(report.as_deref(), Some(&b"\x1b[<0;35;50M"[..]));
+}
+
+#[tokio::test]
+async fn an_osc52_copy_reaches_the_host_and_the_program_end_follows() {
+    let (events_tx, events) = mpsc::channel(4);
+    let mut view = View::new(
+        TerminalRuntime::test_with_screen_bytes(20, 4, b""),
+        events,
+        Arc::new(Notify::new()),
+        Arc::new(RenderSignal::new()),
+    );
+    events_tx
+        .send(AppEvent::ClipboardWrite {
+            content: b"copied".to_vec(),
+        })
         .await
-        .expect("the view sees the program end");
+        .expect("send");
+    events_tx
+        .send(AppEvent::PaneDied {
+            pane_id: PaneId::from_raw(0),
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        })
+        .await
+        .expect("send");
+
+    assert_eq!(view.event().await, Event::Copy(b"copied".to_vec()));
+    assert_eq!(view.event().await, Event::Ended);
 }
