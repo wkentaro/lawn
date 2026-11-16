@@ -73,6 +73,7 @@ async fn synchronized_output_keeps_its_damage_until_it_ends() {
     assert_eq!(damaged(&view.draw()), [0]);
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn synchronized_output_holds_the_cursor_until_it_ends() {
     let mut view = view(20, 4);
