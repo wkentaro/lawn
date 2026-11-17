@@ -462,3 +462,40 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
         );
     }
 }
+
+fn reports(input: &mut tokio::sync::mpsc::Receiver<bytes::Bytes>) -> Vec<u8> {
+    let mut sent = Vec::new();
+    while let Ok(bytes) = input.try_recv() {
+        sent.extend_from_slice(&bytes);
+    }
+    sent
+}
+
+#[tokio::test]
+async fn moving_focus_tells_both_panes() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = Vec::new();
+    for (_, id, geometry) in requests(&mut surface) {
+        let (view, input) = View::test_with_input(geometry.cols, geometry.rows);
+        view.test_feed(b"\x1b[?1004h");
+        surface.attached(id, geometry, Ok(view));
+        inputs.push(input);
+    }
+    frame(&mut surface, &HashSet::new());
+    let [left, right] = &mut inputs[..] else {
+        unreachable!("two panes")
+    };
+    assert_eq!(reports(left), b"\x1b[I");
+    assert_eq!(reports(right), b"");
+
+    let pane = surface.tiles.tiles[1].info.inner_rect;
+    surface.mouse(click(pane.x, pane.y));
+    assert_eq!(reports(left), b"\x1b[O");
+    assert_eq!(reports(right), b"\x1b[I");
+
+    surface.host_focus(false);
+    surface.update(row_of(&terminals(2)));
+    assert_eq!(reports(left), b"");
+    assert_eq!(reports(right), b"\x1b[O");
+}

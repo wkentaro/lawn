@@ -305,6 +305,14 @@ impl View {
         Self::new(TerminalRuntime::test_with_screen_bytes(cols, rows, b""))
     }
 
+    pub(in crate::core_client) fn test_with_input(
+        cols: u16,
+        rows: u16,
+    ) -> (Self, tokio::sync::mpsc::Receiver<Bytes>) {
+        let (runtime, input) = TerminalRuntime::test_with_channel_capacity(cols, rows, 16);
+        (Self::new(runtime), input)
+    }
+
     pub(in crate::core_client) fn test_feed(&self, bytes: &[u8]) {
         self.runtime.test_process_pty_bytes(bytes);
     }

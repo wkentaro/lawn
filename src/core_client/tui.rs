@@ -174,6 +174,8 @@ mod unix {
                         match event {
                             RawInputEvent::Key(key) if detaches(&key) => return Ok(()),
                             RawInputEvent::Mouse(mouse) => surface.mouse(mouse),
+                            RawInputEvent::OuterFocusGained => surface.host_focus(true),
+                            RawInputEvent::OuterFocusLost => surface.host_focus(false),
                             event => {
                                 if let Some(view) = surface.focused() {
                                     deliver(view, keys, event);

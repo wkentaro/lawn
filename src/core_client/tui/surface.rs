@@ -24,6 +24,8 @@ pub(super) struct Surface {
     views: HashMap<PaneId, Shown>,
     attaching: HashSet<PaneId>,
     detached_while_attaching: HashSet<PaneId>,
+    reported_focus: Option<PaneId>,
+    host_focused: bool,
     tiles: Tiles,
     chrome: PaneChrome,
     palette: Palette,
@@ -40,6 +42,8 @@ impl Surface {
             views: HashMap::new(),
             attaching: HashSet::new(),
             detached_while_attaching: HashSet::new(),
+            reported_focus: None,
+            host_focused: true,
             tiles: Tiles::default(),
             chrome,
             palette,
@@ -53,6 +57,30 @@ impl Surface {
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
         self.relayout = true;
+        self.report_focus();
+    }
+
+    pub(super) fn host_focus(&mut self, focused: bool) {
+        self.host_focused = focused;
+        if let Some(view) = self.focused() {
+            view.focus(focused);
+        }
+    }
+
+    fn report_focus(&mut self) {
+        let shown = |id: &PaneId| self.views.contains_key(id);
+        let focused = self.session.focused_id().filter(shown);
+        let reported = self.reported_focus.filter(shown);
+        if focused == reported {
+            return;
+        }
+        if let Some(shown) = reported.and_then(|id| self.views.get(&id)) {
+            shown.view.focus(false);
+        }
+        if let Some(view) = self.focused() {
+            view.focus(self.host_focused);
+        }
+        self.reported_focus = focused;
     }
 
     pub(super) fn resize(&mut self, host: Geometry) {
@@ -63,6 +91,7 @@ impl Surface {
     pub(super) fn forget(&mut self, id: PaneId) {
         if self.views.remove(&id).is_some() {
             self.relayout = true;
+            self.report_focus();
         } else if self.attaching.contains(&id) {
             self.detached_while_attaching.insert(id);
         }
@@ -89,6 +118,7 @@ impl Surface {
                 tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
             }
         }
+        self.report_focus();
     }
 
     pub(super) fn needs_layout(&self) -> bool {
@@ -115,12 +145,14 @@ impl Surface {
         }) else {
             return;
         };
+        let id = tile.info.id;
         if event.kind == MouseEventKind::Down(MouseButton::Left)
             && self.session.focus(&tile.terminal)
         {
             self.relayout = true;
+            self.report_focus();
         }
-        if let Some(shown) = self.views.get(&tile.info.id) {
+        if let Some(shown) = self.views.get(&id) {
             event.column -= shown.inner.x;
             event.row -= shown.inner.y;
             shown.view.mouse(event);
