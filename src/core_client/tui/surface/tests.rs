@@ -305,6 +305,19 @@ async fn panes_keep_drawing_and_taking_input_while_another_pane_attaches() {
 }
 
 #[tokio::test]
+async fn a_pane_detached_before_its_attach_finished_attaches_again() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(1)));
+    let [(_, id, geometry)] = requests(&mut surface).try_into().expect("one request");
+
+    surface.forget(id);
+    surface.attached(id, geometry, Ok(View::test(geometry.cols, geometry.rows)));
+    let (_, attached) = frame_attaching(&mut surface, &HashSet::new());
+
+    assert_eq!(attached, ["t0"]);
+}
+
+#[tokio::test]
 async fn an_attach_that_finishes_after_its_pane_left_is_dropped() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));

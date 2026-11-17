@@ -23,6 +23,7 @@ pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
     attaching: HashSet<PaneId>,
+    detached_while_attaching: HashSet<PaneId>,
     tiles: Tiles,
     chrome: PaneChrome,
     palette: Palette,
@@ -38,6 +39,7 @@ impl Surface {
             session: Session::default(),
             views: HashMap::new(),
             attaching: HashSet::new(),
+            detached_while_attaching: HashSet::new(),
             tiles: Tiles::default(),
             chrome,
             palette,
@@ -61,14 +63,17 @@ impl Surface {
     pub(super) fn forget(&mut self, id: PaneId) {
         if self.views.remove(&id).is_some() {
             self.relayout = true;
+        } else if self.attaching.contains(&id) {
+            self.detached_while_attaching.insert(id);
         }
     }
 
     pub(super) fn attached(&mut self, id: PaneId, geometry: Geometry, view: io::Result<View>) {
         self.attaching.remove(&id);
+        let detached = self.detached_while_attaching.remove(&id);
         self.relayout = true;
         match view {
-            Ok(view) if self.terminal(id).is_some() => {
+            Ok(view) if !detached && self.terminal(id).is_some() => {
                 self.views.insert(
                     id,
                     Shown {
