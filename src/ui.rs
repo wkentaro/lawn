@@ -3,6 +3,8 @@ use ratatui::layout::Rect;
 
 pub(crate) mod chrome;
 mod onboarding;
+#[cfg(test)]
+mod pane_drawing_characterization;
 mod panes;
 mod release_notes;
 mod scrollbar;

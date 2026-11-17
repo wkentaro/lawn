@@ -1092,6 +1092,49 @@ mod tests {
     }
 
     #[test]
+    fn pane_borders_and_titles_beyond_the_buffer_are_clipped() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.test_split(ratatui::layout::Direction::Vertical);
+        let full = Rect::new(0, 0, 32, 10);
+        let mut app = AppState::test_new();
+        app.view.pane_infos = apply_pane_chrome(
+            ws.tabs[0].layout.panes(full),
+            PaneBordersConfig::Auto,
+            false,
+            true,
+        );
+        let splits = ws.tabs[0].layout.splits(full);
+        for pane in ws.tabs[0].panes.values() {
+            let mut state = TerminalState::new(pane.attached_terminal_id.clone(), "/tmp".into());
+            state.set_manual_label("a label wider than the clipped edge".into());
+            app.terminals
+                .insert(pane.attached_terminal_id.clone(), state);
+        }
+        let draw = |width, height| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| render_view_pane_borders(&app, &ws, &splits, frame))
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        let whole = draw(full.width, full.height);
+        let clipped = draw(20, 5);
+
+        for (x, y) in (0..5).flat_map(|y| (0..20).map(move |x| (x, y))) {
+            assert_eq!(clipped[(x, y)], whole[(x, y)], "cell ({x}, {y})");
+        }
+        assert!(app.view.pane_infos.iter().any(|info| info.rect.y >= 5));
+        assert!(app
+            .view
+            .pane_infos
+            .iter()
+            .any(|info| info.rect.x + info.rect.width > 20));
+    }
+
+    #[test]
     fn default_horizontal_split_uses_one_shared_divider_column() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs[0].root_pane;

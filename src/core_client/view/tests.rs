@@ -190,6 +190,65 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
 }
 
 #[tokio::test]
+async fn a_draw_takes_every_pending_render_request() {
+    let mut view = view(20, 4);
+    view.draw();
+    view.dirty.request_pty(PaneId::from_raw(0));
+    view.dirty.request_terminal_title(PaneId::from_raw(0));
+    assert!(view.dirty.is_pending());
+
+    view.draw();
+
+    assert!(!view.dirty.is_pending());
+    assert!(view.dirty.pending_terminal_title_sources().is_empty());
+}
+
+#[tokio::test]
+async fn a_held_draw_still_takes_the_render_request() {
+    let mut view = view(20, 4);
+    view.draw();
+    feed(&view, b"\x1b[?2026h");
+    view.dirty.request_pty(PaneId::from_raw(0));
+
+    assert!(view.draw().is_empty());
+
+    assert!(!view.dirty.is_pending());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn each_core_output_wakes_the_host_to_draw_it() {
+    let Some(test) = crate::hc::test_support::TestCore::start() else {
+        return;
+    };
+    let address = test
+        .core
+        .run(serde_json::json!({"argv": ["cat"], "no_parent": true}))
+        .expect("run");
+    let geometry = Geometry {
+        cols: 40,
+        rows: 5,
+        cell_width_px: 0,
+        cell_height_px: 0,
+    };
+    let mut view = View::attach(test.core.clone(), &address, geometry).expect("attach");
+    for word in ["first-word", "second-word"] {
+        view.text(&format!("{word}\r"));
+        let mut screen = vec![String::new(); 5];
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !screen.iter().any(|row| row.contains(word)) {
+                view.output().await;
+                for row in view.draw() {
+                    screen[usize::from(row.y)] = text(&row);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{word} never reached the view; saw {screen:?}"));
+    }
+}
+
+#[tokio::test]
 async fn pixel_mouse_reports_use_the_host_cell_size() {
     let mut view = view(20, 4);
     view.resize(Geometry {

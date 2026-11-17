@@ -6928,4 +6928,75 @@ mod tests {
             Some(AppEvent::CodexPromptObserved { ready: true, .. })
         ));
     }
+
+    fn output_sharing(
+        runtime: &PaneRuntime,
+        pane_id: PaneId,
+        render_dirty: &Arc<RenderSignal>,
+        render_notify: &Arc<Notify>,
+    ) -> PaneOutput {
+        let (response_writer, _) = mpsc::channel(4);
+        let (events, _) = mpsc::channel(4);
+        PaneOutput {
+            pane_id,
+            terminal: runtime.terminal.clone(),
+            response_writer,
+            render_notify: render_notify.clone(),
+            render_dirty: render_dirty.clone(),
+            content_seq: runtime.content_seq.clone(),
+            content_write_lock: runtime.content_write_lock.clone(),
+            detection_content_seq: None,
+            child_pid: runtime.child_pid.clone(),
+            events,
+            reported_cwd: runtime.reported_cwd.clone(),
+            compression_wake: runtime.compression.notifier(),
+            rt: tokio::runtime::Handle::current(),
+        }
+    }
+
+    async fn woken(notify: &Notify) -> bool {
+        tokio::time::timeout(std::time::Duration::ZERO, notify.notified())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn output_wakes_the_host_once_and_names_each_pane_that_drew() {
+        use std::collections::HashSet;
+        let render_dirty = Arc::new(RenderSignal::new());
+        let render_notify = Arc::new(Notify::new());
+        let first_runtime = PaneRuntime::test_with_screen_bytes(20, 4, b"");
+        let second_runtime = PaneRuntime::test_with_screen_bytes(20, 4, b"");
+        let first = output_sharing(
+            &first_runtime,
+            PaneId::from_raw(1),
+            &render_dirty,
+            &render_notify,
+        );
+        let second = output_sharing(
+            &second_runtime,
+            PaneId::from_raw(2),
+            &render_dirty,
+            &render_notify,
+        );
+
+        first.process(b"one");
+        second.process(b"two");
+        first.process(b" more");
+
+        assert!(woken(&render_notify).await);
+        assert!(!woken(&render_notify).await);
+        assert_eq!(
+            render_dirty.take().pty_sources,
+            HashSet::from([PaneId::from_raw(1), PaneId::from_raw(2)])
+        );
+        assert!(!render_dirty.is_pending());
+
+        first.process(b"!");
+        assert!(woken(&render_notify).await);
+        assert_eq!(
+            render_dirty.take().pty_sources,
+            HashSet::from([PaneId::from_raw(1)])
+        );
+    }
 }
