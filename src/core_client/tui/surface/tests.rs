@@ -1,12 +1,15 @@
 use std::collections::HashSet;
 
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use serde_json::{json, Value};
 
 use super::Surface;
 use crate::config::PaneBordersConfig;
 use crate::core_client::tui::session::PaneChrome;
 use crate::core_client::view::{Geometry, View};
+use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
 use crate::protocol::PaneSurfacePatchRow;
 use crate::session_doc::Layout;
@@ -64,9 +67,13 @@ fn frame(surface: &mut Surface, dirty: &HashSet<PaneId>) -> Vec<PaneSurfacePatch
 
 fn requests(surface: &mut Surface) -> Vec<(String, PaneId, Geometry)> {
     let mut requests = Vec::new();
-    surface.frame(&HashSet::new(), |terminal, id, geometry| {
-        requests.push((terminal.to_owned(), id, geometry));
-    });
+    surface.frame(
+        &HashSet::new(),
+        |terminal, id, geometry| {
+            requests.push((terminal.to_owned(), id, geometry));
+        },
+        ignore_leaving,
+    );
     requests
 }
 
@@ -76,9 +83,13 @@ fn frame_attaching(
 ) -> (Vec<PaneSurfacePatchRow>, Vec<String>) {
     let mut requests = Vec::new();
     let rows = surface
-        .frame(dirty, |terminal, id, geometry| {
-            requests.push((terminal.to_owned(), id, geometry));
-        })
+        .frame(
+            dirty,
+            |terminal, id, geometry| {
+                requests.push((terminal.to_owned(), id, geometry));
+            },
+            ignore_leaving,
+        )
         .0;
     if requests.is_empty() {
         return (rows, Vec::new());
@@ -86,7 +97,9 @@ fn frame_attaching(
     for (_, id, geometry) in &requests {
         surface.attached(*id, *geometry, Ok(View::test(geometry.cols, geometry.rows)));
     }
-    let rows = surface.frame(dirty, |_, _, _| unreachable!("attached")).0;
+    let rows = surface
+        .frame(dirty, |_, _, _| unreachable!("attached"), ignore_leaving)
+        .0;
     (
         rows,
         requests
@@ -99,6 +112,8 @@ fn frame_attaching(
 fn never_attach(_: &str, _: PaneId, _: Geometry) {
     unreachable!("no pane to attach");
 }
+
+fn ignore_leaving(_: PaneId, _: &View) {}
 
 fn text(rows: &[PaneSurfacePatchRow]) -> String {
     rows.iter()
@@ -187,7 +202,7 @@ async fn clicking_a_pane_focuses_it_and_puts_the_cursor_there() {
     surface.mouse(click(right.x + 1, right.y + 1));
 
     assert!(surface.needs_layout());
-    let (_, cursor) = surface.frame(&HashSet::new(), never_attach);
+    let (_, cursor) = surface.frame(&HashSet::new(), never_attach, ignore_leaving);
     let cursor = cursor.expect("cursor");
     assert_eq!((cursor.x, cursor.y), (right.x, right.y));
     assert!(surface.tiles.tiles[1].info.is_focused);
@@ -292,11 +307,15 @@ async fn panes_keep_drawing_and_taking_input_while_another_pane_attaches() {
 
     feed(&surface, "t0", b"left");
     let rows = surface
-        .frame(&HashSet::from([id_of(&surface, "t0")]), never_attach)
+        .frame(
+            &HashSet::from([id_of(&surface, "t0")]),
+            never_attach,
+            ignore_leaving,
+        )
         .0;
     assert!(text(&rows).contains("left"));
     surface.resize(host(50, 12));
-    surface.frame(&HashSet::new(), never_attach);
+    surface.frame(&HashSet::new(), never_attach, ignore_leaving);
     let left = surface.tiles.tiles[0].info.inner_rect;
     surface.mouse(click(left.x, left.y));
 
@@ -323,7 +342,7 @@ async fn an_attach_that_finishes_after_its_pane_left_is_dropped() {
     surface.update(row_of(&terminals(2)));
     let pending = requests(&mut surface);
     surface.update(row_of(&terminals(1)));
-    surface.frame(&HashSet::new(), never_attach);
+    surface.frame(&HashSet::new(), never_attach, ignore_leaving);
 
     for (_, id, geometry) in pending {
         surface.attached(id, geometry, Ok(View::test(geometry.cols, geometry.rows)));
@@ -560,8 +579,152 @@ async fn a_pane_that_asks_for_focus_reports_after_it_attached_is_told_its_focus(
     feed(&surface, "t0", REPORT_FOCUS);
     feed(&surface, "t1", REPORT_FOCUS);
     let dirty = HashSet::from([id_of(&surface, "t0"), id_of(&surface, "t1")]);
-    surface.frame(&dirty, never_attach);
+    surface.frame(&dirty, never_attach, ignore_leaving);
 
     assert_eq!(reports(left), b"\x1b[I");
     assert_eq!(reports(right), b"\x1b[O");
+}
+
+#[tokio::test]
+async fn moving_focus_by_key_tells_both_panes() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
+    frame(&mut surface, &HashSet::new());
+    let [left, right] = &mut inputs[..] else {
+        unreachable!("two panes")
+    };
+    reports(left);
+    reports(right);
+
+    assert_eq!(surface.act(KeybindAction::FocusPaneRight, true), None);
+    assert!(surface.needs_layout());
+    assert_eq!(reports(left), b"\x1b[O");
+    assert_eq!(reports(right), b"\x1b[I");
+
+    surface.act(KeybindAction::CyclePaneNext, true);
+    assert_eq!(reports(left), b"\x1b[I");
+    assert_eq!(reports(right), b"\x1b[O");
+}
+
+#[tokio::test]
+async fn zooming_keeps_the_other_panes_view_for_when_it_ends() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
+    frame(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"right");
+    let right = id_of(&surface, "t1");
+    let size = surface.views[&right].view.size();
+
+    surface.act(KeybindAction::Zoom, true);
+    let zoomed = text(&frame(&mut surface, &HashSet::new()));
+    assert!(!zoomed.contains("right"));
+    assert_eq!(surface.tiles.tiles.len(), 1);
+    assert_eq!(surface.views[&right].view.size(), size);
+
+    surface.act(KeybindAction::FocusPaneRight, true);
+    let rows = surface
+        .frame(&HashSet::new(), never_attach, ignore_leaving)
+        .0;
+    assert!(text(&rows).contains("right"));
+    assert_eq!(surface.views[&right].view.size(), size);
+    assert_eq!(reports(&mut inputs[1]), b"\x1b[O\x1b[I");
+}
+
+#[tokio::test]
+async fn a_created_terminal_takes_focus_and_tells_both_panes() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut first = attach_with_input(&mut surface, REPORT_FOCUS).remove(0);
+    surface.update(row_of(&terminals(2)));
+    let mut second = attach_with_input(&mut surface, REPORT_FOCUS).remove(0);
+    reports(&mut first);
+    reports(&mut second);
+
+    surface.created("t1".to_owned());
+
+    assert!(surface.needs_layout());
+    assert_eq!(reports(&mut first), b"\x1b[O");
+    assert_eq!(reports(&mut second), b"\x1b[I");
+}
+
+#[tokio::test]
+async fn input_reaches_a_pane_focused_out_of_zoom_before_the_next_frame() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, b"");
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+
+    surface.act(KeybindAction::FocusPaneRight, true);
+    assert!(surface.cursor().is_none());
+    surface.focused().expect("focused view").text("typed");
+
+    assert_eq!(reports(&mut inputs[1]), b"typed");
+}
+
+#[tokio::test]
+async fn a_pane_hidden_by_zoom_is_told_its_focus_once_it_asks() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, b"");
+    frame(&mut surface, &HashSet::new());
+    let right = id_of(&surface, "t1");
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+
+    surface.views[&right].view.test_feed(REPORT_FOCUS);
+    surface.views[&right].view.test_feed(b"behind");
+    let rows = surface
+        .frame(&HashSet::from([right]), never_attach, ignore_leaving)
+        .0;
+
+    assert!(!text(&rows).contains("behind"));
+    assert_eq!(reports(&mut inputs[1]), b"\x1b[O");
+}
+
+#[tokio::test]
+async fn a_pane_holding_output_shows_its_last_image_when_zoom_ends() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    feed_after_first_frame(&mut surface, "t1", b"shown");
+    let right = id_of(&surface, "t1");
+    surface.views[&right].view.test_feed(b"\x1b[?2026h\r\nheld");
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+
+    surface.act(KeybindAction::Zoom, true);
+    let rows = surface
+        .frame(&HashSet::new(), never_attach, ignore_leaving)
+        .0;
+
+    assert!(text(&rows).contains("shown"));
+    assert!(!text(&rows).contains("held"));
+}
+
+#[tokio::test]
+async fn a_parked_pane_is_told_before_its_view_goes() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[>3u");
+    frame(&mut surface, &HashSet::new());
+    let parked = id_of(&surface, "t0");
+    reports(&mut inputs[0]);
+
+    let mut layout = row_of(&terminals(2));
+    layout.parked.insert("t0".to_owned());
+    surface.update(layout);
+    let mut leaving = Vec::new();
+    surface.frame(&HashSet::new(), never_attach, |id, view| {
+        leaving.push(id);
+        view.key(
+            TerminalKey::new(KeyCode::Up, KeyModifiers::NONE).with_kind(KeyEventKind::Release),
+        );
+    });
+
+    assert_eq!(leaving, [parked]);
+    assert!(!surface.views.contains_key(&parked));
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[1;1:3A");
 }

@@ -6,8 +6,9 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::session::{PaneChrome, Session, Tiles};
+use super::session::{Operation, PaneChrome, Session, Tiles};
 use crate::core_client::view::{Geometry, View};
+use crate::input::KeybindAction;
 use crate::layout::PaneId;
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::session_doc::Layout;
@@ -15,10 +16,22 @@ use crate::ui::theme::Palette;
 
 struct Shown {
     view: View,
-    inner: Rect,
+    place: Place,
     geometry: Geometry,
-    retained: Option<Rect>,
     told_focus: Option<bool>,
+}
+
+enum Place {
+    Visible {
+        inner: Rect,
+        retained: Option<Retained>,
+    },
+    Hidden(Vec<CellData>),
+}
+
+enum Retained {
+    At(Rect),
+    Image(Vec<CellData>),
 }
 
 impl Shown {
@@ -66,6 +79,22 @@ impl Surface {
         self.sync_focus();
     }
 
+    pub(super) fn act(&mut self, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
+        let area = Rect::new(0, 0, self.host.cols, self.host.rows);
+        if self.session.navigate(action, area, self.chrome) {
+            self.relayout = true;
+            self.sync_focus();
+        }
+        self.session.operation(action, confirm_close)
+    }
+
+    pub(super) fn created(&mut self, terminal: String) {
+        if self.session.created(terminal) {
+            self.relayout = true;
+            self.sync_focus();
+        }
+    }
+
     pub(super) fn host_focus(&mut self, focused: bool) {
         self.host_focused = focused;
         self.sync_focus();
@@ -104,9 +133,11 @@ impl Surface {
                     id,
                     Shown {
                         view,
-                        inner: Rect::default(),
+                        place: Place::Visible {
+                            inner: Rect::default(),
+                            retained: None,
+                        },
                         geometry,
-                        retained: None,
                         told_focus: None,
                     },
                 );
@@ -129,10 +160,25 @@ impl Surface {
             .iter()
             .find(|tile| tile.info.id == id)
             .map(|tile| tile.terminal.as_str())
+            .or_else(|| {
+                self.tiles
+                    .hidden
+                    .iter()
+                    .find(|(hidden, _)| *hidden == id)
+                    .map(|(_, terminal)| terminal.as_str())
+            })
+    }
+
+    pub(super) fn focused_id(&self) -> Option<PaneId> {
+        self.session.focused_id()
     }
 
     pub(super) fn focused(&self) -> Option<&View> {
-        Some(&self.views.get(&self.session.focused_id()?)?.view)
+        self.view(self.session.focused_id()?)
+    }
+
+    pub(super) fn view(&self, id: PaneId) -> Option<&View> {
+        Some(&self.views.get(&id)?.view)
     }
 
     pub(super) fn mouse(&mut self, mut event: MouseEvent) {
@@ -150,10 +196,15 @@ impl Surface {
             self.relayout = true;
             self.sync_focus();
         }
-        if let Some(shown) = self.views.get(&id) {
-            event.column -= shown.inner.x;
-            event.row -= shown.inner.y;
-            shown.view.mouse(event);
+        if let Some(Shown {
+            view,
+            place: Place::Visible { inner, .. },
+            ..
+        }) = self.views.get(&id)
+        {
+            event.column -= inner.x;
+            event.row -= inner.y;
+            view.mouse(event);
         }
     }
 
@@ -161,6 +212,7 @@ impl Surface {
         &mut self,
         dirty: &HashSet<PaneId>,
         attach: impl FnMut(&str, PaneId, Geometry),
+        leave: impl FnMut(PaneId, &View),
     ) -> (Vec<PaneSurfacePatchRow>, Option<CursorState>) {
         let focused = self.reporting_focus();
         for id in dirty {
@@ -170,13 +222,18 @@ impl Surface {
         }
         let rows = if self.relayout {
             self.relayout = false;
-            self.lay_out(attach);
+            self.lay_out(attach, leave);
             self.compose()
         } else {
             let mut rows = Vec::new();
             for id in dirty {
-                if let Some(shown) = self.views.get_mut(id) {
-                    rows.extend(placed(shown.view.draw(), shown.inner));
+                if let Some(Shown {
+                    view,
+                    place: Place::Visible { inner, .. },
+                    ..
+                }) = self.views.get_mut(id)
+                {
+                    rows.extend(placed(view.draw(), *inner));
                 }
             }
             if !self.canvas.is_empty() {
@@ -187,7 +244,11 @@ impl Surface {
         (rows, self.cursor())
     }
 
-    fn lay_out(&mut self, mut attach: impl FnMut(&str, PaneId, Geometry)) {
+    fn lay_out(
+        &mut self,
+        mut attach: impl FnMut(&str, PaneId, Geometry),
+        mut leave: impl FnMut(PaneId, &View),
+    ) {
         let area = Rect::new(0, 0, self.host.cols, self.host.rows);
         self.tiles = self.session.tiles(area, self.chrome);
         let mut views = std::mem::take(&mut self.views);
@@ -208,16 +269,32 @@ impl Surface {
                 }
                 continue;
             };
+            let retained = match std::mem::replace(&mut shown.place, Place::Hidden(Vec::new())) {
+                Place::Visible { inner: was, .. } => (was.width == inner.width
+                    && was.height == inner.height)
+                    .then_some(Retained::At(was)),
+                Place::Hidden(image) => (shown.geometry.cols == inner.width
+                    && shown.geometry.rows == inner.height)
+                    .then_some(Retained::Image(image)),
+            };
             if shown.geometry == geometry {
                 shown.view.invalidate();
             } else {
                 shown.view.resize(geometry);
             }
-            let same_size = shown.inner.width == inner.width && shown.inner.height == inner.height;
-            shown.retained = same_size.then_some(shown.inner);
-            shown.inner = inner;
+            shown.place = Place::Visible { inner, retained };
             shown.geometry = geometry;
             self.views.insert(tile.info.id, shown);
+        }
+        for (id, mut shown) in views {
+            if !self.tiles.hidden.iter().any(|(hidden, _)| *hidden == id) {
+                leave(id, &shown.view);
+                continue;
+            }
+            if let Place::Visible { inner, .. } = shown.place {
+                shown.place = Place::Hidden(cut(&self.canvas, self.canvas_cols, inner));
+            }
+            self.views.insert(id, shown);
         }
     }
 
@@ -248,14 +325,24 @@ impl Surface {
             .map(CellData::from_ratatui_cell)
             .collect();
         for shown in self.views.values_mut() {
-            let rows = placed(shown.view.draw(), shown.inner);
-            if let Some(was) = shown.retained.filter(|_| rows.is_empty()) {
-                copy(
-                    (&previous, self.canvas_cols),
-                    was,
-                    (&mut cells, cols),
-                    shown.inner,
-                );
+            let Place::Visible { inner, retained } = &mut shown.place else {
+                continue;
+            };
+            let rows = placed(shown.view.draw(), *inner);
+            match retained.take().filter(|_| rows.is_empty()) {
+                Some(Retained::At(was)) => {
+                    copy(
+                        (&previous, self.canvas_cols),
+                        was,
+                        (&mut cells, cols),
+                        *inner,
+                    );
+                }
+                Some(Retained::Image(image)) => {
+                    let was = Rect::new(0, 0, inner.width, inner.height);
+                    copy((&image, inner.width), was, (&mut cells, cols), *inner);
+                }
+                None => {}
             }
             crate::protocol::surface_delta::apply_rows(&mut cells, cols, &rows);
         }
@@ -273,10 +360,17 @@ impl Surface {
     }
 
     fn cursor(&mut self) -> Option<CursorState> {
-        let shown = self.views.get_mut(&self.session.focused_id()?)?;
-        let mut cursor = shown.view.cursor()?;
-        cursor.x += shown.inner.x;
-        cursor.y += shown.inner.y;
+        let Shown {
+            view,
+            place: Place::Visible { inner, .. },
+            ..
+        } = self.views.get_mut(&self.session.focused_id()?)?
+        else {
+            return None;
+        };
+        let mut cursor = view.cursor()?;
+        cursor.x += inner.x;
+        cursor.y += inner.y;
         Some(cursor)
     }
 }
@@ -293,6 +387,22 @@ fn copy(from: (&[CellData], u16), was: Rect, to: (&mut [CellData], u16), inner: 
         let (from_start, to_start) = (start(was, row, from.1), start(inner, row, to.1));
         to.0[to_start..to_start + width].clone_from_slice(&from.0[from_start..from_start + width]);
     }
+}
+
+fn cut(canvas: &[CellData], cols: u16, rect: Rect) -> Vec<CellData> {
+    if rect.right() > cols {
+        return Vec::new();
+    }
+    (rect.y..rect.bottom())
+        .flat_map(|y| {
+            let start = usize::from(y) * usize::from(cols) + usize::from(rect.x);
+            canvas
+                .get(start..start + usize::from(rect.width))
+                .into_iter()
+                .flatten()
+                .cloned()
+        })
+        .collect()
 }
 
 fn placed(rows: Vec<PaneSurfacePatchRow>, inner: Rect) -> Vec<PaneSurfacePatchRow> {
