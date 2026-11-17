@@ -24,6 +24,7 @@ mod config;
 mod copy_mode;
 mod core_client;
 mod core_lifecycle;
+mod core_resume;
 mod detect;
 mod events;
 use ghostty_vt as ghostty;

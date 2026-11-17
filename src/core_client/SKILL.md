@@ -45,6 +45,12 @@ Parking removes the pane and clears the terminal's keep flag. The program contin
 
 Closing ends the terminal's program. Use it only when the user wants that program stopped.
 
+## Record a resume command
+
+Hook integrations can pipe a JSON report to `LAWN_REWRITE=1 lawn record-resume TERMINAL`. Read `LAWN_REWRITE=1 lawn record-resume --help` for its fields and limits.
+
+Reports belong to the core terminal, not a layout session. Each agent invocation uses a fresh `reporter_id` and increasing `seq`. Records preserve argv and cwd as data. Recording does not execute the reported command or authorize automatic resuming. Existing hooks are not connected to this recorder yet.
+
 ## Draw one terminal
 
 On Unix, `LAWN_REWRITE=1 lawn attach t3` draws that terminal without a Lawn server. Ctrl+\ detaches and leaves the program running. This command requires a terminal.

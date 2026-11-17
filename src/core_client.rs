@@ -1,6 +1,7 @@
 mod attach;
 mod cli;
 mod commands;
+mod resume;
 #[cfg_attr(not(unix), allow(dead_code))]
 mod screen;
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -18,7 +19,9 @@ pub(crate) fn maybe_run(args: &[String]) -> Option<std::io::Result<()>> {
         print!("{}", include_str!("core_client/SKILL.md"));
         return Some(Ok(()));
     }
-    cli::maybe_run(args).or_else(|| attach::maybe_run(args))
+    cli::maybe_run(args)
+        .or_else(|| resume::maybe_run(args))
+        .or_else(|| attach::maybe_run(args))
 }
 
 #[cfg(test)]
