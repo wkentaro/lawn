@@ -36,7 +36,14 @@ fn run(terminal: &str) -> io::Result<()> {
         .build()?;
     runtime.block_on(async {
         let stop = unix::Stop::register()?;
-        let view = super::view::View::attach(core, terminal, geometry)?;
+        let wake = super::view::Wake::default();
+        let view = super::view::View::attach(
+            core,
+            terminal,
+            geometry,
+            crate::layout::PaneId::from_raw(0),
+            &wake,
+        )?;
         let mut guard = crate::client::terminal_setup::setup_terminal(false)?;
         let restore = guard.panic_restore();
         let hook = std::panic::take_hook();
@@ -44,7 +51,7 @@ fn run(terminal: &str) -> io::Result<()> {
             restore();
             hook(info);
         }));
-        unix::show(view, geometry, &mut guard, stop).await
+        unix::show(view, &wake, geometry, &mut guard, stop).await
     })
 }
 
@@ -63,7 +70,7 @@ mod unix {
     use tracing::warn;
 
     use super::super::screen::Screen;
-    use super::super::view::{Event, Geometry, View};
+    use super::super::view::{Event, Geometry, View, Wake};
     use crate::client::terminal_setup::{set_mouse_capture, TerminalGuard};
     use crate::client::HostResize;
     use crate::input::TerminalKey;
@@ -213,6 +220,7 @@ mod unix {
 
     pub(super) async fn show(
         mut view: View,
+        wake: &Wake,
         mut host: Geometry,
         guard: &mut TerminalGuard,
         mut stop: Stop,
@@ -234,12 +242,12 @@ mod unix {
         let mut due = Some(Instant::now());
         let mut last_draw = Instant::now();
         loop {
-            let output = view.output();
             tokio::select! {
-                () = output => {
+                () = wake.wait() => {
                     due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
                 }
                 () = wait(due) => {
+                    wake.take();
                     screen.present(
                         &mut out,
                         (host.cols, host.rows),

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 
@@ -26,6 +27,25 @@ pub(crate) struct Geometry {
     pub(crate) cell_height_px: u32,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct Wake {
+    notify: Arc<Notify>,
+    dirty: Arc<RenderSignal>,
+}
+
+impl Wake {
+    pub(crate) async fn wait(&self) {
+        self.notify.notified().await;
+    }
+
+    pub(crate) fn take(&self) -> HashSet<PaneId> {
+        let request = self.dirty.take();
+        let mut sources = request.pty_sources;
+        sources.extend(request.terminal_title_sources);
+        sources
+    }
+}
+
 /// What the terminal asks of the host beyond its screen.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -42,8 +62,6 @@ pub(crate) enum Event {
 pub(crate) struct View {
     runtime: TerminalRuntime,
     events: mpsc::Receiver<AppEvent>,
-    output: Arc<Notify>,
-    dirty: Arc<RenderSignal>,
     repaint: bool,
     cursor: Option<CursorState>,
 }
@@ -51,36 +69,33 @@ pub(crate) struct View {
 impl View {
     /// Attaches to `address` at `geometry`, steering the terminal's size.
     /// Needs a tokio runtime.
-    pub(crate) fn attach(core: Arc<Core>, address: &str, geometry: Geometry) -> io::Result<Self> {
-        let output = Arc::new(Notify::new());
-        let dirty = Arc::new(RenderSignal::new());
+    pub(crate) fn attach(
+        core: Arc<Core>,
+        address: &str,
+        geometry: Geometry,
+        id: PaneId,
+        wake: &Wake,
+    ) -> io::Result<Self> {
         let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
         let runtime = TerminalRuntime::attach_core_terminal(
-            PaneId::from_raw(0),
+            id,
             core,
             address,
             geometry.rows,
             geometry.cols,
             events_tx,
-            output.clone(),
-            dirty.clone(),
+            wake.notify.clone(),
+            wake.dirty.clone(),
         )?;
-        let mut view = Self::new(runtime, events, output, dirty);
+        let mut view = Self::new(runtime, events);
         view.resize(geometry);
         Ok(view)
     }
 
-    fn new(
-        runtime: TerminalRuntime,
-        events: mpsc::Receiver<AppEvent>,
-        output: Arc<Notify>,
-        dirty: Arc<RenderSignal>,
-    ) -> Self {
+    fn new(runtime: TerminalRuntime, events: mpsc::Receiver<AppEvent>) -> Self {
         Self {
             runtime,
             events,
-            output,
-            dirty,
             repaint: true,
             cursor: None,
         }
@@ -102,12 +117,6 @@ impl View {
         self.repaint = true;
     }
 
-    /// Resolves once new output may have changed the screen.
-    pub(crate) fn output(&self) -> impl std::future::Future<Output = ()> + 'static {
-        let output = self.output.clone();
-        async move { output.notified().await }
-    }
-
     /// Resolves with the next thing the terminal asks of the host.
     pub(crate) async fn event(&mut self) -> Event {
         while let Some(event) = self.events.recv().await {
@@ -125,7 +134,6 @@ impl View {
     /// the program holds synchronized output, which keeps the damage for
     /// the draw after it.
     pub(crate) fn draw(&mut self) -> Vec<PaneSurfacePatchRow> {
-        self.dirty.take();
         let (cols, rows) = self.size();
         if cols == 0 || rows == 0 || self.runtime.synchronized_output_active() {
             return Vec::new();

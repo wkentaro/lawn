@@ -6,8 +6,6 @@ fn view(cols: u16, rows: u16) -> View {
     View::new(
         TerminalRuntime::test_with_screen_bytes(cols, rows, b""),
         events,
-        Arc::new(Notify::new()),
-        Arc::new(RenderSignal::new()),
     )
 }
 
@@ -169,12 +167,21 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
         cell_width_px: 0,
         cell_height_px: 0,
     };
-    let mut view = View::attach(test.core.clone(), &address, geometry).expect("attach");
+    let wake = Wake::default();
+    let mut view = View::attach(
+        test.core.clone(),
+        &address,
+        geometry,
+        PaneId::from_raw(0),
+        &wake,
+    )
+    .expect("attach");
     let mut screen = vec![String::new(); 5];
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !screen.iter().any(|row| row.contains("lawn-view-hello")) {
-            view.output().await;
+            wake.wait().await;
+            wake.take();
             for row in view.draw() {
                 screen[usize::from(row.y)] = text(&row);
             }
@@ -189,30 +196,20 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
     .expect("the view sees the program end");
 }
 
-#[tokio::test]
-async fn a_draw_takes_every_pending_render_request() {
-    let mut view = view(20, 4);
-    view.draw();
-    view.dirty.request_pty(PaneId::from_raw(0));
-    view.dirty.request_terminal_title(PaneId::from_raw(0));
-    assert!(view.dirty.is_pending());
+#[test]
+fn a_take_names_every_view_with_output_and_rearms_the_wake() {
+    let wake = Wake::default();
+    let (left, right) = (PaneId::from_raw(1), PaneId::from_raw(2));
+    assert!(wake.dirty.request_pty(left));
+    assert!(!wake.dirty.request_pty(right));
+    wake.dirty.request_terminal_title(left);
 
-    view.draw();
+    assert_eq!(wake.take(), HashSet::from([left, right]));
 
-    assert!(!view.dirty.is_pending());
-    assert!(view.dirty.pending_terminal_title_sources().is_empty());
-}
-
-#[tokio::test]
-async fn a_held_draw_still_takes_the_render_request() {
-    let mut view = view(20, 4);
-    view.draw();
-    feed(&view, b"\x1b[?2026h");
-    view.dirty.request_pty(PaneId::from_raw(0));
-
-    assert!(view.draw().is_empty());
-
-    assert!(!view.dirty.is_pending());
+    assert!(!wake.dirty.is_pending());
+    assert!(wake.dirty.pending_terminal_title_sources().is_empty());
+    assert!(wake.dirty.request_pty(right));
+    assert_eq!(wake.take(), HashSet::from([right]));
 }
 
 #[cfg(unix)]
@@ -231,13 +228,16 @@ async fn each_core_output_wakes_the_host_to_draw_it() {
         cell_width_px: 0,
         cell_height_px: 0,
     };
-    let mut view = View::attach(test.core.clone(), &address, geometry).expect("attach");
+    let wake = Wake::default();
+    let id = PaneId::from_raw(7);
+    let mut view = View::attach(test.core.clone(), &address, geometry, id, &wake).expect("attach");
     for word in ["first-word", "second-word"] {
         view.text(&format!("{word}\r"));
         let mut screen = vec![String::new(); 5];
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !screen.iter().any(|row| row.contains(word)) {
-                view.output().await;
+                wake.wait().await;
+                assert_eq!(wake.take(), HashSet::from([id]));
                 for row in view.draw() {
                     screen[usize::from(row.y)] = text(&row);
                 }
@@ -272,12 +272,7 @@ async fn pixel_mouse_reports_use_the_host_cell_size() {
 #[tokio::test]
 async fn an_osc52_copy_and_a_bell_reach_the_host_and_the_program_end_follows() {
     let (events_tx, events) = mpsc::channel(4);
-    let mut view = View::new(
-        TerminalRuntime::test_with_screen_bytes(20, 4, b""),
-        events,
-        Arc::new(Notify::new()),
-        Arc::new(RenderSignal::new()),
-    );
+    let mut view = View::new(TerminalRuntime::test_with_screen_bytes(20, 4, b""), events);
     events_tx
         .send(AppEvent::ClipboardWrite {
             content: b"copied".to_vec(),
