@@ -22,9 +22,8 @@ mod cli;
 mod client;
 mod config;
 mod copy_mode;
-/// Recovery operations for the rewrite clients, which are wired separately.
-#[cfg_attr(not(all(test, unix)), allow(dead_code))]
-pub(crate) mod core_lifecycle;
+mod core_client;
+mod core_lifecycle;
 mod detect;
 mod events;
 use ghostty_vt as ghostty;
@@ -58,7 +57,6 @@ mod render_signal;
 mod selection;
 mod server;
 mod session;
-#[cfg_attr(not(all(test, unix)), allow(dead_code))]
 mod session_doc;
 mod session_model;
 mod sound;
@@ -552,6 +550,15 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
+    if core_client::enabled() {
+        if let Some(outcome) = core_client::maybe_run(&args) {
+            if let Err(err) = outcome {
+                eprintln!("error: {err}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+    }
     let (args, remote_launch) = match remote::extract_remote_args(&args) {
         Ok(parsed) => parsed,
         Err(err) => {

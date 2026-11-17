@@ -98,6 +98,7 @@ impl Layout {
     }
 
     /// Every terminal shown in any tab, depth-first.
+    #[cfg(test)]
     pub(crate) fn terminals(&self) -> impl Iterator<Item = &str> {
         self.workspaces
             .iter()
