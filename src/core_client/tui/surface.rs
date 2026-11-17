@@ -21,6 +21,14 @@ struct Shown {
     told_focus: Option<bool>,
 }
 
+impl Shown {
+    fn tell_focus(&mut self, focus: bool) {
+        if self.told_focus != Some(focus) && self.view.focus(focus) {
+            self.told_focus = Some(focus);
+        }
+    }
+}
+
 pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
@@ -63,14 +71,14 @@ impl Surface {
         self.sync_focus();
     }
 
+    fn reporting_focus(&self) -> Option<PaneId> {
+        self.session.focused_id().filter(|_| self.host_focused)
+    }
+
     fn sync_focus(&mut self) {
-        let focused = self.session.focused_id().filter(|_| self.host_focused);
+        let focused = self.reporting_focus();
         for (id, shown) in &mut self.views {
-            let focus = focused == Some(*id);
-            if shown.told_focus != Some(focus) {
-                shown.view.focus(focus);
-                shown.told_focus = Some(focus);
-            }
+            shown.tell_focus(focused == Some(*id));
         }
     }
 
@@ -154,6 +162,12 @@ impl Surface {
         dirty: &HashSet<PaneId>,
         attach: impl FnMut(&str, PaneId, Geometry),
     ) -> (Vec<PaneSurfacePatchRow>, Option<CursorState>) {
+        let focused = self.reporting_focus();
+        for id in dirty {
+            if let Some(shown) = self.views.get_mut(id) {
+                shown.tell_focus(focused == Some(*id));
+            }
+        }
         let rows = if self.relayout {
             self.relayout = false;
             self.lay_out(attach);

@@ -280,13 +280,13 @@ impl View {
         }
     }
 
-    pub(crate) fn focus(&self, focused: bool) {
+    pub(crate) fn focus(&self, focused: bool) -> bool {
         let event = if focused {
             crate::ghostty::FocusEvent::Gained
         } else {
             crate::ghostty::FocusEvent::Lost
         };
-        self.runtime.try_send_focus_event(event);
+        self.runtime.try_send_focus_event(event)
     }
 
     fn send(&self, bytes: Vec<u8>) {

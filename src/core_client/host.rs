@@ -213,8 +213,12 @@ pub(super) fn deliver(view: &View, keys: HostKeys, event: RawInputEvent) {
         RawInputEvent::Text(text) => view.text(text.as_str()),
         RawInputEvent::Paste(text) => view.paste(text),
         RawInputEvent::Mouse(mouse) => view.mouse(mouse),
-        RawInputEvent::OuterFocusGained => view.focus(true),
-        RawInputEvent::OuterFocusLost => view.focus(false),
+        RawInputEvent::OuterFocusGained => {
+            view.focus(true);
+        }
+        RawInputEvent::OuterFocusLost => {
+            view.focus(false);
+        }
         RawInputEvent::HostDefaultColor { .. }
         | RawInputEvent::HostPaletteColors { .. }
         | RawInputEvent::HostColorSchemeChanged(_)
