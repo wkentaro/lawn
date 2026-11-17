@@ -94,6 +94,59 @@ fn an_invalid_start_does_not_create_a_session_or_upgrade_its_document() {
 }
 
 #[test]
+fn a_received_error_still_reconciles_a_terminal_that_did_start() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let reference = lifecycle.store.reserve_start(&workspace()).unwrap();
+    let terminal = run_unacknowledged(&test, &reference);
+    lifecycle
+        .store
+        .edit(|layout| {
+            layout
+                .pending_starts
+                .get_mut(&reference)
+                .unwrap()
+                .reply_received = true
+        })
+        .unwrap();
+
+    Lifecycle::new(test.core.clone(), "work").recover().unwrap();
+
+    let layout = lifecycle.store.load().unwrap().layout;
+    assert!(layout.pending_starts.is_empty());
+    assert!(layout.shows(&terminal));
+    assert_eq!(record(&test.core, &terminal)["state"], "live");
+}
+
+#[test]
+fn a_confirmed_run_rejection_does_not_permanently_block_the_session() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let error = lifecycle
+        .start(
+            workspace(),
+            Path::new("/tmp"),
+            &["/nonexistent/lawn-test-program".to_owned()],
+        )
+        .unwrap_err();
+    assert!(error.contains("cannot start"), "{error}");
+    assert!(lifecycle
+        .store
+        .load()
+        .unwrap()
+        .layout
+        .pending_starts
+        .is_empty());
+    lifecycle
+        .start(workspace(), Path::new("/tmp"), &program())
+        .unwrap();
+}
+
+#[test]
 fn successful_creation_is_kept_and_clears_its_start_record() {
     let Some(test) = TestCore::start() else {
         return;

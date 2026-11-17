@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::hc::Core;
+use crate::hc::{Core, HcError};
 use crate::session_doc::{Created, Destination, Sessions, Store};
 
 const START_LABEL: &str = "lawn-start";
@@ -46,9 +46,21 @@ impl Lifecycle {
         if !argv.is_empty() {
             params["argv"] = json!(argv);
         }
-        let terminal = self.core.run(params).map_err(|err| {
-            format!("start {reference} is unconfirmed: {err}; inspect `lawn --session {} ls` before starting another program", self.session)
-        })?;
+        let terminal = match self.core.run(params) {
+            Ok(terminal) => terminal,
+            Err(err @ HcError::Rpc { .. }) => {
+                self.store.edit(|layout| {
+                    if let Some(start) = layout.pending_starts.get_mut(&reference) {
+                        start.reply_received = true;
+                    }
+                }).map_err(|recovery| format!("{err}; start {reference} remains unconfirmed: {recovery}"))?;
+                self.recover().map_err(|recovery| format!("{err}; recovery of {reference}: {recovery}"))?;
+                return Err(err.to_string());
+            }
+            Err(err) => return Err(format!(
+                "start {reference} is unconfirmed: {err}; inspect `lawn --session {} ls` before starting another program", self.session
+            )),
+        };
         self.finish_start(&reference, &terminal)?.ok_or_else(|| {
             format!(
                 "start {reference} was already recovered; inspect `lawn --session {} ls`",
@@ -58,10 +70,10 @@ impl Lifecycle {
     }
 
     /// Recovers saved starts and closes without ever starting another
-    /// program. An empty lookup leaves the start unresolved.
+    /// program. An empty lookup without a final reply leaves it unresolved.
     pub(crate) fn recover(&self) -> Result<(), String> {
         let loaded = self.store.load()?.layout;
-        for reference in loaded.pending_starts.keys() {
+        for (reference, start) in &loaded.pending_starts {
             let listed = self
                 .core
                 .call(
@@ -73,6 +85,9 @@ impl Lifecycle {
                 .map_err(|err| err.to_string())?;
             if let Some(terminal) = local_start(&listed)? {
                 self.finish_start(reference, terminal)?;
+            } else if start.reply_received {
+                self.store
+                    .edit(|layout| layout.pending_starts.remove(reference))?;
             }
         }
         for terminal in self.store.load()?.layout.closing {

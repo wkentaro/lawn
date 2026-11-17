@@ -25,6 +25,8 @@ pub(crate) enum Destination {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PendingStart {
     pub(crate) destination: Destination,
+    #[serde(default)]
+    pub(crate) reply_received: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -124,7 +126,7 @@ impl Store {
             }
             destination.validate(layout)?;
             let reference = format!("{}:{version}", self.name);
-            sessions.entry(self.session.clone()).or_default().pending_starts.insert(reference.clone(), PendingStart { destination });
+            sessions.entry(self.session.clone()).or_default().pending_starts.insert(reference.clone(), PendingStart { destination, reply_received: false });
             Ok(reference)
         })?;
         reserved
