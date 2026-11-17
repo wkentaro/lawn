@@ -3580,6 +3580,10 @@ impl PaneRuntime {
         })
     }
 
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<TerminalCursorState>) {
+        self.terminal.cursor_snapshot()
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.terminal.synchronized_output_active()
     }
@@ -3663,6 +3667,10 @@ impl PaneRuntime {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
         self.terminal.render(frame, area, show_cursor);
+    }
+
+    pub fn try_render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) -> bool {
+        self.terminal.try_render(frame, area, show_cursor)
     }
 
     pub(crate) fn collect_dirty_patch_snapshot(

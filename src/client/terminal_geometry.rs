@@ -60,6 +60,15 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 
 type TerminalGeometry = (u16, u16, u32, u32, bool);
 
+/// What the resize watcher reports.
+#[derive(Debug)]
+pub(crate) enum HostResize {
+    /// The host window changed size, or was signalled to.
+    Resized(TerminalGeometry),
+    /// The host terminal is gone.
+    Unavailable(io::Error),
+}
+
 pub(super) fn current_terminal_geometry_with(
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
@@ -114,6 +123,16 @@ pub(super) fn initial_terminal_geometry(
     )
 }
 
+/// The host's `(cols, rows, cell_width_px, cell_height_px)` as a direct
+/// attach reads it, with a zero cell size when the host lacks a coherent
+/// pixel extent.
+#[cfg(unix)]
+pub(crate) fn host_terminal_geometry() -> io::Result<(u16, u16, u32, u32)> {
+    let (cols, rows, cell_width_px, cell_height_px, _) =
+        current_terminal_geometry(true, false, &AtomicU64::new(0), None)?;
+    Ok((cols, rows, cell_width_px, cell_height_px))
+}
+
 pub(super) fn resize_report_required(
     signalled: bool,
     new_size: (u16, u16, u32, u32, bool),
@@ -142,7 +161,6 @@ pub(super) fn resize_poll_loop(
 ) {
     crate::platform::watch_terminal_resize_signal();
     resize_poll_loop_with(
-        resize_tx,
         (
             initial_cols,
             initial_rows,
@@ -160,17 +178,27 @@ pub(super) fn resize_poll_loop(
         },
         crate::platform::take_terminal_resize_signal,
         should_quit,
+        |report| {
+            let event = match report {
+                HostResize::Resized((cols, rows, cell_width_px, cell_height_px, exact)) => {
+                    ClientLoopEvent::Resize(cols, rows, cell_width_px, cell_height_px, exact)
+                }
+                HostResize::Unavailable(err) => ClientLoopEvent::TerminalUnavailable(err),
+            };
+            resize_tx.blocking_send(event).is_ok()
+        },
     );
 }
 
 /// The resize watcher loop, with its geometry and resize-signal sources
 /// injected so the transient/recovery behavior is testable without a terminal.
-pub(super) fn resize_poll_loop_with(
-    resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    initial_size: (u16, u16, u32, u32, bool),
+/// Stops after an unavailable report, or once `report` returns false.
+pub(crate) fn resize_poll_loop_with(
+    initial_size: TerminalGeometry,
     mut read_geometry: impl FnMut((u32, u32)) -> io::Result<TerminalGeometry>,
     mut take_signal: impl FnMut() -> bool,
-    should_quit: &Arc<AtomicBool>,
+    should_quit: &AtomicBool,
+    mut report: impl FnMut(HostResize) -> bool,
 ) {
     let mut last_size = initial_size;
     // Retained across a transient sample so a resize that lands back on the
@@ -187,23 +215,14 @@ pub(super) fn resize_poll_loop_with(
                 // instead of treating the terminal as gone.
                 Err(err) if crate::platform::is_transient_terminal_grid_error(&err) => continue,
                 Err(err) => {
-                    let _ = resize_tx.blocking_send(ClientLoopEvent::TerminalUnavailable(err));
+                    report(HostResize::Unavailable(err));
                     break;
                 }
             };
         let new_size = (cols, rows, cell_width_px, cell_height_px, exact);
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
-            if resize_tx
-                .blocking_send(ClientLoopEvent::Resize(
-                    cols,
-                    rows,
-                    cell_width_px,
-                    cell_height_px,
-                    exact,
-                ))
-                .is_err()
-            {
+            if !report(HostResize::Resized(new_size)) {
                 break;
             }
         }

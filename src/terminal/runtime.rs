@@ -248,6 +248,30 @@ impl TerminalRuntime {
         .map(Self)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn attach_core_terminal(
+        pane_id: PaneId,
+        core: Arc<crate::hc::Core>,
+        address: &str,
+        rows: u16,
+        cols: u16,
+        events: mpsc::Sender<AppEvent>,
+        render_notify: Arc<Notify>,
+        render_dirty: Arc<RenderSignal>,
+    ) -> std::io::Result<Self> {
+        crate::pane::PaneRuntime::attach_core_terminal(
+            pane_id,
+            core,
+            address,
+            rows,
+            cols,
+            events,
+            render_notify,
+            render_dirty,
+        )
+        .map(Self)
+    }
+
     pub fn core_address(&self) -> Option<&str> {
         self.0.core_address()
     }
@@ -385,6 +409,10 @@ impl TerminalRuntime {
         self.0.cursor_state(area, show_cursor)
     }
 
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<crate::pane::TerminalCursorState>) {
+        self.0.cursor_snapshot()
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.0.synchronized_output_active()
     }
@@ -464,6 +492,10 @@ impl TerminalRuntime {
         self.0.render(frame, area, show_cursor);
     }
 
+    pub fn try_render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) -> bool {
+        self.0.try_render(frame, area, show_cursor)
+    }
+
     pub(crate) fn collect_dirty_patch_snapshot(
         &self,
         area_width: u16,
@@ -509,6 +541,14 @@ impl TerminalRuntime {
 
     pub fn modify_other_keys_level(&self) -> u8 {
         self.0.modify_other_keys_level()
+    }
+
+    /// Whether the program's keyboard modes need the host to report every
+    /// key as an escape code.
+    pub(crate) fn requests_all_key_reports(&self) -> bool {
+        let protocol = self.keyboard_protocol();
+        protocol.reports_all_keys()
+            || (protocol.reports_event_types() && self.modify_other_keys_level() > 0)
     }
 
     pub fn encode_terminal_key(&self, key: crate::input::TerminalKey) -> Vec<u8> {
