@@ -16,8 +16,8 @@ fn split(first: Node, second: Node) -> Node {
 }
 
 fn add_workspace(layout: &mut Layout, root: Node) -> String {
-    let workspace = layout.new_id("w");
-    let tab = layout.new_id("t");
+    let workspace = layout.new_id("ws");
+    let tab = layout.new_id("tab");
     layout.workspaces.push(Workspace {
         id: workspace.clone(),
         name: None,
@@ -36,8 +36,8 @@ fn new_id_counts_up_from_next_id() {
         next_id: 3,
         ..Layout::default()
     };
-    assert_eq!(layout.new_id("w"), "w3");
-    assert_eq!(layout.new_id("t"), "t4");
+    assert_eq!(layout.new_id("ws"), "ws3");
+    assert_eq!(layout.new_id("tab"), "tab4");
     assert_eq!(layout.next_id, 5);
 }
 

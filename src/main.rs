@@ -22,6 +22,9 @@ mod cli;
 mod client;
 mod config;
 mod copy_mode;
+/// Recovery operations for the rewrite clients, which are wired separately.
+#[cfg_attr(not(all(test, unix)), allow(dead_code))]
+pub(crate) mod core_lifecycle;
 mod detect;
 mod events;
 use ghostty_vt as ghostty;

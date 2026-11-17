@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,13 @@ use serde_json::{json, Value};
 
 use crate::hc::Core;
 
-const SCHEMA: u64 = 1;
+mod edit;
+mod start;
+
+pub(crate) use edit::Placement;
+pub(crate) use start::{Created, Destination, PendingStart};
+
+const SCHEMA: u64 = 2;
 const EDIT_ATTEMPTS: usize = 8;
 
 /// The herdr-core document holding every Lawn session's layout.
@@ -27,6 +33,11 @@ pub(crate) struct Layout {
     pub(crate) parked: BTreeMap<String, ReturnPosition>,
     #[serde(default)]
     pub(crate) next_id: u64,
+    /// Terminals a close is ending, which no session may claim meanwhile.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(crate) closing: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) pending_starts: BTreeMap<String, PendingStart>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -109,6 +120,20 @@ impl Node {
         terminals
     }
 
+    pub(crate) fn first_terminal(&self) -> &str {
+        match self {
+            Node::Pane { terminal } => terminal,
+            Node::Split { first, .. } => first.first_terminal(),
+        }
+    }
+
+    pub(crate) fn last_terminal(&self) -> &str {
+        match self {
+            Node::Pane { terminal } => terminal,
+            Node::Split { second, .. } => second.last_terminal(),
+        }
+    }
+
     pub(crate) fn shows(&self, terminal: &str) -> bool {
         match self {
             Node::Pane { terminal: shown } => shown == terminal,
@@ -173,7 +198,7 @@ impl Store {
         &self,
         mut change: impl FnMut(&mut Layout) -> T,
     ) -> Result<(T, Loaded), String> {
-        let (output, mut sessions, version) = self.write(|sessions| {
+        let (output, mut sessions, version) = self.write(|sessions, _| {
             let mut layout = sessions.get(&self.session).cloned().unwrap_or_default();
             let before = layout.clone();
             let output = change(&mut layout);
@@ -190,20 +215,20 @@ impl Store {
     /// reapplying when another writer got there first.
     pub(crate) fn edit_all<T>(
         &self,
-        change: impl FnMut(&mut Sessions) -> T,
+        mut change: impl FnMut(&mut Sessions) -> T,
     ) -> Result<(T, u64), String> {
-        let (output, _, version) = self.write(change)?;
+        let (output, _, version) = self.write(|sessions, _| change(sessions))?;
         Ok((output, version))
     }
 
     fn write<T>(
         &self,
-        mut change: impl FnMut(&mut Sessions) -> T,
+        mut change: impl FnMut(&mut Sessions, u64) -> T,
     ) -> Result<(T, Sessions, u64), String> {
         for _ in 0..EDIT_ATTEMPTS {
             let (loaded, version) = self.load_all()?;
             let mut sessions = loaded.clone();
-            let output = change(&mut sessions);
+            let output = change(&mut sessions, version);
             if sessions == loaded {
                 return Ok((output, sessions, version));
             }

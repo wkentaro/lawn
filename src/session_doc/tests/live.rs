@@ -34,7 +34,7 @@ fn edits_round_trip_through_load() {
                 "t3".to_owned(),
                 ReturnPosition {
                     workspace: workspace.clone(),
-                    tab: "t1".to_owned(),
+                    tab: "tab1".to_owned(),
                     beside: Some("t2".to_owned()),
                     direction: Direction::Down,
                 },
@@ -42,7 +42,7 @@ fn edits_round_trip_through_load() {
             workspace
         })
         .expect("edit");
-    assert_eq!(workspace, "w0");
+    assert_eq!(workspace, "ws0");
     assert!(written.version > 0);
     assert_eq!(store.load(), Ok(written));
 }
@@ -106,7 +106,12 @@ fn a_newer_schema_refuses_to_load() {
     };
     let store = Store::new(test.core.clone(), "newer", None);
     test.core
-        .doc_set(&store.name, None, &json!({"schema": 2, "sessions": {}}), 0)
+        .doc_set(
+            &store.name,
+            None,
+            &json!({"schema": SCHEMA + 1, "sessions": {}}),
+            0,
+        )
         .expect("write");
     let err = store.load().expect_err("newer schema");
     assert!(err.contains("newer Lawn"), "{err}");
