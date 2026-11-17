@@ -1,29 +1,8 @@
 // Modified for Lawn.
 use super::*;
-use ratatui::{
-    text::Line,
-    widgets::{Paragraph, Widget},
-};
 
-fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
-    if palette.selection_bg == ratatui::style::Color::Reset {
-        palette.active_row_bg
-    } else {
-        palette.selection_bg
-    }
-}
-
-pub(in crate::client::shell) fn workspace_active_background(
-    palette: &Palette,
-    navigating: bool,
-) -> ratatui::style::Color {
-    // The fallback cursor shares the active-row color; only fill the cursor while navigating.
-    if navigating && palette.selection_bg == ratatui::style::Color::Reset {
-        palette.sidebar_bg
-    } else {
-        palette.active_row_bg
-    }
-}
+pub(in crate::client::shell) use crate::ui::chrome::workspace_active_background;
+use crate::ui::chrome::workspace_selection_background;
 
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
@@ -526,62 +505,18 @@ pub(in crate::client::shell) fn render_workspace_rows(
     dragged: bool,
     palette: &Palette,
 ) {
-    for (row_index, row) in rows.iter().enumerate() {
-        let y = area.y + row_index as u16;
-        if y >= area.bottom() {
-            break;
-        }
-        let x = area.x.saturating_add(if row_index == 0 { 1 } else { 3 });
-        let highlighted = focused || dragged;
-        let workspace_style = Style::default()
-            .fg(if highlighted {
-                palette.text
-            } else {
-                palette.subtext0
-            })
-            .add_modifier(if highlighted {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            });
-        let secondary_style = Style::default().fg(if focused {
-            palette.mauve
-        } else {
-            palette.overlay0
-        });
-        let spans = crate::ui::resolved_token_spans(
-            row,
-            (
-                status_icon(status, indicators),
-                Style::default().fg(status_color(status, palette)),
-            ),
-            Style::default().fg(status_color(status, palette)),
-            workspace_style,
-            secondary_style,
-            Style::default().fg(palette.overlay1),
-            palette,
-            area.right().saturating_sub(2).saturating_sub(x) as usize,
-        );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
-            buffer,
-        );
-    }
-
-    let background = if selected {
-        Some(workspace_selection_background(palette))
-    } else if dragged {
-        Some(palette.surface1)
-    } else if focused {
-        Some(workspace_active_background(palette, navigating))
-    } else {
-        None
-    };
-    if let Some(background) = background {
-        for y in area.y..area.bottom() {
-            for x in area.x..area.right() {
-                buffer[(x, y)].set_bg(background);
-            }
-        }
-    }
+    crate::ui::chrome::render_workspace_rows(
+        buffer,
+        area,
+        crate::ui::chrome::WorkspaceRow {
+            status,
+            rows: &rows,
+            focused,
+            selected,
+            navigating,
+            dragged,
+        },
+        indicators,
+        palette,
+    );
 }

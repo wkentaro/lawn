@@ -178,26 +178,7 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     hash
 }
 
-fn status_icon(
-    status: crate::api::schema::AgentStatus,
-    style: crate::config::StatusIndicatorStyle,
-) -> &'static str {
-    use crate::api::schema::AgentStatus;
-    use crate::config::StatusIndicatorStyle;
-    match (style, status) {
-        (
-            StatusIndicatorStyle::Dots,
-            AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done,
-        ) => "●",
-        (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
-    }
-}
+use crate::ui::chrome::{panel_contrast_fg, status_color, status_icon};
 
 fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
     status_icon(status, crate::config::StatusIndicatorStyle::Dots)
@@ -222,27 +203,6 @@ fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
         AgentStatus::Done => "done",
         AgentStatus::Idle => "idle",
         AgentStatus::Unknown => "unknown",
-    }
-}
-
-fn status_color(
-    status: crate::api::schema::AgentStatus,
-    palette: &Palette,
-) -> ratatui::style::Color {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Working => palette.yellow,
-        AgentStatus::Blocked => palette.red,
-        AgentStatus::Done => palette.teal,
-        AgentStatus::Idle => palette.green,
-        AgentStatus::Unknown => palette.overlay0,
-    }
-}
-
-fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
-    match palette.panel_bg {
-        ratatui::style::Color::Reset => palette.surface_dim,
-        color => color,
     }
 }
 

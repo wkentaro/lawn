@@ -1,6 +1,7 @@
 // Modified for Lawn.
 use ratatui::layout::Rect;
 
+pub(crate) mod chrome;
 mod onboarding;
 mod panes;
 mod release_notes;
@@ -9,6 +10,7 @@ mod sidebar;
 mod status;
 mod tab_surface;
 mod text;
+pub(crate) mod theme;
 mod widgets;
 
 pub(crate) use self::onboarding::{

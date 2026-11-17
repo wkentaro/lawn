@@ -372,62 +372,15 @@ impl ClientShellConfig {
         single_tab: bool,
         sidebar_width: u16,
     ) -> ClientShellLayout {
-        if cols <= self.mobile_width_threshold {
-            let header_height = rows.min(2);
-            return ClientShellLayout {
-                parking_header: Rect::default(),
-                sidebar: Rect::default(),
-                tab_bar: Rect::default(),
-                mobile_header: Rect::new(0, 0, cols, header_height),
-                pane_surface: Rect::new(0, header_height, cols, rows.saturating_sub(header_height)),
-            };
+        crate::ui::chrome::LayoutSettings {
+            sidebar_min_width: self.sidebar_min_width,
+            sidebar_max_width: self.sidebar_max_width,
+            mobile_width_threshold: self.mobile_width_threshold,
+            tab_bar_position: self.tab_bar_position,
+            hide_tab_bar_when_single_tab: self.hide_tab_bar_when_single_tab,
+            sidebar_collapsed_mode: self.sidebar_collapsed_mode,
         }
-
-        let sidebar_width = if sidebar_collapsed {
-            match self.sidebar_collapsed_mode {
-                SidebarCollapsedModeConfig::Compact => 4,
-                SidebarCollapsedModeConfig::Hidden => 0,
-            }
-        } else {
-            let (min, max) = crate::config::validated_sidebar_bounds(
-                self.sidebar_min_width,
-                self.sidebar_max_width,
-            )
-            .unwrap_or((18, 36));
-            sidebar_width.clamp(min, max)
-        }
-        .min(cols.saturating_sub(1));
-        let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
-        let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && single_tab);
-        let tab_height = u16::from(show_tab_bar);
-        let (tab_bar, pane_surface) = match self.tab_bar_position {
-            TabBarPositionConfig::Top => (
-                Rect::new(main.x, 0, main.width, tab_height),
-                Rect::new(
-                    main.x,
-                    tab_height,
-                    main.width,
-                    rows.saturating_sub(tab_height),
-                ),
-            ),
-            TabBarPositionConfig::Bottom => (
-                Rect::new(
-                    main.x,
-                    rows.saturating_sub(tab_height),
-                    main.width,
-                    tab_height,
-                ),
-                Rect::new(main.x, 0, main.width, rows.saturating_sub(tab_height)),
-            ),
-        };
-
-        ClientShellLayout {
-            parking_header: Rect::default(),
-            sidebar: Rect::new(0, 0, sidebar_width, rows),
-            tab_bar,
-            mobile_header: Rect::default(),
-            pane_surface,
-        }
+        .layout(cols, rows, sidebar_collapsed, single_tab, sidebar_width)
     }
 
     pub(crate) fn initial_surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
