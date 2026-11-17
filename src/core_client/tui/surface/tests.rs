@@ -363,13 +363,18 @@ async fn a_held_pane_survives_a_resize_to_another_shape_of_the_same_area() {
     );
     feed_after_first_frame(&mut surface, "d", b"d");
     let before = surface.tiles.tiles[3].info.inner_rect;
-    feed(&surface, "d", b"\x1b[?2026h");
+    feed(&surface, "d", b"\x1b[?2026h\r\nheld");
 
-    surface.resize(host(96, 20));
-    let rows = frame(&mut surface, &HashSet::new());
+    for (cols, rows) in [(96, 20), (90, 24)] {
+        surface.resize(host(cols, rows));
+        let drawn = frame(&mut surface, &HashSet::new());
 
-    let after = surface.tiles.tiles[3].info.inner_rect;
-    assert_eq!((before.width, before.height), (after.width, after.height));
-    assert_ne!(before, after);
-    assert_eq!(rows.len(), 20);
+        let after = surface.tiles.tiles[3].info.inner_rect;
+        assert_eq!((before.width, before.height), (after.width, after.height));
+        assert_eq!(drawn.len(), usize::from(rows));
+        assert_eq!(
+            drawn[usize::from(after.y)].cells[usize::from(after.x)].symbol,
+            "d"
+        );
+    }
 }

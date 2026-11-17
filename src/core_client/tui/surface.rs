@@ -201,9 +201,12 @@ impl Surface {
         for shown in self.views.values_mut() {
             let rows = placed(shown.view.draw(), shown.inner);
             if let Some(was) = shown.retained.filter(|_| rows.is_empty()) {
-                if previous.len() == cells.len() && self.canvas_cols == cols {
-                    copy(&previous, was, &mut cells, shown.inner, cols);
-                }
+                copy(
+                    (&previous, self.canvas_cols),
+                    was,
+                    (&mut cells, cols),
+                    shown.inner,
+                );
             }
             crate::protocol::surface_delta::apply_rows(&mut cells, cols, &rows);
         }
@@ -229,13 +232,17 @@ impl Surface {
     }
 }
 
-fn copy(from: &[CellData], was: Rect, to: &mut [CellData], inner: Rect, cols: u16) {
-    let start =
-        |rect: Rect, row: u16| usize::from(rect.y + row) * usize::from(cols) + usize::from(rect.x);
+fn copy(from: (&[CellData], u16), was: Rect, to: (&mut [CellData], u16), inner: Rect) {
+    let start = |rect: Rect, row: u16, cols: u16| {
+        usize::from(rect.y + row) * usize::from(cols) + usize::from(rect.x)
+    };
     let width = usize::from(inner.width);
+    if was.right() > from.1 || usize::from(was.bottom()) * usize::from(from.1) > from.0.len() {
+        return;
+    }
     for row in 0..inner.height {
-        let (from_start, to_start) = (start(was, row), start(inner, row));
-        to[to_start..to_start + width].clone_from_slice(&from[from_start..from_start + width]);
+        let (from_start, to_start) = (start(was, row, from.1), start(inner, row, to.1));
+        to.0[to_start..to_start + width].clone_from_slice(&from.0[from_start..from_start + width]);
     }
 }
 
