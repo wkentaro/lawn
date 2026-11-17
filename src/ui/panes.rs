@@ -610,7 +610,32 @@ fn render_pane_borders(
     split_borders: &[crate::layout::SplitBorder],
     frame: &mut Frame,
 ) {
-    if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
+    if !app.pane_borders.draws_borders() {
+        return;
+    }
+    paint_pane_borders(
+        frame.buffer_mut(),
+        pane_infos,
+        split_borders,
+        app.pane_gaps,
+        &app.palette,
+        |pane| {
+            ws.pane_state(pane)
+                .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
+                .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+        },
+    );
+}
+
+pub(crate) fn paint_pane_borders(
+    buf: &mut Buffer,
+    pane_infos: &[PaneInfo],
+    split_borders: &[crate::layout::SplitBorder],
+    pane_gaps: bool,
+    palette: &Palette,
+    label: impl Fn(PaneId) -> Option<String>,
+) {
+    if pane_infos.iter().all(|info| info.borders.is_empty()) {
         return;
     }
 
@@ -618,9 +643,8 @@ fn render_pane_borders(
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
     }
-    add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
+    add_split_border_cells(pane_gaps, split_borders, &mut cells);
 
-    let buf = frame.buffer_mut();
     let area = buf.area;
     for ((x, y), line) in cells {
         if x < area.x
@@ -632,7 +656,7 @@ fn render_pane_borders(
         }
         let focused = pane_infos
             .iter()
-            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.pane_gaps));
+            .any(|info| info.is_focused && line_touches_pane(x, y, info, pane_gaps));
         let symbol = line_cell_symbol(line);
         if symbol.is_empty() {
             continue;
@@ -640,14 +664,14 @@ fn render_pane_borders(
         let cell = &mut buf[(x, y)];
         cell.set_symbol(symbol);
         let color = if focused {
-            app.palette.accent
+            palette.accent
         } else {
-            app.palette.overlay0
+            palette.overlay0
         };
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, frame);
+    paint_pane_border_titles(buf, pane_infos, palette, label);
 }
 
 fn add_split_border_cells(
@@ -772,22 +796,18 @@ fn line_touches_pane(x: u16, y: u16, info: &PaneInfo, pane_gaps: bool) -> bool {
         || (x == shared_right && y == shared_bottom)
 }
 
-fn render_pane_border_titles(
-    app: &AppState,
-    ws: &crate::workspace::Workspace,
+fn paint_pane_border_titles(
+    buf: &mut Buffer,
     pane_infos: &[PaneInfo],
-    frame: &mut Frame,
+    palette: &Palette,
+    label: impl Fn(PaneId) -> Option<String>,
 ) {
-    let buf = frame.buffer_mut();
     let area = buf.area;
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
-        let Some(title) = ws
-            .pane_state(info.id)
-            .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+        let Some(title) = label(info.id)
             .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
         else {
             continue;
@@ -807,9 +827,9 @@ fn render_pane_border_titles(
             continue;
         }
         let color = if info.is_focused {
-            app.palette.accent
+            palette.accent
         } else {
-            app.palette.overlay0
+            palette.overlay0
         };
         let mut style = Style::default().fg(color);
         if info.is_focused {
@@ -1089,6 +1109,49 @@ mod tests {
         assert_eq!(buffer[(4, 0)].symbol(), "模");
         assert_eq!(buffer[(5, 0)].symbol(), " ");
         assert_eq!(buffer[(6, 0)].symbol(), "块");
+    }
+
+    #[test]
+    fn pane_borders_and_titles_beyond_the_buffer_are_clipped() {
+        let mut ws = Workspace::test_new("test");
+        ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.test_split(ratatui::layout::Direction::Vertical);
+        let full = Rect::new(0, 0, 32, 10);
+        let mut app = AppState::test_new();
+        app.view.pane_infos = apply_pane_chrome(
+            ws.tabs[0].layout.panes(full),
+            PaneBordersConfig::Auto,
+            false,
+            true,
+        );
+        let splits = ws.tabs[0].layout.splits(full);
+        for pane in ws.tabs[0].panes.values() {
+            let mut state = TerminalState::new(pane.attached_terminal_id.clone(), "/tmp".into());
+            state.set_manual_label("a label wider than the clipped edge".into());
+            app.terminals
+                .insert(pane.attached_terminal_id.clone(), state);
+        }
+        let draw = |width, height| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| render_view_pane_borders(&app, &ws, &splits, frame))
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        let whole = draw(full.width, full.height);
+        let clipped = draw(20, 5);
+
+        for (x, y) in (0..5).flat_map(|y| (0..20).map(move |x| (x, y))) {
+            assert_eq!(clipped[(x, y)], whole[(x, y)], "cell ({x}, {y})");
+        }
+        assert!(app.view.pane_infos.iter().any(|info| info.rect.y >= 5));
+        assert!(app
+            .view
+            .pane_infos
+            .iter()
+            .any(|info| info.rect.x + info.rect.width > 20));
     }
 
     #[test]

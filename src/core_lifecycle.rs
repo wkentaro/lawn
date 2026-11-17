@@ -9,6 +9,11 @@ use crate::session_doc::{Created, Destination, Sessions, Store};
 const START_LABEL: &str = "lawn-start";
 const KEEP_SETTLE_ATTEMPTS: usize = 4;
 
+fn utf8(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
+}
+
 pub(crate) struct Lifecycle {
     core: Arc<Core>,
     session: String,
@@ -32,10 +37,46 @@ impl Lifecycle {
         cwd: &Path,
         argv: &[String],
     ) -> Result<Created, String> {
-        let cwd = cwd
-            .to_str()
-            .ok_or_else(|| format!("{} is not valid UTF-8", cwd.display()))?;
+        let cwd = utf8(cwd)?;
         let reference = self.store.reserve_start(&destination)?;
+        self.submit(&reference, cwd, argv)?.ok_or_else(|| {
+            format!(
+                "start {reference} was already recovered; inspect `lawn --session {} ls`",
+                self.session
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn open(&self, cwd: &Path) -> Result<(), String> {
+        let settled = self.store.load()?.layout.pending_starts.is_empty();
+        if let Err(error) = self.recover() {
+            eprintln!("warning: recovery in session {}: {error}", self.session);
+        }
+        if settled {
+            self.start_first(cwd, &[])?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn start_first(
+        &self,
+        cwd: &Path,
+        argv: &[String],
+    ) -> Result<Option<Created>, String> {
+        let cwd = utf8(cwd)?;
+        match self.store.reserve_first_start()? {
+            Some(reference) => self.submit(&reference, cwd, argv),
+            None => Ok(None),
+        }
+    }
+
+    fn submit(
+        &self,
+        reference: &str,
+        cwd: &str,
+        argv: &[String],
+    ) -> Result<Option<Created>, String> {
         let mut params = json!({
             "cwd": cwd,
             "keep": true,
@@ -50,7 +91,7 @@ impl Lifecycle {
             Ok(terminal) => terminal,
             Err(err @ HcError::Rpc { .. }) => {
                 self.store.edit(|layout| {
-                    if let Some(start) = layout.pending_starts.get_mut(&reference) {
+                    if let Some(start) = layout.pending_starts.get_mut(reference) {
                         start.reply_received = true;
                     }
                 }).map_err(|recovery| format!("{err}; start {reference} remains unconfirmed: {recovery}"))?;
@@ -61,12 +102,7 @@ impl Lifecycle {
                 "start {reference} is unconfirmed: {err}; inspect `lawn --session {} ls` before starting another program", self.session
             )),
         };
-        self.finish_start(&reference, &terminal)?.ok_or_else(|| {
-            format!(
-                "start {reference} was already recovered; inspect `lawn --session {} ls`",
-                self.session
-            )
-        })
+        self.finish_start(reference, &terminal)
     }
 
     /// Recovers saved starts and closes without ever starting another
@@ -124,9 +160,7 @@ impl Lifecycle {
 
     pub(crate) fn close(&self, terminal: &str) -> Result<(), String> {
         let (reserved, _) = self.store.edit(|layout| {
-            let ours = layout.remove(terminal).is_some()
-                | layout.parked.remove(terminal).is_some()
-                | layout.closing.contains(terminal);
+            let ours = layout.remove(terminal) | layout.closing.contains(terminal);
             if ours {
                 layout.closing.insert(terminal.to_owned());
             }
@@ -156,7 +190,7 @@ impl Lifecycle {
     pub(crate) fn park(&self, terminal: &str) -> Result<(), String> {
         let (parked, _) = self
             .store
-            .edit(|layout| layout.park(terminal) || layout.parked.contains_key(terminal))?;
+            .edit(|layout| layout.park(terminal) || layout.parked.contains(terminal))?;
         if !parked {
             return Err(format!(
                 "{terminal} is not shown in session {}",
@@ -261,11 +295,7 @@ fn local_start(listed: &serde_json::Value) -> Result<Option<&str>, String> {
 fn owner<'a>(sessions: &'a Sessions, terminal: &str) -> Option<&'a str> {
     sessions
         .iter()
-        .find(|(_, layout)| {
-            layout.shows(terminal)
-                || layout.parked.contains_key(terminal)
-                || layout.closing.contains(terminal)
-        })
+        .find(|(_, layout)| layout.owns(terminal) || layout.closing.contains(terminal))
         .map(|(session, _)| session.as_str())
 }
 
@@ -296,7 +326,7 @@ fn claim(
     }
     for (name, other) in sessions.iter_mut() {
         if name != session {
-            other.parked.remove(terminal);
+            other.remove(terminal);
         }
     }
     Ok(())

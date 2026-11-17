@@ -165,5 +165,17 @@ fn unpark_takes_an_optional_placement() {
     }
 }
 
+#[test]
+fn ls_text_lists_a_parked_terminal_only_under_parked() {
+    let mut layout = crate::session_doc::Layout::default();
+    layout.add_workspace(Some("main".to_owned()), "t1".to_owned());
+    layout.split("t1", Direction::Right, 0.5, "t2".to_owned());
+    layout.park("t2");
+    assert_eq!(
+        super::commands::ls_text(&layout),
+        "ws0 main\n  tab1\n    t1\nparked:\n  t2\n"
+    );
+}
+
 #[cfg(unix)]
 mod live;

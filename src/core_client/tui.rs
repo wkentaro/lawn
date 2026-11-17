@@ -1,0 +1,224 @@
+use std::io;
+
+mod follow;
+mod session;
+mod surface;
+#[cfg(all(test, unix))]
+mod tests;
+
+pub(crate) fn maybe_run(args: &[String]) -> Option<io::Result<()>> {
+    (args.len() == 1).then(run)
+}
+
+#[cfg(not(unix))]
+fn run() -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "lawn needs herdr core, which this platform lacks",
+    ))
+}
+
+#[cfg(unix)]
+fn run() -> io::Result<()> {
+    use std::io::IsTerminal as _;
+
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::other("lawn needs a terminal"));
+    }
+    let core = super::core()?;
+    let session = crate::session::active_name()
+        .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
+    crate::core_lifecycle::Lifecycle::new(core.clone(), &session)
+        .open(&std::env::current_dir()?)
+        .map_err(io::Error::other)?;
+    let host = super::host::host_geometry()?;
+    run_with_bounded_shutdown(async {
+        let stop = super::host::Stop::register()?;
+        let layouts = follow::follow(session.clone())?;
+        let mut guard = super::host::enter(true)?;
+        unix::show(core, session, layouts, host, &mut guard, stop).await
+    })?
+}
+
+#[cfg(unix)]
+fn run_with_bounded_shutdown<T>(future: impl std::future::Future<Output = T>) -> io::Result<T> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let output = runtime.block_on(future);
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    Ok(output)
+}
+
+#[cfg(unix)]
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[cfg(unix)]
+mod unix {
+    use std::io;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use tokio::sync::mpsc;
+    use tokio::time::Instant;
+    use tracing::warn;
+
+    use super::session::PaneChrome;
+    use super::surface::Surface;
+    use crate::client::terminal_setup::TerminalGuard;
+    use crate::core_client::host::{
+        deliver, detaches, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
+        HostKeys, HostSizes, Stop, FRAME,
+    };
+    use crate::core_client::screen::Screen;
+    use crate::core_client::view::{Event, Events, Geometry, View, Wake};
+    use crate::core_lifecycle::Lifecycle;
+    use crate::hc::Core;
+    use crate::raw_input::RawInputEvent;
+    use crate::session_doc::Layout;
+
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn connected(core: Arc<Core>) -> io::Result<Arc<Core>> {
+        if core.is_closed() {
+            return crate::core_client::core();
+        }
+        Ok(core)
+    }
+
+    pub(super) async fn show(
+        core: Arc<Core>,
+        session: String,
+        mut layouts: mpsc::UnboundedReceiver<Layout>,
+        mut host: Geometry,
+        guard: &mut TerminalGuard,
+        mut stop: Stop,
+    ) -> io::Result<()> {
+        let config = crate::config::Config::load().config;
+        let mut surface = Surface::new(
+            host,
+            PaneChrome {
+                borders: config.ui.pane_borders,
+                gaps: config.ui.pane_gaps,
+                outer_borders: config.ui.pane_outer_borders,
+            },
+            crate::ui::theme::client_palette_from_config(&config),
+        );
+        let mouse_capture = Arc::new(AtomicBool::new(true));
+        let mut input = read_input(
+            guard.take_buffered_host_input(),
+            guard.host_escape_disambiguation_active(),
+            mouse_capture.clone(),
+        )?;
+        let mut sizes = HostSizes::watch(host)?;
+        let wake = Wake::default();
+        let mut events = Events::default();
+        let (attached_tx, mut attached) = mpsc::unbounded_channel();
+        let mut screen = Screen::default();
+        let mut keys = HostKeys::new(guard);
+        let mut out = io::stdout();
+        let mut due = None;
+        let mut last_draw = Instant::now();
+        loop {
+            tokio::select! {
+                () = wake.wait() => {
+                    due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
+                }
+                () = wait(due) => {
+                    let dirty = wake.take();
+                    let (rows, cursor) = surface.frame(&dirty, |terminal, id, geometry| {
+                        let (core, terminal, wake, events, attached) = (
+                            core.clone(),
+                            terminal.to_owned(),
+                            wake.clone(),
+                            events.sender(),
+                            attached_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            let view = tokio::task::spawn_blocking(move || {
+                                View::attach(connected(core)?, &terminal, geometry, id, &wake, &events)
+                            })
+                            .await
+                            .unwrap_or_else(|error| Err(io::Error::other(error)));
+                            if view.is_err() {
+                                tokio::time::sleep(RETRY).await;
+                            }
+                            attached.send((id, geometry, view)).ok();
+                        });
+                    });
+                    screen.present(&mut out, (host.cols, host.rows), rows, cursor)?;
+                    let all_keys = surface.focused().is_some_and(View::reports_all_keys);
+                    follow_key_reporting(all_keys, &mut keys.all, &mut out)?;
+                    last_draw = Instant::now();
+                    due = None;
+                }
+                Some((id, geometry, view)) = attached.recv() => {
+                    surface.attached(id, geometry, view);
+                    due.get_or_insert_with(Instant::now);
+                }
+                layout = layouts.recv() => {
+                    let Some(layout) = layout else {
+                        return Err(io::Error::other("lawn stopped following the session"));
+                    };
+                    surface.update(layout);
+                    due.get_or_insert_with(Instant::now);
+                }
+                batch = input.recv() => {
+                    let Some(batch) = batch else {
+                        return Ok(());
+                    };
+                    if crate::raw_input::events_require_host_mode_refresh(&batch) {
+                        refresh_host_modes(guard, &mouse_capture, keys.all, false);
+                    }
+                    for event in batch {
+                        match event {
+                            RawInputEvent::Key(key) if detaches(&key) => return Ok(()),
+                            RawInputEvent::Mouse(mouse) => surface.mouse(mouse),
+                            RawInputEvent::OuterFocusGained => surface.host_focus(true),
+                            RawInputEvent::OuterFocusLost => surface.host_focus(false),
+                            event => {
+                                if let Some(view) = surface.focused() {
+                                    deliver(view, keys, event);
+                                }
+                            }
+                        }
+                    }
+                    if surface.needs_layout() {
+                        due.get_or_insert_with(Instant::now);
+                    }
+                }
+                size = sizes.recv() => {
+                    let Ok(size) = size else {
+                        return Ok(());
+                    };
+                    host = size;
+                    surface.resize(host);
+                    refresh_host_modes(guard, &mouse_capture, keys.all, true);
+                    due = Some(Instant::now());
+                }
+                event = events.recv() => match event {
+                    Event::Ended(id) => {
+                        let Some(terminal) = surface.terminal(id).map(str::to_owned) else {
+                            continue;
+                        };
+                        let (core, session) = (core.clone(), session.clone());
+                        tokio::task::spawn_blocking(move || {
+                            let closed = connected(core)
+                                .map_err(|error| error.to_string())
+                                .and_then(|core| Lifecycle::new(core, &session).close(&terminal));
+                            if let Err(error) = closed {
+                                warn!(%error, terminal, "the ended pane did not close");
+                            }
+                        });
+                    }
+                    Event::Detached(id) => {
+                        surface.forget(id);
+                        due.get_or_insert_with(Instant::now);
+                    }
+                    event => relay(event, &mut out),
+                },
+                () = stop.recv() => return Ok(()),
+            }
+        }
+    }
+}

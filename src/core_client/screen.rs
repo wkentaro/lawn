@@ -52,7 +52,7 @@ fn write(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     out.flush()
 }
 
-fn clip(
+pub(super) fn clip(
     mut rows: Vec<PaneSurfacePatchRow>,
     (cols, height): (u16, u16),
 ) -> Vec<PaneSurfacePatchRow> {

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use super::super::commands::{self, Program};
 use crate::hc::test_support::TestCore;
 use crate::hc::Core;
-use crate::session_doc::{Direction, Node, Placement, ReturnPosition};
+use crate::session_doc::{Direction, Node, Placement};
 
 const SESSION: &str = "live";
 
@@ -155,15 +155,10 @@ fn park_and_unpark_round_trip_beside_the_same_terminal() {
     assert_eq!(get(&test.core, &second)["keep"], false);
     let layout = commands::ls(&test.core, SESSION).expect("ls");
     assert!(!layout.shows(&second));
-    assert_eq!(
-        layout.parked.get(&second),
-        Some(&ReturnPosition {
-            workspace: text(&created, "workspace"),
-            tab: text(&created, "tab"),
-            beside: Some(first.clone()),
-            direction: Direction::Right,
-        })
-    );
+    assert!(layout.parked.contains(&second));
+    assert_eq!(layout.workspaces[0].id, text(&created, "workspace"));
+    assert_eq!(layout.workspaces[0].tabs[0].id, text(&created, "tab"));
+    assert!(layout.workspaces[0].tabs[0].root.contains(&second));
 
     commands::unpark(&test.core, SESSION, &second, None).expect("unpark");
     assert_eq!(get(&test.core, &second)["keep"], true);
@@ -265,10 +260,7 @@ fn unparking_a_terminal_another_session_parked_takes_it_over() {
     assert!(commands::ls(&test.core, "other")
         .expect("ls")
         .shows(&second));
-    assert!(!commands::ls(&test.core, SESSION)
-        .expect("ls")
-        .parked
-        .contains_key(&second));
+    assert!(!commands::ls(&test.core, SESSION).expect("ls").owns(&second));
     assert_eq!(get(&test.core, &second)["keep"], true);
 }
 
@@ -290,7 +282,7 @@ fn a_failed_takeover_leaves_the_other_session_parked() {
     assert!(commands::ls(&test.core, SESSION)
         .expect("ls")
         .parked
-        .contains_key(&second));
+        .contains(&second));
     assert!(!commands::ls(&test.core, "other")
         .expect("ls")
         .shows(&second));
@@ -325,7 +317,7 @@ fn a_terminal_being_closed_cannot_be_claimed() {
     commands::park(&test.core, SESSION, &second).expect("park");
     crate::session_doc::Store::new(test.core.clone(), SESSION, None)
         .edit(|layout| {
-            layout.parked.remove(&second);
+            layout.remove(&second);
             layout.closing.insert(second.clone());
         })
         .expect("reserve");
@@ -391,4 +383,26 @@ fn pane_close_kills_the_terminal_and_collapses_the_split() {
         layout.workspaces[0].tabs[0].root,
         Node::Pane { terminal: first }
     );
+}
+
+#[test]
+fn parking_the_last_pane_keeps_its_workspace_and_starts_nothing() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let created = workspace(&test.core);
+    let first = text(&created, "terminal");
+    let before = commands::ls(&test.core, SESSION).expect("ls").workspaces;
+
+    commands::park(&test.core, SESSION, &first).expect("park");
+
+    let layout = commands::ls(&test.core, SESSION).expect("ls");
+    assert!(!layout.shows(&first));
+    assert_eq!(layout.workspaces, before);
+    assert_eq!(get(&test.core, &first)["keep"], false);
+    let listed = test
+        .core
+        .call("terminal.list", json!({"all": true}))
+        .expect("list");
+    assert_eq!(listed["terminals"].as_array().map(Vec::len), Some(1));
 }

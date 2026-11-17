@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 
@@ -26,6 +27,25 @@ pub(crate) struct Geometry {
     pub(crate) cell_height_px: u32,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct Wake {
+    notify: Arc<Notify>,
+    dirty: Arc<RenderSignal>,
+}
+
+impl Wake {
+    pub(crate) async fn wait(&self) {
+        self.notify.notified().await;
+    }
+
+    pub(crate) fn take(&self) -> HashSet<PaneId> {
+        let request = self.dirty.take();
+        let mut sources = request.pty_sources;
+        sources.extend(request.terminal_title_sources);
+        sources
+    }
+}
+
 /// What the terminal asks of the host beyond its screen.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -34,16 +54,51 @@ pub(crate) enum Event {
     /// The program rang the bell this many times.
     Bell(u16),
     /// The program has ended.
-    Ended,
+    Ended(PaneId),
+    Detached(PaneId),
+}
+
+#[derive(Clone)]
+pub(crate) struct EventSender(mpsc::Sender<AppEvent>);
+
+pub(crate) struct Events {
+    sender: mpsc::Sender<AppEvent>,
+    receiver: mpsc::Receiver<AppEvent>,
+}
+
+impl Default for Events {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel(EVENT_QUEUE);
+        Self { sender, receiver }
+    }
+}
+
+impl Events {
+    pub(crate) fn sender(&self) -> EventSender {
+        EventSender(self.sender.clone())
+    }
+
+    pub(crate) async fn recv(&mut self) -> Event {
+        while let Some(event) = self.receiver.recv().await {
+            match event {
+                AppEvent::ClipboardWrite { content } => return Event::Copy(content),
+                AppEvent::TerminalBell { count, .. } => return Event::Bell(count),
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: crate::platform::ChildExitReason::Exited,
+                } => return Event::Ended(pane_id),
+                AppEvent::PaneDied { pane_id, .. } => return Event::Detached(pane_id),
+                _ => {}
+            }
+        }
+        std::future::pending().await
+    }
 }
 
 /// One herdr-core terminal, parsed in this process and drawn row by row as
 /// its screen changes.
 pub(crate) struct View {
     runtime: TerminalRuntime,
-    events: mpsc::Receiver<AppEvent>,
-    output: Arc<Notify>,
-    dirty: Arc<RenderSignal>,
     repaint: bool,
     cursor: Option<CursorState>,
 }
@@ -51,36 +106,32 @@ pub(crate) struct View {
 impl View {
     /// Attaches to `address` at `geometry`, steering the terminal's size.
     /// Needs a tokio runtime.
-    pub(crate) fn attach(core: Arc<Core>, address: &str, geometry: Geometry) -> io::Result<Self> {
-        let output = Arc::new(Notify::new());
-        let dirty = Arc::new(RenderSignal::new());
-        let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
+    pub(crate) fn attach(
+        core: Arc<Core>,
+        address: &str,
+        geometry: Geometry,
+        id: PaneId,
+        wake: &Wake,
+        events: &EventSender,
+    ) -> io::Result<Self> {
         let runtime = TerminalRuntime::attach_core_terminal(
-            PaneId::from_raw(0),
+            id,
             core,
             address,
             geometry.rows,
             geometry.cols,
-            events_tx,
-            output.clone(),
-            dirty.clone(),
+            events.0.clone(),
+            wake.notify.clone(),
+            wake.dirty.clone(),
         )?;
-        let mut view = Self::new(runtime, events, output, dirty);
+        let mut view = Self::new(runtime);
         view.resize(geometry);
         Ok(view)
     }
 
-    fn new(
-        runtime: TerminalRuntime,
-        events: mpsc::Receiver<AppEvent>,
-        output: Arc<Notify>,
-        dirty: Arc<RenderSignal>,
-    ) -> Self {
+    fn new(runtime: TerminalRuntime) -> Self {
         Self {
             runtime,
-            events,
-            output,
-            dirty,
             repaint: true,
             cursor: None,
         }
@@ -102,30 +153,14 @@ impl View {
         self.repaint = true;
     }
 
-    /// Resolves once new output may have changed the screen.
-    pub(crate) fn output(&self) -> impl std::future::Future<Output = ()> + 'static {
-        let output = self.output.clone();
-        async move { output.notified().await }
-    }
-
-    /// Resolves with the next thing the terminal asks of the host.
-    pub(crate) async fn event(&mut self) -> Event {
-        while let Some(event) = self.events.recv().await {
-            match event {
-                AppEvent::ClipboardWrite { content } => return Event::Copy(content),
-                AppEvent::TerminalBell { count, .. } => return Event::Bell(count),
-                AppEvent::PaneDied { .. } => return Event::Ended,
-                _ => {}
-            }
-        }
-        Event::Ended
+    pub(crate) fn invalidate(&mut self) {
+        self.repaint = true;
     }
 
     /// The rows that changed since the last draw, full width. Empty while
     /// the program holds synchronized output, which keeps the damage for
     /// the draw after it.
     pub(crate) fn draw(&mut self) -> Vec<PaneSurfacePatchRow> {
-        self.dirty.take();
         let (cols, rows) = self.size();
         if cols == 0 || rows == 0 || self.runtime.synchronized_output_active() {
             return Vec::new();
@@ -245,13 +280,13 @@ impl View {
         }
     }
 
-    pub(crate) fn focus(&self, focused: bool) {
+    pub(crate) fn focus(&self, focused: bool) -> bool {
         let event = if focused {
             crate::ghostty::FocusEvent::Gained
         } else {
             crate::ghostty::FocusEvent::Lost
         };
-        self.runtime.try_send_focus_event(event);
+        self.runtime.try_send_focus_event(event)
     }
 
     fn send(&self, bytes: Vec<u8>) {
@@ -261,6 +296,25 @@ impl View {
         if let Err(error) = self.runtime.try_send_bytes(Bytes::from(bytes)) {
             tracing::debug!(%error, "input did not reach the core terminal");
         }
+    }
+}
+
+#[cfg(test)]
+impl View {
+    pub(in crate::core_client) fn test(cols: u16, rows: u16) -> Self {
+        Self::new(TerminalRuntime::test_with_screen_bytes(cols, rows, b""))
+    }
+
+    pub(in crate::core_client) fn test_with_input(
+        cols: u16,
+        rows: u16,
+    ) -> (Self, tokio::sync::mpsc::Receiver<Bytes>) {
+        let (runtime, input) = TerminalRuntime::test_with_channel_capacity(cols, rows, 16);
+        (Self::new(runtime), input)
+    }
+
+    pub(in crate::core_client) fn test_feed(&self, bytes: &[u8]) {
+        self.runtime.test_process_pty_bytes(bytes);
     }
 }
 

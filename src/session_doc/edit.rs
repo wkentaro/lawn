@@ -1,8 +1,8 @@
-use super::{Direction, Layout, Node, ReturnPosition, Tab, Workspace};
+use super::{Direction, Layout, Node, Tab, Workspace};
 
 const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
-const EVEN_RATIO: f32 = 0.5;
+pub(super) const EVEN_RATIO: f32 = 0.5;
 
 /// Where an unparked terminal goes.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +69,16 @@ impl Layout {
         } else {
             ratio.clamp(MIN_RATIO, MAX_RATIO)
         };
+        !self.parked.contains(beside) && self.insert_beside(beside, direction, ratio, terminal)
+    }
+
+    pub(super) fn insert_beside(
+        &mut self,
+        beside: &str,
+        direction: Direction,
+        ratio: f32,
+        terminal: String,
+    ) -> bool {
         let Some(node) = self
             .workspaces
             .iter_mut()
@@ -77,72 +87,47 @@ impl Layout {
         else {
             return false;
         };
-        let shown = std::mem::replace(node, empty_pane());
+        let owned = std::mem::replace(node, empty_pane());
         *node = Node::Split {
             direction,
             ratio,
-            first: Box::new(shown),
+            first: Box::new(owned),
             second: Box::new(Node::Pane { terminal }),
         };
         true
     }
 
-    /// Removes the pane showing `terminal`, dropping a tab or workspace it
-    /// leaves empty, and returns where it was.
-    pub(crate) fn remove(&mut self, terminal: &str) -> Option<ReturnPosition> {
-        let (w, t) = self
-            .workspaces
-            .iter()
-            .enumerate()
-            .find_map(|(w, workspace)| {
-                workspace
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.root.shows(terminal))
-                    .map(|t| (w, t))
-            })?;
-        let workspace = &mut self.workspaces[w];
-        let tab = &mut workspace.tabs[t];
-        let position = |beside, direction| ReturnPosition {
-            workspace: workspace.id.clone(),
-            tab: tab.id.clone(),
-            beside,
-            direction,
-        };
-        if let Some((beside, direction)) = tab.root.take(terminal) {
-            return Some(position(Some(beside), direction));
-        }
-        let position = position(None, Direction::Right);
-        workspace.tabs.remove(t);
-        if workspace.tabs.is_empty() {
-            self.workspaces.remove(w);
-        }
-        Some(position)
-    }
-
-    /// Takes `terminal` out of view, remembering where it returns.
-    pub(crate) fn park(&mut self, terminal: &str) -> bool {
-        let Some(position) = self.remove(terminal) else {
+    pub(crate) fn remove(&mut self, terminal: &str) -> bool {
+        self.parked.remove(terminal);
+        let Some(source) = self.detach(terminal) else {
             return false;
         };
-        self.parked.insert(terminal.to_owned(), position);
+        self.drop_if_empty(&source);
         true
     }
 
-    /// Shows `terminal` again, at `to` or where it was parked from.
+    pub(crate) fn park(&mut self, terminal: &str) -> bool {
+        self.shows(terminal) && self.parked.insert(terminal.to_owned())
+    }
+
     pub(crate) fn unpark(&mut self, terminal: &str, to: Option<Placement>) -> Result<(), String> {
         if self.shows(terminal) {
             return Err(format!("{terminal} is already shown"));
         }
         let placement = match to {
             Some(placement) => self.checked(placement)?,
-            None => self.return_placement(terminal),
+            None if self.owns(terminal) => {
+                self.parked.remove(terminal);
+                return Ok(());
+            }
+            None => self.first_tab(),
         };
         self.parked.remove(terminal);
+        let source = self.detach(terminal);
         let terminal = terminal.to_owned();
         match placement {
             Resolved::Beside { beside, direction } => {
-                self.split(&beside, direction, EVEN_RATIO, terminal);
+                self.insert_beside(&beside, direction, EVEN_RATIO, terminal);
             }
             Resolved::Tab(workspace) => {
                 self.add_tab(&workspace, None, terminal);
@@ -150,6 +135,9 @@ impl Layout {
             Resolved::Workspace => {
                 self.add_workspace(None, terminal);
             }
+        }
+        if let Some(source) = source {
+            self.drop_if_empty(&source);
         }
         Ok(())
     }
@@ -174,32 +162,33 @@ impl Layout {
         }
     }
 
-    fn return_placement(&self, terminal: &str) -> Resolved {
-        let Some(position) = self.parked.get(terminal) else {
-            return self.first_tab();
-        };
-        let Some(workspace) = self.workspaces.iter().find(|w| w.id == position.workspace) else {
-            return self.first_tab();
-        };
-        let Some(tab) = workspace.tabs.iter().find(|t| t.id == position.tab) else {
-            return Resolved::Tab(workspace.id.clone());
-        };
-        let beside = position
-            .beside
-            .as_deref()
-            .filter(|beside| tab.root.shows(beside))
-            .unwrap_or_else(|| tab.root.last_terminal());
-        Resolved::Beside {
-            beside: beside.to_owned(),
-            direction: position.direction,
-        }
-    }
-
     fn first_tab(&self) -> Resolved {
         match self.workspaces.first() {
             Some(workspace) => Resolved::Tab(workspace.id.clone()),
             None => Resolved::Workspace,
         }
+    }
+
+    fn detach(&mut self, terminal: &str) -> Option<String> {
+        for workspace in &mut self.workspaces {
+            let Some(index) = workspace
+                .tabs
+                .iter()
+                .position(|tab| tab.root.contains(terminal))
+            else {
+                continue;
+            };
+            if !workspace.tabs[index].root.take(terminal) {
+                workspace.tabs.remove(index);
+            }
+            return Some(workspace.id.clone());
+        }
+        None
+    }
+
+    fn drop_if_empty(&mut self, workspace: &str) {
+        self.workspaces
+            .retain(|w| w.id != workspace || !w.tabs.is_empty());
     }
 }
 
@@ -223,17 +212,10 @@ impl Node {
         }
     }
 
-    fn take(&mut self, terminal: &str) -> Option<(String, Direction)> {
-        let Node::Split {
-            direction,
-            first,
-            second,
-            ..
-        } = self
-        else {
-            return None;
+    fn take(&mut self, terminal: &str) -> bool {
+        let Node::Split { first, second, .. } = self else {
+            return false;
         };
-        let direction = *direction;
         let is_removed =
             |node: &Node| matches!(node, Node::Pane { terminal: shown } if shown == terminal);
         let sibling = if is_removed(first) {
@@ -241,12 +223,11 @@ impl Node {
         } else if is_removed(second) {
             first
         } else {
-            return first.take(terminal).or_else(|| second.take(terminal));
+            return first.take(terminal) || second.take(terminal);
         };
-        let beside = sibling.first_terminal().to_owned();
         let sibling = std::mem::replace(&mut **sibling, empty_pane());
         *self = sibling;
-        Some((beside, direction))
+        true
     }
 }
 

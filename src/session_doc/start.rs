@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{Direction, Layout, Store};
+use super::{Direction, Layout, Sessions, Store};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -118,17 +118,58 @@ impl Store {
             if let Some(reference) = layout.pending_starts.keys().next() {
                 return Err(format!("start {reference} is still unconfirmed in session {}; no new program was started", self.session));
             }
-            let mut destination = destination.clone().normalized();
-            if let Destination::Tab { workspace: target, .. } = &mut destination {
-                if target.is_none() {
-                    *target = layout.workspaces.first().map(|workspace| workspace.id.clone());
-                }
-            }
-            destination.validate(layout)?;
-            let reference = format!("{}:{version}", self.name);
-            sessions.entry(self.session.clone()).or_default().pending_starts.insert(reference.clone(), PendingStart { destination, reply_received: false });
-            Ok(reference)
+            self.put_pending(sessions, version, destination.clone())
         })?;
         reserved
+    }
+
+    pub(crate) fn reserve_first_start(&self) -> Result<Option<String>, String> {
+        let (reserved, _, _) = self.write(|sessions, version| {
+            let occupied = sessions.get(&self.session).is_some_and(|layout| {
+                !layout.workspaces.is_empty() || !layout.pending_starts.is_empty()
+            });
+            if occupied {
+                return Ok(None);
+            }
+            self.put_pending(sessions, version, Destination::Workspace { name: None })
+                .map(Some)
+        })?;
+        reserved
+    }
+
+    fn put_pending(
+        &self,
+        sessions: &mut Sessions,
+        version: u64,
+        destination: Destination,
+    ) -> Result<String, String> {
+        let empty = Layout::default();
+        let layout = sessions.get(&self.session).unwrap_or(&empty);
+        let mut destination = destination.normalized();
+        if let Destination::Tab {
+            workspace: target, ..
+        } = &mut destination
+        {
+            if target.is_none() {
+                *target = layout
+                    .workspaces
+                    .first()
+                    .map(|workspace| workspace.id.clone());
+            }
+        }
+        destination.validate(layout)?;
+        let reference = format!("{}:{version}", self.name);
+        sessions
+            .entry(self.session.clone())
+            .or_default()
+            .pending_starts
+            .insert(
+                reference.clone(),
+                PendingStart {
+                    destination,
+                    reply_received: false,
+                },
+            );
+        Ok(reference)
     }
 }

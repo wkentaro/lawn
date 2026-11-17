@@ -2,17 +2,11 @@ use super::*;
 use crate::core_client::screen::Screen;
 
 fn view(cols: u16, rows: u16) -> View {
-    let (_events_tx, events) = mpsc::channel(1);
-    View::new(
-        TerminalRuntime::test_with_screen_bytes(cols, rows, b""),
-        events,
-        Arc::new(Notify::new()),
-        Arc::new(RenderSignal::new()),
-    )
+    View::test(cols, rows)
 }
 
 fn feed(view: &View, bytes: &[u8]) {
-    view.runtime.test_process_pty_bytes(bytes);
+    view.test_feed(bytes);
 }
 
 fn damaged(rows: &[PaneSurfacePatchRow]) -> Vec<u16> {
@@ -169,12 +163,23 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
         cell_width_px: 0,
         cell_height_px: 0,
     };
-    let mut view = View::attach(test.core.clone(), &address, geometry).expect("attach");
+    let wake = Wake::default();
+    let mut events = Events::default();
+    let mut view = View::attach(
+        test.core.clone(),
+        &address,
+        geometry,
+        PaneId::from_raw(7),
+        &wake,
+        &events.sender(),
+    )
+    .expect("attach");
     let mut screen = vec![String::new(); 5];
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while !screen.iter().any(|row| row.contains("lawn-view-hello")) {
-            view.output().await;
+            wake.wait().await;
+            wake.take();
             for row in view.draw() {
                 screen[usize::from(row.y)] = text(&row);
             }
@@ -183,10 +188,70 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
     .await
     .unwrap_or_else(|_| panic!("the view never showed the output; saw {screen:?}"));
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while view.event().await != Event::Ended {}
+        while events.recv().await != Event::Ended(PaneId::from_raw(7)) {}
     })
     .await
     .expect("the view sees the program end");
+}
+
+#[test]
+fn a_take_names_every_view_with_output_and_rearms_the_wake() {
+    let wake = Wake::default();
+    let (left, right) = (PaneId::from_raw(1), PaneId::from_raw(2));
+    assert!(wake.dirty.request_pty(left));
+    assert!(!wake.dirty.request_pty(right));
+    wake.dirty.request_terminal_title(left);
+
+    assert_eq!(wake.take(), HashSet::from([left, right]));
+
+    assert!(!wake.dirty.is_pending());
+    assert!(wake.dirty.pending_terminal_title_sources().is_empty());
+    assert!(wake.dirty.request_pty(right));
+    assert_eq!(wake.take(), HashSet::from([right]));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn each_core_output_wakes_the_host_to_draw_it() {
+    let Some(test) = crate::hc::test_support::TestCore::start() else {
+        return;
+    };
+    let address = test
+        .core
+        .run(serde_json::json!({"argv": ["cat"], "no_parent": true}))
+        .expect("run");
+    let geometry = Geometry {
+        cols: 40,
+        rows: 5,
+        cell_width_px: 0,
+        cell_height_px: 0,
+    };
+    let wake = Wake::default();
+    let id = PaneId::from_raw(7);
+    let mut view = View::attach(
+        test.core.clone(),
+        &address,
+        geometry,
+        id,
+        &wake,
+        &Events::default().sender(),
+    )
+    .expect("attach");
+    for word in ["first-word", "second-word"] {
+        view.text(&format!("{word}\r"));
+        let mut screen = vec![String::new(); 5];
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !screen.iter().any(|row| row.contains(word)) {
+                wake.wait().await;
+                assert_eq!(wake.take(), HashSet::from([id]));
+                for row in view.draw() {
+                    screen[usize::from(row.y)] = text(&row);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{word} never reached the view; saw {screen:?}"));
+    }
 }
 
 #[tokio::test]
@@ -212,13 +277,8 @@ async fn pixel_mouse_reports_use_the_host_cell_size() {
 
 #[tokio::test]
 async fn an_osc52_copy_and_a_bell_reach_the_host_and_the_program_end_follows() {
-    let (events_tx, events) = mpsc::channel(4);
-    let mut view = View::new(
-        TerminalRuntime::test_with_screen_bytes(20, 4, b""),
-        events,
-        Arc::new(Notify::new()),
-        Arc::new(RenderSignal::new()),
-    );
+    let mut events = Events::default();
+    let events_tx = events.sender.clone();
     events_tx
         .send(AppEvent::ClipboardWrite {
             content: b"copied".to_vec(),
@@ -234,13 +294,21 @@ async fn an_osc52_copy_and_a_bell_reach_the_host_and_the_program_end_follows() {
         .expect("send");
     events_tx
         .send(AppEvent::PaneDied {
-            pane_id: PaneId::from_raw(0),
+            pane_id: PaneId::from_raw(3),
             exit_reason: crate::platform::ChildExitReason::Exited,
         })
         .await
         .expect("send");
 
-    assert_eq!(view.event().await, Event::Copy(b"copied".to_vec()));
-    assert_eq!(view.event().await, Event::Bell(2));
-    assert_eq!(view.event().await, Event::Ended);
+    assert_eq!(events.recv().await, Event::Copy(b"copied".to_vec()));
+    assert_eq!(events.recv().await, Event::Bell(2));
+    assert_eq!(events.recv().await, Event::Ended(PaneId::from_raw(3)));
+    events_tx
+        .send(AppEvent::PaneDied {
+            pane_id: PaneId::from_raw(4),
+            exit_reason: crate::platform::ChildExitReason::WaitFailed,
+        })
+        .await
+        .expect("send");
+    assert_eq!(events.recv().await, Event::Detached(PaneId::from_raw(4)));
 }

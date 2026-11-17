@@ -1,0 +1,497 @@
+[
+  {
+    "cursor": [
+      3,
+      1,
+      1
+    ],
+    "frame_sha256": "575e996017350c7281691b0a7e4b1dcdca3a66fc3605153cf4e77a7a7ec348bd",
+    "name": "single",
+    "panes": [
+      {
+        "borders": 0,
+        "focused": true,
+        "inner": [
+          0,
+          0,
+          31,
+          10
+        ],
+        "rect": [
+          0,
+          0,
+          32,
+          10
+        ]
+      }
+    ],
+    "rows": [
+      "hello                           ",
+      "wor                             ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                "
+    ]
+  },
+  {
+    "cursor": [
+      4,
+      2,
+      1
+    ],
+    "frame_sha256": "67b2b11747e038eeed17fb3b11de8070f4ba7b2c4b842a512f809825902814a5",
+    "name": "always_single",
+    "panes": [
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          1,
+          1,
+          29,
+          8
+        ],
+        "rect": [
+          0,
+          0,
+          32,
+          10
+        ]
+      }
+    ],
+    "rows": [
+      "┌ build ───────────────────────┐",
+      "│hello                         │",
+      "│wor                           │",
+      "│                              │",
+      "│                              │",
+      "│                              │",
+      "│                              │",
+      "│                              │",
+      "│                              │",
+      "└──────────────────────────────┘"
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      7,
+      1
+    ],
+    "frame_sha256": "cd67902f47b5ec184d705f40e6ef54a3d1af500248ab5489066bbe8fd0eb09d5",
+    "name": "grid",
+    "panes": [
+      {
+        "borders": 13,
+        "focused": false,
+        "inner": [
+          1,
+          1,
+          15,
+          8
+        ],
+        "rect": [
+          0,
+          0,
+          16,
+          10
+        ]
+      },
+      {
+        "borders": 11,
+        "focused": false,
+        "inner": [
+          17,
+          1,
+          14,
+          4
+        ],
+        "rect": [
+          16,
+          0,
+          16,
+          5
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          17,
+          6,
+          13,
+          3
+        ],
+        "rect": [
+          16,
+          5,
+          16,
+          5
+        ]
+      }
+    ],
+    "rows": [
+      "┌ build ────────┬ 模 块 组 织 （ … ─┐",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               ├ a much long… ┤",
+      "│               │hello         │",
+      "│               │wor           │",
+      "│               │              │",
+      "└───────────────┴──────────────┘"
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      7,
+      1
+    ],
+    "frame_sha256": "18b49c6891400dab0c0f60deeb14e4d3e2d1b524fc821d5e06969606f72da4fe",
+    "name": "gaps",
+    "panes": [
+      {
+        "borders": 15,
+        "focused": false,
+        "inner": [
+          1,
+          1,
+          14,
+          8
+        ],
+        "rect": [
+          0,
+          0,
+          16,
+          10
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": false,
+        "inner": [
+          17,
+          1,
+          14,
+          3
+        ],
+        "rect": [
+          16,
+          0,
+          16,
+          5
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          17,
+          6,
+          13,
+          3
+        ],
+        "rect": [
+          16,
+          5,
+          16,
+          5
+        ]
+      }
+    ],
+    "rows": [
+      "┌ build ───────┐┌ 模 块 组 织 （ … ─┐",
+      "│              ││              │",
+      "│              ││              │",
+      "│              ││              │",
+      "│              │└──────────────┘",
+      "│              │┌ a much long… ┐",
+      "│              ││hello         │",
+      "│              ││wor           │",
+      "│              ││              │",
+      "└──────────────┘└──────────────┘"
+    ]
+  },
+  {
+    "cursor": [
+      19,
+      6,
+      1
+    ],
+    "frame_sha256": "e7cbab32bb262095a4721e3880b07a2c258edc6763db2eda33904b01afa48805",
+    "name": "off",
+    "panes": [
+      {
+        "borders": 0,
+        "focused": false,
+        "inner": [
+          0,
+          0,
+          16,
+          10
+        ],
+        "rect": [
+          0,
+          0,
+          16,
+          10
+        ]
+      },
+      {
+        "borders": 0,
+        "focused": false,
+        "inner": [
+          16,
+          0,
+          16,
+          5
+        ],
+        "rect": [
+          16,
+          0,
+          16,
+          5
+        ]
+      },
+      {
+        "borders": 0,
+        "focused": true,
+        "inner": [
+          16,
+          5,
+          15,
+          5
+        ],
+        "rect": [
+          16,
+          5,
+          16,
+          5
+        ]
+      }
+    ],
+    "rows": [
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                                ",
+      "                hello           ",
+      "                wor             ",
+      "                                ",
+      "                                ",
+      "                                "
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      7,
+      1
+    ],
+    "frame_sha256": "bace81c21d93da650f604b4b2aa4af0efe2c8c311e1b5bf77ef77a44e7ee202c",
+    "name": "agent_labels",
+    "panes": [
+      {
+        "borders": 13,
+        "focused": false,
+        "inner": [
+          1,
+          1,
+          15,
+          8
+        ],
+        "rect": [
+          0,
+          0,
+          16,
+          10
+        ]
+      },
+      {
+        "borders": 11,
+        "focused": false,
+        "inner": [
+          17,
+          1,
+          14,
+          4
+        ],
+        "rect": [
+          16,
+          0,
+          16,
+          5
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          17,
+          6,
+          13,
+          3
+        ],
+        "rect": [
+          16,
+          5,
+          16,
+          5
+        ]
+      }
+    ],
+    "rows": [
+      "┌ build ────────┬ 模 块 组 织 （ … ─┐",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               ├ claude ──────┤",
+      "│               │hello         │",
+      "│               │wor           │",
+      "│               │              │",
+      "└───────────────┴──────────────┘"
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "159b82b83a80863fb5f3963fd8645b5c7415defd7cd410a05d88750077c2eeac",
+    "name": "narrow",
+    "panes": [
+      {
+        "borders": 13,
+        "focused": false,
+        "inner": [
+          1,
+          1,
+          4,
+          3
+        ],
+        "rect": [
+          0,
+          0,
+          5,
+          5
+        ]
+      },
+      {
+        "borders": 11,
+        "focused": false,
+        "inner": [
+          6,
+          1,
+          2,
+          2
+        ],
+        "rect": [
+          5,
+          0,
+          4,
+          3
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          6,
+          4,
+          2,
+          0
+        ],
+        "rect": [
+          5,
+          3,
+          4,
+          2
+        ]
+      }
+    ],
+    "rows": [
+      "┌ … ─┬──┐",
+      "│    │  │",
+      "│    │  │",
+      "│    ├──┤",
+      "└────┴──┘"
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      7,
+      0
+    ],
+    "frame_sha256": "da568be3ef3ebc9425cb580045cd2799a5f65c16e08f6b1768e69ea338bf98bc",
+    "name": "hidden_cursor",
+    "panes": [
+      {
+        "borders": 13,
+        "focused": false,
+        "inner": [
+          1,
+          1,
+          15,
+          8
+        ],
+        "rect": [
+          0,
+          0,
+          16,
+          10
+        ]
+      },
+      {
+        "borders": 11,
+        "focused": false,
+        "inner": [
+          17,
+          1,
+          14,
+          4
+        ],
+        "rect": [
+          16,
+          0,
+          16,
+          5
+        ]
+      },
+      {
+        "borders": 15,
+        "focused": true,
+        "inner": [
+          17,
+          6,
+          13,
+          3
+        ],
+        "rect": [
+          16,
+          5,
+          16,
+          5
+        ]
+      }
+    ],
+    "rows": [
+      "┌ build ────────┬ 模 块 组 织 （ … ─┐",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               │              │",
+      "│               ├ a much long… ┤",
+      "│               │hello         │",
+      "│               │wor           │",
+      "│               │              │",
+      "└───────────────┴──────────────┘"
+    ]
+  }
+]

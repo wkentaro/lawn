@@ -30,15 +30,7 @@ fn edits_round_trip_through_load() {
         .edit(|layout| {
             let workspace = add_workspace(layout, split(pane("t1"), pane("t2")));
             layout.workspaces[0].name = Some("main".to_owned());
-            layout.parked.insert(
-                "t3".to_owned(),
-                ReturnPosition {
-                    workspace: workspace.clone(),
-                    tab: "tab1".to_owned(),
-                    beside: Some("t2".to_owned()),
-                    direction: Direction::Down,
-                },
-            );
+            layout.parked.insert("t2".to_owned());
             workspace
         })
         .expect("edit");
@@ -175,4 +167,78 @@ fn a_session_that_never_changed_is_not_written() {
     let (_, loaded) = store.edit(|layout| layout.shows("t1")).expect("no-op");
     assert_eq!(loaded.version, 0);
     assert_eq!(store.load_all().expect("load all"), (Sessions::new(), 0));
+}
+
+fn write_legacy(test: &TestCore, store: &Store) -> u64 {
+    test.core
+        .doc_set(
+            &store.name,
+            None,
+            &json!({"schema": 2, "sessions": {"legacy": {
+                "workspaces": [{"id": "ws0", "name": "main", "tabs": [
+                    {"id": "tab1", "root": {"kind": "pane", "terminal": "t1"}}
+                ]}],
+                "parked": {"t2": {"workspace": "ws0", "tab": "tab1", "beside": "t1", "direction": "down"}},
+                "next_id": 2
+            }}}),
+            0,
+        )
+        .expect("write legacy")
+}
+
+#[test]
+fn only_a_real_change_upgrades_a_legacy_document() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "legacy", None);
+    let version = write_legacy(&test, &store);
+
+    assert!(!store.load().expect("load").layout.shows("t2"));
+    let (refused, _) = store
+        .edit(|layout| layout.unpark("t1", None))
+        .expect("edit");
+    assert!(refused.is_err());
+    store.edit(|layout| layout.park("t2")).expect("no-op");
+    let raw = test.core.doc_get(&store.name, None).expect("get");
+    assert_eq!(
+        (raw.version, raw.value["schema"].as_u64()),
+        (version, Some(2))
+    );
+
+    store
+        .edit(|layout| layout.unpark("t2", None))
+        .expect("unpark")
+        .0
+        .expect("unparked");
+    let raw = test.core.doc_get(&store.name, None).expect("get");
+    assert!(raw.version > version);
+    assert_eq!(raw.value["schema"], SCHEMA);
+    let layout = store.load().expect("load").layout;
+    assert!(layout.shows("t2"));
+    assert_eq!(layout.workspaces[0].name.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_conflict_migrates_the_winners_legacy_document() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let store = Store::new(test.core.clone(), "legacy", None);
+    let calls = Cell::new(0);
+    let (_, written) = store
+        .edit(|layout| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                write_legacy(&test, &store);
+            }
+            layout.unpark("t2", None)
+        })
+        .expect("edit");
+    assert_eq!(calls.get(), 2);
+    assert_eq!(written.layout.workspaces.len(), 1);
+    assert_eq!(written.layout.workspaces[0].name.as_deref(), Some("main"));
+    assert_eq!(written.layout.terminals().collect::<Vec<_>>(), ["t1", "t2"]);
+    assert!(written.layout.parked.is_empty());
+    assert_eq!(store.load(), Ok(written));
 }

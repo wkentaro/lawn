@@ -1,13 +1,4 @@
 use super::*;
-use crate::session_doc::Layout;
-
-#[test]
-fn a_schema_one_layout_defaults_to_no_pending_operations() {
-    let layout: Layout =
-        serde_json::from_value(json!({"workspaces": [], "parked": {}, "next_id": 0})).unwrap();
-    assert!(layout.pending_starts.is_empty());
-    assert!(layout.closing.is_empty());
-}
 
 #[test]
 fn remote_matches_never_resolve_a_local_start() {
@@ -27,5 +18,7 @@ fn remote_matches_never_resolve_a_local_start() {
 
 #[cfg(unix)]
 mod close;
+#[cfg(unix)]
+mod first;
 #[cfg(unix)]
 mod live;
