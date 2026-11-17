@@ -471,23 +471,29 @@ fn reports(input: &mut tokio::sync::mpsc::Receiver<bytes::Bytes>) -> Vec<u8> {
     sent
 }
 
+fn attach_reporting_focus(surface: &mut Surface) -> Vec<tokio::sync::mpsc::Receiver<bytes::Bytes>> {
+    requests(surface)
+        .into_iter()
+        .map(|(_, id, geometry)| {
+            let (view, input) = View::test_with_input(geometry.cols, geometry.rows);
+            view.test_feed(b"\x1b[?1004h");
+            surface.attached(id, geometry, Ok(view));
+            input
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn moving_focus_tells_both_panes() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
-    let mut inputs = Vec::new();
-    for (_, id, geometry) in requests(&mut surface) {
-        let (view, input) = View::test_with_input(geometry.cols, geometry.rows);
-        view.test_feed(b"\x1b[?1004h");
-        surface.attached(id, geometry, Ok(view));
-        inputs.push(input);
-    }
+    let mut inputs = attach_reporting_focus(&mut surface);
     frame(&mut surface, &HashSet::new());
     let [left, right] = &mut inputs[..] else {
         unreachable!("two panes")
     };
     assert_eq!(reports(left), b"\x1b[I");
-    assert_eq!(reports(right), b"");
+    assert_eq!(reports(right), b"\x1b[O");
 
     let pane = surface.tiles.tiles[1].info.inner_rect;
     surface.mouse(click(pane.x, pane.y));
@@ -498,4 +504,38 @@ async fn moving_focus_tells_both_panes() {
     surface.update(row_of(&terminals(2)));
     assert_eq!(reports(left), b"");
     assert_eq!(reports(right), b"\x1b[O");
+}
+
+#[tokio::test]
+async fn parking_the_focused_pane_moves_focus_before_the_next_frame() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_reporting_focus(&mut surface);
+    let [left, right] = &mut inputs[..] else {
+        unreachable!("two panes")
+    };
+    assert_eq!(reports(left), b"\x1b[I");
+    assert_eq!(reports(right), b"\x1b[O");
+
+    let mut layout = row_of(&terminals(2));
+    layout.parked.insert("t0".to_owned());
+    surface.update(layout);
+
+    assert_eq!(reports(left), b"\x1b[O");
+    assert_eq!(reports(right), b"\x1b[I");
+}
+
+#[tokio::test]
+async fn a_pane_reattached_after_the_host_regained_focus_is_told_it_has_focus() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_reporting_focus(&mut surface).remove(0);
+    surface.host_focus(false);
+    assert_eq!(reports(&mut input), b"\x1b[I\x1b[O");
+
+    surface.forget(id_of(&surface, "t0"));
+    surface.host_focus(true);
+    let mut input = attach_reporting_focus(&mut surface).remove(0);
+
+    assert_eq!(reports(&mut input), b"\x1b[I");
 }

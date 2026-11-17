@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::io;
 
@@ -17,14 +18,13 @@ struct Shown {
     inner: Rect,
     geometry: Geometry,
     retained: Option<Rect>,
+    told_focus: Option<bool>,
 }
 
 pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
-    attaching: HashSet<PaneId>,
-    detached_while_attaching: HashSet<PaneId>,
-    reported_focus: Option<PaneId>,
+    attaching: HashMap<PaneId, bool>,
     host_focused: bool,
     tiles: Tiles,
     chrome: PaneChrome,
@@ -40,9 +40,7 @@ impl Surface {
         Self {
             session: Session::default(),
             views: HashMap::new(),
-            attaching: HashSet::new(),
-            detached_while_attaching: HashSet::new(),
-            reported_focus: None,
+            attaching: HashMap::new(),
             host_focused: true,
             tiles: Tiles::default(),
             chrome,
@@ -57,30 +55,23 @@ impl Surface {
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
         self.relayout = true;
-        self.report_focus();
+        self.sync_focus();
     }
 
     pub(super) fn host_focus(&mut self, focused: bool) {
         self.host_focused = focused;
-        if let Some(view) = self.focused() {
-            view.focus(focused);
-        }
+        self.sync_focus();
     }
 
-    fn report_focus(&mut self) {
-        let shown = |id: &PaneId| self.views.contains_key(id);
-        let focused = self.session.focused_id().filter(shown);
-        let reported = self.reported_focus.filter(shown);
-        if focused == reported {
-            return;
+    fn sync_focus(&mut self) {
+        let focused = self.session.focused_id().filter(|_| self.host_focused);
+        for (id, shown) in &mut self.views {
+            let focus = focused == Some(*id);
+            if shown.told_focus != Some(focus) {
+                shown.view.focus(focus);
+                shown.told_focus = Some(focus);
+            }
         }
-        if let Some(shown) = reported.and_then(|id| self.views.get(&id)) {
-            shown.view.focus(false);
-        }
-        if let Some(view) = self.focused() {
-            view.focus(self.host_focused);
-        }
-        self.reported_focus = focused;
     }
 
     pub(super) fn resize(&mut self, host: Geometry) {
@@ -91,15 +82,13 @@ impl Surface {
     pub(super) fn forget(&mut self, id: PaneId) {
         if self.views.remove(&id).is_some() {
             self.relayout = true;
-            self.report_focus();
-        } else if self.attaching.contains(&id) {
-            self.detached_while_attaching.insert(id);
+        } else if let Some(detached) = self.attaching.get_mut(&id) {
+            *detached = true;
         }
     }
 
     pub(super) fn attached(&mut self, id: PaneId, geometry: Geometry, view: io::Result<View>) {
-        self.attaching.remove(&id);
-        let detached = self.detached_while_attaching.remove(&id);
+        let detached = self.attaching.remove(&id).unwrap_or(true);
         self.relayout = true;
         match view {
             Ok(view) if !detached && self.terminal(id).is_some() => {
@@ -110,6 +99,7 @@ impl Surface {
                         inner: Rect::default(),
                         geometry,
                         retained: None,
+                        told_focus: None,
                     },
                 );
             }
@@ -118,7 +108,7 @@ impl Surface {
                 tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
             }
         }
-        self.report_focus();
+        self.sync_focus();
     }
 
     pub(super) fn needs_layout(&self) -> bool {
@@ -150,7 +140,7 @@ impl Surface {
             && self.session.focus(&tile.terminal)
         {
             self.relayout = true;
-            self.report_focus();
+            self.sync_focus();
         }
         if let Some(shown) = self.views.get(&id) {
             event.column -= shown.inner.x;
@@ -197,34 +187,23 @@ impl Surface {
                 rows: inner.height,
                 ..self.host
             };
-            let Some(Shown {
-                mut view,
-                inner: was,
-                geometry: had,
-                ..
-            }) = views.remove(&tile.info.id)
-            else {
-                if self.attaching.insert(tile.info.id) {
+            let Some(mut shown) = views.remove(&tile.info.id) else {
+                if let Entry::Vacant(attempt) = self.attaching.entry(tile.info.id) {
+                    attempt.insert(false);
                     attach(&tile.terminal, tile.info.id, geometry);
                 }
                 continue;
             };
-            if had == geometry {
-                view.invalidate();
+            if shown.geometry == geometry {
+                shown.view.invalidate();
             } else {
-                view.resize(geometry);
+                shown.view.resize(geometry);
             }
-            let same_size = was.width == inner.width && was.height == inner.height;
-            let retained = same_size.then_some(was);
-            self.views.insert(
-                tile.info.id,
-                Shown {
-                    view,
-                    inner,
-                    geometry,
-                    retained,
-                },
-            );
+            let same_size = shown.inner.width == inner.width && shown.inner.height == inner.height;
+            shown.retained = same_size.then_some(shown.inner);
+            shown.inner = inner;
+            shown.geometry = geometry;
+            self.views.insert(tile.info.id, shown);
         }
     }
 
