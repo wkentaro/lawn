@@ -34,6 +34,25 @@ fn unbuilt_commands_fall_through_to_the_old_cli() {
 }
 
 #[test]
+fn the_skill_needs_no_core_or_terminal() {
+    std::env::set_var(crate::hc::HC_BIN_ENV, "/nonexistent/lawn-skill-test-hc");
+    assert!(matches!(
+        super::maybe_run(&args(&["lawn", "--skill"])),
+        Some(Ok(()))
+    ));
+}
+
+#[test]
+fn the_skill_does_not_override_help() {
+    for words in [
+        &["lawn", "--help", "--skill"][..],
+        &["lawn", "--skill", "--help"],
+    ] {
+        assert!(super::maybe_run(&args(words)).is_none());
+    }
+}
+
+#[test]
 fn ls_takes_json() {
     assert_eq!(parsed(&["ls"]), Command::Ls { json: false });
     assert_eq!(parsed(&["ls", "--json"]), Command::Ls { json: true });

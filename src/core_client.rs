@@ -13,6 +13,11 @@ pub(crate) fn enabled() -> bool {
 }
 
 pub(crate) fn maybe_run(args: &[String]) -> Option<std::io::Result<()>> {
+    if args.len() == 2 && args[1] == "--skill" {
+        crate::platform::begin_cli_output();
+        print!("{}", include_str!("core_client/SKILL.md"));
+        return Some(Ok(()));
+    }
     cli::maybe_run(args).or_else(|| attach::maybe_run(args))
 }
 
