@@ -1,0 +1,395 @@
+[
+  {
+    "frame_sha256": "2d007b6419634c155a4dc4c0613fc6adc76e6d97ecfcb94c4bfbc2b4456c659f",
+    "hits": {
+      "active_launcher": [0, 8, 25, 1],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [19, 10, 6, 1],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [85, 11, 3, 1],
+      "new_workspace": [0, 10, 5, 1],
+      "parked_launcher": [0, 9, 25, 1],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [25, 0, 1, 12],
+      "sidebar_toggle": [24, 11, 1, 1],
+      "tab_left": [26, 11, 3, 1],
+      "tab_right": [82, 11, 3, 1],
+      "tabs": [
+        [
+          [29, 11, 8, 1],
+          "tab_1"
+        ],
+        [
+          [38, 11, 10, 1],
+          "tab_2"
+        ],
+        [
+          [49, 11, 10, 1],
+          "tab_3"
+        ],
+        [
+          [60, 11, 10, 1],
+          "tab_4"
+        ],
+        [
+          [71, 11, 10, 1],
+          "tab_5"
+        ]
+      ],
+      "workspaces": [
+        [
+          [0, 2, 25, 1],
+          "ws_1"
+        ]
+      ]
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [26, 0, 62, 11],
+      "sidebar": [0, 0, 26, 12],
+      "tabs": [26, 11, 62, 1]
+    },
+    "name": "desktop",
+    "rows": [
+      " spaces                  │LIVE                                                          ",
+      "                         │PANE                                                          ",
+      " service                 │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      " active                1 │                                                              ",
+      " parked                0 │                                                              ",
+      " new                 menu│                                                              ",
+      "                        «│ <   ● 1      task 2     task 3     task 4     task 5  … >  + "
+    ]
+  },
+  {
+    "frame_sha256": "b1705bc3962cfdcbf297ce51fed8e7bb17130467e161ce99f25855a1b8c0c74e",
+    "hits": {
+      "active_launcher": [0, 8, 25, 1],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [19, 10, 6, 1],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [85, 0, 3, 1],
+      "new_workspace": [0, 10, 5, 1],
+      "parked_launcher": [0, 9, 25, 1],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [25, 0, 1, 12],
+      "sidebar_toggle": [24, 11, 1, 1],
+      "tab_left": [26, 0, 3, 1],
+      "tab_right": [82, 0, 3, 1],
+      "tabs": [
+        [
+          [29, 0, 8, 1],
+          "tab_1"
+        ],
+        [
+          [38, 0, 10, 1],
+          "tab_2"
+        ],
+        [
+          [49, 0, 10, 1],
+          "tab_3"
+        ],
+        [
+          [60, 0, 10, 1],
+          "tab_4"
+        ],
+        [
+          [71, 0, 10, 1],
+          "tab_5"
+        ]
+      ],
+      "workspaces": [
+        [
+          [0, 2, 25, 1],
+          "ws_1"
+        ]
+      ]
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [26, 1, 62, 11],
+      "sidebar": [0, 0, 26, 12],
+      "tabs": [26, 0, 62, 1]
+    },
+    "name": "top",
+    "rows": [
+      " spaces                  │ <   ● 1      task 2     task 3     task 4     task 5  … >  + ",
+      "                         │LIVE                                                          ",
+      " service                 │PANE                                                          ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      " active                1 │                                                              ",
+      " parked                0 │                                                              ",
+      " new                 menu│                                                              ",
+      "                        «│                                                              "
+    ]
+  },
+  {
+    "frame_sha256": "364773527d76aa22780782f779692ce1de28a4b58b7e43317a18283eb3d7ad10",
+    "hits": {
+      "active_launcher": [0, 0, 0, 0],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [0, 0, 0, 0],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [68, 11, 3, 1],
+      "new_workspace": [0, 0, 0, 0],
+      "parked_launcher": [0, 0, 0, 0],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [0, 0, 0, 0],
+      "sidebar_toggle": [1, 11, 1, 1],
+      "tab_left": [0, 0, 0, 0],
+      "tab_right": [0, 0, 0, 0],
+      "tabs": [
+        [
+          [4, 11, 8, 1],
+          "tab_1"
+        ],
+        [
+          [13, 11, 10, 1],
+          "tab_2"
+        ],
+        [
+          [24, 11, 10, 1],
+          "tab_3"
+        ],
+        [
+          [35, 11, 10, 1],
+          "tab_4"
+        ],
+        [
+          [46, 11, 10, 1],
+          "tab_5"
+        ],
+        [
+          [57, 11, 10, 1],
+          "tab_6"
+        ]
+      ],
+      "workspaces": [
+        [
+          [0, 0, 3, 1],
+          "ws_1"
+        ]
+      ]
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [4, 0, 84, 11],
+      "sidebar": [0, 0, 4, 12],
+      "tabs": [4, 11, 84, 1]
+    },
+    "name": "compact",
+    "rows": [
+      "1  │LIVE                                                                                ",
+      "   │PANE                                                                                ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      "   │                                                                                    ",
+      " » │  ● 1      task 2     task 3     task 4     task 5     task 6    +                  "
+    ]
+  },
+  {
+    "frame_sha256": "6cbbbdb67d9a3e9e4f574aaed4bfc452b4a4a7a2b0b42a9e4fd8afabcb6fd4d1",
+    "hits": {
+      "active_launcher": [0, 0, 0, 0],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [0, 0, 0, 0],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [64, 11, 3, 1],
+      "new_workspace": [0, 0, 0, 0],
+      "parked_launcher": [0, 0, 0, 0],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [0, 0, 0, 0],
+      "sidebar_toggle": [0, 0, 0, 0],
+      "tab_left": [0, 0, 0, 0],
+      "tab_right": [0, 0, 0, 0],
+      "tabs": [
+        [
+          [0, 11, 8, 1],
+          "tab_1"
+        ],
+        [
+          [9, 11, 10, 1],
+          "tab_2"
+        ],
+        [
+          [20, 11, 10, 1],
+          "tab_3"
+        ],
+        [
+          [31, 11, 10, 1],
+          "tab_4"
+        ],
+        [
+          [42, 11, 10, 1],
+          "tab_5"
+        ],
+        [
+          [53, 11, 10, 1],
+          "tab_6"
+        ]
+      ],
+      "workspaces": []
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [0, 0, 88, 11],
+      "sidebar": [0, 0, 0, 12],
+      "tabs": [0, 11, 88, 1]
+    },
+    "name": "hidden",
+    "rows": [
+      "LIVE                                                                                    ",
+      "PANE                                                                                    ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "                                                                                        ",
+      "  ● 1      task 2     task 3     task 4     task 5     task 6    +                      "
+    ]
+  },
+  {
+    "frame_sha256": "f733d75a153c8f34060dd35304487398ad344d80903a76cae84c09fe820b29da",
+    "hits": {
+      "active_launcher": [0, 8, 25, 1],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [19, 10, 6, 1],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [0, 0, 0, 0],
+      "new_workspace": [0, 10, 5, 1],
+      "parked_launcher": [0, 9, 25, 1],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [25, 0, 1, 12],
+      "sidebar_toggle": [24, 11, 1, 1],
+      "tab_left": [0, 0, 0, 0],
+      "tab_right": [0, 0, 0, 0],
+      "tabs": [],
+      "workspaces": [
+        [
+          [0, 2, 25, 1],
+          "ws_1"
+        ]
+      ]
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [26, 0, 62, 12],
+      "sidebar": [0, 0, 26, 12],
+      "tabs": [26, 12, 62, 0]
+    },
+    "name": "single",
+    "rows": [
+      " spaces                  │LIVE                                                          ",
+      "                         │PANE                                                          ",
+      " service                 │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      "                         │                                                              ",
+      " active                1 │                                                              ",
+      " parked                0 │                                                              ",
+      " new                 menu│                                                              ",
+      "                        «│                                                              "
+    ]
+  },
+  {
+    "frame_sha256": "b2e24164640a51a611be8a46e8333f18c9c17932f670d19a5fae3ee6abd795ec",
+    "hits": {
+      "active_launcher": [0, 0, 0, 0],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [0, 0, 0, 0],
+      "mobile_switch": [34, 0, 10, 2],
+      "new_tab": [0, 0, 0, 0],
+      "new_workspace": [0, 0, 0, 0],
+      "parked_launcher": [0, 0, 0, 0],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [0, 0, 0, 0],
+      "sidebar_toggle": [0, 0, 0, 0],
+      "tab_left": [0, 0, 0, 0],
+      "tab_right": [0, 0, 0, 0],
+      "tabs": [],
+      "workspaces": []
+    },
+    "layout": {
+      "mobile": [0, 0, 44, 2],
+      "panes": [0, 2, 44, 10],
+      "sidebar": [0, 0, 0, 0],
+      "tabs": [0, 0, 0, 0]
+    },
+    "name": "mobile",
+    "rows": [
+      " ● service            tab 1 · 1/6 │         ",
+      " 1 working                        │ switch  ",
+      "LIVE                                        ",
+      "PANE                                        ",
+      "                                            ",
+      "                                            ",
+      "                                            ",
+      "                                            ",
+      "                                            ",
+      "                                            ",
+      "                                            ",
+      "                                            "
+    ]
+  },
+  {
+    "frame_sha256": "fbecf20aaee7de02cdb68608e089995e1c928deccac32485caddbdc6b3688172",
+    "hits": {
+      "active_launcher": [0, 0, 0, 0],
+      "agent_sort": [0, 0, 0, 0],
+      "agents": [],
+      "global_launcher": [0, 0, 0, 1],
+      "mobile_switch": [0, 0, 0, 0],
+      "new_tab": [0, 0, 0, 0],
+      "new_workspace": [0, 0, 0, 0],
+      "parked_launcher": [0, 0, 0, 0],
+      "section_divider": [0, 0, 0, 0],
+      "sidebar_divider": [25, 0, 1, 1],
+      "sidebar_toggle": [24, 0, 1, 1],
+      "tab_left": [0, 0, 0, 0],
+      "tab_right": [0, 0, 0, 0],
+      "tabs": [],
+      "workspaces": [
+        [
+          [0, 2, 0, 0],
+          "ws_1"
+        ]
+      ]
+    },
+    "layout": {
+      "mobile": [0, 0, 0, 0],
+      "panes": [26, 0, 62, 1],
+      "sidebar": [0, 0, 26, 1],
+      "tabs": [26, 1, 62, 0]
+    },
+    "name": "tiny",
+    "rows": [
+      "                        «│LIVE                                                          "
+    ]
+  }
+]
