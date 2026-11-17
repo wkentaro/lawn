@@ -171,7 +171,7 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
         geometry,
         PaneId::from_raw(7),
         &wake,
-        &events,
+        &events.sender(),
     )
     .expect("attach");
     let mut screen = vec![String::new(); 5];
@@ -234,7 +234,7 @@ async fn each_core_output_wakes_the_host_to_draw_it() {
         geometry,
         id,
         &wake,
-        &Events::default(),
+        &Events::default().sender(),
     )
     .expect("attach");
     for word in ["first-word", "second-word"] {

@@ -22,6 +22,7 @@ struct Shown {
 pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
+    attaching: HashSet<PaneId>,
     tiles: Tiles,
     chrome: PaneChrome,
     palette: Palette,
@@ -36,6 +37,7 @@ impl Surface {
         Self {
             session: Session::default(),
             views: HashMap::new(),
+            attaching: HashSet::new(),
             tiles: Tiles::default(),
             chrome,
             palette,
@@ -59,6 +61,28 @@ impl Surface {
     pub(super) fn forget(&mut self, id: PaneId) {
         if self.views.remove(&id).is_some() {
             self.relayout = true;
+        }
+    }
+
+    pub(super) fn attached(&mut self, id: PaneId, geometry: Geometry, view: io::Result<View>) {
+        self.attaching.remove(&id);
+        self.relayout = true;
+        match view {
+            Ok(view) if self.terminal(id).is_some() => {
+                self.views.insert(
+                    id,
+                    Shown {
+                        view,
+                        inner: Rect::default(),
+                        geometry,
+                        retained: None,
+                    },
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
+            }
         }
     }
 
@@ -101,7 +125,7 @@ impl Surface {
     pub(super) fn frame(
         &mut self,
         dirty: &HashSet<PaneId>,
-        attach: impl FnMut(&str, PaneId, Geometry) -> io::Result<View>,
+        attach: impl FnMut(&str, PaneId, Geometry),
     ) -> (Vec<PaneSurfacePatchRow>, Option<CursorState>) {
         let rows = if self.relayout {
             self.relayout = false;
@@ -122,7 +146,7 @@ impl Surface {
         (rows, self.cursor())
     }
 
-    fn lay_out(&mut self, mut attach: impl FnMut(&str, PaneId, Geometry) -> io::Result<View>) {
+    fn lay_out(&mut self, mut attach: impl FnMut(&str, PaneId, Geometry)) {
         let area = Rect::new(0, 0, self.host.cols, self.host.rows);
         self.tiles = self.session.tiles(area, self.chrome);
         let mut views = std::mem::take(&mut self.views);
@@ -136,30 +160,25 @@ impl Surface {
                 rows: inner.height,
                 ..self.host
             };
-            let (view, retained) = match views.remove(&tile.info.id) {
-                Some(Shown {
-                    mut view,
-                    inner: was,
-                    geometry: had,
-                    ..
-                }) => {
-                    if had == geometry {
-                        view.invalidate();
-                    } else {
-                        view.resize(geometry);
-                    }
-                    let same_size = was.width == inner.width && was.height == inner.height;
-                    (view, same_size.then_some(was))
+            let Some(Shown {
+                mut view,
+                inner: was,
+                geometry: had,
+                ..
+            }) = views.remove(&tile.info.id)
+            else {
+                if self.attaching.insert(tile.info.id) {
+                    attach(&tile.terminal, tile.info.id, geometry);
                 }
-                None => match attach(&tile.terminal, tile.info.id, geometry) {
-                    Ok(view) => (view, None),
-                    Err(error) => {
-                        tracing::warn!(%error, terminal = tile.terminal, "the pane did not attach");
-                        self.relayout = true;
-                        continue;
-                    }
-                },
+                continue;
             };
+            if had == geometry {
+                view.invalidate();
+            } else {
+                view.resize(geometry);
+            }
+            let same_size = was.width == inner.width && was.height == inner.height;
+            let retained = same_size.then_some(was);
             self.views.insert(
                 tile.info.id,
                 Shown {

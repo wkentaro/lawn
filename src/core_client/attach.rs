@@ -42,7 +42,7 @@ fn run(terminal: &str) -> io::Result<()> {
             geometry,
             crate::layout::PaneId::from_raw(0),
             &wake,
-            &events,
+            &events.sender(),
         )?;
         let mut guard = super::host::enter(false)?;
         unix::show(view, &wake, events, geometry, &mut guard, stop).await

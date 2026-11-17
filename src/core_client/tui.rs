@@ -67,15 +67,15 @@ mod unix {
 
     const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
-    fn current(core: &mut Arc<Core>) -> io::Result<Arc<Core>> {
+    fn connected(core: Arc<Core>) -> io::Result<Arc<Core>> {
         if core.is_closed() {
-            *core = crate::core_client::core()?;
+            return crate::core_client::core();
         }
-        Ok(core.clone())
+        Ok(core)
     }
 
     pub(super) async fn show(
-        mut core: Arc<Core>,
+        core: Arc<Core>,
         session: String,
         mut layouts: mpsc::UnboundedReceiver<Layout>,
         mut host: Geometry,
@@ -101,6 +101,7 @@ mod unix {
         let mut sizes = HostSizes::watch(host)?;
         let wake = Wake::default();
         let mut events = Events::default();
+        let (attached_tx, mut attached) = mpsc::unbounded_channel();
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
         let mut out = io::stdout();
@@ -114,13 +115,34 @@ mod unix {
                 () = wait(due) => {
                     let dirty = wake.take();
                     let (rows, cursor) = surface.frame(&dirty, |terminal, id, geometry| {
-                        View::attach(current(&mut core)?, terminal, geometry, id, &wake, &events)
+                        let (core, terminal, wake, events, attached) = (
+                            core.clone(),
+                            terminal.to_owned(),
+                            wake.clone(),
+                            events.sender(),
+                            attached_tx.clone(),
+                        );
+                        tokio::spawn(async move {
+                            let view = tokio::task::spawn_blocking(move || {
+                                View::attach(connected(core)?, &terminal, geometry, id, &wake, &events)
+                            })
+                            .await
+                            .unwrap_or_else(|error| Err(io::Error::other(error)));
+                            if view.is_err() {
+                                tokio::time::sleep(RETRY).await;
+                            }
+                            attached.send((id, geometry, view)).ok();
+                        });
                     });
                     screen.present(&mut out, (host.cols, host.rows), rows, cursor)?;
                     let all_keys = surface.focused().is_some_and(View::reports_all_keys);
                     follow_key_reporting(all_keys, &mut keys.all, &mut out)?;
                     last_draw = Instant::now();
-                    due = surface.needs_layout().then(|| last_draw + RETRY);
+                    due = None;
+                }
+                Some((id, geometry, view)) = attached.recv() => {
+                    surface.attached(id, geometry, view);
+                    due.get_or_insert_with(Instant::now);
                 }
                 layout = layouts.recv() => {
                     let Some(layout) = layout else {
@@ -165,15 +187,12 @@ mod unix {
                         let Some(terminal) = surface.terminal(id).map(str::to_owned) else {
                             continue;
                         };
-                        let lifecycle = match current(&mut core) {
-                            Ok(core) => Lifecycle::new(core, &session),
-                            Err(error) => {
-                                warn!(%error, terminal, "the ended pane did not close");
-                                continue;
-                            }
-                        };
+                        let (core, session) = (core.clone(), session.clone());
                         tokio::task::spawn_blocking(move || {
-                            if let Err(error) = lifecycle.close(&terminal) {
+                            let closed = connected(core)
+                                .map_err(|error| error.to_string())
+                                .and_then(|core| Lifecycle::new(core, &session).close(&terminal));
+                            if let Err(error) = closed {
                                 warn!(%error, terminal, "the ended pane did not close");
                             }
                         });

@@ -59,11 +59,45 @@ fn terminals(count: usize) -> Vec<String> {
 }
 
 fn frame(surface: &mut Surface, dirty: &HashSet<PaneId>) -> Vec<PaneSurfacePatchRow> {
-    surface
-        .frame(dirty, |_, _, geometry| {
-            Ok(View::test(geometry.cols, geometry.rows))
+    frame_attaching(surface, dirty).0
+}
+
+fn requests(surface: &mut Surface) -> Vec<(String, PaneId, Geometry)> {
+    let mut requests = Vec::new();
+    surface.frame(&HashSet::new(), |terminal, id, geometry| {
+        requests.push((terminal.to_owned(), id, geometry));
+    });
+    requests
+}
+
+fn frame_attaching(
+    surface: &mut Surface,
+    dirty: &HashSet<PaneId>,
+) -> (Vec<PaneSurfacePatchRow>, Vec<String>) {
+    let mut requests = Vec::new();
+    let rows = surface
+        .frame(dirty, |terminal, id, geometry| {
+            requests.push((terminal.to_owned(), id, geometry));
         })
-        .0
+        .0;
+    if requests.is_empty() {
+        return (rows, Vec::new());
+    }
+    for (_, id, geometry) in &requests {
+        surface.attached(*id, *geometry, Ok(View::test(geometry.cols, geometry.rows)));
+    }
+    let rows = surface.frame(dirty, |_, _, _| unreachable!("attached")).0;
+    (
+        rows,
+        requests
+            .into_iter()
+            .map(|(terminal, ..)| terminal)
+            .collect(),
+    )
+}
+
+fn never_attach(_: &str, _: PaneId, _: Geometry) {
+    unreachable!("no pane to attach");
 }
 
 fn text(rows: &[PaneSurfacePatchRow]) -> String {
@@ -153,7 +187,7 @@ async fn clicking_a_pane_focuses_it_and_puts_the_cursor_there() {
     surface.mouse(click(right.x + 1, right.y + 1));
 
     assert!(surface.needs_layout());
-    let (_, cursor) = surface.frame(&HashSet::new(), |_, _, _| unreachable!("no new pane"));
+    let (_, cursor) = surface.frame(&HashSet::new(), never_attach);
     let cursor = cursor.expect("cursor");
     assert_eq!((cursor.x, cursor.y), (right.x, right.y));
     assert!(surface.tiles.tiles[1].info.is_focused);
@@ -208,11 +242,7 @@ async fn a_pane_keeps_its_view_until_it_leaves_the_tab() {
     frame(&mut surface, &HashSet::new());
 
     surface.update(row_of(&terminals(3)));
-    let mut attached = Vec::new();
-    surface.frame(&HashSet::new(), |terminal, _, geometry| {
-        attached.push(terminal.to_owned());
-        Ok(View::test(geometry.cols, geometry.rows))
-    });
+    let (_, attached) = frame_attaching(&mut surface, &HashSet::new());
     assert_eq!(attached, ["t2"]);
 
     surface.update(row_of(&terminals(1)));
@@ -243,13 +273,52 @@ async fn a_detached_pane_attaches_again() {
     frame(&mut surface, &HashSet::new());
 
     surface.forget(id_of(&surface, "t1"));
-    let mut attached = Vec::new();
-    surface.frame(&HashSet::new(), |terminal, _, geometry| {
-        attached.push(terminal.to_owned());
-        Ok(View::test(geometry.cols, geometry.rows))
-    });
+    let (_, attached) = frame_attaching(&mut surface, &HashSet::new());
 
     assert_eq!(attached, ["t1"]);
+}
+
+#[tokio::test]
+async fn panes_keep_drawing_and_taking_input_while_another_pane_attaches() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    frame(&mut surface, &HashSet::new());
+    surface.forget(id_of(&surface, "t1"));
+    let pending: Vec<_> = requests(&mut surface)
+        .into_iter()
+        .map(|(terminal, ..)| terminal)
+        .collect();
+    assert_eq!(pending, ["t1"]);
+
+    feed(&surface, "t0", b"left");
+    let rows = surface
+        .frame(&HashSet::from([id_of(&surface, "t0")]), never_attach)
+        .0;
+    assert!(text(&rows).contains("left"));
+    surface.resize(host(50, 12));
+    surface.frame(&HashSet::new(), never_attach);
+    let left = surface.tiles.tiles[0].info.inner_rect;
+    surface.mouse(click(left.x, left.y));
+
+    assert!(surface.focused().is_some());
+    assert_eq!(surface.views.len(), 1);
+}
+
+#[tokio::test]
+async fn an_attach_that_finishes_after_its_pane_left_is_dropped() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let pending = requests(&mut surface);
+    surface.update(row_of(&terminals(1)));
+    surface.frame(&HashSet::new(), never_attach);
+
+    for (_, id, geometry) in pending {
+        surface.attached(id, geometry, Ok(View::test(geometry.cols, geometry.rows)));
+    }
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.views.len(), 1);
+    assert!(surface.views.contains_key(&id_of(&surface, "t0")));
 }
 
 fn feed_after_first_frame(surface: &mut Surface, terminal: &str, bytes: &[u8]) {
@@ -282,16 +351,18 @@ async fn a_pane_that_fails_to_attach_is_tried_again() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
 
-    surface.frame(&HashSet::new(), |terminal, _, geometry| {
-        if terminal == "t1" {
+    for (terminal, id, geometry) in requests(&mut surface) {
+        let view = if terminal == "t1" {
             Err(std::io::Error::other("unavailable"))
         } else {
             Ok(View::test(geometry.cols, geometry.rows))
-        }
-    });
+        };
+        surface.attached(id, geometry, view);
+    }
     assert!(surface.needs_layout());
-    frame(&mut surface, &HashSet::new());
+    let (_, attached) = frame_attaching(&mut surface, &HashSet::new());
 
+    assert_eq!(attached, ["t1"]);
     assert_eq!(surface.views.len(), 2);
     assert!(!surface.needs_layout());
 }
@@ -332,7 +403,7 @@ async fn a_new_cell_size_reaches_every_view() {
 }
 
 #[tokio::test]
-async fn a_held_pane_survives_a_resize_to_another_shape_of_the_same_area() {
+async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
     let pane = |terminal: &str| json!({"kind": "pane", "terminal": terminal});
     let split = |direction: &str, ratio: f32, first: Value, second: Value| json!({"kind": "split", "direction": direction, "ratio": ratio, "first": first, "second": second});
     let root = split(

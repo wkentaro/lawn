@@ -58,6 +58,9 @@ pub(crate) enum Event {
     Detached(PaneId),
 }
 
+#[derive(Clone)]
+pub(crate) struct EventSender(mpsc::Sender<AppEvent>);
+
 pub(crate) struct Events {
     sender: mpsc::Sender<AppEvent>,
     receiver: mpsc::Receiver<AppEvent>,
@@ -71,6 +74,10 @@ impl Default for Events {
 }
 
 impl Events {
+    pub(crate) fn sender(&self) -> EventSender {
+        EventSender(self.sender.clone())
+    }
+
     pub(crate) async fn recv(&mut self) -> Event {
         while let Some(event) = self.receiver.recv().await {
             match event {
@@ -105,7 +112,7 @@ impl View {
         geometry: Geometry,
         id: PaneId,
         wake: &Wake,
-        events: &Events,
+        events: &EventSender,
     ) -> io::Result<Self> {
         let runtime = TerminalRuntime::attach_core_terminal(
             id,
@@ -113,7 +120,7 @@ impl View {
             address,
             geometry.rows,
             geometry.cols,
-            events.sender.clone(),
+            events.0.clone(),
             wake.notify.clone(),
             wake.dirty.clone(),
         )?;
