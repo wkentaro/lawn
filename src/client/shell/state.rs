@@ -1,8 +1,6 @@
 // Modified for Lawn.
 use super::*;
 
-pub(super) const MIN_TAB_WIDTH: u16 = 8;
-pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
 
@@ -54,15 +52,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) startup_onboarding: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ClientShellLayout {
-    pub sidebar: Rect,
-    pub tab_bar: Rect,
-    pub mobile_header: Rect,
-    pub pane_surface: Rect,
-    pub parking_header: Rect,
-}
-
+pub(super) use crate::ui::chrome::Layout as ClientShellLayout;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ClientMobileTarget {
     Machine(ClientEndpointId),
