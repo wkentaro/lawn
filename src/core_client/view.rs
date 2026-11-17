@@ -177,13 +177,13 @@ impl View {
     /// The program's cursor. Held where it was while the program holds
     /// synchronized output, like the rows.
     pub(crate) fn cursor(&mut self) -> Option<CursorState> {
-        if self.runtime.synchronized_output_active() {
+        let (cols, rows) = self.size();
+        let (held, cursor) = self.runtime.cursor_snapshot();
+        if held {
             return self.cursor.clone();
         }
-        let (cols, rows) = self.size();
-        self.cursor = self
-            .runtime
-            .cursor_state(Rect::new(0, 0, cols, rows), true)
+        self.cursor = cursor
+            .filter(|cursor| cursor.x < cols && cursor.y < rows)
             .map(|cursor| CursorState {
                 x: cursor.x,
                 y: cursor.y,

@@ -3580,6 +3580,10 @@ impl PaneRuntime {
         })
     }
 
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<TerminalCursorState>) {
+        self.terminal.cursor_snapshot()
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.terminal.synchronized_output_active()
     }

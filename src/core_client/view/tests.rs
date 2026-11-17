@@ -90,6 +90,22 @@ async fn synchronized_output_holds_the_cursor_until_it_ends() {
 }
 
 #[tokio::test]
+async fn a_sync_start_after_an_earlier_check_withholds_the_cursor_snapshot() {
+    let mut view = view(20, 4);
+    feed(&view, b"\x1b[2;3H");
+    view.draw();
+    let before = view.cursor();
+    assert!(!view.runtime.synchronized_output_active());
+
+    feed(&view, b"\x1b[?2026h\x1b[4;9H");
+
+    let (held, cursor) = view.runtime.cursor_snapshot();
+    assert!(held);
+    assert!(cursor.is_none());
+    assert_eq!(view.cursor(), before);
+}
+
+#[tokio::test]
 async fn the_host_reports_all_keys_only_while_the_program_needs_it() {
     let view = view(20, 4);
     assert!(!view.reports_all_keys());

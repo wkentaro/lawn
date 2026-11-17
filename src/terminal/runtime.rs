@@ -409,6 +409,10 @@ impl TerminalRuntime {
         self.0.cursor_state(area, show_cursor)
     }
 
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<crate::pane::TerminalCursorState>) {
+        self.0.cursor_snapshot()
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.0.synchronized_output_active()
     }

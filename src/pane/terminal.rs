@@ -484,6 +484,10 @@ impl PaneTerminal {
         self.ghostty.cursor_state()
     }
 
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<TerminalCursorState>) {
+        self.ghostty.cursor_snapshot()
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.ghostty.synchronized_output_active()
     }
@@ -2016,6 +2020,21 @@ impl GhosttyPaneTerminal {
         let mut core = self.core.lock().ok()?;
         let current = current_cursor_state(&mut core);
         effective_cursor_state(&mut core, current)
+    }
+
+    pub(crate) fn cursor_snapshot(&self) -> (bool, Option<TerminalCursorState>) {
+        let Ok(mut core) = self.core.lock() else {
+            return (true, None);
+        };
+        if core
+            .terminal
+            .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            .unwrap_or(true)
+        {
+            return (true, None);
+        }
+        let current = current_cursor_state(&mut core);
+        (false, effective_cursor_state(&mut core, current))
     }
 
     pub fn synchronized_output_active(&self) -> bool {
