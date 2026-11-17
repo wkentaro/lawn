@@ -3,6 +3,8 @@ use std::io;
 mod follow;
 mod session;
 mod surface;
+#[cfg(all(test, unix))]
+mod tests;
 
 pub(crate) fn maybe_run(args: &[String]) -> Option<io::Result<()>> {
     (args.len() == 1).then(run)
@@ -30,16 +32,26 @@ fn run() -> io::Result<()> {
         .open(&std::env::current_dir()?)
         .map_err(io::Error::other)?;
     let host = super::host::host_geometry()?;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(async {
+    run_with_bounded_shutdown(async {
         let stop = super::host::Stop::register()?;
         let layouts = follow::follow(session.clone())?;
         let mut guard = super::host::enter(true)?;
         unix::show(core, session, layouts, host, &mut guard, stop).await
-    })
+    })?
 }
+
+#[cfg(unix)]
+fn run_with_bounded_shutdown<T>(future: impl std::future::Future<Output = T>) -> io::Result<T> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let output = runtime.block_on(future);
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    Ok(output)
+}
+
+#[cfg(unix)]
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 #[cfg(unix)]
 mod unix {
