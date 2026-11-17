@@ -54,14 +54,44 @@ pub(crate) enum Event {
     /// The program rang the bell this many times.
     Bell(u16),
     /// The program has ended.
-    Ended,
+    Ended(PaneId),
+    Detached(PaneId),
+}
+
+pub(crate) struct Events {
+    sender: mpsc::Sender<AppEvent>,
+    receiver: mpsc::Receiver<AppEvent>,
+}
+
+impl Default for Events {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel(EVENT_QUEUE);
+        Self { sender, receiver }
+    }
+}
+
+impl Events {
+    pub(crate) async fn recv(&mut self) -> Event {
+        while let Some(event) = self.receiver.recv().await {
+            match event {
+                AppEvent::ClipboardWrite { content } => return Event::Copy(content),
+                AppEvent::TerminalBell { count, .. } => return Event::Bell(count),
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: crate::platform::ChildExitReason::Exited,
+                } => return Event::Ended(pane_id),
+                AppEvent::PaneDied { pane_id, .. } => return Event::Detached(pane_id),
+                _ => {}
+            }
+        }
+        std::future::pending().await
+    }
 }
 
 /// One herdr-core terminal, parsed in this process and drawn row by row as
 /// its screen changes.
 pub(crate) struct View {
     runtime: TerminalRuntime,
-    events: mpsc::Receiver<AppEvent>,
     repaint: bool,
     cursor: Option<CursorState>,
 }
@@ -75,27 +105,26 @@ impl View {
         geometry: Geometry,
         id: PaneId,
         wake: &Wake,
+        events: &Events,
     ) -> io::Result<Self> {
-        let (events_tx, events) = mpsc::channel(EVENT_QUEUE);
         let runtime = TerminalRuntime::attach_core_terminal(
             id,
             core,
             address,
             geometry.rows,
             geometry.cols,
-            events_tx,
+            events.sender.clone(),
             wake.notify.clone(),
             wake.dirty.clone(),
         )?;
-        let mut view = Self::new(runtime, events);
+        let mut view = Self::new(runtime);
         view.resize(geometry);
         Ok(view)
     }
 
-    fn new(runtime: TerminalRuntime, events: mpsc::Receiver<AppEvent>) -> Self {
+    fn new(runtime: TerminalRuntime) -> Self {
         Self {
             runtime,
-            events,
             repaint: true,
             cursor: None,
         }
@@ -117,17 +146,8 @@ impl View {
         self.repaint = true;
     }
 
-    /// Resolves with the next thing the terminal asks of the host.
-    pub(crate) async fn event(&mut self) -> Event {
-        while let Some(event) = self.events.recv().await {
-            match event {
-                AppEvent::ClipboardWrite { content } => return Event::Copy(content),
-                AppEvent::TerminalBell { count, .. } => return Event::Bell(count),
-                AppEvent::PaneDied { .. } => return Event::Ended,
-                _ => {}
-            }
-        }
-        Event::Ended
+    pub(crate) fn invalidate(&mut self) {
+        self.repaint = true;
     }
 
     /// The rows that changed since the last draw, full width. Empty while
@@ -269,6 +289,17 @@ impl View {
         if let Err(error) = self.runtime.try_send_bytes(Bytes::from(bytes)) {
             tracing::debug!(%error, "input did not reach the core terminal");
         }
+    }
+}
+
+#[cfg(test)]
+impl View {
+    pub(in crate::core_client) fn test(cols: u16, rows: u16) -> Self {
+        Self::new(TerminalRuntime::test_with_screen_bytes(cols, rows, b""))
+    }
+
+    pub(in crate::core_client) fn test_feed(&self, bytes: &[u8]) {
+        self.runtime.test_process_pty_bytes(bytes);
     }
 }
 

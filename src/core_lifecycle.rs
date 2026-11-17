@@ -47,6 +47,17 @@ impl Lifecycle {
         })
     }
 
+    pub(crate) fn open(&self, cwd: &Path) -> Result<(), String> {
+        let settled = self.store.load()?.layout.pending_starts.is_empty();
+        if let Err(error) = self.recover() {
+            eprintln!("warning: recovery in session {}: {error}", self.session);
+        }
+        if settled {
+            self.start_first(cwd, &[])?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn start_first(
         &self,
         cwd: &Path,
