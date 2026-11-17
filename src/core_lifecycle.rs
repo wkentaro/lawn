@@ -47,6 +47,7 @@ impl Lifecycle {
         })
     }
 
+    #[cfg(unix)]
     pub(crate) fn open(&self, cwd: &Path) -> Result<(), String> {
         let settled = self.store.load()?.layout.pending_starts.is_empty();
         if let Err(error) = self.recover() {
