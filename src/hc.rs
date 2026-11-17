@@ -43,10 +43,16 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// How much of `hc connect`'s stderr to keep for error messages.
 const STDERR_CAP: usize = 64 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum HcError {
-    /// `hc` could not be started or the connection dropped.
+    /// The request could not be submitted or the core could not be reached.
     Unavailable(String),
+    /// No reply was received. The request may have taken effect. A deadline
+    /// does not cancel it; wait on `pending` again to receive a late reply.
+    Unknown {
+        pending: Box<PendingRequest>,
+        reason: UnknownReason,
+    },
     /// The core answered with an error, such as `conflict` or `not_found`.
     Rpc {
         method: String,
@@ -86,6 +92,11 @@ impl std::fmt::Display for HcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HcError::Unavailable(message) | HcError::Incompatible(message) => f.write_str(message),
+            HcError::Unknown { pending, reason } => write!(
+                f,
+                "{}: outcome unknown ({reason}); the request may have taken effect",
+                pending.method
+            ),
             HcError::Rpc {
                 method,
                 message,
@@ -105,6 +116,75 @@ impl std::fmt::Display for HcError {
 impl std::error::Error for HcError {}
 
 pub(crate) type HcResult<T> = Result<T, HcError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnknownReason {
+    Deadline,
+    Disconnected,
+}
+
+impl std::fmt::Display for UnknownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Deadline => "no reply before the deadline",
+            Self::Disconnected => "connection lost before the reply",
+        })
+    }
+}
+
+/// One submitted request. Waiting does not resubmit it. Dropping it stops
+/// waiting and closes an unclaimed stream, but does not undo its effects.
+pub(crate) struct PendingRequest {
+    id: u64,
+    method: String,
+    reply: Mutex<mpsc::Receiver<Result<Value, Value>>>,
+    routes: Arc<Mutex<Routes>>,
+    writer: mpsc::Sender<Outgoing>,
+    claimed: bool,
+}
+
+impl std::fmt::Debug for PendingRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingRequest")
+            .field("id", &self.id)
+            .field("method", &self.method)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PendingRequest {
+    /// A timeout returns this handle in `HcError::Unknown`; it can be waited
+    /// on again. A disconnect cannot be resolved through this connection.
+    pub(crate) fn wait(mut self, timeout: Duration) -> HcResult<Value> {
+        let received = lock(&self.reply).recv_timeout(timeout);
+        match received {
+            Ok(reply) => {
+                self.claimed = true;
+                reply.map_err(|error| HcError::rpc(&self.method, &error))
+            }
+            Err(error) => Err(HcError::Unknown {
+                pending: Box::new(self),
+                reason: match error {
+                    mpsc::RecvTimeoutError::Timeout => UnknownReason::Deadline,
+                    mpsc::RecvTimeoutError::Disconnected => UnknownReason::Disconnected,
+                },
+            }),
+        }
+    }
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        if self.claimed {
+            return;
+        }
+        let mut routes = lock(&self.routes);
+        routes.replies.remove(&self.id);
+        if let Ok(Ok(result)) = lock(&self.reply).try_recv() {
+            abandon_reply(&mut routes, &self.writer, &result);
+        }
+    }
+}
 
 /// What arrives on an attach or event channel.
 #[derive(Debug, PartialEq)]
@@ -247,7 +327,7 @@ pub(crate) fn backend() -> Option<HcResult<Arc<Core>>> {
     Some(core)
 }
 
-fn lock(routes: &Mutex<Routes>) -> MutexGuard<'_, Routes> {
+fn lock<T>(routes: &Mutex<T>) -> MutexGuard<'_, T> {
     routes
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -492,25 +572,39 @@ impl Core {
         true
     }
 
+    /// Submits once and waits for the usual deadline. An unknown outcome
+    /// retains the request handle; it is not evidence the operation failed.
     pub(crate) fn call(&self, method: &str, params: Value) -> HcResult<Value> {
+        self.request(method, params)?.wait(CALL_TIMEOUT)
+    }
+
+    /// Submits a request without waiting. Validation and a closed connection
+    /// fail before submission. Once queued, a lost reply is an unknown outcome.
+    pub(crate) fn request(&self, method: &str, params: Value) -> HcResult<PendingRequest> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = request_payload(id, method, params)?;
+        let frame = frame::encode(0, frame::DATA, request.as_bytes());
         let (tx, rx) = mpsc::channel();
-        {
-            let mut routes = lock(&self.routes);
-            if routes.closed {
-                return Err(HcError::Unavailable(format!("{method}: lost the core")));
-            }
-            routes.replies.insert(id, tx);
+        let mut routes = lock(&self.routes);
+        if routes.closed {
+            return Err(HcError::Unavailable(format!("{method}: lost the core")));
         }
-        self.send(0, frame::DATA, request.as_bytes());
-        match await_reply(&self.routes, id, &rx, CALL_TIMEOUT) {
-            Some(Ok(result)) => Ok(result),
-            Some(Err(error)) => Err(HcError::rpc(method, &error)),
-            None => Err(HcError::Unavailable(format!(
-                "{method}: no reply from the core"
-            ))),
+        routes.replies.insert(id, tx);
+        if self.writer.send((frame, None)).is_err() {
+            routes.replies.remove(&id);
+            return Err(HcError::Unavailable(format!(
+                "{method}: could not submit the request"
+            )));
         }
+        drop(routes);
+        Ok(PendingRequest {
+            id,
+            method: method.to_owned(),
+            reply: Mutex::new(rx),
+            routes: self.routes.clone(),
+            writer: self.writer.clone(),
+            claimed: false,
+        })
     }
 
     /// Registers a stream channel, delivering frames that beat its reply.
@@ -707,27 +801,6 @@ fn request_payload(id: u64, method: &str, params: Value) -> HcResult<String> {
     Ok(request)
 }
 
-/// Waits for reply `id`. None means it timed out and a late reply will find
-/// no waiter, so the reader cleans up after it.
-fn await_reply(
-    routes: &Mutex<Routes>,
-    id: u64,
-    rx: &mpsc::Receiver<Result<Value, Value>>,
-    timeout: Duration,
-) -> Option<Result<Value, Value>> {
-    if let Ok(reply) = rx.recv_timeout(timeout) {
-        return Some(reply);
-    }
-    if lock(routes).replies.remove(&id).is_some() {
-        return None;
-    }
-    // The reader took the waiter first, so its reply is on the way.
-    Some(
-        rx.recv()
-            .unwrap_or_else(|_| Err(json!({"message": "lost the core"}))),
-    )
-}
-
 fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Outgoing>, payload: &[u8]) {
     let Ok(mut message) = serde_json::from_slice::<Value>(payload) else {
         return;
@@ -735,30 +808,35 @@ fn deliver_reply(routes: &Mutex<Routes>, writer: &mpsc::Sender<Outgoing>, payloa
     let Some(id) = message.get("id").and_then(Value::as_u64) else {
         return;
     };
-    let mut r = lock(routes);
-    let Some(tx) = r.replies.remove(&id) else {
-        // A call that timed out may still have opened a stream nobody will read.
-        if let Some(channel) = message
-            .pointer("/result/channel")
-            .and_then(Value::as_u64)
-            .and_then(|c| u32::try_from(c).ok())
-        {
-            let early = r.early.remove(&channel).unwrap_or_default();
-            if !early.iter().any(|item| matches!(item, Stream::Closed(_))) {
-                r.detached.insert(channel);
-                let _ = writer.send((frame::encode(channel, frame::CLOSE, &[]), None));
-            }
-        }
-        return;
-    };
-    drop(r);
-    let _ = tx.send(match message.get_mut("error").map(Value::take) {
+    let reply = match message.get_mut("error").map(Value::take) {
         Some(error) => Err(error),
         None => Ok(message
             .get_mut("result")
             .map(Value::take)
             .unwrap_or_default()),
-    });
+    };
+    let mut routes = lock(routes);
+    let undelivered = match routes.replies.remove(&id) {
+        Some(tx) => tx.send(reply).err().map(|err| err.0),
+        None => Some(reply),
+    };
+    if let Some(Ok(result)) = undelivered {
+        abandon_reply(&mut routes, writer, &result);
+    }
+}
+
+fn abandon_reply(routes: &mut Routes, writer: &mpsc::Sender<Outgoing>, result: &Value) {
+    let Some(channel) = result["channel"]
+        .as_u64()
+        .and_then(|channel| u32::try_from(channel).ok())
+    else {
+        return;
+    };
+    let early = routes.early.remove(&channel).unwrap_or_default();
+    if !routes.closed && !early.iter().any(|item| matches!(item, Stream::Closed(_))) {
+        routes.detached.insert(channel);
+        let _ = writer.send((frame::encode(channel, frame::CLOSE, &[]), None));
+    }
 }
 
 /// Writes frames in order; a frame's waiter hears back only once it's out,
@@ -817,15 +895,12 @@ fn read_loop(mut reader: impl Read, routes: &Mutex<Routes>, writer: &mpsc::Sende
             r.streams.remove(&frame.channel);
         }
     }
-    // The core went away: tell every stream and fail calls still waiting.
     let mut r = lock(routes);
     r.closed = true;
     for (_, route) in r.streams.drain() {
         let _ = route.tx.send(Stream::Lost);
     }
-    for (_, tx) in r.replies.drain() {
-        let _ = tx.send(Err(json!({"message": "lost the core"})));
-    }
+    r.replies.clear();
 }
 
 // The live tests that use it run Unix shell lines.
