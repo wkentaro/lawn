@@ -19,4 +19,6 @@ fn remote_matches_never_resolve_a_local_start() {
 #[cfg(unix)]
 mod close;
 #[cfg(unix)]
+mod first;
+#[cfg(unix)]
 mod live;

@@ -9,6 +9,11 @@ use crate::session_doc::{Created, Destination, Sessions, Store};
 const START_LABEL: &str = "lawn-start";
 const KEEP_SETTLE_ATTEMPTS: usize = 4;
 
+fn utf8(path: &Path) -> Result<&str, String> {
+    path.to_str()
+        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
+}
+
 pub(crate) struct Lifecycle {
     core: Arc<Core>,
     session: String,
@@ -32,10 +37,34 @@ impl Lifecycle {
         cwd: &Path,
         argv: &[String],
     ) -> Result<Created, String> {
-        let cwd = cwd
-            .to_str()
-            .ok_or_else(|| format!("{} is not valid UTF-8", cwd.display()))?;
+        let cwd = utf8(cwd)?;
         let reference = self.store.reserve_start(&destination)?;
+        self.submit(&reference, cwd, argv)?.ok_or_else(|| {
+            format!(
+                "start {reference} was already recovered; inspect `lawn --session {} ls`",
+                self.session
+            )
+        })
+    }
+
+    pub(crate) fn start_first(
+        &self,
+        cwd: &Path,
+        argv: &[String],
+    ) -> Result<Option<Created>, String> {
+        let cwd = utf8(cwd)?;
+        match self.store.reserve_first_start()? {
+            Some(reference) => self.submit(&reference, cwd, argv),
+            None => Ok(None),
+        }
+    }
+
+    fn submit(
+        &self,
+        reference: &str,
+        cwd: &str,
+        argv: &[String],
+    ) -> Result<Option<Created>, String> {
         let mut params = json!({
             "cwd": cwd,
             "keep": true,
@@ -50,7 +79,7 @@ impl Lifecycle {
             Ok(terminal) => terminal,
             Err(err @ HcError::Rpc { .. }) => {
                 self.store.edit(|layout| {
-                    if let Some(start) = layout.pending_starts.get_mut(&reference) {
+                    if let Some(start) = layout.pending_starts.get_mut(reference) {
                         start.reply_received = true;
                     }
                 }).map_err(|recovery| format!("{err}; start {reference} remains unconfirmed: {recovery}"))?;
@@ -61,12 +90,7 @@ impl Lifecycle {
                 "start {reference} is unconfirmed: {err}; inspect `lawn --session {} ls` before starting another program", self.session
             )),
         };
-        self.finish_start(&reference, &terminal)?.ok_or_else(|| {
-            format!(
-                "start {reference} was already recovered; inspect `lawn --session {} ls`",
-                self.session
-            )
-        })
+        self.finish_start(reference, &terminal)
     }
 
     /// Recovers saved starts and closes without ever starting another
