@@ -20,7 +20,7 @@ Keep the inherited `HC_SESSION` and `HC_SOCKET`. A Lawn layout session does not 
 LAWN_REWRITE=1 lawn ls --json
 ```
 
-The result contains the session name and layout, including workspace IDs, tab IDs, terminal addresses, parked return positions, and any pending operations. Listing also attempts recovery of recorded starts and closes.
+The result contains the session name and layout, including workspace IDs, tab IDs, terminal addresses, the parked terminals, and any pending operations. A parked terminal keeps its pane in the tab tree, so tree walks must skip addresses listed under `parked`. Listing also attempts recovery of recorded starts and closes.
 
 For terminal output, input, process status, or child terminals, read `hc --skill` and use hc. Lawn's listing describes its layout, not every terminal in the core.
 
@@ -41,7 +41,7 @@ LAWN_REWRITE=1 lawn pane close t3
 
 Creation without a program starts the core's default shell. `--cwd` defaults to the command's current directory. Tab creation without `--workspace` uses the first workspace.
 
-Parking removes the pane and clears the terminal's keep flag. The program continues to run until it exits, but a parked job does not survive a machine restart. Unparking without a destination uses its saved return position when available. A terminal shown in another layout session must be parked there first.
+Parking hides the pane and clears the terminal's keep flag. Its workspace and tab stay, even when it was their last visible pane. The program continues to run until it exits, but a parked job does not survive a machine restart. Unparking without a destination shows the pane where it was; a destination moves it there. A terminal shown in another layout session must be parked there first.
 
 Closing ends the terminal's program. Use it only when the user wants that program stopped.
 

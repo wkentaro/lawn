@@ -124,9 +124,7 @@ impl Lifecycle {
 
     pub(crate) fn close(&self, terminal: &str) -> Result<(), String> {
         let (reserved, _) = self.store.edit(|layout| {
-            let ours = layout.remove(terminal).is_some()
-                | layout.parked.remove(terminal).is_some()
-                | layout.closing.contains(terminal);
+            let ours = layout.remove(terminal) | layout.closing.contains(terminal);
             if ours {
                 layout.closing.insert(terminal.to_owned());
             }
@@ -156,7 +154,7 @@ impl Lifecycle {
     pub(crate) fn park(&self, terminal: &str) -> Result<(), String> {
         let (parked, _) = self
             .store
-            .edit(|layout| layout.park(terminal) || layout.parked.contains_key(terminal))?;
+            .edit(|layout| layout.park(terminal) || layout.parked.contains(terminal))?;
         if !parked {
             return Err(format!(
                 "{terminal} is not shown in session {}",
@@ -261,11 +259,7 @@ fn local_start(listed: &serde_json::Value) -> Result<Option<&str>, String> {
 fn owner<'a>(sessions: &'a Sessions, terminal: &str) -> Option<&'a str> {
     sessions
         .iter()
-        .find(|(_, layout)| {
-            layout.shows(terminal)
-                || layout.parked.contains_key(terminal)
-                || layout.closing.contains(terminal)
-        })
+        .find(|(_, layout)| layout.owns(terminal) || layout.closing.contains(terminal))
         .map(|(session, _)| session.as_str())
 }
 
@@ -296,7 +290,7 @@ fn claim(
     }
     for (name, other) in sessions.iter_mut() {
         if name != session {
-            other.parked.remove(terminal);
+            other.remove(terminal);
         }
     }
     Ok(())

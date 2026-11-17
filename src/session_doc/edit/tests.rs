@@ -35,15 +35,6 @@ fn root(layout: &Layout, workspace: usize, tab: usize) -> &Node {
     &layout.workspaces[workspace].tabs[tab].root
 }
 
-fn position(beside: Option<&str>, direction: Direction) -> ReturnPosition {
-    ReturnPosition {
-        workspace: "ws0".to_owned(),
-        tab: "tab1".to_owned(),
-        beside: beside.map(str::to_owned),
-        direction,
-    }
-}
-
 #[test]
 fn add_workspace_names_it_and_shows_the_terminal_in_one_tab() {
     let mut layout = Layout::default();
@@ -114,46 +105,23 @@ fn remove_collapses_the_parent_into_the_sibling() {
         split(Direction::Right, pane("a"), pane("b")),
         pane("c"),
     ));
-    assert_eq!(
-        layout.remove("c"),
-        Some(position(Some("a"), Direction::Down))
-    );
+    assert!(layout.remove("c"));
     assert_eq!(
         root(&layout, 0, 0),
         &split(Direction::Right, pane("a"), pane("b"))
     );
-    assert_eq!(
-        layout.remove("a"),
-        Some(position(Some("b"), Direction::Right))
-    );
+    assert!(layout.remove("a"));
     assert_eq!(root(&layout, 0, 0), &pane("b"));
-}
-
-#[test]
-fn remove_names_the_first_terminal_of_a_split_sibling() {
-    let mut layout = one_workspace(split(
-        Direction::Right,
-        pane("a"),
-        split(Direction::Down, pane("b"), pane("c")),
-    ));
-    assert_eq!(
-        layout.remove("a"),
-        Some(position(Some("b"), Direction::Right))
-    );
-    assert_eq!(
-        root(&layout, 0, 0),
-        &split(Direction::Down, pane("b"), pane("c"))
-    );
 }
 
 #[test]
 fn remove_drops_an_empty_tab_and_then_an_empty_workspace() {
     let mut layout = one_workspace(pane("a"));
     layout.add_tab("ws0", None, "b".to_owned());
-    assert_eq!(layout.remove("a"), Some(position(None, Direction::Right)));
+    assert!(layout.remove("a"));
     assert_eq!(layout.workspaces[0].tabs.len(), 1);
     assert_eq!(layout.workspaces[0].tabs[0].id, "tab2");
-    assert!(layout.remove("b").is_some());
+    assert!(layout.remove("b"));
     assert!(layout.workspaces.is_empty());
 }
 
@@ -161,24 +129,24 @@ fn remove_drops_an_empty_tab_and_then_an_empty_workspace() {
 fn remove_of_an_unshown_terminal_changes_nothing() {
     let mut layout = one_workspace(pane("a"));
     let before = layout.clone();
-    assert_eq!(layout.remove("z"), None);
+    assert!(!layout.remove("z"));
     assert_eq!(layout, before);
 }
 
 #[test]
-fn park_remembers_where_the_terminal_was() {
+fn park_hides_the_pane_in_place() {
     let mut layout = one_workspace(split(Direction::Down, pane("a"), pane("b")));
+    let before = layout.workspaces.clone();
     assert!(layout.park("b"));
     assert!(!layout.shows("b"));
-    assert_eq!(
-        layout.parked.get("b"),
-        Some(&position(Some("a"), Direction::Down))
-    );
+    assert!(layout.owns("b"));
+    assert_eq!(layout.workspaces, before);
     assert!(!layout.park("b"));
+    assert!(!layout.park("z"));
 }
 
 #[test]
-fn unpark_returns_beside_the_same_terminal() {
+fn unpark_shows_the_pane_where_it_was() {
     let mut layout = one_workspace(split(Direction::Down, pane("a"), pane("b")));
     layout.park("b");
     layout.unpark("b", None).expect("unpark");
@@ -190,55 +158,48 @@ fn unpark_returns_beside_the_same_terminal() {
 }
 
 #[test]
-fn unpark_falls_back_to_the_tabs_last_terminal() {
-    let mut layout = one_workspace(split(
-        Direction::Right,
-        pane("a"),
-        split(Direction::Right, pane("b"), pane("c")),
-    ));
+fn remove_drops_a_parked_pane_and_its_mark() {
+    let mut layout = one_workspace(split(Direction::Down, pane("a"), pane("b")));
     layout.park("b");
-    layout.park("c");
-    layout.split("a", Direction::Down, 0.5, "d".to_owned());
-    layout.unpark("b", None).expect("unpark b");
-    assert_eq!(
-        root(&layout, 0, 0),
-        &split(
-            Direction::Down,
-            pane("a"),
-            split(Direction::Right, pane("d"), pane("b"))
-        )
-    );
-}
-
-#[test]
-fn unpark_opens_a_tab_in_its_workspace_when_its_tab_is_gone() {
-    let mut layout = one_workspace(pane("a"));
-    layout.add_tab("ws0", None, "b".to_owned());
-    layout.park("a");
-    layout.unpark("a", None).expect("unpark");
-    assert_eq!(layout.workspaces[0].tabs.len(), 2);
-    assert_eq!(root(&layout, 0, 1), &pane("a"));
-}
-
-#[test]
-fn unpark_opens_a_tab_in_the_first_workspace_when_its_workspace_is_gone() {
-    let mut layout = one_workspace(pane("a"));
-    layout.add_workspace(None, "b".to_owned());
-    layout.park("a");
-    layout.unpark("a", None).expect("unpark");
-    assert_eq!(layout.workspaces.len(), 1);
-    assert_eq!(layout.workspaces[0].tabs.len(), 2);
-    assert_eq!(root(&layout, 0, 1), &pane("a"));
-}
-
-#[test]
-fn unpark_with_no_workspace_left_makes_one() {
-    let mut layout = one_workspace(pane("a"));
-    layout.park("a");
-    assert!(layout.workspaces.is_empty());
-    layout.unpark("a", None).expect("unpark");
-    assert_eq!(layout.terminals().collect::<Vec<_>>(), ["a"]);
+    assert!(layout.remove("b"));
+    assert_eq!(root(&layout, 0, 0), &pane("a"));
     assert!(layout.parked.is_empty());
+
+    layout.park("a");
+    assert!(layout.remove("a"));
+    assert!(layout.workspaces.is_empty());
+    assert!(layout.parked.is_empty());
+}
+
+#[test]
+fn a_parked_pane_is_not_a_split_or_move_target() {
+    let mut layout = one_workspace(split(Direction::Down, pane("a"), pane("b")));
+    layout.park("a");
+    let before = layout.clone();
+    assert!(!layout.split("a", Direction::Right, 0.5, "c".to_owned()));
+    let beside_parked = Some(Placement::Beside {
+        terminal: "a".to_owned(),
+        direction: Direction::Right,
+    });
+    assert!(layout.unpark("x", beside_parked).is_err());
+    assert_eq!(layout, before);
+}
+
+#[test]
+fn a_fully_parked_workspace_takes_new_tabs() {
+    let mut layout = named(one_workspace(pane("a")));
+    layout.park("a");
+    layout
+        .unpark(
+            "x",
+            Some(Placement::NewTab {
+                workspace: Some("ws0".to_owned()),
+            }),
+        )
+        .expect("unpark");
+    assert_eq!(root(&layout, 0, 0), &pane("a"));
+    assert_eq!(root(&layout, 0, 1), &pane("x"));
+    assert!(!layout.shows("a"));
 }
 
 #[test]
@@ -253,13 +214,10 @@ fn unpark_of_an_unparked_terminal_opens_a_tab_in_the_first_workspace() {
 }
 
 #[test]
-fn unpark_beside_a_chosen_terminal() {
-    let mut layout = one_workspace(pane("a"));
+fn unpark_beside_a_chosen_terminal_moves_the_pane() {
+    let mut layout = one_workspace(split(Direction::Right, pane("a"), pane("c")));
     layout.add_workspace(None, "b".to_owned());
     layout.park("a");
-    layout
-        .parked
-        .insert("a".to_owned(), position(None, Direction::Right));
     layout
         .unpark(
             "a",
@@ -269,11 +227,29 @@ fn unpark_beside_a_chosen_terminal() {
             }),
         )
         .expect("unpark");
+    assert_eq!(root(&layout, 0, 0), &pane("c"));
     assert_eq!(
-        root(&layout, 0, 0),
+        root(&layout, 1, 0),
         &split(Direction::Down, pane("b"), pane("a"))
     );
     assert!(layout.parked.is_empty());
+}
+
+#[test]
+fn moving_a_sole_parked_pane_elsewhere_drops_its_emptied_workspace() {
+    let mut layout = one_workspace(pane("a"));
+    layout.add_workspace(None, "b".to_owned());
+    layout.park("a");
+    layout
+        .unpark(
+            "a",
+            Some(Placement::NewTab {
+                workspace: Some("ws2".to_owned()),
+            }),
+        )
+        .expect("unpark");
+    assert_eq!(layout.workspaces.len(), 1);
+    assert_eq!(root(&layout, 0, 1), &pane("a"));
 }
 
 #[test]
@@ -321,4 +297,94 @@ fn unpark_refusals_change_nothing() {
         assert!(layout.unpark(terminal, to).is_err());
         assert_eq!(layout, before);
     }
+}
+
+fn named(mut layout: Layout) -> Layout {
+    layout.workspaces[0].name = Some("main".to_owned());
+    layout.workspaces[0].tabs[0].name = Some("logs".to_owned());
+    layout
+}
+
+#[test]
+fn parking_the_last_pane_keeps_its_workspace_and_tab() {
+    let mut layout = named(one_workspace(pane("a")));
+    let before = layout.workspaces.clone();
+    assert!(layout.park("a"));
+    assert!(!layout.shows("a"));
+    assert_eq!(layout.workspaces, before);
+
+    layout.unpark("a", None).expect("unpark");
+    assert!(layout.shows("a"));
+    assert_eq!(layout.workspaces, before);
+}
+
+#[test]
+fn unparking_returns_panes_to_their_places_after_their_neighbors_change() {
+    let original = split(
+        Direction::Right,
+        pane("a"),
+        split(Direction::Down, pane("b"), pane("c")),
+    );
+    let mut layout = one_workspace(original.clone());
+    layout.park("b");
+    layout.park("c");
+    layout.unpark("c", None).expect("unpark c");
+    layout.unpark("b", None).expect("unpark b");
+    assert_eq!(root(&layout, 0, 0), &original);
+}
+
+#[test]
+fn moving_the_sole_parked_pane_to_a_new_tab_in_its_own_workspace_keeps_the_workspace() {
+    let mut layout = named(one_workspace(pane("a")));
+    layout.park("a");
+    layout
+        .unpark(
+            "a",
+            Some(Placement::NewTab {
+                workspace: Some("ws0".to_owned()),
+            }),
+        )
+        .expect("unpark");
+    assert_eq!(layout.workspaces.len(), 1);
+    assert_eq!(layout.workspaces[0].name.as_deref(), Some("main"));
+    assert_eq!(layout.workspaces[0].tabs.len(), 1);
+    assert_eq!(root(&layout, 0, 0), &pane("a"));
+    assert!(layout.shows("a"));
+}
+
+#[test]
+fn only_the_workspace_a_pane_leaves_is_dropped() {
+    let mut layout = one_workspace(pane("a"));
+    layout.workspaces.push(Workspace {
+        id: "ws5".to_owned(),
+        name: Some("saved".to_owned()),
+        tabs: Vec::new(),
+    });
+    layout.add_workspace(None, "b".to_owned());
+    let before = layout.clone();
+    assert!(!layout.remove("missing"));
+    assert_eq!(layout, before);
+
+    layout.park("a");
+    layout
+        .unpark(
+            "a",
+            Some(Placement::Beside {
+                terminal: "b".to_owned(),
+                direction: Direction::Right,
+            }),
+        )
+        .expect("unpark");
+    assert_eq!(
+        layout
+            .workspaces
+            .iter()
+            .map(|w| w.id.as_str())
+            .collect::<Vec<_>>(),
+        ["ws5", "ws2"]
+    );
+    assert!(layout.remove("a"));
+    assert!(layout.remove("b"));
+    assert_eq!(layout.workspaces.len(), 1);
+    assert_eq!(layout.workspaces[0].name.as_deref(), Some("saved"));
 }

@@ -85,13 +85,16 @@ pub(super) fn ls_text(layout: &Layout) -> String {
         for tab in &workspace.tabs {
             text += &format!("  {}\n", titled(&tab.id, &tab.name));
             for terminal in tab.root.terminals() {
+                if layout.parked.contains(terminal) {
+                    continue;
+                }
                 text += &format!("    {terminal}\n");
             }
         }
     }
     if !layout.parked.is_empty() {
         text += "parked:\n";
-        for terminal in layout.parked.keys() {
+        for terminal in &layout.parked {
             text += &format!("  {terminal}\n");
         }
     }

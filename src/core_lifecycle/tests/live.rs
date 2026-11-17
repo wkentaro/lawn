@@ -42,7 +42,7 @@ fn a_default_tab_destination_stays_bound_to_its_original_workspace() {
             name: None,
         })
         .unwrap();
-    lifecycle.park(&first.terminal).unwrap();
+    lifecycle.close(&first.terminal).unwrap();
     let terminal = run_unacknowledged(&test, &reference);
 
     assert!(lifecycle

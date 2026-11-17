@@ -7,12 +7,13 @@ use serde_json::{json, Value};
 use crate::hc::Core;
 
 mod edit;
+mod legacy;
 mod start;
 
 pub(crate) use edit::Placement;
 pub(crate) use start::{Created, Destination, PendingStart};
 
-const SCHEMA: u64 = 2;
+const SCHEMA: u64 = 3;
 const EDIT_ATTEMPTS: usize = 8;
 
 /// The herdr-core document holding every Lawn session's layout.
@@ -28,9 +29,8 @@ pub(crate) type Sessions = BTreeMap<String, Layout>;
 pub(crate) struct Layout {
     #[serde(default)]
     pub(crate) workspaces: Vec<Workspace>,
-    /// Terminals out of view, keyed by hc address, with where they return.
     #[serde(default)]
-    pub(crate) parked: BTreeMap<String, ReturnPosition>,
+    pub(crate) parked: BTreeSet<String>,
     #[serde(default)]
     pub(crate) next_id: u64,
     /// Terminals a close is ending, which no session may claim meanwhile.
@@ -80,16 +80,6 @@ pub(crate) enum Direction {
     Down,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) struct ReturnPosition {
-    pub(crate) workspace: String,
-    pub(crate) tab: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) beside: Option<String>,
-    pub(crate) direction: Direction,
-}
-
 impl Layout {
     pub(crate) fn new_id(&mut self, prefix: &str) -> String {
         let id = format!("{prefix}{}", self.next_id);
@@ -97,7 +87,6 @@ impl Layout {
         id
     }
 
-    /// Every terminal shown in any tab, depth-first.
     #[cfg(test)]
     pub(crate) fn terminals(&self) -> impl Iterator<Item = &str> {
         self.workspaces
@@ -106,11 +95,15 @@ impl Layout {
             .flat_map(|tab| tab.root.terminals())
     }
 
-    pub(crate) fn shows(&self, terminal: &str) -> bool {
+    pub(crate) fn owns(&self, terminal: &str) -> bool {
         self.workspaces
             .iter()
             .flat_map(|workspace| workspace.tabs.iter())
-            .any(|tab| tab.root.shows(terminal))
+            .any(|tab| tab.root.contains(terminal))
+    }
+
+    pub(crate) fn shows(&self, terminal: &str) -> bool {
+        !self.parked.contains(terminal) && self.owns(terminal)
     }
 }
 
@@ -121,13 +114,6 @@ impl Node {
         terminals
     }
 
-    pub(crate) fn first_terminal(&self) -> &str {
-        match self {
-            Node::Pane { terminal } => terminal,
-            Node::Split { first, .. } => first.first_terminal(),
-        }
-    }
-
     pub(crate) fn last_terminal(&self) -> &str {
         match self {
             Node::Pane { terminal } => terminal,
@@ -135,10 +121,12 @@ impl Node {
         }
     }
 
-    pub(crate) fn shows(&self, terminal: &str) -> bool {
+    pub(crate) fn contains(&self, terminal: &str) -> bool {
         match self {
-            Node::Pane { terminal: shown } => shown == terminal,
-            Node::Split { first, second, .. } => first.shows(terminal) || second.shows(terminal),
+            Node::Pane { terminal: owned } => owned == terminal,
+            Node::Split { first, second, .. } => {
+                first.contains(terminal) || second.contains(terminal)
+            }
         }
     }
 
@@ -270,7 +258,43 @@ fn decode(name: &str, mut value: Value, version: u64) -> Result<Sessions, String
         .get_mut("sessions")
         .map(Value::take)
         .unwrap_or_default();
-    serde_json::from_value(sessions).map_err(|err| format!("cannot read {name}: {err}"))
+    let sessions = if schema < SCHEMA {
+        legacy::migrate(sessions)
+    } else {
+        serde_json::from_value(sessions).map_err(|err| err.to_string())
+    };
+    sessions
+        .and_then(|sessions| validate(&sessions).map(|()| sessions))
+        .map_err(|err| format!("cannot read {name}: {err}"))
+}
+
+fn validate(sessions: &Sessions) -> Result<(), String> {
+    let mut owners = BTreeMap::new();
+    for (session, layout) in sessions {
+        let mut ids = BTreeSet::new();
+        for workspace in &layout.workspaces {
+            for id in std::iter::once(&workspace.id).chain(workspace.tabs.iter().map(|t| &t.id)) {
+                if !ids.insert(id) {
+                    return Err(format!("session {session} reuses id {id}"));
+                }
+            }
+            for terminal in workspace.tabs.iter().flat_map(|tab| tab.root.terminals()) {
+                if let Some(owner) = owners.insert(terminal, session) {
+                    return Err(format!(
+                        "{terminal} has panes in sessions {owner} and {session}"
+                    ));
+                }
+            }
+        }
+        if let Some(terminal) = layout
+            .parked
+            .iter()
+            .find(|t| owners.get(t.as_str()) != Some(&session))
+        {
+            return Err(format!("session {session} parks {terminal} without a pane"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
