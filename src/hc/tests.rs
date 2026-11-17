@@ -186,25 +186,245 @@ fn written_input_waits_for_the_write_and_fails_with_it() {
     thread.join().unwrap();
 }
 
-#[test]
-fn a_reply_already_taken_at_timeout_still_reaches_the_caller() {
-    let routes = Mutex::new(Routes::default());
+fn pending_request() -> (PendingRequest, mpsc::Receiver<Outgoing>) {
+    let routes = Arc::new(Mutex::new(Routes::default()));
     let (tx, rx) = mpsc::channel();
-    // The reader removed the waiter and is about to send.
-    let sender = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        tx.send(Ok(json!({"channel": 5}))).unwrap();
-    });
-    assert_eq!(
-        await_reply(&routes, 1, &rx, Duration::from_millis(1)),
-        Some(Ok(json!({"channel": 5})))
-    );
-    sender.join().unwrap();
+    let (writer, sent) = mpsc::channel();
+    lock(&routes).replies.insert(17, tx);
+    (
+        PendingRequest {
+            id: 17,
+            method: "terminal.run".to_owned(),
+            reply: Mutex::new(rx),
+            routes,
+            writer,
+            claimed: false,
+        },
+        sent,
+    )
+}
 
-    let (tx, rx) = mpsc::channel();
-    lock(&routes).replies.insert(2, tx);
-    assert_eq!(await_reply(&routes, 2, &rx, Duration::from_millis(1)), None);
-    assert!(!lock(&routes).replies.contains_key(&2));
+fn after_deadline(pending: PendingRequest) -> Box<PendingRequest> {
+    match pending.wait(Duration::ZERO) {
+        Err(HcError::Unknown {
+            pending,
+            reason: UnknownReason::Deadline,
+        }) => pending,
+        other => panic!("expected an unknown outcome, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_deadline_does_not_forget_an_in_flight_reply() {
+    let (pending, sent) = pending_request();
+    let pending = after_deadline(pending);
+    assert!(lock(&pending.routes).replies.contains_key(&17));
+    let response = json!({"id": 17, "result": {"address": "t7"}});
+    deliver_reply(
+        &pending.routes,
+        &pending.writer,
+        response.to_string().as_bytes(),
+    );
+
+    assert_eq!(
+        pending.wait(Duration::ZERO).unwrap(),
+        json!({"address": "t7"})
+    );
+    assert!(sent.try_recv().is_err());
+}
+
+#[test]
+fn a_late_server_error_is_still_a_server_reply() {
+    let (pending, _) = pending_request();
+    let pending = after_deadline(pending);
+    let response = json!({"id": 17, "error": {
+        "message": "spawn failed", "data": {"kind": "spawn_failed"}
+    }});
+    deliver_reply(
+        &pending.routes,
+        &pending.writer,
+        response.to_string().as_bytes(),
+    );
+
+    let error = pending.wait(Duration::ZERO).unwrap_err();
+    assert_eq!(error.kind(), Some("spawn_failed"));
+}
+
+#[test]
+fn disconnect_is_unknown_and_not_a_fabricated_server_error() {
+    let (pending, _) = pending_request();
+    let pending = after_deadline(pending);
+    read_loop(&b""[..], &pending.routes, &pending.writer);
+
+    let error = pending.wait(Duration::ZERO).unwrap_err();
+    assert!(error.to_string().contains("outcome unknown"));
+    assert!(matches!(
+        error,
+        HcError::Unknown {
+            reason: UnknownReason::Disconnected,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn abandoning_a_delivered_stream_closes_it_and_clears_early_data() {
+    let (pending, sent) = pending_request();
+    let routes = pending.routes.clone();
+    let pending = after_deadline(pending);
+    lock(&routes)
+        .early
+        .insert(5, vec![Stream::Data(b"early".to_vec())]);
+    let response = json!({"id": 17, "result": {"channel": 5}});
+    deliver_reply(&routes, &pending.writer, response.to_string().as_bytes());
+
+    drop(pending);
+
+    assert_eq!(
+        sent.try_recv().unwrap().0,
+        frame::encode(5, frame::CLOSE, &[])
+    );
+    assert!(!lock(&routes).early.contains_key(&5));
+    assert!(lock(&routes).replies.is_empty());
+}
+
+#[test]
+fn abandoning_before_a_reply_still_closes_a_late_stream() {
+    let (pending, sent) = pending_request();
+    let routes = pending.routes.clone();
+    let writer = pending.writer.clone();
+    drop(after_deadline(pending));
+    assert!(lock(&routes).replies.is_empty());
+    let response = json!({"id": 17, "result": {"channel": 5}});
+    deliver_reply(&routes, &writer, response.to_string().as_bytes());
+
+    assert_eq!(
+        sent.try_recv().unwrap().0,
+        frame::encode(5, frame::CLOSE, &[])
+    );
+}
+
+#[test]
+fn abandoning_a_stream_that_already_closed_does_not_close_it_again() {
+    let (pending, sent) = pending_request();
+    lock(&pending.routes)
+        .early
+        .insert(5, vec![Stream::Closed(Value::Null)]);
+    let response = json!({"id": 17, "result": {"channel": 5}});
+    deliver_reply(
+        &pending.routes,
+        &pending.writer,
+        response.to_string().as_bytes(),
+    );
+    let routes = pending.routes.clone();
+
+    drop(pending);
+
+    assert!(sent.try_recv().is_err());
+    assert!(!lock(&routes).early.contains_key(&5));
+    assert!(!lock(&routes).detached.contains(&5));
+}
+
+#[test]
+fn dropping_and_delivering_concurrently_always_closes_an_unclaimed_stream() {
+    for _ in 0..100 {
+        let (pending, sent) = pending_request();
+        let routes = pending.routes.clone();
+        let writer = pending.writer.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let dropping = barrier.clone();
+        let thread = std::thread::spawn(move || {
+            dropping.wait();
+            drop(pending);
+        });
+        barrier.wait();
+        let response = json!({"id": 17, "result": {"channel": 5}});
+        deliver_reply(&routes, &writer, response.to_string().as_bytes());
+        thread.join().unwrap();
+
+        assert_eq!(
+            sent.try_recv().unwrap().0,
+            frame::encode(5, frame::CLOSE, &[])
+        );
+        assert!(sent.try_recv().is_err());
+        assert!(lock(&routes).replies.is_empty());
+    }
+}
+
+#[test]
+fn claiming_a_delivered_stream_does_not_close_it() {
+    let (pending, sent) = pending_request();
+    let pending = after_deadline(pending);
+    let response = json!({"id": 17, "result": {"channel": 5}});
+    deliver_reply(
+        &pending.routes,
+        &pending.writer,
+        response.to_string().as_bytes(),
+    );
+
+    assert_eq!(pending.wait(Duration::ZERO).unwrap(), json!({"channel": 5}));
+    assert!(sent.try_recv().is_err());
+}
+
+fn transport_core() -> (Core, mpsc::Receiver<Outgoing>) {
+    let (writer, sent) = mpsc::channel();
+    let child = Command::new(std::env::current_exe().unwrap())
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    (
+        Core {
+            hello: hello(1, USES),
+            writer,
+            routes: Arc::new(Mutex::new(Routes::default())),
+            next_id: AtomicU64::new(1),
+            child,
+        },
+        sent,
+    )
+}
+
+#[test]
+fn a_closed_connection_refuses_before_submitting() {
+    let (core, sent) = transport_core();
+    lock(&core.routes).closed = true;
+
+    assert!(matches!(
+        core.request("terminal.run", json!({})),
+        Err(HcError::Unavailable(_))
+    ));
+    assert!(lock(&core.routes).replies.is_empty());
+    assert!(sent.try_recv().is_err());
+}
+
+#[test]
+fn a_missing_writer_refuses_before_submitting() {
+    let (core, sent) = transport_core();
+    drop(sent);
+
+    assert!(matches!(
+        core.request("terminal.run", json!({})),
+        Err(HcError::Unavailable(_))
+    ));
+    assert!(lock(&core.routes).replies.is_empty());
+}
+
+#[test]
+fn waiting_again_does_not_submit_a_second_request() {
+    let (core, sent) = transport_core();
+    let pending = core.request("terminal.run", json!({})).unwrap();
+    let pending = after_deadline(pending);
+    assert!(sent.try_recv().is_ok());
+    let pending = after_deadline(*pending);
+    assert!(sent.try_recv().is_err());
+    let response = json!({"id": 1, "result": {"address": "t7"}});
+    deliver_reply(&core.routes, &core.writer, response.to_string().as_bytes());
+    assert_eq!(
+        pending.wait(Duration::ZERO).unwrap(),
+        json!({"address": "t7"})
+    );
 }
 
 #[test]
@@ -235,7 +455,7 @@ fn losing_the_core_fails_waiting_calls_and_open_streams() {
         );
     }
     read_loop(&b""[..], &routes, &mpsc::channel().0);
-    assert!(reply_rx.recv().unwrap().is_err());
+    assert!(reply_rx.recv().is_err());
     assert_eq!(stream_rx.try_recv().unwrap(), Stream::Lost);
 }
 
