@@ -25,7 +25,8 @@ pub(crate) use self::panes::popup_pane_rects;
 use self::panes::resize_popup_pane;
 pub(crate) use self::panes::{
     apply_pane_chrome, new_layout_terminal_sizes, new_pane_terminal_size, paint_pane_borders,
-    pane_inner_rect, pane_is_scrolled_back, render_selection_highlight, NewPanePlacement,
+    pane_inner_rect, pane_is_scrolled_back, render_selection_highlight, scrollbar_gutter_for,
+    NewPanePlacement,
 };
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, product_announcement_scroll_metrics,
@@ -35,7 +36,7 @@ pub(crate) use self::release_notes::{
 pub(crate) use self::scrollbar::{
     release_notes_scrollbar_rect, render_pane_scrollbar_buffer, render_scrollbar_buffer,
     scrollbar_offset_from_drag_row, scrollbar_offset_from_row, scrollbar_thumb,
-    scrollbar_thumb_grab_offset,
+    scrollbar_thumb_grab_offset, should_show_scrollbar, ScrollbarThumb,
 };
 pub(crate) use self::sidebar::{
     agent_panel_entries_from, resolved_token_spans, sidebar_agent_rows, sidebar_space_rows,

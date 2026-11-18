@@ -212,7 +212,9 @@ pub(super) fn deliver(view: &View, keys: HostKeys, event: RawInputEvent) {
         },
         RawInputEvent::Text(text) => view.text(text.as_str()),
         RawInputEvent::Paste(text) => view.paste(text),
-        RawInputEvent::Mouse(mouse) => view.mouse(mouse),
+        RawInputEvent::Mouse(mouse) => {
+            view.mouse(mouse);
+        }
         RawInputEvent::OuterFocusGained => {
             view.focus(true);
         }

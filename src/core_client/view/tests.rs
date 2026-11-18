@@ -480,6 +480,26 @@ async fn a_reported_click_returns_to_the_bottom_but_motion_does_not() {
 }
 
 #[tokio::test]
+async fn a_mouse_report_counts_as_sent_only_when_the_terminal_took_it() {
+    let (view, mut input, _wake) = scrolled(4, 3);
+    let click = wheel(MouseEventKind::Down(crossterm::event::MouseButton::Left));
+    assert!(!view.mouse(click));
+
+    feed(&view, b"\x1b[?1000h\x1b[?1006h");
+    assert!(view.mouse(click));
+
+    while view
+        .runtime
+        .try_send_bytes(Bytes::from_static(b"x"))
+        .is_ok()
+    {}
+    assert!(!view.mouse(click));
+
+    sent(&mut input);
+    assert!(view.mouse(click));
+}
+
+#[tokio::test]
 async fn plain_page_keys_scroll_a_page_and_swallow_the_release() {
     let (view, mut input, wake) = scrolled(4, 3);
     let none = KeyModifiers::NONE;
@@ -657,10 +677,20 @@ async fn a_core_view_scrolls_back_to_what_its_terminal_printed_before_the_attach
     .await;
     let press = |code| page(code, KeyModifiers::NONE, KeyEventKind::Press);
 
-    let seen = core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollUp)), "1");
+    let seen = core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollUp));
+        },
+        "1",
+    );
     assert!(seen.contains(&"0".repeat(40)), "{seen:?}");
     assert!(seen.contains(&"0".repeat(20)), "{seen:?}");
-    core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollDown)), "done");
+    core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollDown));
+        },
+        "done",
+    );
     core.scroll_until(|view| view.key(press(KeyCode::PageUp)), "1");
     core.scroll_until(|view| view.key(press(KeyCode::PageDown)), "done");
 }
@@ -681,5 +711,10 @@ async fn a_core_view_scrolls_back_through_output_printed_after_the_attach() {
     core.view.text("go\r");
     core.until_shown("end").await;
 
-    core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollUp)), "1");
+    core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollUp));
+        },
+        "1",
+    );
 }

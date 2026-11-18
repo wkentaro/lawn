@@ -11,7 +11,7 @@ use crate::events::AppEvent;
 use crate::hc::Core;
 use crate::input::TerminalKey;
 use crate::layout::PaneId;
-use crate::pane::{TerminalDirtyPatchOutcome, WheelRouting};
+use crate::pane::{ScrollMetrics, TerminalDirtyPatchOutcome, WheelRouting};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalRuntime;
@@ -266,6 +266,20 @@ impl View {
         self.runtime.cwd()
     }
 
+    pub(crate) fn alternate_screen(&self) -> bool {
+        self.runtime.alternate_screen_active()
+    }
+
+    pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+        self.runtime.scroll_metrics()
+    }
+
+    pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {
+        self.runtime
+            .set_scroll_offset_from_bottom(offset_from_bottom);
+        self.redraw();
+    }
+
     pub(crate) fn key(&self, key: TerminalKey) {
         let event = key.as_key_event();
         if matches!(event.code, KeyCode::PageUp | KeyCode::PageDown)
@@ -294,7 +308,7 @@ impl View {
         }
     }
 
-    pub(crate) fn mouse(&self, event: MouseEvent) {
+    pub(crate) fn mouse(&self, event: MouseEvent) -> bool {
         let report = match event.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 match self.runtime.wheel_routing() {
@@ -304,7 +318,8 @@ impl View {
                     }
                     Some(WheelRouting::HostScroll) | None => {
                         let up = event.kind == MouseEventKind::ScrollUp;
-                        return self.scroll(up, self.wheel_lines);
+                        self.scroll(up, self.wheel_lines);
+                        return false;
                     }
                 }
             }
@@ -314,7 +329,7 @@ impl View {
         if !report.is_empty() && event.kind != MouseEventKind::Moved {
             self.to_bottom();
         }
-        self.send(report);
+        self.send(report)
     }
 
     fn scroll(&self, up: bool, lines: usize) {
@@ -372,12 +387,16 @@ impl View {
         self.runtime.try_send_focus_event(event)
     }
 
-    fn send(&self, bytes: Vec<u8>) {
+    fn send(&self, bytes: Vec<u8>) -> bool {
         if bytes.is_empty() {
-            return;
+            return false;
         }
-        if let Err(error) = self.runtime.try_send_bytes(Bytes::from(bytes)) {
-            tracing::debug!(%error, "input did not reach the core terminal");
+        match self.runtime.try_send_bytes(Bytes::from(bytes)) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!(%error, "input did not reach the core terminal");
+                false
+            }
         }
     }
 }

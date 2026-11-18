@@ -169,6 +169,7 @@ mod unix {
                 outer_borders: config.ui.pane_outer_borders,
             },
             crate::ui::theme::client_palette_from_config(&config),
+            config.ui.pane_scrollbars,
         );
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(

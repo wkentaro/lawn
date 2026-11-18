@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crossterm::event::{
     KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use ratatui::layout::Rect;
 use serde_json::{json, Value};
 
 use super::Surface;
@@ -25,6 +26,10 @@ fn host(cols: u16, rows: u16) -> Geometry {
 }
 
 fn surface(cols: u16, rows: u16) -> Surface {
+    surface_with_scrollbars(cols, rows, true)
+}
+
+fn surface_with_scrollbars(cols: u16, rows: u16, scrollbars: bool) -> Surface {
     Surface::new(
         host(cols, rows),
         PaneChrome {
@@ -33,6 +38,7 @@ fn surface(cols: u16, rows: u16) -> Surface {
             outer_borders: true,
         },
         Palette::catppuccin(),
+        scrollbars,
     )
 }
 
@@ -457,6 +463,7 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
             outer_borders: true,
         },
         Palette::catppuccin(),
+        true,
     );
     surface.update(
         serde_json::from_value(
@@ -757,4 +764,378 @@ async fn a_parked_pane_is_told_before_its_view_goes() {
     assert_eq!(leaving, [parked]);
     assert!(!surface.views.contains_key(&parked));
     assert_eq!(reports(&mut inputs[0]), b"\x1b[1;1:3A");
+}
+
+fn lines(count: usize) -> Vec<u8> {
+    (1..=count)
+        .flat_map(|line| format!("\r\nline-{line}").into_bytes())
+        .collect()
+}
+
+fn track(surface: &Surface, terminal: &str) -> Rect {
+    let pane = surface
+        .tiles
+        .tiles
+        .iter()
+        .find(|tile| tile.terminal == terminal)
+        .expect("tile")
+        .info
+        .inner_rect;
+    Rect::new(pane.right() - 1, pane.y, 1, pane.height)
+}
+
+fn column(surface: &Surface, track: Rect) -> String {
+    (track.y..track.bottom())
+        .map(|y| {
+            surface.canvas[usize::from(y) * usize::from(surface.canvas_cols) + usize::from(track.x)]
+                .symbol
+                .clone()
+        })
+        .collect()
+}
+
+fn metrics(surface: &Surface, terminal: &str) -> crate::pane::ScrollMetrics {
+    surface.views[&id_of(surface, terminal)]
+        .view
+        .scroll_metrics()
+        .expect("metrics")
+}
+
+fn mouse_at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn scrolled_back_pane(surface: &mut Surface) -> (Rect, HashSet<PaneId>) {
+    attach_with_input(surface, b"");
+    feed_after_first_frame(surface, "t0", &lines(40));
+    (track(surface, "t0"), HashSet::from([id_of(surface, "t0")]))
+}
+
+#[tokio::test]
+async fn a_pane_gives_its_last_column_to_the_scrollbar_only_on_the_primary_screen() {
+    let mut surface = surface(20, 8);
+    surface.update(row_of(&terminals(1)));
+    attach_with_input(&mut surface, b"");
+    frame(&mut surface, &HashSet::new());
+    let pane = surface.tiles.tiles[0].info.inner_rect;
+    let id = id_of(&surface, "t0");
+    assert_eq!(
+        surface.views[&id].view.size(),
+        (pane.width - 1, pane.height)
+    );
+
+    feed(&surface, "t0", b"\x1b[?1049h");
+    frame(&mut surface, &HashSet::from([id]));
+    assert_eq!(surface.views[&id].view.size(), (pane.width, pane.height));
+
+    feed(&surface, "t0", b"\x1b[?1049l");
+    frame(&mut surface, &HashSet::from([id]));
+    assert_eq!(
+        surface.views[&id].view.size(),
+        (pane.width - 1, pane.height)
+    );
+}
+
+#[tokio::test]
+async fn a_narrow_pane_or_disabled_scrollbars_reserve_no_column() {
+    for mut surface in [surface_with_scrollbars(20, 8, false), surface(4, 3)] {
+        surface.update(row_of(&terminals(1)));
+        let geometry = requests(&mut surface).remove(0).2;
+        let pane = surface.tiles.tiles[0].info.inner_rect;
+
+        assert_eq!((geometry.cols, geometry.rows), (pane.width, pane.height));
+    }
+}
+
+#[tokio::test]
+async fn the_bar_shows_once_there_is_scrollback_and_follows_the_wheel() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    attach_with_input(&mut surface, b"");
+    frame(&mut surface, &HashSet::new());
+    let track = track(&surface, "t0");
+    assert_eq!(
+        column(&surface, track),
+        " ".repeat(usize::from(track.height))
+    );
+
+    feed(&surface, "t0", &lines(40));
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+    let bottom = column(&surface, track);
+    assert!(bottom.ends_with('▐'), "{bottom:?}");
+
+    for _ in 0..5 {
+        surface.mouse(mouse_at(MouseEventKind::ScrollUp, track.x - 1, track.y));
+    }
+    frame(&mut surface, &dirty);
+    let scrolled = column(&surface, track);
+    assert!(!scrolled.ends_with('▐'), "{scrolled:?}");
+    assert!(scrolled.contains('▐'), "{scrolled:?}");
+}
+
+#[tokio::test]
+async fn a_press_on_the_track_jumps_and_focuses_the_pane() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    attach_with_input(&mut surface, b"");
+    feed_after_first_frame(&mut surface, "t1", &lines(40));
+    let track = track(&surface, "t1");
+
+    surface.mouse(click(track.x, track.y));
+
+    assert_eq!(surface.focused_id(), Some(id_of(&surface, "t1")));
+    let metrics = metrics(&surface, "t1");
+    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+}
+
+#[tokio::test]
+async fn a_thumb_drag_follows_the_pointer_off_the_bar_until_the_release() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let (track, _) = scrolled_back_pane(&mut surface);
+    let thumb = crate::ui::scrollbar_thumb(metrics(&surface, "t0"), track).expect("thumb");
+
+    surface.mouse(click(track.x, thumb.top));
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, 0);
+
+    surface.mouse(mouse_at(
+        MouseEventKind::Drag(MouseButton::Left),
+        0,
+        track.y,
+    ));
+    let top = metrics(&surface, "t0");
+    assert_eq!(top.offset_from_bottom, top.max_offset_from_bottom);
+
+    surface.mouse(mouse_at(
+        MouseEventKind::Up(MouseButton::Left),
+        0,
+        track.bottom() - 1,
+    ));
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, 0);
+
+    surface.mouse(mouse_at(
+        MouseEventKind::Drag(MouseButton::Left),
+        track.x,
+        track.y,
+    ));
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, 0);
+}
+
+#[tokio::test]
+async fn a_press_on_the_bar_never_reaches_a_mouse_reporting_program() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"").remove(0);
+    frame(&mut surface, &HashSet::new());
+    feed(&surface, "t0", &lines(40));
+    feed(&surface, "t0", b"\x1b[?1000h\x1b[?1006h");
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+    let track = track(&surface, "t0");
+    reports(&mut input);
+
+    surface.mouse(click(track.x, track.y));
+    surface.mouse(mouse_at(
+        MouseEventKind::Up(MouseButton::Left),
+        track.x,
+        track.y,
+    ));
+    assert_eq!(reports(&mut input), b"");
+
+    surface.mouse(click(track.x - 1, track.y));
+    assert!(!reports(&mut input).is_empty());
+}
+
+#[tokio::test]
+async fn output_redraws_the_bar_only_when_its_thumb_moves() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let (track, dirty) = scrolled_back_pane(&mut surface);
+    let on_bar = |rows: &[PaneSurfacePatchRow]| rows.iter().filter(|row| row.x == track.x).count();
+
+    feed(&surface, "t0", b"x");
+    assert_eq!(on_bar(&frame(&mut surface, &dirty)), 0);
+
+    surface.mouse(mouse_at(MouseEventKind::ScrollUp, track.x - 1, track.y));
+    assert_eq!(
+        on_bar(&frame(&mut surface, &dirty)),
+        usize::from(track.height)
+    );
+}
+
+const REPORT_MOUSE: &[u8] = b"\x1b[?1000h\x1b[?1006h";
+
+fn release_at(column: u16, row: u16) -> MouseEvent {
+    mouse_at(MouseEventKind::Up(MouseButton::Left), column, row)
+}
+
+#[tokio::test]
+async fn a_press_in_the_terminal_released_on_the_bar_reaches_the_program() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, REPORT_MOUSE).remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.mouse(release_at(track.x, track.y));
+
+    assert_eq!(reports(&mut input), b"\x1b[<0;3;4M\x1b[<0;19;1m");
+}
+
+#[tokio::test]
+async fn a_press_in_one_pane_released_over_another_reaches_only_the_first() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
+    frame(&mut surface, &HashSet::new());
+    let [first, second] = [0, 1].map(|index| surface.tiles.tiles[index].info.inner_rect);
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    surface.mouse(click(first.x, first.y));
+    surface.mouse(release_at(second.x + 1, second.y));
+
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[<0;1;1M\x1b[<0;18;1m");
+    assert_eq!(reports(&mut inputs[1]), b"");
+}
+
+#[tokio::test]
+async fn a_track_press_keeps_its_jump_when_released_in_the_terminal() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"").remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    feed(&surface, "t0", REPORT_MOUSE);
+    reports(&mut input);
+
+    surface.mouse(click(track.x, track.y));
+    surface.mouse(mouse_at(
+        MouseEventKind::Drag(MouseButton::Left),
+        2,
+        track.y,
+    ));
+    surface.mouse(release_at(2, track.y));
+
+    assert_eq!(reports(&mut input), b"");
+    let metrics = metrics(&surface, "t0");
+    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+}
+
+#[tokio::test]
+async fn losing_host_focus_releases_a_held_button_once() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, REPORT_MOUSE).remove(0);
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.host_focus(false);
+    surface.mouse(release_at(4, 5));
+    assert_eq!(reports(&mut input), b"\x1b[<0;3;4M\x1b[<0;3;4m");
+
+    surface.host_focus(true);
+    surface.mouse(click(4, 5));
+    assert_eq!(reports(&mut input), b"\x1b[<0;5;6M");
+}
+
+#[tokio::test]
+async fn zooming_another_pane_releases_the_held_button_before_hiding_its_pane() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
+    frame(&mut surface, &HashSet::new());
+    let left = surface.tiles.tiles[0].info.inner_rect;
+    let held = id_of(&surface, "t0");
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    surface.mouse(click(left.x + 1, left.y + 1));
+    surface.act(KeybindAction::FocusPaneRight, true);
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+    assert!(matches!(
+        surface.views[&held].place,
+        super::Place::Hidden(_)
+    ));
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[<0;2;2M\x1b[<0;2;2m");
+
+    surface.mouse(release_at(left.x + 1, left.y + 1));
+    assert_eq!(reports(&mut inputs[0]), b"");
+    assert_eq!(reports(&mut inputs[1]), b"");
+}
+
+#[tokio::test]
+async fn a_pixel_report_press_released_on_the_bar_reaches_the_program() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h\x1b[?1016h").remove(0);
+    surface.resize(Geometry {
+        cell_width_px: 10,
+        cell_height_px: 20,
+        ..host(20, 10)
+    });
+    frame(&mut surface, &HashSet::new());
+    let track = track(&surface, "t0");
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.mouse(release_at(track.x, track.bottom()));
+
+    let sent = String::from_utf8(reports(&mut input)).expect("utf8");
+    assert_eq!(sent.matches("\x1b[<0;").count(), 2, "{sent:?}");
+    assert!(sent.ends_with('m'), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_release_after_the_pane_shrank_lands_inside_it() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h\x1b[?1016h").remove(0);
+    let pixels = |cols, rows| Geometry {
+        cell_width_px: 10,
+        cell_height_px: 20,
+        ..host(cols, rows)
+    };
+    surface.resize(pixels(20, 10));
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+
+    surface.mouse(click(18, 9));
+    surface.resize(pixels(10, 5));
+    frame(&mut surface, &HashSet::new());
+    surface.host_focus(false);
+
+    let sent = String::from_utf8(reports(&mut input)).expect("utf8");
+    assert_eq!(sent.matches("\x1b[<0;").count(), 2, "{sent:?}");
+    assert!(sent.ends_with('m'), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_press_the_program_did_not_see_is_never_released_to_it() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"").remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    surface.mouse(mouse_at(MouseEventKind::ScrollUp, 2, 3));
+    let offset = metrics(&surface, "t0").offset_from_bottom;
+    assert!(offset > 0);
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    feed(&surface, "t0", REPORT_MOUSE);
+    surface.host_focus(false);
+    surface.mouse(release_at(track.x - 1, 3));
+
+    assert_eq!(reports(&mut input), b"");
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, offset);
 }
