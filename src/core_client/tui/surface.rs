@@ -10,9 +10,11 @@ use super::session::{Operation, PaneChrome, Session, Tiles};
 use crate::core_client::view::{Geometry, View};
 use crate::input::KeybindAction;
 use crate::layout::PaneId;
+use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::session_doc::Layout;
 use crate::ui::theme::Palette;
+use crate::ui::ScrollbarThumb;
 
 struct Shown {
     view: View,
@@ -24,9 +26,22 @@ struct Shown {
 enum Place {
     Visible {
         inner: Rect,
+        alternate: bool,
+        gutter: Option<Gutter>,
         retained: Option<Retained>,
     },
     Hidden(Vec<CellData>),
+}
+
+struct Gutter {
+    track: Rect,
+    thumb: Option<ScrollbarThumb>,
+}
+
+#[derive(Clone, Copy)]
+struct BarDrag {
+    pane: PaneId,
+    grab: u16,
 }
 
 enum Retained {
@@ -40,6 +55,59 @@ impl Shown {
             self.told_focus = Some(focus);
         }
     }
+
+    fn gutter_is_stale(&self, scrollbars: bool) -> bool {
+        scrollbars
+            && matches!(self.place, Place::Visible { alternate, .. } if alternate != self.view.alternate_screen())
+    }
+}
+
+impl Gutter {
+    fn thumb_for(&self, metrics: Option<ScrollMetrics>) -> Option<ScrollbarThumb> {
+        metrics.and_then(|metrics| crate::ui::scrollbar_thumb(metrics, self.track))
+    }
+
+    fn draw(
+        &mut self,
+        metrics: Option<ScrollMetrics>,
+        palette: &Palette,
+        focused: bool,
+    ) -> Vec<PaneSurfacePatchRow> {
+        self.thumb = self.thumb_for(metrics);
+        let mut buffer = Buffer::empty(self.track);
+        if let Some(metrics) = metrics {
+            crate::ui::render_pane_scrollbar_buffer(
+                &mut buffer,
+                metrics,
+                self.track,
+                palette,
+                focused,
+            );
+        }
+        buffer
+            .content
+            .iter()
+            .zip(self.track.y..)
+            .map(|(cell, y)| PaneSurfacePatchRow {
+                x: self.track.x,
+                y,
+                cells: vec![CellData::from_ratatui_cell(cell)],
+            })
+            .collect()
+    }
+
+    fn redraw(
+        &mut self,
+        view: &View,
+        palette: &Palette,
+        focused: bool,
+    ) -> Vec<PaneSurfacePatchRow> {
+        let metrics = view.scroll_metrics();
+        if self.thumb_for(metrics) == self.thumb {
+            return Vec::new();
+        }
+        self.draw(metrics, palette, focused)
+    }
 }
 
 pub(super) struct Surface {
@@ -51,13 +119,20 @@ pub(super) struct Surface {
     chrome: PaneChrome,
     palette: Palette,
     host: Geometry,
+    scrollbars: bool,
+    bar_drag: Option<BarDrag>,
     relayout: bool,
     canvas: Vec<CellData>,
     canvas_cols: u16,
 }
 
 impl Surface {
-    pub(super) fn new(host: Geometry, chrome: PaneChrome, palette: Palette) -> Self {
+    pub(super) fn new(
+        host: Geometry,
+        chrome: PaneChrome,
+        palette: Palette,
+        scrollbars: bool,
+    ) -> Self {
         Self {
             session: Session::default(),
             views: HashMap::new(),
@@ -67,6 +142,8 @@ impl Surface {
             chrome,
             palette,
             host,
+            scrollbars,
+            bar_drag: None,
             relayout: true,
             canvas: Vec::new(),
             canvas_cols: 0,
@@ -135,6 +212,8 @@ impl Surface {
                         view,
                         place: Place::Visible {
                             inner: Rect::default(),
+                            alternate: false,
+                            gutter: None,
                             retained: None,
                         },
                         geometry,
@@ -182,25 +261,46 @@ impl Surface {
     }
 
     pub(super) fn mouse(&mut self, mut event: MouseEvent) {
-        let Some(tile) = self.tiles.tiles.iter().find(|tile| {
-            tile.info
-                .inner_rect
-                .contains(ratatui::layout::Position::new(event.column, event.row))
-        }) else {
+        if let Some(drag) = self.bar_drag {
+            match event.kind {
+                MouseEventKind::Drag(MouseButton::Left) => return self.drag_bar(drag, event.row),
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.bar_drag = None;
+                    return self.drag_bar(drag, event.row);
+                }
+                _ => {}
+            }
+        }
+        let point = ratatui::layout::Position::new(event.column, event.row);
+        let Some(tile) = self
+            .tiles
+            .tiles
+            .iter()
+            .find(|tile| tile.info.inner_rect.contains(point))
+        else {
             return;
         };
         let id = tile.info.id;
-        let focuses = matches!(
-            event.kind,
-            MouseEventKind::Down(MouseButton::Left)
-                | MouseEventKind::ScrollUp
-                | MouseEventKind::ScrollDown
-                | MouseEventKind::ScrollLeft
-                | MouseEventKind::ScrollRight
-        );
+        let on_bar = self.track(id).is_some_and(|track| track.contains(point));
+        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        let focuses = press
+            || !on_bar
+                && matches!(
+                    event.kind,
+                    MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight
+                );
         if focuses && self.session.focus(&tile.terminal) {
             self.relayout = true;
             self.sync_focus();
+        }
+        if on_bar {
+            if press {
+                self.press_bar(id, event.row);
+            }
+            return;
         }
         if let Some(Shown {
             view,
@@ -214,6 +314,53 @@ impl Surface {
         }
     }
 
+    fn track(&self, id: PaneId) -> Option<Rect> {
+        match &self.views.get(&id)?.place {
+            Place::Visible {
+                gutter: Some(gutter),
+                ..
+            } => Some(gutter.track),
+            _ => None,
+        }
+    }
+
+    fn bar(&self, id: PaneId) -> Option<(&View, Rect, ScrollMetrics)> {
+        let shown = self.views.get(&id)?;
+        let Place::Visible {
+            gutter: Some(Gutter { track, .. }),
+            ..
+        } = shown.place
+        else {
+            return None;
+        };
+        let metrics = shown
+            .view
+            .scroll_metrics()
+            .filter(|metrics| crate::ui::should_show_scrollbar(*metrics))?;
+        Some((&shown.view, track, metrics))
+    }
+
+    fn press_bar(&mut self, id: PaneId, row: u16) {
+        let Some((view, track, metrics)) = self.bar(id) else {
+            return;
+        };
+        match crate::ui::scrollbar_thumb_grab_offset(metrics, track, row) {
+            Some(grab) => self.bar_drag = Some(BarDrag { pane: id, grab }),
+            None => view.scroll_to(crate::ui::scrollbar_offset_from_row(metrics, track, row)),
+        }
+    }
+
+    fn drag_bar(&mut self, drag: BarDrag, row: u16) {
+        let Some((view, track, metrics)) = self.bar(drag.pane) else {
+            self.bar_drag = None;
+            return;
+        };
+        let offset = crate::ui::scrollbar_offset_from_drag_row(metrics, track, row, drag.grab);
+        if offset != metrics.offset_from_bottom {
+            view.scroll_to(offset);
+        }
+    }
+
     pub(super) fn frame(
         &mut self,
         dirty: &HashSet<PaneId>,
@@ -224,6 +371,7 @@ impl Surface {
         for id in dirty {
             if let Some(shown) = self.views.get_mut(id) {
                 shown.tell_focus(focused == Some(*id));
+                self.relayout = self.relayout || shown.gutter_is_stale(self.scrollbars);
             }
         }
         let rows = if self.relayout {
@@ -232,14 +380,18 @@ impl Surface {
             self.compose()
         } else {
             let mut rows = Vec::new();
+            let focused = self.session.focused_id();
             for id in dirty {
                 if let Some(Shown {
                     view,
-                    place: Place::Visible { inner, .. },
+                    place: Place::Visible { inner, gutter, .. },
                     ..
                 }) = self.views.get_mut(id)
                 {
                     rows.extend(placed(view.draw(), *inner));
+                    if let Some(gutter) = gutter {
+                        rows.extend(gutter.redraw(view, &self.palette, focused == Some(*id)));
+                    }
                 }
             }
             if !self.canvas.is_empty() {
@@ -259,10 +411,16 @@ impl Surface {
         self.tiles = self.session.tiles(area, self.chrome);
         let mut views = std::mem::take(&mut self.views);
         for tile in &self.tiles.tiles {
-            let inner = tile.info.inner_rect;
-            if inner.is_empty() {
+            if tile.info.inner_rect.is_empty() {
                 continue;
             }
+            let alternate = views
+                .get(&tile.info.id)
+                .is_some_and(|shown| shown.view.alternate_screen());
+            let (inner, track) = crate::ui::scrollbar_gutter_for(
+                tile.info.inner_rect,
+                self.scrollbars && !alternate,
+            );
             let geometry = Geometry {
                 cols: inner.width,
                 rows: inner.height,
@@ -288,7 +446,12 @@ impl Surface {
             } else {
                 shown.view.resize(geometry);
             }
-            shown.place = Place::Visible { inner, retained };
+            shown.place = Place::Visible {
+                inner,
+                alternate,
+                gutter: track.map(|track| Gutter { track, thumb: None }),
+                retained,
+            };
             shown.geometry = geometry;
             self.views.insert(tile.info.id, shown);
         }
@@ -330,8 +493,15 @@ impl Surface {
             .iter()
             .map(CellData::from_ratatui_cell)
             .collect();
-        for shown in self.views.values_mut() {
-            let Place::Visible { inner, retained } = &mut shown.place else {
+        let focused = self.session.focused_id();
+        for (id, shown) in &mut self.views {
+            let Place::Visible {
+                inner,
+                gutter,
+                retained,
+                ..
+            } = &mut shown.place
+            else {
                 continue;
             };
             let rows = placed(shown.view.draw(), *inner);
@@ -351,6 +521,14 @@ impl Surface {
                 None => {}
             }
             crate::protocol::surface_delta::apply_rows(&mut cells, cols, &rows);
+            if let Some(gutter) = gutter {
+                let rows = gutter.draw(
+                    shown.view.scroll_metrics(),
+                    &self.palette,
+                    focused == Some(*id),
+                );
+                crate::protocol::surface_delta::apply_rows(&mut cells, cols, &rows);
+            }
         }
         self.canvas = cells;
         self.canvas_cols = cols;

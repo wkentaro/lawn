@@ -293,22 +293,24 @@ fn stable_scrollbar_gutter(
     pane_inner: Rect,
     pane_scrollbars: bool,
 ) -> (Rect, Option<Rect>) {
-    let inner_rect = terminal_inner_rect(rt, pane_inner, pane_scrollbars);
-    if inner_rect == pane_inner {
-        return (inner_rect, None);
-    }
-    let gutter = Rect::new(
-        pane_inner.x + pane_inner.width.saturating_sub(1),
-        pane_inner.y,
-        1,
-        pane_inner.height,
-    );
-    let scrollbar_rect = rt
-        .scroll_metrics()
-        .filter(|metrics| should_show_scrollbar(*metrics))
-        .map(|_| gutter);
+    let (inner_rect, gutter) =
+        scrollbar_gutter_for(pane_inner, pane_scrollbars && !rt.alternate_screen_active());
+    let scrollbar_rect = gutter.filter(|_| rt.scroll_metrics().is_some_and(should_show_scrollbar));
 
     (inner_rect, scrollbar_rect)
+}
+
+pub(crate) fn scrollbar_gutter_for(pane_inner: Rect, reserve: bool) -> (Rect, Option<Rect>) {
+    let inner_rect = terminal_inner_rect_for(pane_inner, reserve);
+    let gutter = (inner_rect != pane_inner).then(|| {
+        Rect::new(
+            pane_inner.x + pane_inner.width.saturating_sub(1),
+            pane_inner.y,
+            1,
+            pane_inner.height,
+        )
+    });
+    (inner_rect, gutter)
 }
 
 /// Resize every visible runtime in a tab to the geometry it would receive if the tab were selected.

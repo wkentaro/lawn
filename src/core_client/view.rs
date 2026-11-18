@@ -11,7 +11,7 @@ use crate::events::AppEvent;
 use crate::hc::Core;
 use crate::input::TerminalKey;
 use crate::layout::PaneId;
-use crate::pane::{TerminalDirtyPatchOutcome, WheelRouting};
+use crate::pane::{ScrollMetrics, TerminalDirtyPatchOutcome, WheelRouting};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalRuntime;
@@ -264,6 +264,20 @@ impl View {
 
     pub(crate) fn cwd(&self) -> Option<std::path::PathBuf> {
         self.runtime.cwd()
+    }
+
+    pub(crate) fn alternate_screen(&self) -> bool {
+        self.runtime.alternate_screen_active()
+    }
+
+    pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+        self.runtime.scroll_metrics()
+    }
+
+    pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {
+        self.runtime
+            .set_scroll_offset_from_bottom(offset_from_bottom);
+        self.redraw();
     }
 
     pub(crate) fn key(&self, key: TerminalKey) {
