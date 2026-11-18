@@ -1,0 +1,514 @@
+use super::*;
+
+struct Screen {
+    cols: u16,
+    cells: Vec<CellData>,
+}
+
+impl Screen {
+    fn of(surface: &mut Surface) -> Self {
+        surface.resize(surface.host);
+        let blank = CellData::from_ratatui_cell(&ratatui::buffer::Cell::default());
+        let size = usize::from(surface.host.cols) * usize::from(surface.host.rows);
+        let mut screen = Self {
+            cols: surface.host.cols,
+            cells: vec![blank; size],
+        };
+        screen.show(surface, &HashSet::new());
+        screen
+    }
+
+    fn show(&mut self, surface: &mut Surface, dirty: &HashSet<PaneId>) {
+        let rows = frame(surface, dirty);
+        crate::protocol::surface_delta::apply_rows(&mut self.cells, self.cols, &rows);
+    }
+
+    fn cell(&self, x: u16, y: u16) -> &CellData {
+        &self.cells[usize::from(y) * usize::from(self.cols) + usize::from(x)]
+    }
+
+    fn span(&self, y: u16, xs: std::ops::Range<u16>) -> String {
+        xs.map(|x| self.cell(x, y).symbol.as_str()).collect()
+    }
+
+    fn line(&self, y: u16) -> String {
+        self.span(y, 0..self.cols)
+    }
+
+    fn lines(&self, ys: std::ops::Range<u16>) -> Vec<String> {
+        ys.map(|y| self.line(y).trim_end().to_owned()).collect()
+    }
+}
+
+fn two_workspaces() -> Layout {
+    spaces(&[(Some("main"), &[None, None]), (Some("other"), &[None])])
+}
+
+fn opened(layout: Layout) -> (Surface, Screen) {
+    let mut surface = plain(64, 20);
+    surface.update(layout);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(tap(&mut surface, 58, 1), None);
+    assert!(surface.switching());
+    let screen = Screen::of(&mut surface);
+    (surface, screen)
+}
+
+fn bold() -> u16 {
+    styled(Style::default().add_modifier(Modifier::BOLD)).modifier
+}
+
+#[tokio::test]
+async fn at_the_mobile_width_threshold_a_header_sits_above_the_panes_and_one_column_more_brings_back_the_sidebar(
+) {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None, None])]));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.mobile_header, Rect::new(0, 0, 64, 2));
+    assert_eq!(pane_area(&surface), Rect::new(0, 2, 64, 18));
+    assert!(surface.areas.sidebar.is_empty() && surface.areas.tab_bar.is_empty());
+
+    surface.resize(host(65, 20));
+    frame(&mut surface, &HashSet::new());
+    assert!(surface.areas.mobile_header.is_empty());
+    assert_eq!(surface.areas.sidebar.width, 26);
+    assert_eq!(surface.areas.tab_bar, Rect::new(26, 0, 39, 1));
+}
+
+#[tokio::test]
+async fn the_header_names_the_focused_workspace_in_bold_with_its_tab_on_the_right_and_a_switch_button_last(
+) {
+    let palette = Palette::catppuccin();
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(Some("main"), &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(
+        line(&surface, 0),
+        format!(" main{}tab 1 │{}", " ".repeat(43), " ".repeat(9))
+    );
+    assert_eq!(line(&surface, 1), format!("{}│ switch  ", " ".repeat(54)));
+    assert_eq!(cell(&surface, 1, 0).modifier, bold());
+    assert_ne!(cell(&surface, 48, 0).modifier, bold());
+    assert_eq!(cell(&surface, 56, 1).modifier, bold());
+    assert_eq!(cell(&surface, 10, 1).bg, background(palette.panel_bg));
+    for y in 0..2 {
+        assert_eq!(cell(&surface, 53, y).bg, background(palette.panel_bg));
+        for x in 54..64 {
+            assert_eq!(cell(&surface, x, y).bg, background(palette.surface0));
+        }
+    }
+}
+
+#[tokio::test]
+async fn with_several_tabs_the_header_counts_the_focused_tab_and_names_a_named_one() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(Some("main"), &[None, None, Some("logs")])]));
+    surface.act(KeybindAction::NextTab, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(span(&surface, 0, 42..55), "tab 2 · 2/3 │");
+
+    surface.act(KeybindAction::NextTab, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(span(&surface, 0, 39..55), "tab logs · 3/3 │");
+}
+
+#[tokio::test]
+async fn without_a_workspace_the_header_says_so_and_keeps_its_switch_button() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[]));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(span(&surface, 0, 0..15), " no workspace  ");
+    assert_eq!(span(&surface, 1, 54..64), "│ switch  ");
+}
+
+#[tokio::test]
+async fn a_press_anywhere_on_the_switch_button_opens_the_switcher_and_beside_it_does_not() {
+    for (column, row, opens) in [(54, 0, true), (63, 1, true), (53, 1, false), (20, 0, false)] {
+        let mut surface = plain(64, 20);
+        surface.update(two_workspaces());
+        frame(&mut surface, &HashSet::new());
+
+        assert_eq!(tap(&mut surface, column, row), None);
+        assert_eq!(surface.switching(), opens, "{column},{row}");
+    }
+}
+
+#[tokio::test]
+async fn the_switcher_covers_the_screen_with_its_title_close_button_and_both_sections() {
+    let (surface, screen) = opened(two_workspaces());
+
+    assert_eq!(
+        screen.line(0),
+        format!(" switch{}│  close  ", " ".repeat(47))
+    );
+    assert_eq!(screen.line(1), format!("{}│    ×    ", " ".repeat(54)));
+    assert_eq!(screen.line(2), "─".repeat(64));
+    assert_eq!(
+        screen.lines(3..14),
+        [
+            "  spaces",
+            "   + new workspace",
+            "   main",
+            "   tab 1 · 1/2",
+            "   other",
+            "   tab 1",
+            "  tabs",
+            "   + new tab",
+            "   tab 1",
+            "   tab 2",
+            "",
+        ]
+    );
+    assert!(line(&surface, 0).starts_with(" main "));
+}
+
+#[tokio::test]
+async fn the_switcher_highlights_the_focused_workspace_and_the_focused_tab() {
+    let palette = Palette::catppuccin();
+    let (mut surface, mut screen) = opened(two_workspaces());
+    let at = |screen: &Screen, x, y| screen.cell(x, y).bg;
+
+    for y in [5, 6] {
+        assert_eq!(at(&screen, 1, y), background(palette.surface0));
+        assert_eq!(at(&screen, 63, y), background(palette.surface0));
+    }
+    assert_eq!(at(&screen, 1, 7), background(palette.panel_bg));
+    assert_eq!(at(&screen, 1, 11), background(palette.surface_dim));
+    assert_eq!(at(&screen, 1, 12), background(palette.panel_bg));
+    assert_eq!(screen.cell(3, 5).modifier, bold());
+
+    surface.act(KeybindAction::NextTab, false);
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(at(&screen, 1, 11), background(palette.panel_bg));
+    assert_eq!(at(&screen, 1, 12), background(palette.surface_dim));
+}
+
+#[tokio::test]
+async fn the_close_button_or_escape_closes_the_switcher_and_shows_the_panes_again() {
+    let mut surface = plain(64, 20);
+    surface.update(two_workspaces());
+    let mut screen = Screen::of(&mut surface);
+    let panes = screen.lines(0..20);
+
+    for close in [true, false] {
+        tap(&mut surface, 58, 1);
+        screen.show(&mut surface, &HashSet::new());
+        assert_ne!(screen.lines(0..20), panes);
+
+        if close {
+            assert_eq!(tap(&mut surface, 54, 1), None);
+        } else {
+            surface.close_switcher();
+        }
+        assert!(!surface.switching());
+        assert!(!surface.relayout);
+        screen.show(&mut surface, &HashSet::new());
+        assert_eq!(screen.lines(0..20), panes);
+    }
+}
+
+#[tokio::test]
+async fn a_press_on_a_workspace_or_a_tab_in_the_switcher_focuses_it_and_closes_the_switcher() {
+    let (mut surface, _) = opened(two_workspaces());
+
+    tap(&mut surface, 5, 12);
+    assert_eq!(tab(&surface), "tab2");
+    assert!(!surface.switching());
+
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 58, 1);
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 40, 8);
+    assert_eq!(workspace(&surface), "w1");
+    assert!(!surface.switching());
+}
+
+#[tokio::test]
+async fn the_create_rows_act_like_their_keys_and_close_the_switcher() {
+    let (mut surface, _) = opened(two_workspaces());
+    let workspace = tap(&mut surface, 5, 4);
+    assert!(workspace.is_some());
+    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
+    assert!(!surface.switching());
+
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 58, 1);
+    frame(&mut surface, &HashSet::new());
+    let tab = tap(&mut surface, 5, 10);
+    assert!(tab.is_some());
+    assert_eq!(tab, surface.act(KeybindAction::NewTab, false));
+    assert!(!surface.switching());
+
+    let (mut surface, screen) = opened(spaces(&[]));
+    assert_eq!(screen.lines(3..6), ["  spaces", "   + new workspace", ""]);
+    let workspace = tap(&mut surface, 5, 4);
+    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
+    assert!(workspace.is_some());
+    assert!(!surface.switching());
+}
+
+#[tokio::test]
+async fn the_wheel_scrolls_the_switcher_two_rows_a_step_and_stops_at_either_end() {
+    let (mut surface, mut screen) = opened(many(12));
+    let top = |screen: &Screen| screen.span(3, 1..64).trim_end().to_owned();
+    assert_eq!(top(&screen), " spaces");
+
+    wheel(&mut surface, true, 30, 10);
+    assert!(surface.needs_frame());
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(top(&screen), "  ws0");
+
+    for _ in 0..5 {
+        wheel(&mut surface, true, 30, 10);
+    }
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(top(&screen), "  ws5");
+    assert_eq!(screen.span(19, 1..64).trim_end(), "  tab 1");
+    wheel(&mut surface, true, 30, 10);
+    assert!(!surface.needs_frame());
+
+    wheel(&mut surface, false, 0, 0);
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(top(&screen), "  ws4");
+    for _ in 0..5 {
+        wheel(&mut surface, false, 30, 10);
+    }
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(top(&screen), " spaces");
+    wheel(&mut surface, false, 30, 10);
+    assert!(!surface.needs_frame());
+    assert!(surface.switching());
+}
+
+#[tokio::test]
+async fn the_switcher_shows_a_scrollbar_on_its_left_only_when_the_list_overflows() {
+    let (_, screen) = opened(two_workspaces());
+    assert!((3..20).all(|y| screen.cell(0, y).symbol == " "));
+
+    let (mut surface, mut screen) = opened(many(12));
+    let track: String = (3..20).map(|y| screen.cell(0, y).symbol.as_str()).collect();
+    assert!(track.starts_with('▌') && track.ends_with('│'), "{track}");
+    assert!(track.chars().all(|glyph| glyph == '▌' || glyph == '│'));
+
+    for _ in 0..6 {
+        wheel(&mut surface, true, 30, 10);
+    }
+    screen.show(&mut surface, &HashSet::new());
+    let track: String = (3..20).map(|y| screen.cell(0, y).symbol.as_str()).collect();
+    assert!(track.starts_with('│') && track.ends_with('▌'), "{track}");
+}
+
+#[tokio::test]
+async fn opening_the_switcher_starts_at_the_top_of_the_list() {
+    let mut surface = plain(64, 20);
+    surface.update(many(12));
+    surface.act(KeybindAction::PreviousWorkspace, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(workspace(&surface), "w11");
+
+    for _ in 0..2 {
+        tap(&mut surface, 58, 1);
+        let screen = Screen::of(&mut surface);
+        assert_eq!(screen.span(3, 1..64).trim_end(), " spaces");
+        wheel(&mut surface, true, 30, 10);
+        frame(&mut surface, &HashSet::new());
+        surface.close_switcher();
+        frame(&mut surface, &HashSet::new());
+    }
+}
+
+#[tokio::test]
+async fn a_workspace_focused_while_the_switcher_is_open_scrolls_into_view() {
+    let (mut surface, mut screen) = opened(many(12));
+
+    surface.act(KeybindAction::PreviousWorkspace, false);
+    screen.show(&mut surface, &HashSet::new());
+
+    assert_eq!(workspace(&surface), "w11");
+    assert!(surface.switching());
+    assert_eq!(screen.span(18, 1..64).trim_end(), "  ws11");
+    assert_eq!(screen.span(19, 1..64).trim_end(), "  tab 1");
+
+    surface.act(KeybindAction::NextWorkspace, false);
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(screen.span(3, 1..64).trim_end(), "  ws0");
+}
+
+#[tokio::test]
+async fn while_the_switcher_is_open_no_mouse_event_reaches_a_pane_and_nothing_is_copyable() {
+    let mut surface = plain(64, 20);
+    let mut layout = spaces(&[(None, &[None])]);
+    layout.workspaces[0].tabs[0].root =
+        serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
+    surface.update(layout);
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    let focused = surface.focused_id();
+    let right = pane_inner(&surface, "t9");
+    assert!(right.y <= 16 && right.bottom() > 17 && right.width > 3);
+    tap(&mut surface, 58, 1);
+    frame(&mut surface, &HashSet::new());
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    for (kind, column, row) in [
+        (MouseEventKind::Moved, right.x, 16),
+        (MouseEventKind::Down(MouseButton::Left), right.x, 16),
+        (MouseEventKind::Drag(MouseButton::Left), right.x + 3, 17),
+        (MouseEventKind::Up(MouseButton::Left), right.x + 3, 17),
+        (MouseEventKind::Down(MouseButton::Right), right.x, 16),
+        (MouseEventKind::Up(MouseButton::Right), right.x, 16),
+        (MouseEventKind::Down(MouseButton::Middle), right.x, 16),
+        (MouseEventKind::ScrollDown, right.x, 16),
+        (MouseEventKind::ScrollUp, right.x, 16),
+    ] {
+        assert_eq!(point(&mut surface, kind, column, row), None);
+    }
+
+    for input in &mut inputs {
+        assert_eq!(reports(input), b"");
+    }
+    assert_eq!(surface.focused_id(), focused);
+    assert!(surface.gesture.is_none() && surface.select.shown().is_none());
+    assert!(surface.switching());
+    assert!(!surface.copyable());
+}
+
+#[tokio::test]
+async fn the_cursor_is_hidden_while_the_switcher_is_open_and_returns_once_it_closes() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"\x1b[1;3H\x1b[?25h");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    frame(&mut surface, &dirty);
+    let shown = surface.cursor().map(|cursor| (cursor.x, cursor.y));
+    assert!(shown.is_some());
+
+    tap(&mut surface, 58, 1);
+    frame(&mut surface, &HashSet::new());
+    assert!(surface.cursor().is_none());
+
+    surface.close_switcher();
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.cursor().map(|cursor| (cursor.x, cursor.y)), shown);
+}
+
+#[tokio::test]
+async fn pane_output_while_the_switcher_is_open_stays_under_it_and_shows_once_it_closes() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    let mut screen = Screen::of(&mut surface);
+    let inner = pane_inner(&surface, "t1");
+    tap(&mut surface, 58, 1);
+    screen.show(&mut surface, &HashSet::new());
+
+    feed(&surface, "t1", b"hello");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    assert!(frame(&mut surface, &dirty).is_empty());
+
+    surface.close_switcher();
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(screen.span(inner.y, inner.x..inner.x + 5), "hello");
+}
+
+#[tokio::test]
+async fn the_switcher_is_not_redrawn_when_nothing_it_shows_changed() {
+    let (mut surface, _) = opened(two_workspaces());
+
+    assert!(frame(&mut surface, &HashSet::new()).is_empty());
+    point(&mut surface, MouseEventKind::Moved, 30, 10);
+    wheel(&mut surface, true, 30, 10);
+    assert!(!surface.needs_frame());
+
+    let built = surface.outer.cover().map(|cover| cover.1.as_ptr());
+    surface.update(two_workspaces());
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.outer.cover().map(|cover| cover.1.as_ptr()), built);
+
+    let mut renamed = two_workspaces();
+    renamed.workspaces[1].name = Some("renamed".to_owned());
+    surface.update(renamed);
+    frame(&mut surface, &HashSet::new());
+    assert_ne!(surface.outer.cover().map(|cover| cover.1.as_ptr()), built);
+}
+
+#[tokio::test]
+async fn in_copy_mode_a_press_on_the_switch_button_does_not_open_the_switcher() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"hello");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    frame(&mut surface, &dirty);
+    surface.enter_copy_mode();
+    frame(&mut surface, &dirty);
+
+    tap(&mut surface, 58, 1);
+    assert!(!surface.switching());
+    assert!(surface.copy_mode());
+
+    surface.copy_mode_key(&TerminalKey::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    frame(&mut surface, &dirty);
+    tap(&mut surface, 58, 1);
+    assert!(surface.switching());
+}
+
+#[tokio::test]
+async fn widening_past_the_threshold_closes_the_switcher_and_narrowing_again_does_not_reopen_it() {
+    let (mut surface, _) = opened(two_workspaces());
+
+    surface.resize(host(50, 20));
+    let screen = Screen::of(&mut surface);
+    assert!(surface.switching());
+    assert_eq!(screen.span(0, 40..50), "│  close  ");
+
+    surface.resize(host(120, 20));
+    let screen = Screen::of(&mut surface);
+    assert!(!surface.switching());
+    assert!(surface.outer.cover().is_none());
+    assert_eq!(surface.areas.sidebar.width, 26);
+    assert!(screen.line(2).starts_with(" main "), "{:?}", screen.line(2));
+    let canvas: Vec<String> = (0..20)
+        .map(|y| line(&surface, y).trim_end().to_owned())
+        .collect();
+    assert_eq!(screen.lines(0..20), canvas);
+
+    for (column, row) in [(40, 1), (5, 4), (5, 10)] {
+        tap(&mut surface, column, row);
+        assert!(!surface.switching());
+        assert_eq!(workspace(&surface), "w0");
+    }
+
+    surface.resize(host(64, 20));
+    let screen = Screen::of(&mut surface);
+    assert!(!surface.switching());
+    assert!(screen.line(0).starts_with(" main "));
+}
+
+#[tokio::test]
+async fn on_one_row_the_header_is_one_row_and_on_two_rows_the_switcher_draws_only_its_rule() {
+    let mut surface = plain(64, 1);
+    surface.update(two_workspaces());
+    let screen = Screen::of(&mut surface);
+    assert_eq!(surface.areas.mobile_header, Rect::new(0, 0, 64, 1));
+    assert_eq!(screen.span(0, 54..64), "│ switch  ");
+    assert!(screen.line(0).starts_with(" main "));
+
+    let mut surface = plain(64, 2);
+    surface.update(two_workspaces());
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 58, 1);
+    let screen = Screen::of(&mut surface);
+    assert_eq!(screen.line(0), "─".repeat(64));
+    assert_eq!(screen.line(1).trim_end(), "");
+
+    tap(&mut surface, 58, 0);
+    tap(&mut surface, 5, 1);
+    assert!(surface.switching());
+    assert_eq!(workspace(&surface), "w0");
+}

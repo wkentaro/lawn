@@ -132,17 +132,6 @@ async fn a_collapsed_sidebar_is_four_columns_when_compact_and_gone_when_hidden()
 }
 
 #[tokio::test]
-async fn at_the_mobile_width_threshold_panes_fill_the_whole_screen() {
-    let mut surface = dressed(64, 20, |config| config.ui.mobile_width_threshold = 64);
-    surface.update(spaces(&[(None, &[None, None])]));
-    frame(&mut surface, &HashSet::new());
-
-    assert_eq!(pane_area(&surface), Rect::new(0, 0, 64, 20));
-    assert!(surface.areas.sidebar.is_empty() && surface.areas.tab_bar.is_empty());
-    assert!(surface.outer.rows().is_empty());
-}
-
-#[tokio::test]
 async fn a_single_tab_hides_the_tab_bar_only_when_configured() {
     for (tabs, hidden) in [(&[None][..], true), (&[None, None][..], false)] {
         let mut surface = dressed(120, 30, |config| {
@@ -1454,3 +1443,5 @@ async fn a_still_press_on_the_divider_of_an_oversized_configured_width_leaves_it
 
     assert_eq!(saved(&path), Some((None, None)));
 }
+
+mod mobile;

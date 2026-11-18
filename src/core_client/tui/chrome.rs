@@ -8,6 +8,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use time::format_description::OwnedFormatItem;
 
+use self::mobile::{Switcher, Target};
 use super::session::Session;
 use crate::app::tab_bar_status::{
     format_local_datetime, sanitize_literal_text, sanitize_separator, sanitize_status_text,
@@ -23,6 +24,8 @@ use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
 use crate::ui::chrome::{self as paint, Layout, LayoutSettings, StatusSegment, TabBarState};
 use crate::ui::theme::Palette;
+
+mod mobile;
 
 const HEADER_ROWS: u16 = 2;
 const DOUBLE_CLICK: Duration = Duration::from_millis(350);
@@ -51,6 +54,8 @@ struct Drawn {
     focused_tab: Option<usize>,
     zoomed: bool,
     status: Vec<(String, bool)>,
+    tab_statuses: Vec<String>,
+    switching: bool,
 }
 
 #[derive(PartialEq)]
@@ -73,6 +78,10 @@ struct Hits {
     new_tab: Rect,
     scroll_left: Rect,
     scroll_right: Rect,
+    switch: Rect,
+    close: Rect,
+    targets: Vec<(Rect, Target)>,
+    switcher_max: usize,
 }
 
 #[derive(PartialEq)]
@@ -111,7 +120,7 @@ pub(super) struct Chrome {
     divider_click: Option<Instant>,
     preferences: Option<PathBuf>,
     ticked: bool,
-    scrolled: bool,
+    redraw: bool,
     tab_bar: TabBarState,
     workspace_scroll: usize,
     reveal_workspace: bool,
@@ -119,6 +128,8 @@ pub(super) struct Chrome {
     rows: Vec<PaneSurfacePatchRow>,
     hits: Hits,
     press: Option<Press>,
+    switcher: Option<Switcher>,
+    cover: Option<(Rect, Vec<CellData>)>,
 }
 
 impl Chrome {
@@ -172,7 +183,7 @@ impl Chrome {
             divider_click: None,
             preferences: None,
             ticked: false,
-            scrolled: false,
+            redraw: false,
             tab_bar: TabBarState::default(),
             workspace_scroll: 0,
             reveal_workspace: true,
@@ -180,6 +191,8 @@ impl Chrome {
             rows: Vec::new(),
             hits: Hits::default(),
             press: None,
+            switcher: None,
+            cover: None,
         };
         chrome.width = chrome.bounded(chrome.width);
         chrome
@@ -200,12 +213,6 @@ impl Chrome {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16, session: &Session) -> Layout {
-        if cols <= self.settings.mobile_width_threshold {
-            return Layout {
-                pane_surface: Rect::new(0, 0, cols, rows),
-                ..Layout::default()
-            };
-        }
         let single_tab = session
             .focused_workspace()
             .is_some_and(|workspace| workspace.tabs.len() == 1);
@@ -270,10 +277,33 @@ impl Chrome {
                 event.kind,
                 MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
             );
-        held || !hidden.contains(point)
-            && self.drawn.as_ref().is_some_and(|drawn| {
-                drawn.layout.sidebar.contains(point) || drawn.layout.tab_bar.contains(point)
-            })
+        held || self.switcher.is_some()
+            || !hidden.contains(point)
+                && self.drawn.as_ref().is_some_and(|drawn| {
+                    let Layout {
+                        sidebar,
+                        tab_bar,
+                        mobile_header,
+                        ..
+                    } = drawn.layout;
+                    [sidebar, tab_bar, mobile_header]
+                        .iter()
+                        .any(|rect| rect.contains(point))
+                })
+    }
+
+    pub(super) fn switching(&self) -> bool {
+        self.switcher.is_some()
+    }
+
+    pub(super) fn close(&mut self) {
+        if self.switcher.take().is_some() {
+            self.redraw = true;
+        }
+    }
+
+    pub(super) fn cover(&self) -> Option<&(Rect, Vec<CellData>)> {
+        self.switcher.as_ref().and(self.cover.as_ref())
     }
 
     pub(super) fn mouse(
@@ -281,9 +311,20 @@ impl Chrome {
         event: MouseEvent,
         session: &Session,
         now: Instant,
+        copying: bool,
     ) -> Option<KeybindAction> {
+        if self.switcher.is_some() {
+            return self.switcher_mouse(event, session);
+        }
         let point = Position::new(event.column, event.row);
         match event.kind {
+            MouseEventKind::Down(MouseButton::Left) if self.hits.switch.contains(point) => {
+                if !copying {
+                    self.switcher = Some(Switcher::default());
+                    self.redraw = true;
+                }
+                None
+            }
             MouseEventKind::Down(MouseButton::Left) => self.press_at(point, now),
             MouseEventKind::Drag(MouseButton::Left) => {
                 match (&self.press, self.hits.list) {
@@ -383,18 +424,53 @@ impl Chrome {
             }
             Press::Thumb(_) => None,
             press if self.over(point).as_ref() != Some(&press) => None,
-            Press::Workspace(id) => session
-                .workspaces()
-                .iter()
-                .position(|workspace| workspace.id == id)
-                .map(KeybindAction::SwitchWorkspace),
-            Press::Tab(id) => session
-                .focused_workspace()?
-                .tabs
-                .iter()
-                .position(|tab| tab.id == id)
-                .map(KeybindAction::SwitchTab),
+            press => focusing(press, session),
         }
+    }
+
+    fn switcher_mouse(&mut self, event: MouseEvent, session: &Session) -> Option<KeybindAction> {
+        let switcher = self.switcher.as_mut()?;
+        let scroll = match event.kind {
+            MouseEventKind::ScrollUp => switcher.scroll.saturating_sub(mobile::WHEEL_ROWS),
+            MouseEventKind::ScrollDown => switcher
+                .scroll
+                .saturating_add(mobile::WHEEL_ROWS)
+                .min(self.hits.switcher_max),
+            MouseEventKind::Down(MouseButton::Left) => {
+                return self.choose(Position::new(event.column, event.row), session);
+            }
+            _ => return None,
+        };
+        if scroll != switcher.scroll {
+            switcher.scroll = scroll;
+            self.redraw = true;
+        }
+        None
+    }
+
+    fn choose(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
+        if self.hits.close.contains(point) {
+            self.close();
+            return None;
+        }
+        let target = self
+            .hits
+            .targets
+            .iter()
+            .find(|(rect, _)| rect.contains(point))?
+            .1;
+        let drawn = self.drawn.as_ref()?;
+        let id = |labels: &[Label], index: usize| Some(labels.get(index)?.id.clone());
+        let action = match target {
+            Target::NewWorkspace => KeybindAction::NewWorkspace,
+            Target::NewTab => KeybindAction::NewTab,
+            Target::Workspace(index) => {
+                focusing(Press::Workspace(id(&drawn.workspaces, index)?), session)?
+            }
+            Target::Tab(index) => focusing(Press::Tab(id(&drawn.tabs, index)?), session)?,
+        };
+        self.close();
+        Some(action)
     }
 
     fn wheel(&mut self, point: Position, up: bool) -> Option<KeybindAction> {
@@ -426,14 +502,14 @@ impl Chrome {
     fn scroll_list(&mut self, start: usize) {
         if start != self.workspace_scroll {
             self.workspace_scroll = start;
-            self.scrolled = true;
+            self.redraw = true;
         }
     }
 
     fn scroll_tabs(&mut self, start: usize) {
         if start != self.tab_bar.scroll {
             self.tab_bar.scroll = start;
-            self.scrolled = true;
+            self.redraw = true;
         }
     }
 
@@ -459,7 +535,7 @@ impl Chrome {
     }
 
     pub(super) fn stale(&self) -> bool {
-        self.ticked || self.scrolled
+        self.ticked || self.redraw
     }
 
     pub(super) fn rows(&self) -> &[PaneSurfacePatchRow] {
@@ -474,18 +550,22 @@ impl Chrome {
         palette: &Palette,
     ) -> bool {
         self.ticked = false;
-        let scrolled = std::mem::take(&mut self.scrolled);
+        if layout.mobile_header.is_empty() {
+            self.switcher = None;
+        }
+        let redraw = std::mem::take(&mut self.redraw);
         let drawn = self.drawn(host, layout, session);
         let previous = self.drawn.take();
-        if !scrolled && previous.as_ref() == Some(&drawn) {
+        if !redraw && previous.as_ref() == Some(&drawn) {
             self.drawn = previous;
             return false;
         }
-        if previous
+        let refocused = previous
             .as_ref()
-            .is_none_or(|previous| previous.focused_workspace_id() != drawn.focused_workspace_id())
-        {
-            self.reveal_workspace = true;
+            .is_none_or(|previous| previous.focused_workspace_id() != drawn.focused_workspace_id());
+        self.reveal_workspace |= refocused;
+        if let (Some(switcher), Some(previous)) = (&mut self.switcher, &previous) {
+            switcher.reveal |= previous.switching && (refocused || previous.host != drawn.host);
         }
         if previous.as_ref().is_none_or(|previous| {
             previous.tabs != drawn.tabs
@@ -540,7 +620,7 @@ impl Chrome {
                 .enumerate()
                 .map(|(index, tab)| Label {
                     id: tab.id.clone(),
-                    text: tab.name.clone().unwrap_or_else(|| (index + 1).to_string()),
+                    text: tab_label(index, tab),
                     custom: tab.name.is_some(),
                 })
                 .collect(),
@@ -558,6 +638,22 @@ impl Chrome {
                         .map(|text| (text, false)),
                 })
                 .collect(),
+            tab_statuses: if layout.mobile_header.is_empty() {
+                Vec::new()
+            } else {
+                workspaces
+                    .iter()
+                    .map(|workspace| {
+                        let active = session.active_tab(workspace).unwrap_or(0);
+                        let label = workspace
+                            .tabs
+                            .get(active)
+                            .map_or_else(|| "1".to_owned(), |tab| tab_label(active, tab));
+                        mobile::tab_status(&label, active, workspace.tabs.len())
+                    })
+                    .collect()
+            },
+            switching: self.switcher.is_some(),
         }
     }
 
@@ -565,7 +661,10 @@ impl Chrome {
         self.hits = Hits::default();
         let mut buffer = Buffer::empty(drawn.host);
         let Layout {
-            sidebar, tab_bar, ..
+            sidebar,
+            tab_bar,
+            mobile_header,
+            ..
         } = drawn.layout;
         if !sidebar.is_empty() {
             if self.collapsed {
@@ -577,7 +676,8 @@ impl Chrome {
         if !tab_bar.is_empty() {
             self.draw_tab_bar(&mut buffer, drawn, palette);
         }
-        [sidebar, tab_bar]
+        mobile::draw_header(&mut buffer, drawn, palette, &mut self.hits);
+        let rows = [sidebar, tab_bar, mobile_header]
             .into_iter()
             .flat_map(|rect| (rect.y..rect.bottom()).map(move |y| (rect, y)))
             .map(|(rect, y)| PaneSurfacePatchRow {
@@ -587,7 +687,19 @@ impl Chrome {
                     .map(|x| CellData::from_ratatui_cell(&buffer[(x, y)]))
                     .collect(),
             })
-            .collect()
+            .collect();
+        self.cover = self.switcher.as_mut().map(|switcher| {
+            mobile::draw_switcher(&mut buffer, drawn, switcher, palette, &mut self.hits);
+            (
+                drawn.host,
+                buffer
+                    .content
+                    .iter()
+                    .map(CellData::from_ratatui_cell)
+                    .collect(),
+            )
+        });
+        rows
     }
 
     fn list_area(&self, sidebar: Rect) -> Rect {
@@ -840,6 +952,27 @@ impl Chrome {
 pub(super) fn preferences_path(session: &str) -> PathBuf {
     let name = Some(session).filter(|name| *name != crate::session::DEFAULT_SESSION_NAME);
     preferences::path_for_local_endpoint(&crate::session::client_socket_path_for(name))
+}
+
+fn tab_label(index: usize, tab: &crate::session_doc::Tab) -> String {
+    tab.name.clone().unwrap_or_else(|| (index + 1).to_string())
+}
+
+fn focusing(press: Press, session: &Session) -> Option<KeybindAction> {
+    match press {
+        Press::Workspace(id) => session
+            .workspaces()
+            .iter()
+            .position(|workspace| workspace.id == id)
+            .map(KeybindAction::SwitchWorkspace),
+        Press::Tab(id) => session
+            .focused_workspace()?
+            .tabs
+            .iter()
+            .position(|tab| tab.id == id)
+            .map(KeybindAction::SwitchTab),
+        Press::Thumb(_) | Press::Width => None,
+    }
 }
 
 fn hit(hits: &[(Rect, usize)], point: Position) -> Option<usize> {

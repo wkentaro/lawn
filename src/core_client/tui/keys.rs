@@ -14,6 +14,7 @@ pub(super) enum Routed {
     Binding(KeybindMatch),
     Copy,
     CopyMode(TerminalKey),
+    Dismiss,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub(super) enum Mode {
     Panes,
     Copy,
     Prompt,
+    Switcher,
 }
 
 pub(super) struct Keys {
@@ -195,6 +197,13 @@ impl Keys {
         if mode == Mode::Prompt {
             self.prefix = false;
             return to_focus(routed);
+        }
+        if mode == Mode::Switcher {
+            self.prefix = false;
+            if key.code == KeyCode::Esc || self.config.matches_prefix(key) {
+                routed.push(Routed::Dismiss);
+            }
+            return None;
         }
         if !std::mem::take(&mut self.prefix) {
             if let Some(binding) = (mode == Mode::Panes)
