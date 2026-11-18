@@ -1832,3 +1832,5 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
     let word = surface.mouse(release_at(inner.x, inner.y), now);
     assert_eq!(word.as_deref(), Some("ab"));
 }
+
+mod copy_mode;

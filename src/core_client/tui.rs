@@ -1,5 +1,6 @@
 use std::io;
 
+mod copy_mode;
 mod follow;
 mod keys;
 mod select;
@@ -292,6 +293,9 @@ mod unix {
                                 continue;
                             }
                             event => {
+                                if surface.copy_mode() {
+                                    continue;
+                                }
                                 if matches!(event, RawInputEvent::Text(_) | RawInputEvent::Paste(_)) {
                                     surface.deselect();
                                 }
@@ -308,6 +312,7 @@ mod unix {
                             key,
                             focused,
                             surface.copyable(),
+                            surface.copy_mode(),
                             |key| keys.committed_text(key),
                         );
                         for routed in routes {
@@ -328,6 +333,16 @@ mod unix {
                                     if let Some(view) = surface.view(pane) {
                                         view.key(key);
                                     }
+                                    continue;
+                                }
+                                Routed::CopyMode(key) => {
+                                    if let Some(text) = surface.copy_mode_key(&key) {
+                                        copy.send(text.into_bytes()).ok();
+                                    }
+                                    continue;
+                                }
+                                Routed::Binding(KeybindMatch::Action(KeybindAction::CopyMode)) => {
+                                    surface.enter_copy_mode();
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::Detach)) => {

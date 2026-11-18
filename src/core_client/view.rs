@@ -319,6 +319,26 @@ impl View {
         self.runtime.extract_selection(selection)
     }
 
+    pub(crate) fn cursor_cell(&self) -> Option<(u16, u16)> {
+        let (_, cursor) = self.runtime.cursor_snapshot();
+        cursor
+            .filter(|cursor| cursor.visible && !crate::ui::pane_is_scrolled_back(&self.runtime))
+            .map(|cursor| (cursor.x, cursor.y))
+    }
+
+    pub(crate) fn word_motion_target(
+        &self,
+        (row, col): (u32, u16),
+        motion: crate::pane::TerminalWordMotion,
+    ) -> Option<(u32, u16)> {
+        let target = self.runtime.word_motion_target(row, col, motion)?;
+        Some((target.row, target.col))
+    }
+
+    pub(crate) fn paragraph_motion_target(&self, row: u32, direction: i8) -> Option<u32> {
+        Some(self.runtime.paragraph_motion_target(row, direction)?.row)
+    }
+
     pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {
         self.runtime
             .set_scroll_offset_from_bottom(offset_from_bottom);
@@ -337,7 +357,9 @@ impl View {
             }
             return;
         }
-        self.to_bottom();
+        if event.kind != KeyEventKind::Release {
+            self.to_bottom();
+        }
         self.send(self.runtime.encode_terminal_key(key));
     }
 
