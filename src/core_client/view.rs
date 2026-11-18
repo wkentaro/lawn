@@ -110,6 +110,11 @@ impl Events {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Frame {
+    pub(crate) scroll: Option<ScrollMetrics>,
+}
+
 /// One herdr-core terminal, parsed in this process and drawn row by row as
 /// its screen changes.
 pub(crate) struct View {
@@ -119,6 +124,7 @@ pub(crate) struct View {
     wheel_lines: usize,
     repaint: bool,
     cursor: Option<CursorState>,
+    frame: Option<Frame>,
 }
 
 impl View {
@@ -157,6 +163,7 @@ impl View {
             wheel_lines: wheel_lines.max(1),
             repaint: true,
             cursor: None,
+            frame: None,
         }
     }
 
@@ -190,6 +197,9 @@ impl View {
         }
         if !self.repaint {
             if let Some(snapshot) = self.runtime.collect_dirty_patch_snapshot(cols, rows) {
+                self.frame = Some(Frame {
+                    scroll: snapshot.scroll_metrics,
+                });
                 match snapshot.patch {
                     TerminalDirtyPatchOutcome::Clean => return Vec::new(),
                     TerminalDirtyPatchOutcome::Patch(patch) => {
@@ -205,10 +215,11 @@ impl View {
         }
         self.repaint = false;
         let area = Rect::new(0, 0, cols, rows);
-        let Some(buffer) = self.render_all(area) else {
+        let Some((buffer, frame)) = self.render_all(area) else {
             self.repaint = true;
             return Vec::new();
         };
+        self.frame = Some(frame);
         buffer
             .content
             .chunks(usize::from(buffer.area.width).max(1))
@@ -221,15 +232,22 @@ impl View {
             .collect()
     }
 
-    fn render_all(&self, area: Rect) -> Option<ratatui::buffer::Buffer> {
+    fn render_all(&self, area: Rect) -> Option<(ratatui::buffer::Buffer, Frame)> {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
                 .ok()?;
-        let mut rendered = false;
+        let mut drawn = None;
         terminal
-            .draw(|frame| rendered = self.runtime.try_render(frame, area, true))
+            .draw(|target| {
+                let _writers = self.runtime.exclude_writers();
+                if self.runtime.try_render(target, area, true) {
+                    drawn = Some(Frame {
+                        scroll: self.runtime.scroll_metrics(),
+                    });
+                }
+            })
             .ok()?;
-        rendered.then(|| terminal.backend().buffer().clone())
+        drawn.map(|frame| (terminal.backend().buffer().clone(), frame))
     }
 
     /// The program's cursor. Held where it was while the program holds
@@ -268,6 +286,14 @@ impl View {
 
     pub(crate) fn alternate_screen(&self) -> bool {
         self.runtime.alternate_screen_active()
+    }
+
+    pub(crate) fn frame(&self) -> Option<Frame> {
+        self.frame
+    }
+
+    pub(crate) fn holds_output(&self) -> bool {
+        self.runtime.synchronized_output_active()
     }
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {

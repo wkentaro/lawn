@@ -110,7 +110,7 @@ impl Gutter {
         palette: &Palette,
         focused: bool,
     ) -> Vec<PaneSurfacePatchRow> {
-        let metrics = view.scroll_metrics();
+        let metrics = drawn_scroll(view);
         if self.thumb_for(metrics) == self.thumb {
             return Vec::new();
         }
@@ -415,6 +415,9 @@ impl Surface {
             .view
             .scroll_metrics()
             .filter(|metrics| crate::ui::should_show_scrollbar(*metrics))?;
+        if shown.view.holds_output() && drawn_scroll(&shown.view) != Some(metrics) {
+            return None;
+        }
         Some((&shown.view, track, metrics))
     }
 
@@ -609,7 +612,7 @@ impl Surface {
             crate::protocol::surface_delta::apply_rows(&mut cells, cols, &rows);
             if let Some(gutter) = gutter {
                 let rows = gutter.draw(
-                    shown.view.scroll_metrics(),
+                    drawn_scroll(&shown.view),
                     &self.palette,
                     focused == Some(*id),
                 );
@@ -643,6 +646,10 @@ impl Surface {
         cursor.y += inner.y;
         Some(cursor)
     }
+}
+
+fn drawn_scroll(view: &View) -> Option<ScrollMetrics> {
+    view.frame().and_then(|frame| frame.scroll)
 }
 
 fn copy(from: (&[CellData], u16), was: Rect, to: (&mut [CellData], u16), inner: Rect) {

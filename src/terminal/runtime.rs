@@ -684,6 +684,10 @@ impl TerminalRuntime {
     pub(crate) fn content_seq(&self) -> u64 {
         self.0.content_seq()
     }
+
+    pub(crate) fn exclude_writers(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0.exclude_writers()
+    }
 }
 
 #[cfg(test)]
