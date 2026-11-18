@@ -8,18 +8,18 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub(super) struct ClientChromePreferences {
+pub(crate) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_width: Option<u16>,
+    pub(crate) sidebar_width: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_section_split: Option<f32>,
+    pub(crate) sidebar_section_split: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_collapsed: Option<bool>,
+    pub(crate) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
+    pub(crate) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
 }
 
-pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
+pub(crate) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in socket_path.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
@@ -44,12 +44,12 @@ pub(super) fn path_for_remote_endpoint(target: &str, session: &str) -> PathBuf {
         .join(format!("remote-{:x}.json", hash.finalize()))
 }
 
-pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
+pub(crate) fn load(path: &Path) -> Option<ClientChromePreferences> {
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()
 }
 
-pub(super) fn store(path: &Path, preferences: ClientChromePreferences) -> Result<(), String> {
+pub(crate) fn store(path: &Path, preferences: ClientChromePreferences) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid client shell state path: {}", path.display()))?;

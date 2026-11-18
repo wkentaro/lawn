@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
@@ -11,6 +12,7 @@ use super::session::Session;
 use crate::app::tab_bar_status::{
     format_local_datetime, sanitize_literal_text, sanitize_separator, sanitize_status_text,
 };
+use crate::client::preferences::{self, ClientChromePreferences};
 use crate::client::scroll;
 use crate::config::{
     Config, SidebarCollapsedModeConfig, SpacesSidebarConfig, StatusIndicatorStyle,
@@ -23,6 +25,7 @@ use crate::ui::chrome::{self as paint, Layout, LayoutSettings, StatusSegment, Ta
 use crate::ui::theme::Palette;
 
 const HEADER_ROWS: u16 = 2;
+const DOUBLE_CLICK: Duration = Duration::from_millis(350);
 
 enum Entry {
     Zoom,
@@ -60,6 +63,7 @@ struct Label {
 #[derive(Default)]
 struct Hits {
     toggle: Rect,
+    divider: Rect,
     body: Rect,
     list: Option<ScrollMetrics>,
     track: Rect,
@@ -76,6 +80,7 @@ enum Press {
     Workspace(String),
     Tab(String),
     Thumb(u16),
+    Width,
 }
 
 impl Drawn {
@@ -95,11 +100,16 @@ impl Drawn {
 pub(super) struct Chrome {
     settings: LayoutSettings,
     width: u16,
+    default_width: u16,
+    width_manual: bool,
     spaces: SpacesSidebarConfig,
     indicators: StatusIndicatorStyle,
     entries: Vec<Entry>,
     separator: String,
     collapsed: bool,
+    collapsed_manual: bool,
+    divider_click: Option<Instant>,
+    preferences: Option<PathBuf>,
     ticked: bool,
     scrolled: bool,
     tab_bar: TabBarState,
@@ -141,7 +151,7 @@ impl Chrome {
                 TabBarRightEntryConfig::Command { .. } => None,
             })
             .collect();
-        Self {
+        let mut chrome = Self {
             settings: LayoutSettings {
                 sidebar_min_width: ui.sidebar_min_width,
                 sidebar_max_width: ui.sidebar_max_width,
@@ -151,11 +161,16 @@ impl Chrome {
                 sidebar_collapsed_mode: ui.sidebar_collapsed_mode,
             },
             width: ui.sidebar_width,
+            default_width: ui.sidebar_width,
+            width_manual: false,
             spaces: ui.sidebar.spaces.clone(),
             indicators: ui.status_indicators,
             entries,
             separator: sanitize_separator(&ui.tab_bar_right_separator),
             collapsed: ui.sidebar_start_collapsed,
+            collapsed_manual: false,
+            divider_click: None,
+            preferences: None,
             ticked: false,
             scrolled: false,
             tab_bar: TabBarState::default(),
@@ -165,7 +180,23 @@ impl Chrome {
             rows: Vec::new(),
             hits: Hits::default(),
             press: None,
+        };
+        chrome.width = chrome.bounded(chrome.width);
+        chrome
+    }
+
+    pub(super) fn remembering(mut self, path: PathBuf) -> Self {
+        let saved = preferences::load(&path).unwrap_or_default();
+        if let Some(width) = saved.sidebar_width {
+            self.width = self.bounded(width);
+            self.width_manual = true;
         }
+        if let Some(collapsed) = saved.sidebar_collapsed {
+            self.collapsed = collapsed;
+            self.collapsed_manual = true;
+        }
+        self.preferences = Some(path);
+        self
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16, session: &Session) -> Layout {
@@ -194,10 +225,43 @@ impl Chrome {
 
     pub(super) fn toggle(&mut self) {
         self.collapsed = !self.collapsed;
+        self.collapsed_manual = true;
+        self.save();
+    }
+
+    fn bounded(&self, width: u16) -> u16 {
+        let (min, max) = crate::config::validated_sidebar_bounds(
+            self.settings.sidebar_min_width,
+            self.settings.sidebar_max_width,
+        )
+        .unwrap_or((18, 36));
+        width.clamp(min, max)
+    }
+
+    fn resize_to(&mut self, column: u16) {
+        let width = self.bounded(column.saturating_add(1));
+        if width != self.width {
+            self.width = width;
+            self.width_manual = true;
+        }
+    }
+
+    fn save(&self) {
+        let Some(path) = &self.preferences else {
+            return;
+        };
+        let preferences = ClientChromePreferences {
+            sidebar_width: self.width_manual.then_some(self.width),
+            sidebar_collapsed: self.collapsed_manual.then_some(self.collapsed),
+            ..preferences::load(path).unwrap_or_default()
+        };
+        if let Err(error) = preferences::store(path, preferences) {
+            tracing::warn!(%error, path = %path.display(), "the sidebar preferences were not saved");
+        }
     }
 
     pub(super) fn claim(&mut self, event: MouseEvent, hidden: Rect) -> bool {
-        if matches!(event.kind, MouseEventKind::Down(_)) {
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
             self.press = None;
         }
         let point = Position::new(event.column, event.row);
@@ -212,19 +276,28 @@ impl Chrome {
             })
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent, session: &Session) -> Option<KeybindAction> {
+    pub(super) fn mouse(
+        &mut self,
+        event: MouseEvent,
+        session: &Session,
+        now: Instant,
+    ) -> Option<KeybindAction> {
         let point = Position::new(event.column, event.row);
         match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => self.press_at(point),
+            MouseEventKind::Down(MouseButton::Left) => self.press_at(point, now),
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let (Some(Press::Thumb(grab)), Some(metrics)) = (&self.press, self.hits.list) {
-                    let offset = crate::ui::scrollbar_offset_from_drag_row(
-                        metrics,
-                        self.hits.track,
-                        point.y,
-                        *grab,
-                    );
-                    self.scroll_list(metrics.max_offset_from_bottom.saturating_sub(offset));
+                match (&self.press, self.hits.list) {
+                    (Some(Press::Width), _) => self.resize_to(point.x),
+                    (Some(Press::Thumb(grab)), Some(metrics)) => {
+                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                            metrics,
+                            self.hits.track,
+                            point.y,
+                            *grab,
+                        );
+                        self.scroll_list(metrics.max_offset_from_bottom.saturating_sub(offset));
+                    }
+                    _ => {}
                 }
                 None
             }
@@ -235,9 +308,24 @@ impl Chrome {
         }
     }
 
-    fn press_at(&mut self, point: Position) -> Option<KeybindAction> {
+    fn press_at(&mut self, point: Position, now: Instant) -> Option<KeybindAction> {
         if self.hits.toggle.contains(point) {
             return Some(KeybindAction::ToggleSidebar);
+        }
+        if self.hits.divider.contains(point) {
+            let double = self
+                .divider_click
+                .is_some_and(|last| now.duration_since(last) <= DOUBLE_CLICK);
+            self.divider_click = Some(now);
+            if double {
+                self.width = self.default_width;
+                self.width_manual = false;
+                self.save();
+            } else {
+                self.press = Some(Press::Width);
+                self.resize_to(point.x);
+            }
+            return None;
         }
         if self.hits.track.contains(point) {
             if let Some(metrics) = self.hits.list {
@@ -288,11 +376,13 @@ impl Chrome {
     }
 
     fn release(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
-        let press = self.press.take()?;
-        if self.over(point).as_ref() != Some(&press) {
-            return None;
-        }
-        match press {
+        match self.press.take()? {
+            Press::Width => {
+                self.save();
+                None
+            }
+            Press::Thumb(_) => None,
+            press if self.over(point).as_ref() != Some(&press) => None,
             Press::Workspace(id) => session
                 .workspaces()
                 .iter()
@@ -304,7 +394,6 @@ impl Chrome {
                 .iter()
                 .position(|tab| tab.id == id)
                 .map(KeybindAction::SwitchTab),
-            Press::Thumb(_) => None,
         }
     }
 
@@ -521,6 +610,7 @@ impl Chrome {
         let area = drawn.layout.sidebar;
         let quiet = Style::default().fg(palette.overlay0);
         paint::render_sidebar_background(buffer, area, palette);
+        self.hits.divider = Rect::new(area.right().saturating_sub(1), area.y, 1, area.height);
         let list = self.list_area(area);
         paint::put_text(
             buffer,
@@ -745,6 +835,11 @@ impl Chrome {
         self.hits.scroll_right = outcome.tab_scroll_right;
         paint::render_tab_bar_status(buffer, area, drawn.status(), &self.separator, palette);
     }
+}
+
+pub(super) fn preferences_path(session: &str) -> PathBuf {
+    let name = Some(session).filter(|name| *name != crate::session::DEFAULT_SESSION_NAME);
+    preferences::path_for_local_endpoint(&crate::session::client_socket_path_for(name))
 }
 
 fn hit(hits: &[(Rect, usize)], point: Position) -> Option<usize> {

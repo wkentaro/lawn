@@ -9,6 +9,10 @@ use crate::protocol::CellData;
 fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface {
     let mut config = Config::default();
     configure(&mut config);
+    around(cols, rows, Chrome::new(&config))
+}
+
+fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
     Surface::new(
         host(cols, rows),
         PaneChrome {
@@ -16,7 +20,7 @@ fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface
             gaps: false,
             outer_borders: true,
         },
-        Chrome::new(&config),
+        outer,
         Palette::catppuccin(),
         true,
         Copying {
@@ -564,7 +568,17 @@ async fn a_cursor_below_a_one_row_pane_area_is_not_shown_on_the_bottom_tab_bar()
 }
 
 fn point(surface: &mut Surface, kind: MouseEventKind, column: u16, row: u16) -> Option<Operation> {
-    match surface.mouse(mouse_at(kind, column, row), std::time::Instant::now()) {
+    point_at(surface, kind, column, row, std::time::Instant::now())
+}
+
+fn point_at(
+    surface: &mut Surface,
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    now: std::time::Instant,
+) -> Option<Operation> {
+    match surface.mouse(mouse_at(kind, column, row), now) {
         Some(Pointed::Act(action)) => surface.act(action, false),
         Some(Pointed::Copied(text)) => unreachable!("{text}"),
         None => None,
@@ -1035,4 +1049,408 @@ async fn tabs_under_the_copy_mode_bar_take_no_clicks_or_wheel() {
     frame(&mut surface, &dirty);
     tap(&mut surface, second, 29);
     assert_eq!(tab(&surface), "tab2");
+}
+
+struct Scratch(std::path::PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
+    let dir = std::env::temp_dir().join(format!("lawn-sidebar-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    Scratch(dir)
+}
+
+fn remembered(path: &std::path::Path, configure: impl FnOnce(&mut Config)) -> Surface {
+    let mut config = Config::default();
+    configure(&mut config);
+    let mut surface = around(
+        120,
+        30,
+        Chrome::new(&config).remembering(path.to_path_buf()),
+    );
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    surface
+}
+
+fn saved(path: &std::path::Path) -> Option<(Option<u16>, Option<bool>)> {
+    crate::client::preferences::load(path)
+        .map(|saved| (saved.sidebar_width, saved.sidebar_collapsed))
+}
+
+fn drag_divider(surface: &mut Surface, from: u16, to: u16) {
+    point(surface, MouseEventKind::Down(MouseButton::Left), from, 5);
+    point(surface, MouseEventKind::Drag(MouseButton::Left), to, 5);
+    point(surface, MouseEventKind::Up(MouseButton::Left), to, 5);
+    frame(surface, &HashSet::new());
+}
+
+#[tokio::test]
+async fn dragging_the_sidebar_divider_resizes_the_sidebar_within_its_bounds_and_lays_out_the_panes()
+{
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(cell(&surface, 25, 5).symbol, "│");
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    for (column, width) in [(30, 31), (2, 18), (100, 36), (21, 22)] {
+        point(
+            &mut surface,
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            5,
+        );
+        assert!(surface.needs_frame(), "{column}");
+        frame(&mut surface, &HashSet::new());
+
+        assert_eq!(surface.areas.sidebar.width, width, "{column}");
+        assert_eq!(pane_area(&surface).x, width);
+        assert_eq!(surface.tiles.tiles[0].info.rect.x, width);
+        assert_eq!(cell(&surface, width - 1, 5).symbol, "│");
+    }
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 21, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 22);
+}
+
+#[tokio::test]
+async fn a_divider_drag_over_a_pane_and_below_the_screen_keeps_resizing_and_reaches_no_pane() {
+    let mut surface = plain(120, 30);
+    let mut layout = spaces(&[(None, &[None])]);
+    layout.workspaces[0].tabs[0].root =
+        serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
+    surface.update(layout);
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    let focused = surface.focused_id();
+    let right = pane_inner(&surface, "t9");
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        right.x,
+        right.y,
+    );
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 36);
+    point(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        29,
+        200,
+    );
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 30);
+    let right = pane_inner(&surface, "t9");
+    point(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        right.x,
+        right.y,
+    );
+
+    for input in &mut inputs {
+        assert_eq!(reports(input), b"");
+    }
+    assert_eq!(surface.focused_id(), focused);
+    assert!(surface.gesture.is_none() && surface.select.shown().is_none());
+}
+
+#[tokio::test]
+async fn the_divider_does_not_resize_a_collapsed_sidebar_or_one_hidden_at_the_mobile_width() {
+    let mut surface = dressed(120, 30, |config| config.ui.sidebar_start_collapsed = true);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    drag_divider(&mut surface, 3, 30);
+    assert_eq!(surface.areas.sidebar.width, 4);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 26);
+
+    let mut surface = dressed(64, 20, |config| config.ui.mobile_width_threshold = 64);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    drag_divider(&mut surface, 25, 30);
+    surface.resize(host(120, 20));
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 26);
+}
+
+fn click_divider(surface: &mut Surface, column: u16, now: std::time::Instant) {
+    point_at(
+        surface,
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        5,
+        now,
+    );
+    point_at(
+        surface,
+        MouseEventKind::Up(MouseButton::Left),
+        column,
+        5,
+        now,
+    );
+}
+
+#[tokio::test]
+async fn a_double_click_on_the_divider_restores_the_configured_width() {
+    let mut surface = dressed(120, 30, |config| config.ui.sidebar_width = 24);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    drag_divider(&mut surface, 23, 30);
+    assert_eq!(surface.areas.sidebar.width, 31);
+    let start = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    click_divider(&mut surface, 30, start);
+    click_divider(
+        &mut surface,
+        30,
+        start + std::time::Duration::from_millis(350),
+    );
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 24);
+}
+
+#[tokio::test]
+async fn a_second_divider_press_after_350_ms_starts_a_drag_instead_of_resetting() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    drag_divider(&mut surface, 25, 30);
+    let start = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    click_divider(&mut surface, 30, start);
+    let later = start + std::time::Duration::from_millis(351);
+    point_at(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        30,
+        5,
+        later,
+    );
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 31);
+    point_at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        19,
+        5,
+        later,
+    );
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 20);
+}
+
+#[tokio::test]
+async fn toggling_the_sidebar_by_key_or_click_saves_only_the_collapse_state() {
+    let dir = scratch("toggle");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    surface.act(KeybindAction::ToggleSidebar, false);
+    assert_eq!(saved(&path), Some((None, Some(true))));
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 1, 29);
+    assert_eq!(saved(&path), Some((None, Some(false))));
+}
+
+#[tokio::test]
+async fn a_right_press_during_a_divider_drag_leaves_the_drag_going() {
+    let dir = scratch("right-press");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 30, 5);
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Right),
+        30,
+        5,
+    );
+    point(&mut surface, MouseEventKind::Up(MouseButton::Right), 30, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 32, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 32, 5);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(pane_area(&surface).x, 33);
+    assert_eq!(saved(&path), Some((Some(33), None)));
+}
+
+#[tokio::test]
+async fn a_save_keeps_what_another_client_saved_after_the_start() {
+    let dir = scratch("other-client");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    std::fs::write(&path, r#"{"sidebar_section_split":0.25}"#).expect("write");
+
+    surface.act(KeybindAction::ToggleSidebar, false);
+
+    let saved = crate::client::preferences::load(&path).expect("saved");
+    assert_eq!(saved.sidebar_collapsed, Some(true));
+    assert_eq!(saved.sidebar_section_split, Some(0.25));
+}
+
+#[tokio::test]
+async fn a_divider_drag_saves_its_width_on_release_and_not_while_dragging() {
+    let dir = scratch("drag");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    for column in [30, 33] {
+        point(
+            &mut surface,
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            5,
+        );
+        frame(&mut surface, &HashSet::new());
+        assert_eq!(saved(&path), None);
+    }
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 33, 5);
+
+    assert_eq!(saved(&path), Some((Some(34), None)));
+    let later = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    for (from, to, width, at) in [(33, 100, 36, 0), (35, 2, 18, 1)] {
+        let at = later + std::time::Duration::from_secs(at);
+        point_at(
+            &mut surface,
+            MouseEventKind::Down(MouseButton::Left),
+            from,
+            5,
+            at,
+        );
+        point_at(
+            &mut surface,
+            MouseEventKind::Drag(MouseButton::Left),
+            to,
+            5,
+            at,
+        );
+        point_at(
+            &mut surface,
+            MouseEventKind::Up(MouseButton::Left),
+            to,
+            5,
+            at,
+        );
+        frame(&mut surface, &HashSet::new());
+        assert_eq!(saved(&path), Some((Some(width), None)), "{to}");
+    }
+}
+
+#[tokio::test]
+async fn a_double_click_reset_saves_that_the_width_is_no_longer_set_by_hand() {
+    let dir = scratch("reset");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    drag_divider(&mut surface, 25, 30);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(saved(&path), Some((Some(31), Some(false))));
+    let start = std::time::Instant::now() + std::time::Duration::from_secs(5);
+
+    click_divider(&mut surface, 30, start);
+    click_divider(
+        &mut surface,
+        30,
+        start + std::time::Duration::from_millis(100),
+    );
+
+    assert_eq!(saved(&path), Some((None, Some(false))));
+}
+
+#[tokio::test]
+async fn a_restart_restores_the_saved_width_and_collapse_state_over_config() {
+    let dir = scratch("restart");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    drag_divider(&mut surface, 25, 30);
+    surface.act(KeybindAction::ToggleSidebar, false);
+
+    let mut surface = remembered(&path, |config| config.ui.sidebar_width = 20);
+    assert_eq!(surface.areas.sidebar.width, 4);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 31);
+    assert_eq!(saved(&path), Some((Some(31), Some(false))));
+}
+
+#[tokio::test]
+async fn a_missing_or_corrupt_preferences_file_leaves_the_sidebar_to_config() {
+    let dir = scratch("fallback");
+    let corrupt = dir.join("corrupt.json");
+    std::fs::write(&corrupt, b"{ not json").expect("corrupt preferences");
+    for path in [dir.join("missing.json"), corrupt] {
+        let surface = remembered(&path, |config| {
+            config.ui.sidebar_width = 30;
+            config.ui.sidebar_start_collapsed = false;
+        });
+
+        assert_eq!(surface.areas.sidebar.width, 30, "{}", path.display());
+    }
+}
+
+#[tokio::test]
+async fn a_failed_save_leaves_the_sidebar_working() {
+    let dir = scratch("unwritable");
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, b"").expect("blocker file");
+    let mut surface = remembered(&blocker.join("preferences.json"), |_| {});
+
+    surface.act(KeybindAction::ToggleSidebar, false);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 4);
+}
+
+#[test]
+fn each_session_keeps_its_own_preferences_file_and_the_default_session_shares_herdrs() {
+    use crate::core_client::tui::chrome::preferences_path;
+
+    assert_eq!(preferences_path("one"), preferences_path("one"));
+    assert_ne!(preferences_path("one"), preferences_path("two"));
+    assert_eq!(
+        preferences_path(crate::session::DEFAULT_SESSION_NAME),
+        crate::client::preferences::path_for_local_endpoint(
+            &crate::session::client_socket_path_for(None)
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_still_press_on_the_divider_of_an_oversized_configured_width_leaves_it_to_config() {
+    let dir = scratch("oversized");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |config| config.ui.sidebar_width = 100);
+    assert_eq!(surface.areas.sidebar.width, 36);
+
+    drag_divider(&mut surface, 35, 35);
+
+    assert_eq!(saved(&path), Some((None, None)));
 }
