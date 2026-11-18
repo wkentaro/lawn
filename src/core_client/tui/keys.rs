@@ -2,7 +2,8 @@ use crossterm::event::{KeyCode, KeyEventKind};
 
 use crate::config::LiveKeybindConfig;
 use crate::input::{
-    InputLease, InputLeaseKey, InputLeaseTable, KeybindMatch, RepeatPlan, TerminalKey,
+    ConsumedInputLease, InputLease, InputLeaseKey, InputLeaseTable, KeybindMatch, RepeatPlan,
+    TerminalKey,
 };
 use crate::layout::PaneId;
 
@@ -99,12 +100,18 @@ impl Keys {
     }
 
     pub(super) fn release(&mut self, pane: PaneId) -> Vec<TerminalKey> {
-        self.leases
-            .remove_target(&pane)
-            .into_iter()
-            .filter(|lease| lease.key.committed_text(true).is_none())
-            .map(|lease| lease.key.with_kind(KeyEventKind::Release))
-            .collect()
+        let mut released = Vec::new();
+        for lease in self.leases.remove_target(&pane) {
+            if lease.key.committed_text(true).is_some() {
+                continue;
+            }
+            self.leases.insert_consumed(
+                InputLeaseKey::new((), &lease.key),
+                ConsumedInputLease::SuppressRepeats,
+            );
+            released.push(lease.key.with_kind(KeyEventKind::Release));
+        }
+        released
     }
 
     fn repeat(

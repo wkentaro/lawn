@@ -328,3 +328,22 @@ fn a_leaving_pane_gets_the_release_of_each_key_it_holds_but_typed_text() {
     );
     assert_eq!(keys.release(right()).len(), 1);
 }
+
+#[test]
+fn a_key_held_while_its_pane_leaves_stays_quiet_until_pressed_again() {
+    let mut keys = keys();
+    let up = TerminalKey::new(KeyCode::Up, KeyModifiers::NONE);
+    press_in(&mut keys, &up, left());
+    assert_eq!(keys.release(left()).len(), 1);
+
+    let repeat = up.clone().with_kind(KeyEventKind::Repeat);
+    let release = up.clone().with_kind(KeyEventKind::Release);
+    assert_eq!(press_in(&mut keys, &repeat, right()), []);
+    assert_eq!(press_in(&mut keys, &release, right()), []);
+
+    assert_eq!(press_in(&mut keys, &up, right()), [Outcome::Pane(right())]);
+    assert_eq!(
+        press_in(&mut keys, &release, right()),
+        [Outcome::Pane(right())]
+    );
+}

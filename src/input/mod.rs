@@ -13,7 +13,9 @@ pub(crate) use keybindings::{
     resolve_non_indexed_action, resolve_prefix_binding, KeybindAction, KeybindDispatch,
     KeybindMatch,
 };
-pub(crate) use lease::{InputLease, InputLeaseKey, InputLeaseTable, RepeatPlan};
+pub(crate) use lease::{
+    ConsumedInputLease, InputLease, InputLeaseKey, InputLeaseTable, RepeatPlan,
+};
 #[cfg(not(windows))]
 pub use model::ime_compatible_keyboard_enhancement_flags;
 pub use model::WindowsKeyRecord;
