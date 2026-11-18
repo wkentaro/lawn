@@ -24,9 +24,9 @@ pub(crate) use self::onboarding::{
 pub(crate) use self::panes::popup_pane_rects;
 use self::panes::resize_popup_pane;
 pub(crate) use self::panes::{
-    apply_pane_chrome, new_layout_terminal_sizes, new_pane_terminal_size, paint_pane_borders,
-    pane_inner_rect, pane_is_scrolled_back, render_selection_highlight, scrollbar_gutter_for,
-    NewPanePlacement,
+    apply_pane_chrome, automatic_selection_style, new_layout_terminal_sizes,
+    new_pane_terminal_size, paint_pane_borders, pane_inner_rect, pane_is_scrolled_back,
+    render_selection_highlight, scrollbar_gutter_for, NewPanePlacement,
 };
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, product_announcement_scroll_metrics,

@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::config::LiveKeybindConfig;
 use crate::input::{
@@ -12,6 +12,7 @@ pub(super) enum Routed {
     Text(PaneId, String),
     Key(PaneId, TerminalKey),
     Binding(KeybindMatch),
+    Copy,
 }
 
 pub(super) struct Keys {
@@ -41,6 +42,7 @@ impl Keys {
         &mut self,
         key: TerminalKey,
         focused: Option<PaneId>,
+        copyable: bool,
         committed: impl for<'k> FnOnce(&'k TerminalKey) -> Option<&'k str>,
     ) -> Vec<Routed> {
         let key = key.with_host_erase(self.erase_is_ctrl_h);
@@ -59,6 +61,15 @@ impl Keys {
         let lease_key = InputLeaseKey::new((), &key);
         let key = self.leases.normalize_press(&lease_key, key);
         match key.kind {
+            KeyEventKind::Press
+                if copyable
+                    && matches!(key.code, KeyCode::Char('c' | 'C'))
+                    && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                self.leases
+                    .insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
+                routed.push(Routed::Copy);
+            }
             KeyEventKind::Press => {
                 let initial = self.prefix;
                 let target = self.press(&key, focused, &mut routed);

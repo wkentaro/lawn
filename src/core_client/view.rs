@@ -300,6 +300,22 @@ impl View {
         self.runtime.scroll_metrics()
     }
 
+    pub(crate) fn still(&self) -> impl Drop + '_ {
+        self.runtime.exclude_writers()
+    }
+
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.runtime.content_seq()
+    }
+
+    pub(crate) fn wheel_lines(&self) -> usize {
+        self.wheel_lines
+    }
+
+    pub(crate) fn selected_text(&self, selection: &crate::selection::Selection) -> Option<String> {
+        self.runtime.extract_selection(selection)
+    }
+
     pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {
         self.runtime
             .set_scroll_offset_from_bottom(offset_from_bottom);

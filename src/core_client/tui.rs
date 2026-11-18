@@ -2,6 +2,7 @@ use std::io;
 
 mod follow;
 mod keys;
+mod select;
 mod session;
 mod surface;
 #[cfg(all(test, unix))]
@@ -62,19 +63,21 @@ mod unix {
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
+    use crossterm::event::{KeyCode, KeyEventKind};
     use tokio::sync::mpsc;
     use tokio::time::Instant;
     use tracing::warn;
 
     use super::keys::{Keys, Routed};
+    use super::select::Copying;
     use super::session::{Operation, PaneChrome};
     use super::surface::Surface;
     use crate::client::terminal_setup::TerminalGuard;
     use crate::config::{Config, LiveKeybindConfig};
     use crate::core_client::commands::creation_lifecycle;
     use crate::core_client::host::{
-        deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait, HostKeys,
-        HostSizes, Stop, FRAME,
+        clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
+        HostKeys, HostSizes, Stop, FRAME,
     };
     use crate::core_client::screen::Screen;
     use crate::core_client::view::{Event, Events, Geometry, Scrollback, View, Wake};
@@ -170,6 +173,15 @@ mod unix {
             },
             crate::ui::theme::client_palette_from_config(&config),
             config.ui.pane_scrollbars,
+            Copying {
+                on_select: config.ui.copy_on_select,
+                toast: config
+                    .ui
+                    .toast
+                    .clipboard
+                    .enabled
+                    .then_some(config.ui.toast.clipboard.position),
+            },
         );
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
@@ -178,6 +190,7 @@ mod unix {
             mouse_capture.clone(),
         )?;
         let mut sizes = HostSizes::watch(host)?;
+        let (copy, mut copied) = clipboard()?;
         let wake = Wake::default();
         let mut events = Events::default();
         let (attached_tx, mut attached) = mpsc::unbounded_channel();
@@ -227,13 +240,23 @@ mod unix {
                     last_draw = Instant::now();
                     due = None;
                 }
+                () = wait(surface.deadline().map(Instant::from_std)) => {
+                    surface.tick(std::time::Instant::now());
+                    if surface.needs_frame() {
+                        due.get_or_insert_with(Instant::now);
+                    }
+                }
+                Some(()) = copied.recv() => {
+                    surface.copied(std::time::Instant::now());
+                    due.get_or_insert_with(Instant::now);
+                }
                 Some((id, geometry, view)) = attached.recv() => {
                     surface.attached(id, geometry, view);
                     due.get_or_insert_with(Instant::now);
                 }
                 Some(terminal) = created.recv() => {
                     surface.created(terminal);
-                    if surface.needs_layout() {
+                    if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
@@ -255,7 +278,9 @@ mod unix {
                         let key = match event {
                             RawInputEvent::Key(key) => key,
                             RawInputEvent::Mouse(mouse) => {
-                                surface.mouse(mouse);
+                                if let Some(text) = surface.mouse(mouse, std::time::Instant::now()) {
+                                    copy.send(text.into_bytes()).ok();
+                                }
                                 continue;
                             }
                             RawInputEvent::OuterFocusGained => {
@@ -267,6 +292,9 @@ mod unix {
                                 continue;
                             }
                             event => {
+                                if matches!(event, RawInputEvent::Text(_) | RawInputEvent::Paste(_)) {
+                                    surface.deselect();
+                                }
                                 if let Some(view) = surface.focused() {
                                     deliver(view, keys, event);
                                 }
@@ -274,9 +302,22 @@ mod unix {
                             }
                         };
                         let focused = surface.focused_id();
-                        let routes = bindings.route_host(key, focused, |key| keys.committed_text(key));
+                        let deselects = key.kind != KeyEventKind::Release
+                            && !matches!(key.code, KeyCode::Modifier(_));
+                        let routes = bindings.route_host(
+                            key,
+                            focused,
+                            surface.copyable(),
+                            |key| keys.committed_text(key),
+                        );
                         for routed in routes {
                             let action = match routed {
+                                Routed::Copy => {
+                                    if let Some(text) = surface.copy() {
+                                        copy.send(text.into_bytes()).ok();
+                                    }
+                                    continue;
+                                }
                                 Routed::Text(pane, text) => {
                                     if let Some(view) = surface.view(pane) {
                                         view.text(&text);
@@ -311,8 +352,11 @@ mod unix {
                                 created_tx.clone(),
                             );
                         }
+                        if deselects {
+                            surface.deselect();
+                        }
                     }
-                    if surface.needs_layout() {
+                    if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
@@ -341,6 +385,9 @@ mod unix {
                     Event::Detached(id) => {
                         surface.forget(id);
                         due.get_or_insert_with(Instant::now);
+                    }
+                    Event::Copy(bytes) => {
+                        copy.send(bytes).ok();
                     }
                     event => relay(event, &mut out),
                 },
