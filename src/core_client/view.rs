@@ -326,12 +326,10 @@ impl View {
             _ => self.mouse_report(event),
         }
         .unwrap_or_default();
-        let sent = !report.is_empty();
-        if sent && event.kind != MouseEventKind::Moved {
+        if !report.is_empty() && event.kind != MouseEventKind::Moved {
             self.to_bottom();
         }
-        self.send(report);
-        sent
+        self.send(report)
     }
 
     fn scroll(&self, up: bool, lines: usize) {
@@ -389,12 +387,16 @@ impl View {
         self.runtime.try_send_focus_event(event)
     }
 
-    fn send(&self, bytes: Vec<u8>) {
+    fn send(&self, bytes: Vec<u8>) -> bool {
         if bytes.is_empty() {
-            return;
+            return false;
         }
-        if let Err(error) = self.runtime.try_send_bytes(Bytes::from(bytes)) {
-            tracing::debug!(%error, "input did not reach the core terminal");
+        match self.runtime.try_send_bytes(Bytes::from(bytes)) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!(%error, "input did not reach the core terminal");
+                false
+            }
         }
     }
 }

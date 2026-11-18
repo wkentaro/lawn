@@ -480,6 +480,26 @@ async fn a_reported_click_returns_to_the_bottom_but_motion_does_not() {
 }
 
 #[tokio::test]
+async fn a_mouse_report_counts_as_sent_only_when_the_terminal_took_it() {
+    let (view, mut input, _wake) = scrolled(4, 3);
+    let click = wheel(MouseEventKind::Down(crossterm::event::MouseButton::Left));
+    assert!(!view.mouse(click));
+
+    feed(&view, b"\x1b[?1000h\x1b[?1006h");
+    assert!(view.mouse(click));
+
+    while view
+        .runtime
+        .try_send_bytes(Bytes::from_static(b"x"))
+        .is_ok()
+    {}
+    assert!(!view.mouse(click));
+
+    sent(&mut input);
+    assert!(view.mouse(click));
+}
+
+#[tokio::test]
 async fn plain_page_keys_scroll_a_page_and_swallow_the_release() {
     let (view, mut input, wake) = scrolled(4, 3);
     let none = KeyModifiers::NONE;
