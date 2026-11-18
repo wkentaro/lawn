@@ -66,6 +66,7 @@ struct Overlays {
     selection: [Rect; 3],
     copy: Marks,
     toast: Rect,
+    cover: Rect,
 }
 
 impl Overlays {
@@ -74,7 +75,7 @@ impl Overlays {
             .iter()
             .chain(&self.copy.matches)
             .chain(&self.copy.current)
-            .chain([&self.copy.cursor, &self.copy.bar, &self.toast])
+            .chain([&self.copy.cursor, &self.copy.bar, &self.toast, &self.cover])
     }
 
     fn covers(&self, y: u16) -> bool {
@@ -283,6 +284,14 @@ impl Surface {
 
     pub(super) fn copyable(&self) -> bool {
         !self.copy_mode() && self.select.copyable()
+    }
+
+    pub(super) fn switching(&self) -> bool {
+        self.outer.switching()
+    }
+
+    pub(super) fn close_switcher(&mut self) {
+        self.outer.close();
     }
 
     pub(super) fn copy_mode(&self) -> bool {
@@ -529,7 +538,9 @@ impl Surface {
             if press {
                 self.select.press(None, event, now);
             }
-            let pointed = self.outer.mouse(event, &self.session, now);
+            let pointed = self
+                .outer
+                .mouse(event, &self.session, now, self.copy_mode());
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed.map(Pointed::Act);
         }
@@ -768,6 +779,9 @@ impl Surface {
             .pane()
             .and_then(|pane| visible(&self.views, pane));
         self.select.follow(selected);
+        if chrome && self.outer.cover().is_some() {
+            self.painted.cover = Rect::default();
+        }
         self.paint(&mut rows);
         (rows, self.cursor())
     }
@@ -798,6 +812,10 @@ impl Surface {
                 .toast
                 .as_ref()
                 .map_or_else(Rect::default, |toast| toast.image.0),
+            cover: self
+                .outer
+                .cover()
+                .map_or_else(Rect::default, |cover| cover.0),
         }
     }
 
@@ -805,8 +823,14 @@ impl Surface {
         let overlays = self.overlays();
         let painted = std::mem::replace(&mut self.painted, overlays);
         let overlays = &self.painted;
-        if *overlays == Overlays::default() && painted == *overlays {
-            return;
+        if painted == *overlays {
+            if !overlays.cover.is_empty() {
+                rows.clear();
+                return;
+            }
+            if *overlays == Overlays::default() {
+                return;
+            }
         }
         let mut ys: BTreeSet<u16> = rows
             .iter()
@@ -851,10 +875,10 @@ impl Surface {
             ) {
                 to.clone_from_slice(bar);
             }
-            if let Some((rect, image)) = self
-                .toast
-                .as_ref()
-                .map(|toast| &toast.image)
+            let images = self.toast.as_ref().map(|toast| &toast.image);
+            for (rect, image) in images
+                .into_iter()
+                .chain(self.outer.cover())
                 .filter(|(rect, _)| covers(rect, y))
             {
                 let width = usize::from(rect.width);
@@ -1020,7 +1044,7 @@ impl Surface {
     }
 
     fn cursor(&mut self) -> Option<CursorState> {
-        if self.copy_mode() {
+        if self.copy_mode() || self.switching() {
             return None;
         }
         let Shown {

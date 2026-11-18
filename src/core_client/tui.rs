@@ -316,7 +316,7 @@ mod unix {
                                 continue;
                             }
                             event => {
-                                if surface.copy_mode_input(&event) {
+                                if surface.switching() || surface.copy_mode_input(&event) {
                                     continue;
                                 }
                                 if matches!(event, RawInputEvent::Text(_) | RawInputEvent::Paste(_)) {
@@ -335,10 +335,11 @@ mod unix {
                             key,
                             focused,
                             surface.copyable(),
-                            match (surface.copy_mode(), surface.prompting()) {
-                                (false, _) => Mode::Panes,
-                                (true, false) => Mode::Copy,
-                                (true, true) => Mode::Prompt,
+                            match (surface.switching(), surface.copy_mode(), surface.prompting()) {
+                                (true, ..) => Mode::Switcher,
+                                (false, false, _) => Mode::Panes,
+                                (false, true, false) => Mode::Copy,
+                                (false, true, true) => Mode::Prompt,
                             },
                             |key| keys.committed_text(key),
                         );
@@ -371,6 +372,10 @@ mod unix {
                                     if let Some(text) = surface.copy_mode_key(&key) {
                                         copy.send(text.into_bytes()).ok();
                                     }
+                                    continue;
+                                }
+                                Routed::Dismiss => {
+                                    surface.close_switcher();
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::CopyMode)) => {

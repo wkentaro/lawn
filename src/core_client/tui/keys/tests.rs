@@ -13,6 +13,7 @@ enum Outcome {
     Command,
     Copy,
     CopyMode,
+    Dismiss,
 }
 
 fn left() -> PaneId {
@@ -54,6 +55,7 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
             Routed::Binding(KeybindMatch::Command(_)) => Outcome::Command,
             Routed::Copy => Outcome::Copy,
             Routed::CopyMode(_) => Outcome::CopyMode,
+            Routed::Dismiss => Outcome::Dismiss,
         })
         .collect()
 }
@@ -500,4 +502,63 @@ fn in_the_search_prompt_the_prefix_typed_text_and_bindings_are_prompt_keys() {
             "{key:?}"
         );
     }
+}
+
+fn in_the_switcher(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
+    outcomes(
+        keys.route_host(key.clone(), Some(left()), false, Mode::Switcher, |_| {
+            Some("j")
+        }),
+    )
+}
+
+#[test]
+fn in_the_switcher_no_key_reaches_a_pane_or_runs_a_binding_and_escape_or_the_prefix_dismisses_it() {
+    let mut keys = keys();
+    let typed = key('j', KeyModifiers::NONE);
+    for key in [
+        typed.clone(),
+        typed.clone().with_kind(KeyEventKind::Repeat),
+        typed.with_kind(KeyEventKind::Release),
+        key('n', KeyModifiers::CONTROL),
+        TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE),
+    ] {
+        assert_eq!(in_the_switcher(&mut keys, &key), [], "{key:?}");
+    }
+    let escape = TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(in_the_switcher(&mut keys, &escape), [Outcome::Dismiss]);
+    assert_eq!(in_the_switcher(&mut keys, &prefix()), [Outcome::Dismiss]);
+    assert_eq!(
+        in_the_switcher(&mut keys, &key('z', KeyModifiers::NONE)),
+        []
+    );
+}
+
+#[test]
+fn a_prefix_pending_when_the_switcher_opens_runs_no_binding_there_or_after() {
+    let mut keys = keys();
+    press(&mut keys, &prefix());
+    assert_eq!(
+        in_the_switcher(&mut keys, &key('z', KeyModifiers::NONE)),
+        []
+    );
+    assert_eq!(
+        press(&mut keys, &key('z', KeyModifiers::NONE)),
+        [Outcome::Pane(left())]
+    );
+}
+
+#[test]
+fn a_key_held_before_the_switcher_opened_stops_repeating_and_its_release_reaches_its_pane() {
+    let mut keys = keys();
+    let down = key('x', KeyModifiers::NONE);
+    assert_eq!(press(&mut keys, &down), [Outcome::Pane(left())]);
+    assert_eq!(
+        in_the_switcher(&mut keys, &down.clone().with_kind(KeyEventKind::Repeat)),
+        []
+    );
+    assert_eq!(
+        in_the_switcher(&mut keys, &down.with_kind(KeyEventKind::Release)),
+        [Outcome::Pane(left())]
+    );
 }

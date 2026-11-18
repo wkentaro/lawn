@@ -243,12 +243,15 @@ impl Session {
     }
 
     fn entered(&self, workspace: &Workspace) -> Option<Focus> {
-        let tab = self
-            .tab_of_workspace
-            .get(&workspace.id)
-            .and_then(|remembered| workspace.tabs.iter().find(|tab| &tab.id == remembered))
-            .or_else(|| workspace.tabs.first())?;
+        let tab = workspace.tabs.get(self.active_tab(workspace)?)?;
         Some(self.landing(workspace, tab))
+    }
+
+    pub(super) fn active_tab(&self, workspace: &Workspace) -> Option<usize> {
+        self.tab_of_workspace
+            .get(&workspace.id)
+            .and_then(|remembered| workspace.tabs.iter().position(|tab| &tab.id == remembered))
+            .or_else(|| (!workspace.tabs.is_empty()).then_some(0))
     }
 
     fn landing(&self, workspace: &Workspace, tab: &Tab) -> Focus {

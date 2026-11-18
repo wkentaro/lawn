@@ -31,7 +31,10 @@ fn host(cols: u16, rows: u16) -> Geometry {
 
 fn panes_only() -> Chrome {
     let mut config = Config::default();
-    config.ui.mobile_width_threshold = u16::MAX;
+    config.ui.mobile_width_threshold = 0;
+    config.ui.sidebar_start_collapsed = true;
+    config.ui.sidebar_collapsed_mode = crate::config::SidebarCollapsedModeConfig::Hidden;
+    config.ui.hide_tab_bar_when_single_tab = true;
     Chrome::new(&config)
 }
 
@@ -103,7 +106,7 @@ fn frame_attaching(
     dirty: &HashSet<PaneId>,
 ) -> (Vec<PaneSurfacePatchRow>, Vec<String>) {
     let mut requests = Vec::new();
-    let rows = surface
+    let mut rows = surface
         .frame(
             dirty,
             |terminal, id, geometry| {
@@ -118,9 +121,11 @@ fn frame_attaching(
     for (_, id, geometry) in &requests {
         surface.attached(*id, *geometry, Ok(View::test(geometry.cols, geometry.rows)));
     }
-    let rows = surface
-        .frame(dirty, |_, _, _| unreachable!("attached"), ignore_leaving)
-        .0;
+    rows.extend(
+        surface
+            .frame(dirty, |_, _, _| unreachable!("attached"), ignore_leaving)
+            .0,
+    );
     (
         rows,
         requests
