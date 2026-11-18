@@ -173,6 +173,7 @@ impl Connection {
 
 enum Input {
     Bytes(Bytes),
+    Stop,
     Submit {
         text: Bytes,
         enter: Bytes,
@@ -215,6 +216,7 @@ impl CoreIo {
                             attachment.core.input(attachment.channel, &bytes);
                         }
                     }
+                    Input::Stop => writer.detach(true),
                     Input::Submit {
                         text,
                         enter,
@@ -407,6 +409,12 @@ impl CoreIo {
 
 impl Drop for CoreIo {
     fn drop(&mut self) {
-        self.connection.detach(true);
+        let queued = self
+            .connection
+            .current()
+            .is_some_and(|attachment| self.input.send((attachment, Input::Stop)).is_ok());
+        if !queued {
+            self.connection.detach(true);
+        }
     }
 }

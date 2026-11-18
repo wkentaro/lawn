@@ -91,3 +91,38 @@ async fn replacement_routing_rejects_old_keys_and_renews_responses_and_size() {
     core.call("terminal.kill", json!({"terminal": address}))
         .unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn input_sent_right_before_the_owner_drops_reaches_the_terminal() {
+    use super::super::tests::wait_for;
+    use serde_json::json;
+
+    let Some(test) = crate::hc::test_support::TestCore::start() else {
+        return;
+    };
+    test.share();
+    crate::hc::use_core_for_test();
+    let core = &test.core;
+    let address = core.run(json!({"argv": ["sh", "-c", "stty -echo; echo ready; read last; echo last-$last; sleep 30"], "no_parent": true})).unwrap();
+    let attached = core
+        .attach(json!({"terminal": address, "rows": 24, "cols": 80}))
+        .unwrap();
+    let io = CoreIo::new(core.clone(), attached.channel, address.clone(), 24, 80).unwrap();
+    let text = || {
+        core.call("terminal.read", json!({"terminal": address}))
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    wait_for("the prompt", || text().contains("ready")).await;
+    io.send(Bytes::from_static(b"words\r")).unwrap();
+    drop(io);
+    wait_for("the input sent before the drop", || {
+        text().contains("last-words")
+    })
+    .await;
+    core.call("terminal.kill", json!({"terminal": address}))
+        .unwrap();
+}

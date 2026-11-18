@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use ratatui::layout::Rect;
 
 use crate::config::PaneBordersConfig;
-use crate::layout::{PaneId, PaneInfo, SplitBorder, TileLayout};
-use crate::session_doc::{Direction, Layout, Node, Tab};
+use crate::input::KeybindAction;
+use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
+use crate::session_doc::{Destination, Direction, Layout, Node, Tab, Workspace};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PaneChrome {
@@ -30,6 +31,14 @@ pub(super) struct Tile {
 pub(super) struct Tiles {
     pub(super) tiles: Vec<Tile>,
     pub(super) splits: Vec<SplitBorder>,
+    pub(super) hidden: Vec<(PaneId, String)>,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Operation {
+    Start(Destination),
+    Close(Vec<String>),
+    Park(String),
 }
 
 #[derive(Default)]
@@ -38,13 +47,266 @@ pub(super) struct Session {
     focus: Option<Focus>,
     ids: HashMap<String, PaneId>,
     next_id: u32,
+    tab_of_workspace: HashMap<String, String>,
+    pane_of_tab: HashMap<String, String>,
+    previous_of_tab: HashMap<String, String>,
+    zoomed: bool,
+    created: Option<String>,
 }
 
 impl Session {
     pub(super) fn update(&mut self, layout: Layout) {
         self.layout = layout;
         self.ids.retain(|terminal, _| self.layout.owns(terminal));
-        self.focus = self.reconciled_focus();
+        let focus = self.reconciled_focus();
+        self.set_focus(focus);
+        self.reveal_created();
+    }
+
+    pub(super) fn created(&mut self, terminal: String) -> bool {
+        self.created = Some(terminal);
+        self.reveal_created()
+    }
+
+    fn reveal_created(&mut self) -> bool {
+        let Some(focus) = self
+            .created
+            .as_deref()
+            .and_then(|terminal| self.locate(terminal))
+        else {
+            return false;
+        };
+        self.created = None;
+        self.move_focus(focus)
+    }
+
+    pub(super) fn navigate(
+        &mut self,
+        action: KeybindAction,
+        area: Rect,
+        chrome: PaneChrome,
+    ) -> bool {
+        let Some(focus) = self.focus.clone() else {
+            return false;
+        };
+        let terminal = match action {
+            KeybindAction::FocusPaneLeft => self.toward(NavDirection::Left, area, chrome),
+            KeybindAction::FocusPaneDown => self.toward(NavDirection::Down, area, chrome),
+            KeybindAction::FocusPaneUp => self.toward(NavDirection::Up, area, chrome),
+            KeybindAction::FocusPaneRight => self.toward(NavDirection::Right, area, chrome),
+            KeybindAction::CyclePaneNext => self.cycled(&focus, 1),
+            KeybindAction::CyclePanePrevious => self.cycled(&focus, -1),
+            KeybindAction::LastPane => self
+                .previous_of_tab
+                .get(&focus.tab)
+                .filter(|terminal| self.shown_in(&focus, terminal))
+                .cloned(),
+            KeybindAction::Zoom => {
+                self.zoomed = !self.zoomed && focus.terminal.is_some();
+                return focus.terminal.is_some();
+            }
+            _ => None,
+        };
+        let next = match terminal {
+            Some(terminal) => Some(Focus {
+                terminal: Some(terminal),
+                ..focus.clone()
+            }),
+            None => self.switched(&focus, action),
+        };
+        next.is_some_and(|next| self.move_focus(next))
+    }
+
+    pub(super) fn operation(
+        &self,
+        action: KeybindAction,
+        confirm_close: bool,
+    ) -> Option<Operation> {
+        if action == KeybindAction::NewWorkspace {
+            return Some(Operation::Start(Destination::Workspace { name: None }));
+        }
+        let focus = self.focus.as_ref()?;
+        let workspace = self
+            .layout
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == focus.workspace)?;
+        let tab = workspace.tabs.iter().find(|tab| tab.id == focus.tab)?;
+        let shown = |tab: &Tab| -> Vec<String> {
+            tab.root
+                .terminals()
+                .into_iter()
+                .filter(|terminal| !self.layout.parked.contains(*terminal))
+                .map(str::to_owned)
+                .collect()
+        };
+        let alone = || {
+            workspace
+                .tabs
+                .iter()
+                .filter(|tab| !shown(tab).is_empty())
+                .count()
+                <= 1
+        };
+        let closing = match action {
+            KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
+                return Some(Operation::Start(Destination::Split {
+                    beside: focus.terminal.clone()?,
+                    direction: if action == KeybindAction::SplitVertical {
+                        Direction::Right
+                    } else {
+                        Direction::Down
+                    },
+                    ratio: 0.5,
+                }));
+            }
+            KeybindAction::NewTab => {
+                return Some(Operation::Start(Destination::Tab {
+                    workspace: Some(workspace.id.clone()),
+                    name: None,
+                }));
+            }
+            KeybindAction::ParkPane => return Some(Operation::Park(focus.terminal.clone()?)),
+            KeybindAction::ClosePane if confirm_close && shown(tab).len() == 1 && alone() => {
+                return None
+            }
+            KeybindAction::ClosePane => vec![focus.terminal.clone()?],
+            KeybindAction::CloseTab if confirm_close && alone() => return None,
+            KeybindAction::CloseTab => shown(tab),
+            KeybindAction::CloseWorkspace if confirm_close => return None,
+            KeybindAction::CloseWorkspace => workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.root.terminals())
+                .map(str::to_owned)
+                .collect(),
+            _ => return None,
+        };
+        (!closing.is_empty()).then_some(Operation::Close(closing))
+    }
+
+    fn toward(
+        &mut self,
+        direction: NavDirection,
+        area: Rect,
+        chrome: PaneChrome,
+    ) -> Option<String> {
+        let tiles = self.arranged(area, chrome, false).tiles;
+        let focused = self.focused_id()?;
+        let infos: Vec<PaneInfo> = tiles.iter().map(|tile| tile.info.clone()).collect();
+        let from = infos.iter().find(|info| info.id == focused)?;
+        let to = crate::layout::find_in_direction(from, direction, &infos)?;
+        tiles
+            .into_iter()
+            .find(|tile| tile.info.id == to)
+            .map(|tile| tile.terminal)
+    }
+
+    fn cycled(&self, focus: &Focus, step: isize) -> Option<String> {
+        let terminals: Vec<&str> = tab(&self.layout, focus)?
+            .root
+            .terminals()
+            .into_iter()
+            .filter(|terminal| !self.layout.parked.contains(*terminal))
+            .collect();
+        let current = terminals
+            .iter()
+            .position(|terminal| Some(*terminal) == focus.terminal.as_deref())?;
+        terminals
+            .get(wrapped(current, step, terminals.len()))
+            .map(|terminal| (*terminal).to_owned())
+    }
+
+    fn switched(&self, focus: &Focus, action: KeybindAction) -> Option<Focus> {
+        let workspaces = &self.layout.workspaces;
+        let current = workspaces
+            .iter()
+            .position(|workspace| workspace.id == focus.workspace)?;
+        let workspace = &workspaces[current];
+        let tab_index = workspace.tabs.iter().position(|tab| tab.id == focus.tab);
+        let (workspace, tab) = match action {
+            KeybindAction::PreviousTab => {
+                (workspace, wrapped(tab_index?, -1, workspace.tabs.len()))
+            }
+            KeybindAction::NextTab => (workspace, wrapped(tab_index?, 1, workspace.tabs.len())),
+            KeybindAction::SwitchTab(index) => (workspace, index),
+            KeybindAction::PreviousWorkspace => {
+                return self.entered(&workspaces[wrapped(current, -1, workspaces.len())])
+            }
+            KeybindAction::NextWorkspace => {
+                return self.entered(&workspaces[wrapped(current, 1, workspaces.len())])
+            }
+            KeybindAction::SwitchWorkspace(index) => return self.entered(workspaces.get(index)?),
+            _ => return None,
+        };
+        Some(self.landing(workspace, workspace.tabs.get(tab)?))
+    }
+
+    fn entered(&self, workspace: &Workspace) -> Option<Focus> {
+        let tab = self
+            .tab_of_workspace
+            .get(&workspace.id)
+            .and_then(|remembered| workspace.tabs.iter().find(|tab| &tab.id == remembered))
+            .or_else(|| workspace.tabs.first())?;
+        Some(self.landing(workspace, tab))
+    }
+
+    fn landing(&self, workspace: &Workspace, tab: &Tab) -> Focus {
+        let parked = &self.layout.parked;
+        let terminal = self
+            .pane_of_tab
+            .get(&tab.id)
+            .map(String::as_str)
+            .filter(|terminal| tab.root.contains(terminal) && !parked.contains(*terminal))
+            .or_else(|| {
+                tab.root
+                    .terminals()
+                    .into_iter()
+                    .find(|terminal| !parked.contains(*terminal))
+            });
+        Focus {
+            workspace: workspace.id.clone(),
+            tab: tab.id.clone(),
+            terminal: terminal.map(str::to_owned),
+        }
+    }
+
+    fn shown_in(&self, focus: &Focus, terminal: &str) -> bool {
+        Some(terminal) != focus.terminal.as_deref()
+            && self.layout.shows(terminal)
+            && tab(&self.layout, focus).is_some_and(|tab| tab.root.contains(terminal))
+    }
+
+    fn move_focus(&mut self, focus: Focus) -> bool {
+        if self.focus.as_ref() == Some(&focus) {
+            return false;
+        }
+        self.set_focus(Some(focus));
+        true
+    }
+
+    fn set_focus(&mut self, focus: Option<Focus>) {
+        if let (Some(old), Some(new)) = (&self.focus, &focus) {
+            if old.tab == new.tab && old.terminal != new.terminal {
+                if let Some(terminal) = &old.terminal {
+                    self.previous_of_tab
+                        .insert(old.tab.clone(), terminal.clone());
+                }
+            }
+        }
+        if self.focus.as_ref().map(|old| (&old.tab, &old.terminal))
+            != focus.as_ref().map(|new| (&new.tab, &new.terminal))
+        {
+            self.zoomed = false;
+        }
+        if let Some(new) = &focus {
+            self.tab_of_workspace
+                .insert(new.workspace.clone(), new.tab.clone());
+            if let Some(terminal) = &new.terminal {
+                self.pane_of_tab.insert(new.tab.clone(), terminal.clone());
+            }
+        }
+        self.focus = focus;
     }
 
     pub(super) fn focused_id(&self) -> Option<PaneId> {
@@ -56,16 +318,16 @@ impl Session {
     }
 
     pub(super) fn focus(&mut self, terminal: &str) -> bool {
-        let Some(focus) = self.focus.as_mut() else {
+        let Some(focus) = self.focus.clone() else {
             return false;
         };
-        let shown_here = self.layout.shows(terminal)
-            && tab(&self.layout, focus).is_some_and(|tab| tab.root.contains(terminal));
-        if !shown_here || focus.terminal.as_deref() == Some(terminal) {
+        if !self.shown_in(&focus, terminal) {
             return false;
         }
-        focus.terminal = Some(terminal.to_owned());
-        true
+        self.move_focus(Focus {
+            terminal: Some(terminal.to_owned()),
+            ..focus
+        })
     }
 
     pub(super) fn id(&mut self, terminal: &str) -> PaneId {
@@ -77,19 +339,43 @@ impl Session {
     }
 
     pub(super) fn tiles(&mut self, area: Rect, chrome: PaneChrome) -> Tiles {
+        self.arranged(area, chrome, self.zoomed)
+    }
+
+    fn arranged(&mut self, area: Rect, chrome: PaneChrome, zoomed: bool) -> Tiles {
         let Some(focus) = self.focus.clone() else {
             return Tiles::default();
         };
         let Some(tab) = tab(&self.layout, &focus).cloned() else {
             return Tiles::default();
         };
-        let Some(root) = self.project(&tab.root) else {
-            return Tiles::default();
-        };
         let focused = focus
             .terminal
             .as_deref()
             .map_or(PaneId::from_raw(0), |terminal| self.id(terminal));
+        let root = match zoomed {
+            true => Some(crate::layout::Node::Pane(focused)),
+            false => self.project(&tab.root),
+        };
+        let Some(root) = root else {
+            return Tiles::default();
+        };
+        let hidden: Vec<&str> = match zoomed {
+            true => tab
+                .root
+                .terminals()
+                .into_iter()
+                .filter(|terminal| {
+                    Some(*terminal) != focus.terminal.as_deref()
+                        && !self.layout.parked.contains(*terminal)
+                })
+                .collect(),
+            false => Vec::new(),
+        };
+        let hidden = hidden
+            .into_iter()
+            .map(|terminal| (self.id(terminal), terminal.to_owned()))
+            .collect();
         let layout = TileLayout::from_saved(root, focused);
         let terminals: HashMap<PaneId, &str> = tab
             .root
@@ -115,6 +401,7 @@ impl Session {
                 })
                 .collect(),
             splits: layout.splits(area),
+            hidden,
         }
     }
 
@@ -142,25 +429,28 @@ impl Session {
         }
     }
 
+    fn locate(&self, terminal: &str) -> Option<Focus> {
+        if !self.layout.shows(terminal) {
+            return None;
+        }
+        self.layout.workspaces.iter().find_map(|workspace| {
+            let tab = workspace
+                .tabs
+                .iter()
+                .find(|tab| tab.root.contains(terminal))?;
+            Some(Focus {
+                workspace: workspace.id.clone(),
+                tab: tab.id.clone(),
+                terminal: Some(terminal.to_owned()),
+            })
+        })
+    }
+
     fn reconciled_focus(&self) -> Option<Focus> {
-        let parked = &self.layout.parked;
         let previous = self.focus.as_ref();
         let following = previous
             .and_then(|focus| focus.terminal.as_deref())
-            .filter(|terminal| self.layout.shows(terminal))
-            .and_then(|terminal| {
-                self.layout.workspaces.iter().find_map(|workspace| {
-                    let tab = workspace
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.root.contains(terminal))?;
-                    Some(Focus {
-                        workspace: workspace.id.clone(),
-                        tab: tab.id.clone(),
-                        terminal: Some(terminal.to_owned()),
-                    })
-                })
-            });
+            .and_then(|terminal| self.locate(terminal));
         if following.is_some() {
             return following;
         }
@@ -175,17 +465,12 @@ impl Session {
         let tab = previous
             .and_then(|focus| workspace.tabs.iter().find(|tab| tab.id == focus.tab))
             .or_else(|| workspace.tabs.first())?;
-        Some(Focus {
-            workspace: workspace.id.clone(),
-            tab: tab.id.clone(),
-            terminal: tab
-                .root
-                .terminals()
-                .into_iter()
-                .find(|terminal| !parked.contains(*terminal))
-                .map(str::to_owned),
-        })
+        Some(self.landing(workspace, tab))
     }
+}
+
+fn wrapped(index: usize, step: isize, len: usize) -> usize {
+    (index as isize + step).rem_euclid(len.max(1) as isize) as usize
 }
 
 fn tab<'a>(layout: &'a Layout, focus: &Focus) -> Option<&'a Tab> {

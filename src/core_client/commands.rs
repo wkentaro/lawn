@@ -46,19 +46,31 @@ pub(super) enum Command {
 }
 
 fn lifecycle(core: &Arc<Core>, session: &str) -> Lifecycle {
+    recovered(core, session, report_recovery(session))
+}
+
+fn report_recovery(session: &str) -> impl FnOnce(String) + '_ {
+    move |err| eprintln!("warning: recovery in session {session}: {err}")
+}
+
+fn recovered(core: &Arc<Core>, session: &str, report: impl FnOnce(String)) -> Lifecycle {
     let lifecycle = Lifecycle::new(core.clone(), session);
     if let Err(err) = lifecycle.recover() {
-        eprintln!("warning: recovery in session {session}: {err}");
+        report(err);
     }
     lifecycle
 }
 
-fn creation_lifecycle(core: &Arc<Core>, session: &str) -> Result<Lifecycle, String> {
+pub(super) fn creation_lifecycle(
+    core: &Arc<Core>,
+    session: &str,
+    report: impl FnOnce(String),
+) -> Result<Lifecycle, String> {
     let pending = Store::new(core.clone(), session, None)
         .load()?
         .layout
         .pending_starts;
-    let lifecycle = lifecycle(core, session);
+    let lifecycle = recovered(core, session, report);
     if let Some(reference) = pending.keys().next() {
         return Err(format!("start {reference} was already pending; recovery was attempted, but no new program was started; inspect `lawn --session {session} ls`"));
     }
@@ -119,7 +131,7 @@ pub(super) fn workspace_create(
     name: Option<String>,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session)?.start(
+    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
         Destination::Workspace { name },
         &program.cwd,
         &program.argv,
@@ -134,7 +146,7 @@ pub(super) fn tab_create(
     name: Option<String>,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session)?.start(
+    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
         Destination::Tab {
             workspace: workspace.map(str::to_owned),
             name,
@@ -153,7 +165,7 @@ pub(super) fn pane_split(
     ratio: f32,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session)?.start(
+    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
         Destination::Split {
             beside: beside.to_owned(),
             direction,

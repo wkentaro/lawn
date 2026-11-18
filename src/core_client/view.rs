@@ -239,6 +239,10 @@ impl View {
         self.runtime.mouse_reporting_enabled()
     }
 
+    pub(crate) fn cwd(&self) -> Option<std::path::PathBuf> {
+        self.runtime.cwd()
+    }
+
     pub(crate) fn key(&self, key: TerminalKey) {
         self.send(self.runtime.encode_terminal_key(key));
     }
