@@ -112,6 +112,7 @@ impl Events {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Frame {
+    pub(crate) revision: u64,
     pub(crate) scroll: Option<ScrollMetrics>,
 }
 
@@ -198,6 +199,7 @@ impl View {
         if !self.repaint {
             if let Some(snapshot) = self.runtime.collect_dirty_patch_snapshot(cols, rows) {
                 self.frame = Some(Frame {
+                    revision: snapshot.content_revision,
                     scroll: snapshot.scroll_metrics,
                 });
                 match snapshot.patch {
@@ -242,6 +244,7 @@ impl View {
                 let _writers = self.runtime.exclude_writers();
                 if self.runtime.try_render(target, area, true) {
                     drawn = Some(Frame {
+                        revision: self.runtime.content_seq(),
                         scroll: self.runtime.scroll_metrics(),
                     });
                 }

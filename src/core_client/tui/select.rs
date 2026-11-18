@@ -176,9 +176,12 @@ impl Select {
         self.screen = Screen::of(view, inner);
         let metrics = frame.scroll;
         let plain = event.modifiers.is_empty();
-        if plain && previous.is_some_and(|previous| previous.doubles(&click)) {
+        let revision = view.content_revision();
+        if plain
+            && frame.revision == revision
+            && previous.is_some_and(|previous| previous.doubles(&click))
+        {
             let anchor = (absolute_row_for_viewport(click.row, metrics), click.col);
-            let revision = view.content_revision();
             let Some(bounds) = word_at(view, pane, self.screen.shown.0, anchor) else {
                 return;
             };

@@ -1670,6 +1670,26 @@ async fn a_press_starts_no_selection_while_a_program_holds_synchronized_output()
 }
 
 #[tokio::test]
+async fn a_double_click_reads_no_word_until_the_screen_shows_the_new_text() {
+    let (mut surface, inner, _input) =
+        selecting(true, &[lines(20), b"\r\ntarget".to_vec()].concat());
+    let bottom = inner.bottom() - 1;
+    let now = std::time::Instant::now();
+    let click_once = |surface: &mut Surface| {
+        surface.mouse(click(inner.x + 1, bottom), now);
+        surface.mouse(release_at(inner.x + 1, bottom), now)
+    };
+    feed(&surface, "t0", b"\x1b[?2026h\r\x1b[2Khidden\x1b[?2026l");
+
+    assert_eq!(click_once(&mut surface), None);
+    assert_eq!(click_once(&mut surface), None);
+
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+    assert_eq!(click_once(&mut surface).as_deref(), Some("hidden"));
+}
+
+#[tokio::test]
 async fn a_press_starts_no_selection_in_a_pane_that_has_not_drawn() {
     let mut view = View::test(20, 5);
     view.test_feed(&lines(20));
