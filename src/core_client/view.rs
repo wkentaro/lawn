@@ -11,12 +11,17 @@ use crate::events::AppEvent;
 use crate::hc::Core;
 use crate::input::TerminalKey;
 use crate::layout::PaneId;
-use crate::pane::{ScrollMetrics, TerminalDirtyPatchOutcome, WheelRouting};
+use crate::pane::{
+    ScrollMetrics, TerminalDirtyPatchOutcome, TerminalSearchDirection, TerminalSearchWindow,
+    TerminalTextPoint, WheelRouting,
+};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalRuntime;
 
 const EVENT_QUEUE: usize = 64;
+const SEARCH_QUERY_BYTES: usize = 4096;
+const SEARCH_WINDOW: usize = 1024;
 
 /// The host's grid, and its cell size in pixels, zero when unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +342,25 @@ impl View {
 
     pub(crate) fn paragraph_motion_target(&self, row: u32, direction: i8) -> Option<u32> {
         Some(self.runtime.paragraph_motion_target(row, direction)?.row)
+    }
+
+    pub(crate) fn search(
+        &self,
+        query: &str,
+        direction: TerminalSearchDirection,
+        cursor: TerminalTextPoint,
+        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
+    ) -> Option<TerminalSearchWindow> {
+        (query.len() <= SEARCH_QUERY_BYTES).then(|| {
+            self.runtime.search_text_window(
+                query,
+                query.chars().any(char::is_uppercase),
+                direction,
+                cursor,
+                previous,
+                SEARCH_WINDOW,
+            )
+        })
     }
 
     pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {

@@ -16,6 +16,7 @@ use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
+use crate::raw_input::RawInputEvent;
 use crate::session_doc::Layout;
 use crate::ui::theme::Palette;
 use crate::ui::ScrollbarThumb;
@@ -59,7 +60,7 @@ enum Owner {
     Select,
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 struct Overlays {
     selection: [Rect; 3],
     copy: Marks,
@@ -70,6 +71,8 @@ impl Overlays {
     fn rects(&self) -> impl Iterator<Item = &Rect> {
         self.selection
             .iter()
+            .chain(&self.copy.matches)
+            .chain(&self.copy.current)
             .chain([&self.copy.cursor, &self.copy.bar, &self.toast])
     }
 
@@ -267,9 +270,30 @@ impl Surface {
         self.active_copy().is_some()
     }
 
+    pub(super) fn prompting(&self) -> bool {
+        self.active_copy().is_some_and(CopyMode::prompting)
+    }
+
     fn active_copy(&self) -> Option<&CopyMode> {
         let focused = self.session.focused_id()?;
         self.copy.as_ref().filter(|copy| copy.pane() == focused)
+    }
+
+    pub(super) fn copy_mode_input(&mut self, event: &RawInputEvent) -> bool {
+        let focused = self.session.focused_id();
+        let Some(copy) = self
+            .copy
+            .as_mut()
+            .filter(|copy| Some(copy.pane()) == focused)
+        else {
+            return false;
+        };
+        match event {
+            RawInputEvent::Text(text) => copy.type_text(text.as_str()),
+            RawInputEvent::Paste(text) => copy.type_text(text),
+            _ => {}
+        }
+        true
     }
 
     pub(super) fn enter_copy_mode(&mut self) {
@@ -708,10 +732,12 @@ impl Surface {
             .unwrap_or_default();
         let area = Rect::new(0, 0, self.host.cols, self.host.rows);
         let copy = self
-            .active_copy()
+            .copy
+            .as_ref()
             .and_then(|copy| {
                 let (view, inner) = visible(&self.views, copy.pane())?;
-                Some(copy.marks(inner, area, drawn_scroll(view), &self.select))
+                let active = Some(copy.pane()) == self.session.focused_id();
+                Some(copy.marks(inner, area, view.frame(), &self.select, active))
             })
             .unwrap_or_default();
         Overlays {
@@ -727,7 +753,8 @@ impl Surface {
     fn paint(&mut self, rows: &mut Vec<PaneSurfacePatchRow>) {
         let overlays = self.overlays();
         let painted = std::mem::replace(&mut self.painted, overlays);
-        if overlays == Overlays::default() && painted == overlays {
+        let overlays = &self.painted;
+        if *overlays == Overlays::default() && painted == *overlays {
             return;
         }
         let mut ys: BTreeSet<u16> = rows
@@ -735,23 +762,25 @@ impl Surface {
             .map(|row| row.y)
             .filter(|y| overlays.covers(*y))
             .collect();
-        if painted != overlays {
+        if painted != *overlays {
             for rect in painted.rects().chain(overlays.rects()) {
                 ys.extend(rect.y..rect.bottom());
             }
         }
         rows.retain(|row| !ys.contains(&row.y));
         let cols = usize::from(self.canvas_cols);
-        let copy = overlays.copy;
+        let copy = &overlays.copy;
         let bar = (!copy.bar.is_empty() && ys.contains(&copy.bar.y))
-            .then(|| super::copy_mode::bar(copy.bar.width, copy.selecting, &self.palette));
-        let mark = (!copy.cursor.is_empty()).then(|| super::copy_mode::cursor_cell(&self.palette));
+            .then(|| super::copy_mode::bar(copy, &self.palette));
+        let mark = super::copy_mode::cursor_cell(&self.palette);
+        let found = super::copy_mode::match_cell(&self.palette);
         for y in ys {
             let start = usize::from(y) * cols;
             let Some(cells) = self.canvas.get(start..start + cols) else {
                 continue;
             };
             let mut cells = cells.to_vec();
+            tint(&mut cells, &copy.matches, y, &found);
             for rect in overlays.selection.iter().filter(|rect| covers(rect, y)) {
                 for cell in cells
                     .get_mut(usize::from(rect.x)..usize::from(rect.right()))
@@ -763,14 +792,8 @@ impl Surface {
                     cell.modifier = self.highlight.modifier;
                 }
             }
-            if let (Some(cell), Some(mark)) = (
-                cells.get_mut(usize::from(copy.cursor.x)),
-                mark.as_ref().filter(|_| covers(&copy.cursor, y)),
-            ) {
-                cell.fg = mark.fg;
-                cell.bg = mark.bg;
-                cell.modifier |= mark.modifier;
-            }
+            tint(&mut cells, &copy.current, y, &mark);
+            tint(&mut cells, std::slice::from_ref(&copy.cursor), y, &mark);
             if let (Some(to), Some(bar)) = (
                 cells.get_mut(usize::from(copy.bar.x)..usize::from(copy.bar.right())),
                 bar.as_deref().filter(|_| covers(&copy.bar, y)),
@@ -965,6 +988,20 @@ fn visible(views: &HashMap<PaneId, Shown>, id: PaneId) -> Option<(&View, Rect)> 
             ..
         } => Some((view, *inner)),
         _ => None,
+    }
+}
+
+fn tint(cells: &mut [CellData], rects: &[Rect], y: u16, style: &CellData) {
+    for rect in rects.iter().filter(|rect| covers(rect, y)) {
+        for cell in cells
+            .get_mut(usize::from(rect.x)..usize::from(rect.right()))
+            .into_iter()
+            .flatten()
+        {
+            cell.fg = style.fg;
+            cell.bg = style.bg;
+            cell.modifier |= style.modifier;
+        }
     }
 }
 

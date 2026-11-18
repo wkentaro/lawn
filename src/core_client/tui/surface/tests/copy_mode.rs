@@ -83,7 +83,7 @@ async fn the_bar_spans_the_last_row_of_the_pane_area_across_both_panes() {
     let rows = frame(&mut surface, &dirty);
 
     let width = surface.host.cols;
-    let bar = crate::core_client::tui::copy_mode::bar(width, false, &surface.palette);
+    let bar = crate::core_client::tui::copy_mode::bar(&surface.overlays().copy, &surface.palette);
     let y = last_row(&surface);
     let drawn: Vec<_> = (0..width).filter_map(|x| cell_at(&rows, x, y)).collect();
     assert_eq!(drawn, bar);
@@ -633,4 +633,407 @@ async fn the_cursor_and_bar_stay_on_their_rows_while_the_program_holds_synchroni
 
     feed(&surface, "t0", b"\x1b[?2026l");
     assert_eq!(cursor(&mut surface, &dirty), Some((7, 0)));
+}
+
+const FOUND: &[u8] = b"alpha one\r\nbeta two\r\nalpha three\r\ngamma";
+
+fn bar_text(surface: &Surface) -> String {
+    crate::core_client::tui::copy_mode::bar(&surface.overlays().copy, &surface.palette)
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>()
+        .trim_end()
+        .to_owned()
+}
+
+fn searched(surface: &mut Surface, prompt: &str) {
+    typed(surface, prompt);
+    pressed(surface, KeyCode::Enter, KeyModifiers::NONE);
+}
+
+fn wide(shown: &[u8]) -> (Surface, Rect, HashSet<PaneId>) {
+    let (mut surface, _, dirty) = copying(shown);
+    surface.resize(host(120, 10));
+    frame(&mut surface, &dirty);
+    let (_, inner) = super::super::visible(&surface.views, id_of(&surface, "t0")).expect("visible");
+    (surface, inner, dirty)
+}
+
+#[tokio::test]
+async fn slash_and_question_mark_open_a_search_prompt_on_the_bar() {
+    let (mut surface, _, dirty) = copying(FOUND);
+
+    typed(&mut surface, "/");
+    assert_eq!(bar_text(&surface), " COPY  /");
+    let bar = crate::core_client::tui::copy_mode::bar(&surface.overlays().copy, &surface.palette);
+    let mut caret = ratatui::buffer::Cell::default();
+    caret
+        .set_fg(surface.palette.panel_bg)
+        .set_bg(surface.palette.text);
+    let caret = CellData::from_ratatui_cell(&caret);
+    assert_eq!((bar[8].fg, bar[8].bg), (caret.fg, caret.bg));
+    pressed(&mut surface, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(surface.copy_mode());
+    assert!(bar_text(&surface).starts_with(" COPY  h/j/k/l"));
+
+    typed(&mut surface, "?");
+    assert_eq!(bar_text(&surface), " COPY  ?");
+    surface.resize(host(60, 10));
+    frame(&mut surface, &dirty);
+    assert_eq!(
+        bar_text(&surface),
+        format!(" COPY  ?{}  enter search  esc cancel", " ".repeat(26))
+    );
+}
+
+#[tokio::test]
+async fn the_prompt_takes_typed_text_editing_keys_and_paste_and_none_reach_the_program() {
+    let (mut surface, _, mut input) = selecting(false, FOUND);
+    surface.enter_copy_mode();
+    while input.try_recv().is_ok() {}
+
+    typed(&mut surface, "/yq/n");
+    assert!(surface.copy_mode());
+    pressed(&mut surface, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    let text = crate::raw_input::RawInputEvent::Text(crate::input::TextCommit::new("nee"));
+    assert!(surface.copy_mode_input(&text));
+    assert!(surface.copy_mode_input(&crate::raw_input::RawInputEvent::Paste("dleX".into())));
+    pressed(&mut surface, KeyCode::Backspace, KeyModifiers::NONE);
+
+    assert_eq!(bar_text(&surface), " COPY  /needle");
+    assert!(input.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn enter_searches_forward_from_the_cursor_and_wraps_to_the_first_match() {
+    let (mut surface, _, dirty) = wide(FOUND);
+    assert_eq!(cursor(&mut surface, &dirty), Some((5, 3)));
+
+    searched(&mut surface, "/alpha");
+
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+    assert!(bar_text(&surface).contains("n/N repeat 1/2  "));
+}
+
+#[tokio::test]
+async fn n_repeats_in_the_search_direction_and_shift_n_against_it_both_wrapping() {
+    let (mut surface, _, dirty) = wide(b"alpha\r\nalpha\r\nalpha\r\nend");
+    searched(&mut surface, "/alpha");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+
+    for (commands, row) in [("n", 1), ("n", 2), ("n", 0), ("N", 2), ("N", 1)] {
+        typed(&mut surface, commands);
+        assert_eq!(
+            cursor(&mut surface, &dirty),
+            Some((0, row)),
+            "/ then {commands}"
+        );
+    }
+
+    searched(&mut surface, "?alpha");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+    for (commands, row) in [("n", 2), ("N", 0), ("n", 2), ("N", 0)] {
+        typed(&mut surface, commands);
+        assert_eq!(
+            cursor(&mut surface, &dirty),
+            Some((0, row)),
+            "? then {commands}"
+        );
+    }
+    assert!(bar_text(&surface).contains("n/N repeat 1/3  "));
+}
+
+#[tokio::test]
+async fn a_search_without_a_match_keeps_the_cursor_and_counts_none() {
+    let (mut surface, _, dirty) = wide(FOUND);
+
+    searched(&mut surface, "/zzz");
+
+    assert_eq!(cursor(&mut surface, &dirty), Some((5, 3)));
+    typed(&mut surface, "nN");
+    assert_eq!(cursor(&mut surface, &dirty), Some((5, 3)));
+    assert!(bar_text(&surface).contains("n/N repeat 0/0  "));
+}
+
+#[tokio::test]
+async fn escape_cancels_the_prompt_then_clears_the_search_then_leaves() {
+    let (mut surface, _, dirty) = wide(FOUND);
+    searched(&mut surface, "/alpha");
+
+    typed(&mut surface, "/beta");
+    pressed(&mut surface, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(bar_text(&surface).contains("n/N repeat 1/2  "));
+    searched(&mut surface, "/");
+    assert!(bar_text(&surface).contains("n/N repeat 1/2  "));
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+
+    pressed(&mut surface, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(surface.copy_mode());
+    assert!(bar_text(&surface).contains("n/N repeat  v/space"));
+    assert!(surface.overlays().copy.current.is_empty());
+    typed(&mut surface, "n");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+
+    pressed(&mut surface, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!surface.copy_mode());
+}
+
+#[tokio::test]
+async fn the_bar_lists_search_and_repeat_and_counts_the_current_match() {
+    let (mut surface, _, _) = wide(FOUND);
+    assert_eq!(
+        bar_text(&surface),
+        " COPY  h/j/k/l w/b/e { } move  / ? search  n/N repeat  v/space select  y/enter copy  q/esc exit"
+    );
+
+    searched(&mut surface, "/alpha");
+
+    assert_eq!(
+        bar_text(&surface),
+        " COPY  h/j/k/l w/b/e { } move  / ? search  n/N repeat 1/2  v/space select  y/enter copy  esc clear  q exit"
+    );
+}
+
+#[tokio::test]
+async fn matches_in_view_are_highlighted_and_the_current_one_is_marked() {
+    let (mut surface, inner, dirty) = copying(FOUND);
+    let current = crate::core_client::tui::copy_mode::cursor_cell(&surface.palette);
+    let other = crate::core_client::tui::copy_mode::match_cell(&surface.palette);
+    searched(&mut surface, "/alpha");
+
+    let rows = frame(&mut surface, &dirty);
+
+    let at = |x: u16, y: u16| cell_at(&rows, inner.x + x, inner.y + y).expect("painted");
+    for x in 0..5 {
+        assert_eq!(
+            (at(x, 0).bg, at(x, 0).modifier),
+            (current.bg, current.modifier)
+        );
+        assert_eq!(at(x, 2).bg, other.bg);
+    }
+    assert_ne!(at(5, 0).bg, current.bg);
+    assert_ne!(at(5, 2).bg, other.bg);
+
+    typed(&mut surface, "n");
+    let rows = frame(&mut surface, &dirty);
+    let at = |x: u16, y: u16| cell_at(&rows, inner.x + x, inner.y + y).expect("painted");
+    assert_eq!(at(1, 0).bg, other.bg);
+    assert_eq!(at(1, 2).bg, current.bg);
+}
+
+#[tokio::test]
+async fn highlights_stay_on_the_drawn_rows_while_the_program_holds_synchronized_output() {
+    let (mut surface, _, dirty) = wide(&lines(40));
+    searched(&mut surface, "?line-39");
+    frame(&mut surface, &dirty);
+    let held = surface.overlays().copy.current;
+    assert!(!held.is_empty());
+
+    feed(&surface, "t0", b"\x1b[?2026h");
+    typed(&mut surface, "g");
+    frame(&mut surface, &dirty);
+    assert_eq!(surface.overlays().copy.current, held);
+
+    feed(&surface, "t0", b"\x1b[?2026l");
+    frame(&mut surface, &dirty);
+    assert!(surface.overlays().copy.current.is_empty());
+    assert!(bar_text(&surface).contains("n/N repeat 0/0  "));
+}
+
+#[tokio::test]
+async fn new_output_drops_the_matches_from_the_frame_that_draws_it() {
+    let (mut surface, inner, dirty) = wide(FOUND);
+    let current = crate::core_client::tui::copy_mode::cursor_cell(&surface.palette);
+    searched(&mut surface, "/alpha");
+    frame(&mut surface, &dirty);
+
+    feed(&surface, "t0", b"\r\nalpha four");
+    assert!(!surface.overlays().copy.current.is_empty());
+    let rows = frame(&mut surface, &dirty);
+
+    let cell = cell_at(&rows, inner.x + 1, inner.y).expect("repainted");
+    assert_ne!(cell.bg, current.bg);
+    assert!(surface.overlays().copy.matches.is_empty());
+    assert!(bar_text(&surface).contains("n/N repeat 0/0  "));
+
+    typed(&mut surface, "n");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 2)));
+    assert!(bar_text(&surface).contains("n/N repeat 2/3  "));
+}
+
+#[tokio::test]
+async fn a_new_size_or_screen_drops_the_matches() {
+    for switch in [false, true] {
+        let (mut surface, _, dirty) = wide(FOUND);
+        searched(&mut surface, "/alpha");
+        frame(&mut surface, &dirty);
+
+        if switch {
+            feed(&surface, "t0", b"\x1b[?1049h");
+        } else {
+            surface.resize(host(100, 10));
+        }
+        frame(&mut surface, &dirty);
+
+        assert!(surface.overlays().copy.current.is_empty(), "{switch}");
+        assert!(surface.overlays().copy.matches.is_empty(), "{switch}");
+        assert!(bar_text(&surface).contains("repeat 0/0"), "{switch}");
+    }
+}
+
+#[tokio::test]
+async fn y_copies_the_current_match_when_nothing_is_selected() {
+    for commands in ["y", "vy"] {
+        let (mut surface, _, _) = copying(FOUND);
+        searched(&mut surface, "/beta");
+
+        assert_eq!(
+            typed(&mut surface, commands).as_deref(),
+            Some("beta"),
+            "{commands}"
+        );
+        assert!(!surface.copy_mode());
+    }
+}
+
+#[tokio::test]
+async fn a_selection_wins_over_the_match_when_yanking() {
+    let (mut surface, _, _) = copying(FOUND);
+    searched(&mut surface, "/beta");
+
+    assert_eq!(typed(&mut surface, "vly").as_deref(), Some("be"));
+}
+
+#[tokio::test]
+async fn a_match_is_not_copied_once_the_content_it_came_from_changed() {
+    let (mut surface, _, _) = copying(FOUND);
+    searched(&mut surface, "/beta");
+
+    feed(&surface, "t0", b"\r\nmore");
+
+    assert_eq!(typed(&mut surface, "y"), None);
+    assert!(!surface.copy_mode());
+}
+
+#[tokio::test]
+async fn a_search_jump_keeps_the_match_off_the_last_row() {
+    let (mut surface, inner, dirty) = copying(&lines(40));
+    typed(&mut surface, "g");
+
+    searched(&mut surface, "/line-20");
+
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, inner.height - 2)));
+}
+
+#[tokio::test]
+async fn a_parked_copy_mode_keeps_its_highlights_prompt_and_query_and_shows_no_bar() {
+    let (mut surface, _, dirty) = wide(FOUND);
+    searched(&mut surface, "/alpha");
+    typed(&mut surface, "/al");
+
+    surface.act(KeybindAction::FocusPaneRight, true);
+    frame(&mut surface, &dirty);
+    let parked = surface.overlays().copy;
+    assert!(!parked.current.is_empty());
+    assert!(parked.bar.is_empty() && parked.cursor.is_empty());
+    let text = crate::raw_input::RawInputEvent::Text(crate::input::TextCommit::new("x"));
+    assert!(!surface.copy_mode_input(&text));
+    assert_eq!(typed(&mut surface, "p"), None);
+
+    surface.act(KeybindAction::FocusPaneLeft, true);
+    frame(&mut surface, &dirty);
+    assert!(bar_text(&surface).starts_with(" COPY  /al  "));
+    pressed(&mut surface, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(bar_text(&surface).contains("n/N repeat 1/2  "));
+    assert!(!surface.overlays().copy.current.is_empty());
+}
+
+#[tokio::test]
+async fn a_search_waits_for_the_frame_that_shows_new_output() {
+    let (mut surface, _, dirty) = wide(FOUND);
+    feed(&surface, "t0", b"\r\nalpha four");
+
+    searched(&mut surface, "/alpha");
+    assert!(bar_text(&surface).contains("n/N repeat  v/space"));
+    assert!(surface.overlays().copy.current.is_empty());
+
+    frame(&mut surface, &dirty);
+    searched(&mut surface, "/alpha");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 4)));
+    assert!(bar_text(&surface).contains("n/N repeat 3/3  "));
+}
+
+#[tokio::test]
+async fn n_after_new_output_searches_from_the_cursor_and_not_the_old_match() {
+    let (mut surface, _, dirty) = wide(b"ab ab");
+    searched(&mut surface, "/ab");
+    assert_eq!(cursor(&mut surface, &dirty), Some((0, 0)));
+
+    feed(&surface, "t0", b"\x1b[1;1Hxab ab");
+    frame(&mut surface, &dirty);
+    typed(&mut surface, "n");
+
+    assert_eq!(cursor(&mut surface, &dirty), Some((1, 0)));
+}
+
+#[tokio::test]
+async fn a_new_pane_width_drops_the_matches_while_the_terminal_keeps_its_size() {
+    let mut surface = surface_with_scrollbars(8, 10, false);
+    surface.update(row_of(&terminals(2)));
+    for (_, id, geometry) in requests(&mut surface) {
+        let view = View::test(geometry.cols.max(crate::pane::MIN_PANE_COLS), geometry.rows);
+        view.test_feed(b"ab ab\r");
+        surface.attached(id, geometry, Ok(view));
+    }
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+    surface.enter_copy_mode();
+    searched(&mut surface, "/ab");
+    frame(&mut surface, &dirty);
+    assert!(!surface.overlays().copy.current.is_empty());
+    let size = surface.views[&id_of(&surface, "t0")].view.size();
+
+    surface.resize(host(10, 10));
+    frame(&mut surface, &dirty);
+
+    assert_eq!(surface.views[&id_of(&surface, "t0")].view.size(), size);
+    assert!(surface.overlays().copy.current.is_empty());
+}
+
+#[tokio::test]
+async fn n_moves_on_from_a_match_that_starts_past_the_columns_a_narrow_pane_shows() {
+    let mut surface = surface_with_scrollbars(6, 10, false);
+    surface.update(row_of(&terminals(2)));
+    for (_, id, geometry) in requests(&mut surface) {
+        let view = View::test(geometry.cols.max(crate::pane::MIN_PANE_COLS), geometry.rows);
+        view.test_feed(b"xxa\r\nxxa\r");
+        surface.attached(id, geometry, Ok(view));
+    }
+    let dirty = HashSet::new();
+    frame(&mut surface, &dirty);
+    surface.enter_copy_mode();
+    typed(&mut surface, "k");
+
+    searched(&mut surface, "/a");
+    assert_eq!(cursor(&mut surface, &dirty), Some((1, 0)));
+
+    typed(&mut surface, "n");
+    assert_eq!(cursor(&mut surface, &dirty), Some((1, 1)));
+}
+
+#[tokio::test]
+async fn prompt_keys_before_the_next_frame_reach_a_prompt_whose_pane_was_hidden() {
+    let (mut surface, _, dirty) = wide(FOUND);
+    let pane = id_of(&surface, "t0");
+    typed(&mut surface, "/al");
+    surface.act(KeybindAction::FocusPaneRight, true);
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+    assert!(super::super::visible(&surface.views, pane).is_none());
+
+    surface.act(KeybindAction::LastPane, true);
+    typed(&mut surface, "pha");
+
+    frame(&mut surface, &dirty);
+    assert!(bar_text(&surface).starts_with(" COPY  /alpha  "));
 }

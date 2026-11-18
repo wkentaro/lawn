@@ -37,7 +37,7 @@ mod scroll;
 mod settings;
 mod state;
 mod surface_patch;
-mod text_editor;
+pub(crate) mod text_editor;
 mod word_selection;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;

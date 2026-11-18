@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode};
 
-use super::{Keys, Routed};
+use super::{Keys, Mode, Routed};
 use crate::config::{ActionKeybinds, Config, Keybinds, LiveKeybindConfig};
 use crate::input::{KeybindAction, KeybindMatch, TerminalKey};
 use crate::layout::PaneId;
@@ -59,7 +59,7 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
 }
 
 fn press_in(keys: &mut Keys, key: &TerminalKey, pane: PaneId) -> Vec<Outcome> {
-    outcomes(keys.route_host(key.clone(), Some(pane), false, false, |_| None))
+    outcomes(keys.route_host(key.clone(), Some(pane), false, Mode::Panes, |_| None))
 }
 
 fn press(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
@@ -260,7 +260,7 @@ fn backspace_from_a_host_erasing_with_ctrl_h_is_not_a_ctrl_h_binding() {
     let erase = key('h', KeyModifiers::CONTROL).with_vt_bytes(vec![0x08]);
 
     let mut keys = keys_with(keybinds.clone(), true);
-    let routed = keys.route_host(erase.clone(), Some(left()), false, false, |_| None);
+    let routed = keys.route_host(erase.clone(), Some(left()), false, Mode::Panes, |_| None);
     assert!(matches!(&routed[..], [Routed::Key(_, key)] if key.code == KeyCode::Backspace));
 
     let mut keys = keys_with(keybinds, false);
@@ -275,7 +275,11 @@ fn committed_text_reaches_the_pane_unless_the_prefix_is_pending() {
     let mut keys = keys();
     let committed = key('n', KeyModifiers::CONTROL);
     assert_eq!(
-        outcomes(keys.route_host(committed.clone(), Some(left()), false, false, |_| Some("n"))),
+        outcomes(
+            keys.route_host(committed.clone(), Some(left()), false, Mode::Panes, |_| {
+                Some("n")
+            })
+        ),
         [Outcome::Text(left(), "n".to_owned())]
     );
 
@@ -285,7 +289,7 @@ fn committed_text_reaches_the_pane_unless_the_prefix_is_pending() {
             key('z', KeyModifiers::NONE),
             Some(left()),
             false,
-            false,
+            Mode::Panes,
             |_| Some("z")
         )),
         [Outcome::Action(KeybindAction::Zoom)]
@@ -310,7 +314,7 @@ fn committed_text_completing_a_printable_prefix_reaches_the_pane_as_a_key() {
         true,
     );
     press(&mut keys, &prefix());
-    let routed = keys.route_host(host_key(b"x"), Some(left()), false, false, |key| {
+    let routed = keys.route_host(host_key(b"x"), Some(left()), false, Mode::Panes, |key| {
         key.committed_text(true)
     });
     assert!(matches!(
@@ -361,7 +365,7 @@ fn a_key_held_while_its_pane_leaves_stays_quiet_until_pressed_again() {
 }
 
 fn copying(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
-    outcomes(keys.route_host(key.clone(), Some(left()), true, false, |_| None))
+    outcomes(keys.route_host(key.clone(), Some(left()), true, Mode::Panes, |_| None))
 }
 
 #[test]
@@ -413,7 +417,7 @@ fn a_binding_held_while_a_selection_is_copyable_still_repeats() {
 }
 
 fn in_copy_mode(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
-    outcomes(keys.route_host(key.clone(), Some(left()), false, true, |_| Some("j")))
+    outcomes(keys.route_host(key.clone(), Some(left()), false, Mode::Copy, |_| Some("j")))
 }
 
 #[test]
@@ -471,6 +475,29 @@ fn a_key_held_before_copy_mode_stops_repeating_and_its_release_reaches_its_pane(
             in_copy_mode(&mut keys, &release),
             [Outcome::Pane(pane)],
             "{pane:?}"
+        );
+    }
+}
+
+#[test]
+fn in_the_search_prompt_the_prefix_typed_text_and_bindings_are_prompt_keys() {
+    let mut keys = keys();
+    let typed = key('j', KeyModifiers::NONE);
+    for key in [
+        prefix(),
+        key('z', KeyModifiers::NONE),
+        typed.clone(),
+        typed.clone().with_kind(KeyEventKind::Repeat),
+        key('n', KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(
+            outcomes(
+                keys.route_host(key.clone(), Some(left()), false, Mode::Prompt, |_| Some(
+                    "j"
+                ))
+            ),
+            [Outcome::CopyMode],
+            "{key:?}"
         );
     }
 }
