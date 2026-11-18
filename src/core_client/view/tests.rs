@@ -58,6 +58,29 @@ async fn a_resize_damages_every_row() {
 }
 
 #[tokio::test]
+async fn a_view_keeps_the_frame_it_drew_while_a_program_holds_synchronized_output() {
+    let (mut view, _input, _wake) = scrolled(4, 3);
+    assert_eq!(view.frame(), None);
+
+    view.draw();
+    let drawn = view.frame().expect("frame");
+    assert_eq!(drawn.scroll, view.runtime.scroll_metrics());
+
+    feed(&view, b"\x1b[?2026h");
+    view.scroll_to(5);
+    view.draw();
+    assert_eq!(view.frame(), Some(drawn));
+    assert_ne!(drawn.scroll, view.runtime.scroll_metrics());
+
+    feed(&view, b"\x1b[?2026l");
+    view.draw();
+    assert_eq!(
+        view.frame().map(|frame| frame.scroll),
+        Some(view.runtime.scroll_metrics())
+    );
+}
+
+#[tokio::test]
 async fn synchronized_output_keeps_its_damage_until_it_ends() {
     let mut view = view(20, 4);
     view.draw();

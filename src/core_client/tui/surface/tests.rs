@@ -880,6 +880,92 @@ async fn the_bar_shows_once_there_is_scrollback_and_follows_the_wheel() {
 }
 
 #[tokio::test]
+async fn the_thumb_stays_with_the_rows_on_screen_while_a_program_holds_synchronized_output() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let (track, dirty) = scrolled_back_pane(&mut surface);
+    let shown = column(&surface, track);
+
+    feed(&surface, "t0", b"\x1b[?2026h");
+    for _ in 0..5 {
+        surface.mouse(mouse_at(MouseEventKind::ScrollUp, track.x - 1, track.y));
+    }
+    frame(&mut surface, &dirty);
+    assert_ne!(metrics(&surface, "t0").offset_from_bottom, 0);
+    assert_eq!(column(&surface, track), shown);
+
+    feed(&surface, "t0", b"\x1b[?2026l");
+    frame(&mut surface, &dirty);
+    assert_ne!(column(&surface, track), shown);
+}
+
+#[tokio::test]
+async fn the_bar_ignores_the_pointer_while_held_output_has_changed_the_terminal() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let (track, dirty) = scrolled_back_pane(&mut surface);
+    for _ in 0..3 {
+        surface.mouse(mouse_at(MouseEventKind::ScrollUp, track.x - 1, track.y));
+    }
+    frame(&mut surface, &dirty);
+    let thumb = crate::ui::scrollbar_thumb(metrics(&surface, "t0"), track).expect("thumb");
+    feed(&surface, "t0", b"\x1b[?2026h");
+    feed(&surface, "t0", &lines(400));
+    let held = metrics(&surface, "t0").offset_from_bottom;
+    assert_ne!(held, 0);
+
+    for row in [thumb.top, thumb.top + thumb.len - 1] {
+        surface.mouse(click(track.x, row));
+        surface.mouse(mouse_at(
+            MouseEventKind::Drag(MouseButton::Left),
+            track.x,
+            track.y,
+        ));
+        surface.mouse(mouse_at(
+            MouseEventKind::Up(MouseButton::Left),
+            track.x,
+            row,
+        ));
+        assert_eq!(metrics(&surface, "t0").offset_from_bottom, held, "{row}");
+    }
+    surface.mouse(click(track.x, track.y));
+    surface.mouse(mouse_at(
+        MouseEventKind::Up(MouseButton::Left),
+        track.x,
+        track.y,
+    ));
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, held);
+
+    feed(&surface, "t0", b"\x1b[?2026l");
+    frame(&mut surface, &dirty);
+    surface.mouse(click(track.x, track.bottom() - 1));
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, 0);
+}
+
+#[tokio::test]
+async fn the_bar_takes_one_press_while_held_output_leaves_the_terminal_as_drawn() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let (track, _) = scrolled_back_pane(&mut surface);
+    feed(&surface, "t0", b"\x1b[?2026hx");
+
+    surface.mouse(click(track.x, track.y));
+    surface.mouse(mouse_at(
+        MouseEventKind::Up(MouseButton::Left),
+        track.x,
+        track.y,
+    ));
+    let top = metrics(&surface, "t0");
+    assert_eq!(top.offset_from_bottom, top.max_offset_from_bottom);
+
+    surface.mouse(click(track.x, track.bottom() - 1));
+    assert_eq!(
+        metrics(&surface, "t0").offset_from_bottom,
+        top.max_offset_from_bottom
+    );
+}
+
+#[tokio::test]
 async fn a_press_on_the_track_jumps_and_focuses_the_pane() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));

@@ -3407,6 +3407,12 @@ impl PaneRuntime {
         self.content_seq.load(Ordering::Acquire)
     }
 
+    pub(crate) fn exclude_writers(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.content_write_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Resize if the dimensions actually changed.
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         let rows = rows.max(MIN_PANE_ROWS);
@@ -4387,6 +4393,11 @@ mod tests {
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
         assert!(runtime.collect_dirty_patch_snapshot(20, 4).is_none());
+        assert!(runtime.content_write_lock.try_lock().is_ok());
+
+        let excluded = runtime.exclude_writers();
+        assert!(runtime.content_write_lock.try_lock().is_err());
+        drop(excluded);
         assert!(runtime.content_write_lock.try_lock().is_ok());
     }
 
