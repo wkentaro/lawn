@@ -51,14 +51,14 @@ impl Words {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct Screen {
+pub(super) struct Screen {
     size: (u16, u16),
     shown: (u16, u16),
     alternate: bool,
 }
 
 impl Screen {
-    fn of(view: &View, inner: Rect) -> Self {
+    pub(super) fn of(view: &View, inner: Rect) -> Self {
         Self {
             size: view.size(),
             shown: (inner.width, inner.height),
@@ -126,6 +126,12 @@ impl Select {
         self.words = None;
         self.autoscroll = None;
         self.flash = None;
+    }
+
+    pub(super) fn hold(&mut self, selection: Selection, screen: Screen) {
+        self.clear();
+        self.screen = screen;
+        self.selection = Some(selection);
     }
 
     pub(super) fn follow(&mut self, shown: Option<(&View, Rect)>) {

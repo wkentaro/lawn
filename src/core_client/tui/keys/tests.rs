@@ -12,6 +12,7 @@ enum Outcome {
     Action(KeybindAction),
     Command,
     Copy,
+    CopyMode,
 }
 
 fn left() -> PaneId {
@@ -52,12 +53,13 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
             Routed::Binding(KeybindMatch::Action(action)) => Outcome::Action(action),
             Routed::Binding(KeybindMatch::Command(_)) => Outcome::Command,
             Routed::Copy => Outcome::Copy,
+            Routed::CopyMode(_) => Outcome::CopyMode,
         })
         .collect()
 }
 
 fn press_in(keys: &mut Keys, key: &TerminalKey, pane: PaneId) -> Vec<Outcome> {
-    outcomes(keys.route_host(key.clone(), Some(pane), false, |_| None))
+    outcomes(keys.route_host(key.clone(), Some(pane), false, false, |_| None))
 }
 
 fn press(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
@@ -258,7 +260,7 @@ fn backspace_from_a_host_erasing_with_ctrl_h_is_not_a_ctrl_h_binding() {
     let erase = key('h', KeyModifiers::CONTROL).with_vt_bytes(vec![0x08]);
 
     let mut keys = keys_with(keybinds.clone(), true);
-    let routed = keys.route_host(erase.clone(), Some(left()), false, |_| None);
+    let routed = keys.route_host(erase.clone(), Some(left()), false, false, |_| None);
     assert!(matches!(&routed[..], [Routed::Key(_, key)] if key.code == KeyCode::Backspace));
 
     let mut keys = keys_with(keybinds, false);
@@ -273,17 +275,19 @@ fn committed_text_reaches_the_pane_unless_the_prefix_is_pending() {
     let mut keys = keys();
     let committed = key('n', KeyModifiers::CONTROL);
     assert_eq!(
-        outcomes(keys.route_host(committed.clone(), Some(left()), false, |_| Some("n"))),
+        outcomes(keys.route_host(committed.clone(), Some(left()), false, false, |_| Some("n"))),
         [Outcome::Text(left(), "n".to_owned())]
     );
 
     press(&mut keys, &prefix());
     assert_eq!(
-        outcomes(
-            keys.route_host(key('z', KeyModifiers::NONE), Some(left()), false, |_| Some(
-                "z"
-            ))
-        ),
+        outcomes(keys.route_host(
+            key('z', KeyModifiers::NONE),
+            Some(left()),
+            false,
+            false,
+            |_| Some("z")
+        )),
         [Outcome::Action(KeybindAction::Zoom)]
     );
     assert_eq!(
@@ -306,7 +310,7 @@ fn committed_text_completing_a_printable_prefix_reaches_the_pane_as_a_key() {
         true,
     );
     press(&mut keys, &prefix());
-    let routed = keys.route_host(host_key(b"x"), Some(left()), false, |key| {
+    let routed = keys.route_host(host_key(b"x"), Some(left()), false, false, |key| {
         key.committed_text(true)
     });
     assert!(matches!(
@@ -357,7 +361,7 @@ fn a_key_held_while_its_pane_leaves_stays_quiet_until_pressed_again() {
 }
 
 fn copying(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
-    outcomes(keys.route_host(key.clone(), Some(left()), true, |_| None))
+    outcomes(keys.route_host(key.clone(), Some(left()), true, false, |_| None))
 }
 
 #[test]
@@ -406,4 +410,67 @@ fn a_binding_held_while_a_selection_is_copyable_still_repeats() {
         [Outcome::Action(KeybindAction::NextTab)]
     );
     assert_eq!(press(&mut keys, &next.with_kind(KeyEventKind::Release)), []);
+}
+
+fn in_copy_mode(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
+    outcomes(keys.route_host(key.clone(), Some(left()), false, true, |_| Some("j")))
+}
+
+#[test]
+fn in_copy_mode_typed_text_and_direct_bindings_are_copy_commands() {
+    let mut keys = keys();
+    assert_eq!(
+        in_copy_mode(&mut keys, &key('j', KeyModifiers::NONE)),
+        [Outcome::CopyMode]
+    );
+    assert_eq!(
+        in_copy_mode(&mut keys, &key('n', KeyModifiers::CONTROL)),
+        [Outcome::CopyMode]
+    );
+}
+
+#[test]
+fn in_copy_mode_the_prefix_still_runs_bindings_and_twice_stays_a_copy_command() {
+    let mut keys = keys();
+    assert_eq!(in_copy_mode(&mut keys, &prefix()), []);
+    assert_eq!(
+        in_copy_mode(&mut keys, &key('z', KeyModifiers::NONE)),
+        [Outcome::Action(KeybindAction::Zoom)]
+    );
+    assert_eq!(in_copy_mode(&mut keys, &prefix()), []);
+    assert_eq!(in_copy_mode(&mut keys, &prefix()), [Outcome::CopyMode]);
+}
+
+#[test]
+fn a_held_copy_mode_key_repeats_as_a_command_and_never_reaches_the_pane() {
+    let mut keys = keys();
+    let down = key('j', KeyModifiers::NONE);
+    let repeat = down.clone().with_kind(KeyEventKind::Repeat);
+    let release = down.clone().with_kind(KeyEventKind::Release);
+
+    assert_eq!(in_copy_mode(&mut keys, &down), [Outcome::CopyMode]);
+    assert_eq!(in_copy_mode(&mut keys, &repeat), [Outcome::CopyMode]);
+    assert_eq!(in_copy_mode(&mut keys, &release), []);
+
+    assert_eq!(in_copy_mode(&mut keys, &down), [Outcome::CopyMode]);
+    assert_eq!(press(&mut keys, &repeat), []);
+    assert_eq!(press(&mut keys, &release), []);
+}
+
+#[test]
+fn a_key_held_before_copy_mode_stops_repeating_and_its_release_reaches_its_pane() {
+    for pane in [left(), right()] {
+        let mut keys = keys();
+        let down = key('x', KeyModifiers::NONE);
+        let repeat = down.clone().with_kind(KeyEventKind::Repeat);
+        let release = down.clone().with_kind(KeyEventKind::Release);
+
+        assert_eq!(press_in(&mut keys, &down, pane), [Outcome::Pane(pane)]);
+        assert_eq!(in_copy_mode(&mut keys, &repeat), [], "{pane:?}");
+        assert_eq!(
+            in_copy_mode(&mut keys, &release),
+            [Outcome::Pane(pane)],
+            "{pane:?}"
+        );
+    }
 }

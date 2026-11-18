@@ -7,11 +7,12 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::copy_mode::{CopyMode, Marks, Step};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Session, Tiles};
 use crate::config::ToastClipboardPosition;
 use crate::core_client::view::{Geometry, View};
-use crate::input::KeybindAction;
+use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
@@ -61,12 +62,15 @@ enum Owner {
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Overlays {
     selection: [Rect; 3],
+    copy: Marks,
     toast: Rect,
 }
 
 impl Overlays {
     fn rects(&self) -> impl Iterator<Item = &Rect> {
-        self.selection.iter().chain([&self.toast])
+        self.selection
+            .iter()
+            .chain([&self.copy.cursor, &self.copy.bar, &self.toast])
     }
 
     fn covers(&self, y: u16) -> bool {
@@ -157,6 +161,7 @@ pub(super) struct Surface {
     scrollbars: bool,
     gesture: Option<Gesture>,
     select: Select,
+    copy: Option<CopyMode>,
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
     highlight: CellData,
@@ -191,6 +196,7 @@ impl Surface {
             scrollbars,
             gesture: None,
             select: Select::new(copying.on_select),
+            copy: None,
             toast_at: copying.toast,
             toast: None,
             highlight: CellData::from_ratatui_cell(&highlight),
@@ -254,7 +260,53 @@ impl Surface {
     }
 
     pub(super) fn copyable(&self) -> bool {
-        self.select.copyable()
+        !self.copy_mode() && self.select.copyable()
+    }
+
+    pub(super) fn copy_mode(&self) -> bool {
+        self.active_copy().is_some()
+    }
+
+    fn active_copy(&self) -> Option<&CopyMode> {
+        let focused = self.session.focused_id()?;
+        self.copy.as_ref().filter(|copy| copy.pane() == focused)
+    }
+
+    pub(super) fn enter_copy_mode(&mut self) {
+        let Some(pane) = self.session.focused_id() else {
+            return;
+        };
+        if self.copy.as_ref().is_some_and(|copy| copy.pane() == pane) {
+            return;
+        }
+        if let Some(parked) = self.copy.take() {
+            if let Some(shown) = self.views.get(&parked.pane()) {
+                parked.quit(&shown.view);
+            }
+        }
+        let Some((view, inner)) = visible(&self.views, pane) else {
+            return;
+        };
+        self.copy = CopyMode::enter(pane, view, inner);
+        if self.copy.is_some() {
+            self.select.clear();
+        }
+    }
+
+    pub(super) fn copy_mode_key(&mut self, key: &TerminalKey) -> Option<String> {
+        let focused = self.session.focused_id();
+        let copy = self
+            .copy
+            .as_mut()
+            .filter(|copy| Some(copy.pane()) == focused)?;
+        let shown = visible(&self.views, copy.pane());
+        match copy.key(shown, key, &mut self.select) {
+            Step::Stay => None,
+            Step::Leave(text) => {
+                self.copy = None;
+                text
+            }
+        }
     }
 
     pub(super) fn copy(&mut self) -> Option<String> {
@@ -266,7 +318,9 @@ impl Surface {
     }
 
     pub(super) fn deselect(&mut self) {
-        self.select.clear();
+        if !self.copy_mode() {
+            self.select.clear();
+        }
     }
 
     pub(super) fn copied(&mut self, now: Instant) {
@@ -302,6 +356,9 @@ impl Surface {
     }
 
     pub(super) fn forget(&mut self, id: PaneId) {
+        if self.copy.as_ref().is_some_and(|copy| copy.pane() == id) {
+            self.copy = None;
+        }
         if let Some(shown) = self.views.remove(&id) {
             self.end_gesture(Some((id, &shown.view)));
             self.relayout = true;
@@ -456,6 +513,13 @@ impl Surface {
             }
         };
         if press {
+            if let Some(copy) = self.copy.as_mut().filter(|copy| {
+                matches!(owner, Owner::Select)
+                    && copy.pane() == id
+                    && Some(id) == self.session.focused_id()
+            }) {
+                copy.drop_anchor();
+            }
             let target = matches!(owner, Owner::Select)
                 .then(|| visible(&self.views, id))
                 .flatten()
@@ -590,9 +654,18 @@ impl Surface {
                 self.relayout = self.relayout || shown.gutter_is_stale(self.scrollbars);
             }
         }
-        let mut rows = if self.relayout {
-            self.relayout = false;
+        let relayout = std::mem::take(&mut self.relayout);
+        if relayout {
             self.lay_out(attach, leave);
+        }
+        let focused = self.session.focused_id();
+        if let Some(copy) = self.copy.as_mut() {
+            if let Some((view, inner)) = visible(&self.views, copy.pane()) {
+                let active = Some(copy.pane()) == focused;
+                copy.follow(view, inner, &mut self.select, active);
+            }
+        }
+        let mut rows = if relayout {
             self.compose()
         } else {
             let mut rows = Vec::new();
@@ -633,8 +706,17 @@ impl Surface {
                 Some(selection.visible_rects(inner, drawn_scroll(view)))
             })
             .unwrap_or_default();
+        let area = Rect::new(0, 0, self.host.cols, self.host.rows);
+        let copy = self
+            .active_copy()
+            .and_then(|copy| {
+                let (view, inner) = visible(&self.views, copy.pane())?;
+                Some(copy.marks(inner, area, drawn_scroll(view), &self.select))
+            })
+            .unwrap_or_default();
         Overlays {
             selection,
+            copy,
             toast: self
                 .toast
                 .as_ref()
@@ -660,6 +742,10 @@ impl Surface {
         }
         rows.retain(|row| !ys.contains(&row.y));
         let cols = usize::from(self.canvas_cols);
+        let copy = overlays.copy;
+        let bar = (!copy.bar.is_empty() && ys.contains(&copy.bar.y))
+            .then(|| super::copy_mode::bar(copy.bar.width, copy.selecting, &self.palette));
+        let mark = (!copy.cursor.is_empty()).then(|| super::copy_mode::cursor_cell(&self.palette));
         for y in ys {
             let start = usize::from(y) * cols;
             let Some(cells) = self.canvas.get(start..start + cols) else {
@@ -676,6 +762,20 @@ impl Surface {
                     cell.bg = self.highlight.bg;
                     cell.modifier = self.highlight.modifier;
                 }
+            }
+            if let (Some(cell), Some(mark)) = (
+                cells.get_mut(usize::from(copy.cursor.x)),
+                mark.as_ref().filter(|_| covers(&copy.cursor, y)),
+            ) {
+                cell.fg = mark.fg;
+                cell.bg = mark.bg;
+                cell.modifier |= mark.modifier;
+            }
+            if let (Some(to), Some(bar)) = (
+                cells.get_mut(usize::from(copy.bar.x)..usize::from(copy.bar.right())),
+                bar.as_deref().filter(|_| covers(&copy.bar, y)),
+            ) {
+                to.clone_from_slice(bar);
             }
             if let Some((rect, image)) = self
                 .toast
@@ -839,6 +939,9 @@ impl Surface {
     }
 
     fn cursor(&mut self) -> Option<CursorState> {
+        if self.copy_mode() {
+            return None;
+        }
         let Shown {
             view,
             place: Place::Visible { inner, .. },

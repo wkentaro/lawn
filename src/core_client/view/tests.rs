@@ -460,14 +460,8 @@ async fn a_horizontal_wheel_reaches_only_a_mouse_reporting_program() {
 #[tokio::test]
 async fn keys_text_and_paste_return_a_scrolled_view_to_the_bottom() {
     let (view, mut input, wake) = scrolled(4, 3);
-    let inputs: [&dyn Fn(&View); 4] = [
+    let inputs: [&dyn Fn(&View); 3] = [
         &|view| view.key(TerminalKey::new(KeyCode::Char('a'), KeyModifiers::NONE)),
-        &|view| {
-            view.key(
-                TerminalKey::new(KeyCode::Char('a'), KeyModifiers::NONE)
-                    .with_kind(KeyEventKind::Release),
-            )
-        },
         &|view| view.text("typed"),
         &|view| view.paste("pasted".to_owned()),
     ];
@@ -481,6 +475,20 @@ async fn keys_text_and_paste_return_a_scrolled_view_to_the_bottom() {
         assert_eq!(wake.take(), HashSet::from([scrolled_id()]));
     }
     assert_eq!(sent(&mut input), b"atypedpasted");
+}
+
+#[tokio::test]
+async fn a_key_release_leaves_a_scrolled_view_where_it_is() {
+    let (view, _input, _wake) = scrolled(4, 3);
+    view.mouse(wheel(MouseEventKind::ScrollUp));
+    let scrolled = offset(&view);
+    assert!(scrolled > 0);
+
+    view.key(
+        TerminalKey::new(KeyCode::Char('a'), KeyModifiers::NONE).with_kind(KeyEventKind::Release),
+    );
+
+    assert_eq!(offset(&view), scrolled);
 }
 
 #[tokio::test]
