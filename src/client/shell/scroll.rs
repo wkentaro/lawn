@@ -2,7 +2,7 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 
 use super::Palette;
 
-pub(super) fn list_scroll_metrics(
+pub(crate) fn list_scroll_metrics(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
@@ -53,7 +53,7 @@ pub(super) fn list_scroll_metrics(
     }
 }
 
-pub(super) fn list_scroll_start_to_reveal(
+pub(crate) fn list_scroll_start_to_reveal(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
@@ -76,7 +76,7 @@ pub(super) fn list_scroll_start_to_reveal(
     start
 }
 
-pub(super) fn render_list_scrollbar(
+pub(crate) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
     metrics: crate::pane::ScrollMetrics,

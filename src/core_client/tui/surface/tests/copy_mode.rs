@@ -1037,3 +1037,22 @@ async fn prompt_keys_before_the_next_frame_reach_a_prompt_whose_pane_was_hidden(
     frame(&mut surface, &dirty);
     assert!(bar_text(&surface).starts_with(" COPY  /alpha  "));
 }
+
+#[tokio::test]
+async fn the_paste_shortcut_puts_the_clipboard_into_the_prompt_and_only_there() {
+    let (mut surface, _, mut input) = selecting(false, FOUND);
+    surface.enter_copy_mode();
+    while input.try_recv().is_ok() {}
+    let paste = TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let plain = TerminalKey::new(KeyCode::Char('v'), KeyModifiers::NONE);
+
+    assert!(!surface.paste_shortcut(&paste, || panic!("read outside a prompt")));
+
+    typed(&mut surface, "/");
+    assert!(!surface.paste_shortcut(&plain, || panic!("read for a plain key")));
+    assert!(surface.paste_shortcut(&paste, || Some("needle".to_owned())));
+    assert!(surface.paste_shortcut(&paste, || None));
+
+    assert_eq!(bar_text(&surface), " COPY  /needle");
+    assert!(input.try_recv().is_err());
+}

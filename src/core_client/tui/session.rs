@@ -317,6 +317,26 @@ impl Session {
         self.focus.as_ref()?.terminal.as_deref()
     }
 
+    pub(super) fn workspaces(&self) -> &[Workspace] {
+        &self.layout.workspaces
+    }
+
+    pub(super) fn focused_workspace(&self) -> Option<&Workspace> {
+        let focus = self.focus.as_ref()?;
+        self.layout
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == focus.workspace)
+    }
+
+    pub(super) fn focused_tab(&self) -> Option<&str> {
+        Some(self.focus.as_ref()?.tab.as_str())
+    }
+
+    pub(super) fn zoomed(&self) -> bool {
+        self.zoomed
+    }
+
     pub(super) fn focus(&mut self, terminal: &str) -> bool {
         let Some(focus) = self.focus.clone() else {
             return false;

@@ -215,7 +215,9 @@ impl App {
     }
 }
 
-fn format_local_datetime(format: &time::format_description::OwnedFormatItem) -> Option<String> {
+pub(crate) fn format_local_datetime(
+    format: &time::format_description::OwnedFormatItem,
+) -> Option<String> {
     let datetime = crate::platform::local_datetime()?;
     datetime
         .format(format)
@@ -223,14 +225,14 @@ fn format_local_datetime(format: &time::format_description::OwnedFormatItem) -> 
         .and_then(|value| sanitize_status_text(&value))
 }
 
-fn sanitize_separator(value: &str) -> String {
+pub(crate) fn sanitize_separator(value: &str) -> String {
     value
         .chars()
         .filter(|character| !character.is_control())
         .collect()
 }
 
-fn sanitize_literal_text(value: &str) -> Option<String> {
+pub(crate) fn sanitize_literal_text(value: &str) -> Option<String> {
     let value: String = value
         .chars()
         .filter(|character| !character.is_control())
@@ -238,7 +240,7 @@ fn sanitize_literal_text(value: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn sanitize_status_text(value: &str) -> Option<String> {
+pub(crate) fn sanitize_status_text(value: &str) -> Option<String> {
     let value: String = value
         .trim()
         .chars()

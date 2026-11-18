@@ -34,7 +34,7 @@ pub(super) fn is_modal_paste_shortcut_for_platform(
             || macos && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::SUPER)
 }
 
-fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
+pub(crate) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
     is_modal_paste_shortcut_for_platform(key, cfg!(target_os = "macos"))
 }
 
