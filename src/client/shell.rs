@@ -31,7 +31,7 @@ mod notification_policy;
 mod notifications;
 pub(crate) use navigator_preview::PreviewDisplay;
 mod overlay_input;
-mod preferences;
+pub(crate) mod preferences;
 mod render;
 pub(crate) mod scroll;
 mod settings;

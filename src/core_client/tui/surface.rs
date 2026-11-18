@@ -529,7 +529,9 @@ impl Surface {
             if press {
                 self.select.press(None, event, now);
             }
-            return self.outer.mouse(event, &self.session).map(Pointed::Act);
+            let pointed = self.outer.mouse(event, &self.session, now);
+            self.relayout |= self.lay_out_chrome() != self.areas;
+            return pointed.map(Pointed::Act);
         }
         let point = ratatui::layout::Position::new(event.column, event.row);
         let Some(tile) = self

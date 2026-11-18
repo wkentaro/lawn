@@ -174,7 +174,7 @@ mod unix {
                 gaps: config.ui.pane_gaps,
                 outer_borders: config.ui.pane_outer_borders,
             },
-            Chrome::new(&config),
+            Chrome::new(&config).remembering(super::chrome::preferences_path(&session)),
             crate::ui::theme::client_palette_from_config(&config),
             config.ui.pane_scrollbars,
             Copying {
