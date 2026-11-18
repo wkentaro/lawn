@@ -308,7 +308,7 @@ impl View {
         }
     }
 
-    pub(crate) fn mouse(&self, event: MouseEvent) {
+    pub(crate) fn mouse(&self, event: MouseEvent) -> bool {
         let report = match event.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 match self.runtime.wheel_routing() {
@@ -318,17 +318,20 @@ impl View {
                     }
                     Some(WheelRouting::HostScroll) | None => {
                         let up = event.kind == MouseEventKind::ScrollUp;
-                        return self.scroll(up, self.wheel_lines);
+                        self.scroll(up, self.wheel_lines);
+                        return false;
                     }
                 }
             }
             _ => self.mouse_report(event),
         }
         .unwrap_or_default();
-        if !report.is_empty() && event.kind != MouseEventKind::Moved {
+        let sent = !report.is_empty();
+        if sent && event.kind != MouseEventKind::Moved {
             self.to_bottom();
         }
         self.send(report);
+        sent
     }
 
     fn scroll(&self, up: bool, lines: usize) {

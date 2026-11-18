@@ -657,10 +657,20 @@ async fn a_core_view_scrolls_back_to_what_its_terminal_printed_before_the_attach
     .await;
     let press = |code| page(code, KeyModifiers::NONE, KeyEventKind::Press);
 
-    let seen = core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollUp)), "1");
+    let seen = core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollUp));
+        },
+        "1",
+    );
     assert!(seen.contains(&"0".repeat(40)), "{seen:?}");
     assert!(seen.contains(&"0".repeat(20)), "{seen:?}");
-    core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollDown)), "done");
+    core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollDown));
+        },
+        "done",
+    );
     core.scroll_until(|view| view.key(press(KeyCode::PageUp)), "1");
     core.scroll_until(|view| view.key(press(KeyCode::PageDown)), "done");
 }
@@ -681,5 +691,10 @@ async fn a_core_view_scrolls_back_through_output_printed_after_the_attach() {
     core.view.text("go\r");
     core.until_shown("end").await;
 
-    core.scroll_until(|view| view.mouse(wheel(MouseEventKind::ScrollUp)), "1");
+    core.scroll_until(
+        |view| {
+            view.mouse(wheel(MouseEventKind::ScrollUp));
+        },
+        "1",
+    );
 }

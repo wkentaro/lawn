@@ -39,9 +39,17 @@ struct Gutter {
 }
 
 #[derive(Clone, Copy)]
-struct BarDrag {
+struct Gesture {
     pane: PaneId,
-    grab: u16,
+    button: MouseButton,
+    owner: Owner,
+}
+
+#[derive(Clone, Copy)]
+enum Owner {
+    Terminal { last: MouseEvent },
+    Thumb { grab: u16 },
+    Track,
 }
 
 enum Retained {
@@ -120,7 +128,7 @@ pub(super) struct Surface {
     palette: Palette,
     host: Geometry,
     scrollbars: bool,
-    bar_drag: Option<BarDrag>,
+    gesture: Option<Gesture>,
     relayout: bool,
     canvas: Vec<CellData>,
     canvas_cols: u16,
@@ -143,7 +151,7 @@ impl Surface {
             palette,
             host,
             scrollbars,
-            bar_drag: None,
+            gesture: None,
             relayout: true,
             canvas: Vec::new(),
             canvas_cols: 0,
@@ -174,6 +182,9 @@ impl Surface {
 
     pub(super) fn host_focus(&mut self, focused: bool) {
         self.host_focused = focused;
+        if !focused {
+            self.end_gesture(None);
+        }
         self.sync_focus();
     }
 
@@ -194,7 +205,8 @@ impl Surface {
     }
 
     pub(super) fn forget(&mut self, id: PaneId) {
-        if self.views.remove(&id).is_some() {
+        if let Some(shown) = self.views.remove(&id) {
+            self.end_gesture(Some((id, &shown.view)));
             self.relayout = true;
         } else if let Some(detached) = self.attaching.get_mut(&id) {
             *detached = true;
@@ -260,14 +272,26 @@ impl Surface {
         Some(&self.views.get(&id)?.view)
     }
 
-    pub(super) fn mouse(&mut self, mut event: MouseEvent) {
-        if let Some(drag) = self.bar_drag {
+    pub(super) fn mouse(&mut self, event: MouseEvent) {
+        if let Some(mut gesture) = self.gesture {
             match event.kind {
-                MouseEventKind::Drag(MouseButton::Left) => return self.drag_bar(drag, event.row),
-                MouseEventKind::Up(MouseButton::Left) => {
-                    self.bar_drag = None;
-                    return self.drag_bar(drag, event.row);
+                MouseEventKind::Drag(button) | MouseEventKind::Up(button)
+                    if button == gesture.button =>
+                {
+                    let up = matches!(event.kind, MouseEventKind::Up(_));
+                    match &mut gesture.owner {
+                        Owner::Terminal { last } => {
+                            if let Some((delivered, _)) = self.to_terminal(gesture.pane, event) {
+                                *last = delivered;
+                            }
+                        }
+                        Owner::Thumb { grab } => self.drag_bar(gesture.pane, *grab, event.row),
+                        Owner::Track => {}
+                    }
+                    self.gesture = (!up).then_some(gesture);
+                    return;
                 }
+                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return,
                 _ => {}
             }
         }
@@ -296,21 +320,75 @@ impl Surface {
             self.relayout = true;
             self.sync_focus();
         }
-        if on_bar {
-            if press {
-                self.press_bar(id, event.row);
+        let button = match event.kind {
+            MouseEventKind::Down(button) => button,
+            MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return,
+            _ => {
+                if !on_bar {
+                    self.to_terminal(id, event);
+                }
+                return;
             }
-            return;
-        }
-        if let Some(Shown {
+        };
+        let owner = if on_bar {
+            self.press_bar(id, event)
+        } else {
+            match self.to_terminal(id, event) {
+                Some((last, true)) => Owner::Terminal { last },
+                _ => Owner::Track,
+            }
+        };
+        self.gesture = Some(Gesture {
+            pane: id,
+            button,
+            owner,
+        });
+    }
+
+    fn to_terminal(&self, id: PaneId, mut event: MouseEvent) -> Option<(MouseEvent, bool)> {
+        let Some(Shown {
             view,
             place: Place::Visible { inner, .. },
             ..
         }) = self.views.get(&id)
-        {
-            event.column -= inner.x;
-            event.row -= inner.y;
-            view.mouse(event);
+        else {
+            return None;
+        };
+        event.column = event
+            .column
+            .saturating_sub(inner.x)
+            .min(inner.width.saturating_sub(1));
+        event.row = event
+            .row
+            .saturating_sub(inner.y)
+            .min(inner.height.saturating_sub(1));
+        let sent = view.mouse(event);
+        Some((event, sent))
+    }
+
+    fn end_gesture(&mut self, leaving: Option<(PaneId, &View)>) {
+        let Some(gesture) = self.gesture else {
+            return;
+        };
+        if leaving.is_some_and(|(id, _)| id != gesture.pane) {
+            return;
+        }
+        self.gesture = None;
+        let Owner::Terminal { last } = gesture.owner else {
+            return;
+        };
+        let view = match leaving {
+            Some((_, view)) => Some(view),
+            None => self.view(gesture.pane),
+        };
+        if let Some(view) = view {
+            let (cols, rows) = view.size();
+            view.mouse(MouseEvent {
+                kind: MouseEventKind::Up(gesture.button),
+                column: last.column.min(cols.saturating_sub(1)),
+                row: last.row.min(rows.saturating_sub(1)),
+                ..last
+            });
         }
     }
 
@@ -340,22 +418,29 @@ impl Surface {
         Some((&shown.view, track, metrics))
     }
 
-    fn press_bar(&mut self, id: PaneId, row: u16) {
+    fn press_bar(&self, id: PaneId, event: MouseEvent) -> Owner {
         let Some((view, track, metrics)) = self.bar(id) else {
-            return;
+            return Owner::Track;
         };
-        match crate::ui::scrollbar_thumb_grab_offset(metrics, track, row) {
-            Some(grab) => self.bar_drag = Some(BarDrag { pane: id, grab }),
-            None => view.scroll_to(crate::ui::scrollbar_offset_from_row(metrics, track, row)),
+        if event.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Owner::Track;
+        }
+        match crate::ui::scrollbar_thumb_grab_offset(metrics, track, event.row) {
+            Some(grab) => Owner::Thumb { grab },
+            None => {
+                view.scroll_to(crate::ui::scrollbar_offset_from_row(
+                    metrics, track, event.row,
+                ));
+                Owner::Track
+            }
         }
     }
 
-    fn drag_bar(&mut self, drag: BarDrag, row: u16) {
-        let Some((view, track, metrics)) = self.bar(drag.pane) else {
-            self.bar_drag = None;
+    fn drag_bar(&self, id: PaneId, grab: u16, row: u16) {
+        let Some((view, track, metrics)) = self.bar(id) else {
             return;
         };
-        let offset = crate::ui::scrollbar_offset_from_drag_row(metrics, track, row, drag.grab);
+        let offset = crate::ui::scrollbar_offset_from_drag_row(metrics, track, row, grab);
         if offset != metrics.offset_from_bottom {
             view.scroll_to(offset);
         }
@@ -456,6 +541,7 @@ impl Surface {
             self.views.insert(tile.info.id, shown);
         }
         for (id, mut shown) in views {
+            self.end_gesture(Some((id, &shown.view)));
             if !self.tiles.hidden.iter().any(|(hidden, _)| *hidden == id) {
                 leave(id, &shown.view);
                 continue;

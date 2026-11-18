@@ -812,11 +812,8 @@ fn mouse_at(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
 
 fn scrolled_back_pane(surface: &mut Surface) -> (Rect, HashSet<PaneId>) {
     attach_with_input(surface, b"");
-    frame(surface, &HashSet::new());
-    feed(surface, "t0", &lines(40));
-    let dirty = HashSet::from([id_of(surface, "t0")]);
-    frame(surface, &dirty);
-    (track(surface, "t0"), dirty)
+    feed_after_first_frame(surface, "t0", &lines(40));
+    (track(surface, "t0"), HashSet::from([id_of(surface, "t0")]))
 }
 
 #[tokio::test]
@@ -887,10 +884,7 @@ async fn a_press_on_the_track_jumps_and_focuses_the_pane() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
     attach_with_input(&mut surface, b"");
-    frame(&mut surface, &HashSet::new());
-    feed(&surface, "t1", &lines(40));
-    let dirty = HashSet::from([id_of(&surface, "t1")]);
-    frame(&mut surface, &dirty);
+    feed_after_first_frame(&mut surface, "t1", &lines(40));
     let track = track(&surface, "t1");
 
     surface.mouse(click(track.x, track.y));
@@ -973,4 +967,175 @@ async fn output_redraws_the_bar_only_when_its_thumb_moves() {
         on_bar(&frame(&mut surface, &dirty)),
         usize::from(track.height)
     );
+}
+
+const REPORT_MOUSE: &[u8] = b"\x1b[?1000h\x1b[?1006h";
+
+fn release_at(column: u16, row: u16) -> MouseEvent {
+    mouse_at(MouseEventKind::Up(MouseButton::Left), column, row)
+}
+
+#[tokio::test]
+async fn a_press_in_the_terminal_released_on_the_bar_reaches_the_program() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, REPORT_MOUSE).remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.mouse(release_at(track.x, track.y));
+
+    assert_eq!(reports(&mut input), b"\x1b[<0;3;4M\x1b[<0;19;1m");
+}
+
+#[tokio::test]
+async fn a_press_in_one_pane_released_over_another_reaches_only_the_first() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
+    frame(&mut surface, &HashSet::new());
+    let [first, second] = [0, 1].map(|index| surface.tiles.tiles[index].info.inner_rect);
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    surface.mouse(click(first.x, first.y));
+    surface.mouse(release_at(second.x + 1, second.y));
+
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[<0;1;1M\x1b[<0;18;1m");
+    assert_eq!(reports(&mut inputs[1]), b"");
+}
+
+#[tokio::test]
+async fn a_track_press_keeps_its_jump_when_released_in_the_terminal() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"").remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    feed(&surface, "t0", REPORT_MOUSE);
+    reports(&mut input);
+
+    surface.mouse(click(track.x, track.y));
+    surface.mouse(mouse_at(
+        MouseEventKind::Drag(MouseButton::Left),
+        2,
+        track.y,
+    ));
+    surface.mouse(release_at(2, track.y));
+
+    assert_eq!(reports(&mut input), b"");
+    let metrics = metrics(&surface, "t0");
+    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+}
+
+#[tokio::test]
+async fn losing_host_focus_releases_a_held_button_once() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, REPORT_MOUSE).remove(0);
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.host_focus(false);
+    surface.mouse(release_at(4, 5));
+    assert_eq!(reports(&mut input), b"\x1b[<0;3;4M\x1b[<0;3;4m");
+
+    surface.host_focus(true);
+    surface.mouse(click(4, 5));
+    assert_eq!(reports(&mut input), b"\x1b[<0;5;6M");
+}
+
+#[tokio::test]
+async fn zooming_another_pane_releases_the_held_button_before_hiding_its_pane() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
+    frame(&mut surface, &HashSet::new());
+    let left = surface.tiles.tiles[0].info.inner_rect;
+    let held = id_of(&surface, "t0");
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    surface.mouse(click(left.x + 1, left.y + 1));
+    surface.act(KeybindAction::FocusPaneRight, true);
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+    assert!(matches!(
+        surface.views[&held].place,
+        super::Place::Hidden(_)
+    ));
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[<0;2;2M\x1b[<0;2;2m");
+
+    surface.mouse(release_at(left.x + 1, left.y + 1));
+    assert_eq!(reports(&mut inputs[0]), b"");
+    assert_eq!(reports(&mut inputs[1]), b"");
+}
+
+#[tokio::test]
+async fn a_pixel_report_press_released_on_the_bar_reaches_the_program() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h\x1b[?1016h").remove(0);
+    surface.resize(Geometry {
+        cell_width_px: 10,
+        cell_height_px: 20,
+        ..host(20, 10)
+    });
+    frame(&mut surface, &HashSet::new());
+    let track = track(&surface, "t0");
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    surface.mouse(release_at(track.x, track.bottom()));
+
+    let sent = String::from_utf8(reports(&mut input)).expect("utf8");
+    assert_eq!(sent.matches("\x1b[<0;").count(), 2, "{sent:?}");
+    assert!(sent.ends_with('m'), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_release_after_the_pane_shrank_lands_inside_it() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h\x1b[?1016h").remove(0);
+    let pixels = |cols, rows| Geometry {
+        cell_width_px: 10,
+        cell_height_px: 20,
+        ..host(cols, rows)
+    };
+    surface.resize(pixels(20, 10));
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+
+    surface.mouse(click(18, 9));
+    surface.resize(pixels(10, 5));
+    frame(&mut surface, &HashSet::new());
+    surface.host_focus(false);
+
+    let sent = String::from_utf8(reports(&mut input)).expect("utf8");
+    assert_eq!(sent.matches("\x1b[<0;").count(), 2, "{sent:?}");
+    assert!(sent.ends_with('m'), "{sent:?}");
+}
+
+#[tokio::test]
+async fn a_press_the_program_did_not_see_is_never_released_to_it() {
+    let mut surface = surface(20, 10);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"").remove(0);
+    let (track, _) = scrolled_back_pane(&mut surface);
+    surface.mouse(mouse_at(MouseEventKind::ScrollUp, 2, 3));
+    let offset = metrics(&surface, "t0").offset_from_bottom;
+    assert!(offset > 0);
+    reports(&mut input);
+
+    surface.mouse(click(2, 3));
+    feed(&surface, "t0", REPORT_MOUSE);
+    surface.host_focus(false);
+    surface.mouse(release_at(track.x - 1, 3));
+
+    assert_eq!(reports(&mut input), b"");
+    assert_eq!(metrics(&surface, "t0").offset_from_bottom, offset);
 }
