@@ -74,7 +74,7 @@ mod unix {
     use super::keys::{Keys, Mode, Routed};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
-    use super::surface::Surface;
+    use super::surface::{Pointed, Surface};
     use crate::client::terminal_setup::TerminalGuard;
     use crate::config::{Config, LiveKeybindConfig};
     use crate::core_client::commands::creation_lifecycle;
@@ -206,6 +206,22 @@ mod unix {
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
+        let act = |surface: &mut Surface, action: KeybindAction| {
+            let Some(operation) = surface.act(action, config.ui.confirm_close) else {
+                return;
+            };
+            let cwd = surface
+                .focused()
+                .and_then(View::cwd)
+                .unwrap_or_else(|| launched_in.clone());
+            perform(
+                core.clone(),
+                session.clone(),
+                operation,
+                cwd,
+                created_tx.clone(),
+            );
+        };
         loop {
             tokio::select! {
                 () = wake.wait() => {
@@ -282,8 +298,12 @@ mod unix {
                         let key = match event {
                             RawInputEvent::Key(key) => key,
                             RawInputEvent::Mouse(mouse) => {
-                                if let Some(text) = surface.mouse(mouse, std::time::Instant::now()) {
-                                    copy.send(text.into_bytes()).ok();
+                                match surface.mouse(mouse, std::time::Instant::now()) {
+                                    Some(Pointed::Copied(text)) => {
+                                        copy.send(text.into_bytes()).ok();
+                                    }
+                                    Some(Pointed::Act(action)) => act(&mut surface, action),
+                                    None => {}
                                 }
                                 continue;
                             }
@@ -363,21 +383,7 @@ mod unix {
                                 Routed::Binding(KeybindMatch::Action(action)) => action,
                                 Routed::Binding(KeybindMatch::Command(_)) => continue,
                             };
-                            let Some(operation) = surface.act(action, config.ui.confirm_close)
-                            else {
-                                continue;
-                            };
-                            let cwd = surface
-                                .focused()
-                                .and_then(View::cwd)
-                                .unwrap_or_else(|| launched_in.clone());
-                            perform(
-                                core.clone(),
-                                session.clone(),
-                                operation,
-                                cwd,
-                                created_tx.clone(),
-                            );
+                            act(&mut surface, action);
                         }
                         if deselects {
                             surface.deselect();

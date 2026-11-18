@@ -82,6 +82,12 @@ impl Overlays {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) enum Pointed {
+    Copied(String),
+    Act(KeybindAction),
+}
+
 struct Toast {
     until: Instant,
     image: (Rect, Vec<CellData>),
@@ -475,7 +481,7 @@ impl Surface {
         Some(&self.views.get(&id)?.view)
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<String> {
+    pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<Pointed> {
         if let Some(mut gesture) = self.gesture {
             match event.kind {
                 MouseEventKind::Drag(button) | MouseEventKind::Up(button)
@@ -502,7 +508,7 @@ impl Surface {
                         }
                     }
                     self.gesture = (!up).then_some(gesture);
-                    return copied;
+                    return copied.map(Pointed::Copied);
                 }
                 MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
                     return None
@@ -519,6 +525,12 @@ impl Surface {
             }
         }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        if self.outer.claim(event, self.painted.copy.bar) {
+            if press {
+                self.select.press(None, event, now);
+            }
+            return self.outer.mouse(event, &self.session).map(Pointed::Act);
+        }
         let point = ratatui::layout::Position::new(event.column, event.row);
         let Some(tile) = self
             .tiles

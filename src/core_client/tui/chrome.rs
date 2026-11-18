@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use time::format_description::OwnedFormatItem;
 
@@ -15,6 +16,8 @@ use crate::config::{
     Config, SidebarCollapsedModeConfig, SpacesSidebarConfig, StatusIndicatorStyle,
     TabBarPositionConfig, TabBarRightEntryConfig,
 };
+use crate::input::KeybindAction;
+use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
 use crate::ui::chrome::{self as paint, Layout, LayoutSettings, StatusSegment, TabBarState};
 use crate::ui::theme::Palette;
@@ -39,7 +42,7 @@ struct Drawn {
     host: Rect,
     layout: Layout,
     collapsed: bool,
-    workspaces: Vec<String>,
+    workspaces: Vec<Label>,
     focused_workspace: Option<usize>,
     tabs: Vec<Label>,
     focused_tab: Option<usize>,
@@ -54,7 +57,33 @@ struct Label {
     custom: bool,
 }
 
+#[derive(Default)]
+struct Hits {
+    toggle: Rect,
+    body: Rect,
+    list: Option<ScrollMetrics>,
+    track: Rect,
+    workspaces: Vec<(Rect, usize)>,
+    new_workspace: Rect,
+    tabs: Vec<(Rect, usize)>,
+    new_tab: Rect,
+    scroll_left: Rect,
+    scroll_right: Rect,
+}
+
+#[derive(PartialEq)]
+enum Press {
+    Workspace(String),
+    Tab(String),
+    Thumb(u16),
+}
+
 impl Drawn {
+    fn focused_workspace_id(&self) -> Option<&str> {
+        let label = self.workspaces.get(self.focused_workspace?)?;
+        Some(&label.id)
+    }
+
     fn status(&self) -> impl Iterator<Item = StatusSegment<'_>> + Clone {
         self.status.iter().map(|(text, accent)| StatusSegment {
             text,
@@ -72,11 +101,14 @@ pub(super) struct Chrome {
     separator: String,
     collapsed: bool,
     ticked: bool,
+    scrolled: bool,
     tab_bar: TabBarState,
     workspace_scroll: usize,
     reveal_workspace: bool,
     drawn: Option<Drawn>,
     rows: Vec<PaneSurfacePatchRow>,
+    hits: Hits,
+    press: Option<Press>,
 }
 
 impl Chrome {
@@ -125,11 +157,14 @@ impl Chrome {
             separator: sanitize_separator(&ui.tab_bar_right_separator),
             collapsed: ui.sidebar_start_collapsed,
             ticked: false,
+            scrolled: false,
             tab_bar: TabBarState::default(),
             workspace_scroll: 0,
             reveal_workspace: true,
             drawn: None,
             rows: Vec::new(),
+            hits: Hits::default(),
+            press: None,
         }
     }
 
@@ -161,6 +196,158 @@ impl Chrome {
         self.collapsed = !self.collapsed;
     }
 
+    pub(super) fn claim(&mut self, event: MouseEvent, hidden: Rect) -> bool {
+        if matches!(event.kind, MouseEventKind::Down(_)) {
+            self.press = None;
+        }
+        let point = Position::new(event.column, event.row);
+        let held = self.press.is_some()
+            && matches!(
+                event.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            );
+        held || !hidden.contains(point)
+            && self.drawn.as_ref().is_some_and(|drawn| {
+                drawn.layout.sidebar.contains(point) || drawn.layout.tab_bar.contains(point)
+            })
+    }
+
+    pub(super) fn mouse(&mut self, event: MouseEvent, session: &Session) -> Option<KeybindAction> {
+        let point = Position::new(event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.press_at(point),
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let (Some(Press::Thumb(grab)), Some(metrics)) = (&self.press, self.hits.list) {
+                    let offset = crate::ui::scrollbar_offset_from_drag_row(
+                        metrics,
+                        self.hits.track,
+                        point.y,
+                        *grab,
+                    );
+                    self.scroll_list(metrics.max_offset_from_bottom.saturating_sub(offset));
+                }
+                None
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.release(point, session),
+            MouseEventKind::ScrollUp => self.wheel(point, true),
+            MouseEventKind::ScrollDown => self.wheel(point, false),
+            _ => None,
+        }
+    }
+
+    fn press_at(&mut self, point: Position) -> Option<KeybindAction> {
+        if self.hits.toggle.contains(point) {
+            return Some(KeybindAction::ToggleSidebar);
+        }
+        if self.hits.track.contains(point) {
+            if let Some(metrics) = self.hits.list {
+                let track = self.hits.track;
+                match crate::ui::scrollbar_thumb_grab_offset(metrics, track, point.y) {
+                    Some(grab) => self.press = Some(Press::Thumb(grab)),
+                    None => {
+                        let offset = crate::ui::scrollbar_offset_from_row(metrics, track, point.y);
+                        self.scroll_list(metrics.max_offset_from_bottom.saturating_sub(offset));
+                    }
+                }
+            }
+            return None;
+        }
+        if self.hits.new_workspace.contains(point) {
+            return Some(KeybindAction::NewWorkspace);
+        }
+        if self.hits.new_tab.contains(point) {
+            return Some(KeybindAction::NewTab);
+        }
+        if self.hits.scroll_left.contains(point) {
+            self.scroll_tabs(self.tab_bar.scroll.saturating_sub(1));
+            return None;
+        }
+        if self.hits.scroll_right.contains(point) {
+            let last = self
+                .drawn
+                .as_ref()
+                .map_or(0, |drawn| drawn.tabs.len().saturating_sub(1));
+            self.scroll_tabs(self.tab_bar.scroll.saturating_add(1).min(last));
+            return None;
+        }
+        self.press = self.over(point);
+        None
+    }
+
+    fn over(&self, point: Position) -> Option<Press> {
+        let drawn = self.drawn.as_ref()?;
+        let id = |labels: &[Label], index: usize| Some(labels.get(index)?.id.clone());
+        hit(&self.hits.workspaces, point)
+            .and_then(|index| id(&drawn.workspaces, index))
+            .map(Press::Workspace)
+            .or_else(|| {
+                hit(&self.hits.tabs, point)
+                    .and_then(|index| id(&drawn.tabs, index))
+                    .map(Press::Tab)
+            })
+    }
+
+    fn release(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
+        let press = self.press.take()?;
+        if self.over(point).as_ref() != Some(&press) {
+            return None;
+        }
+        match press {
+            Press::Workspace(id) => session
+                .workspaces()
+                .iter()
+                .position(|workspace| workspace.id == id)
+                .map(KeybindAction::SwitchWorkspace),
+            Press::Tab(id) => session
+                .focused_workspace()?
+                .tabs
+                .iter()
+                .position(|tab| tab.id == id)
+                .map(KeybindAction::SwitchTab),
+            Press::Thumb(_) => None,
+        }
+    }
+
+    fn wheel(&mut self, point: Position, up: bool) -> Option<KeybindAction> {
+        let hits = &self.hits;
+        if hit(&hits.tabs, point).is_some()
+            || [hits.scroll_left, hits.scroll_right, hits.new_tab]
+                .iter()
+                .any(|rect| rect.contains(point))
+        {
+            return Some(if up {
+                KeybindAction::PreviousTab
+            } else {
+                KeybindAction::NextTab
+            });
+        }
+        if hits.body.contains(point) {
+            let last = hits
+                .list
+                .map_or(0, |metrics| metrics.max_offset_from_bottom);
+            self.scroll_list(if up {
+                self.workspace_scroll.saturating_sub(1)
+            } else {
+                self.workspace_scroll.saturating_add(1).min(last)
+            });
+        }
+        None
+    }
+
+    fn scroll_list(&mut self, start: usize) {
+        if start != self.workspace_scroll {
+            self.workspace_scroll = start;
+            self.scrolled = true;
+        }
+    }
+
+    fn scroll_tabs(&mut self, start: usize) {
+        if start != self.tab_bar.scroll {
+            self.tab_bar.scroll = start;
+            self.scrolled = true;
+        }
+    }
+
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.clocks().map(|clock| clock.due).min()
     }
@@ -183,7 +370,7 @@ impl Chrome {
     }
 
     pub(super) fn stale(&self) -> bool {
-        self.ticked
+        self.ticked || self.scrolled
     }
 
     pub(super) fn rows(&self) -> &[PaneSurfacePatchRow] {
@@ -198,15 +385,16 @@ impl Chrome {
         palette: &Palette,
     ) -> bool {
         self.ticked = false;
+        let scrolled = std::mem::take(&mut self.scrolled);
         let drawn = self.drawn(host, layout, session);
         let previous = self.drawn.take();
-        if previous.as_ref() == Some(&drawn) {
+        if !scrolled && previous.as_ref() == Some(&drawn) {
             self.drawn = previous;
             return false;
         }
         if previous
             .as_ref()
-            .is_none_or(|previous| previous.focused_workspace != drawn.focused_workspace)
+            .is_none_or(|previous| previous.focused_workspace_id() != drawn.focused_workspace_id())
         {
             self.reveal_workspace = true;
         }
@@ -244,11 +432,13 @@ impl Chrome {
             collapsed: self.collapsed,
             workspaces: workspaces
                 .iter()
-                .map(|workspace| {
-                    workspace
+                .map(|workspace| Label {
+                    id: workspace.id.clone(),
+                    text: workspace
                         .name
                         .clone()
-                        .unwrap_or_else(|| "workspace".to_owned())
+                        .unwrap_or_else(|| "workspace".to_owned()),
+                    custom: workspace.name.is_some(),
                 })
                 .collect(),
             focused_workspace: focused.and_then(|focused| {
@@ -283,6 +473,7 @@ impl Chrome {
     }
 
     fn draw(&mut self, drawn: &Drawn, palette: &Palette) -> Vec<PaneSurfacePatchRow> {
+        self.hits = Hits::default();
         let mut buffer = Buffer::empty(drawn.host);
         let Layout {
             sidebar, tab_bar, ..
@@ -353,7 +544,7 @@ impl Chrome {
                 let mut rows = crate::ui::sidebar_space_rows(
                     &self.spaces,
                     crate::ui::SpaceTokenContext {
-                        workspace: label,
+                        workspace: &label.text,
                         state_text: "",
                         tokens: &tokens,
                     },
@@ -406,6 +597,8 @@ impl Chrome {
         self.workspace_scroll = metrics
             .max_offset_from_bottom
             .saturating_sub(metrics.offset_from_bottom);
+        self.hits.body = body;
+        self.hits.list = Some(metrics);
         let scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
         let width = body.width.saturating_sub(u16::from(scrollbar));
         let mut y = body.y;
@@ -414,9 +607,11 @@ impl Chrome {
             if y.saturating_add(height) > body.bottom() {
                 break;
             }
+            let rect = Rect::new(body.x, y, width, height);
+            self.hits.workspaces.push((rect, index));
             paint::render_workspace_rows(
                 buffer,
-                Rect::new(body.x, y, width, height),
+                rect,
                 paint::WorkspaceRow {
                     status: crate::api::schema::AgentStatus::Unknown,
                     rows,
@@ -431,40 +626,43 @@ impl Chrome {
             y = y.saturating_add(height + gaps[index]);
         }
         if scrollbar {
-            scroll::render_list_scrollbar(
-                buffer,
-                Rect::new(body.right().saturating_sub(1), body.y, 1, body.height),
-                metrics,
-                palette,
-            );
+            self.hits.track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+            scroll::render_list_scrollbar(buffer, self.hits.track, metrics, palette);
         }
-        paint::put_text(
-            buffer,
+        let footer = list.bottom().saturating_sub(1);
+        self.hits.new_workspace = Rect::new(
             list.x,
-            list.bottom().saturating_sub(1),
-            list.width,
-            " new",
-            quiet,
+            footer,
+            list.width.min(5),
+            u16::from(list.height > 0),
         );
+        paint::put_text(buffer, list.x, footer, list.width, " new", quiet);
         if self.settings.sidebar_collapsed_mode != SidebarCollapsedModeConfig::Hidden {
-            paint::put_text(
-                buffer,
+            self.hits.toggle = Rect::new(
                 area.right().saturating_sub(2),
                 area.bottom().saturating_sub(1),
                 u16::from(area.width > 1),
+                u16::from(area.height > 0),
+            );
+            paint::put_text(
+                buffer,
+                self.hits.toggle.x,
+                self.hits.toggle.y,
+                self.hits.toggle.width,
                 "«",
                 quiet,
             );
         }
     }
 
-    fn draw_collapsed(&self, buffer: &mut Buffer, drawn: &Drawn, palette: &Palette) {
+    fn draw_collapsed(&mut self, buffer: &mut Buffer, drawn: &Drawn, palette: &Palette) {
         let area = drawn.layout.sidebar;
         paint::render_sidebar_background(buffer, area, palette);
         let list = self.list_area(area);
         let active = paint::workspace_active_background(palette, false);
         for index in 0..drawn.workspaces.len().min(usize::from(list.height)) {
             let rect = Rect::new(list.x, list.y + index as u16, list.width, 1);
+            self.hits.workspaces.push((rect, index));
             let style = if drawn.focused_workspace == Some(index) {
                 buffer.set_style(rect, Style::default().bg(active));
                 Style::default().fg(palette.text).bg(active)
@@ -481,10 +679,16 @@ impl Chrome {
             );
         }
         if !list.is_empty() {
-            paint::put_text(
-                buffer,
+            self.hits.toggle = Rect::new(
                 list.x + list.width / 2,
                 area.bottom().saturating_sub(1),
+                1,
+                1,
+            );
+            paint::put_text(
+                buffer,
+                self.hits.toggle.x,
+                self.hits.toggle.y,
                 1,
                 "»",
                 Style::default().fg(palette.overlay0),
@@ -516,7 +720,8 @@ impl Chrome {
             area,
             paint::tab_bar_status_width(drawn.status(), &self.separator),
         );
-        self.tab_bar = paint::render_tab_strip(
+        let mut hits = Vec::new();
+        let outcome = paint::render_tab_strip(
             buffer,
             content,
             &tabs,
@@ -527,11 +732,25 @@ impl Chrome {
             },
             self.tab_bar,
             None,
-            |_, _| {},
-        )
-        .state;
+            |rect, key| {
+                if let Some(index) = drawn.tabs.iter().position(|tab| tab.id == key) {
+                    hits.push((rect, index));
+                }
+            },
+        );
+        self.tab_bar = outcome.state;
+        self.hits.tabs = hits;
+        self.hits.new_tab = outcome.new_tab;
+        self.hits.scroll_left = outcome.tab_scroll_left;
+        self.hits.scroll_right = outcome.tab_scroll_right;
         paint::render_tab_bar_status(buffer, area, drawn.status(), &self.separator, palette);
     }
+}
+
+fn hit(hits: &[(Rect, usize)], point: Position) -> Option<usize> {
+    hits.iter()
+        .find(|(rect, _)| rect.contains(point))
+        .map(|(_, index)| *index)
 }
 
 fn period(format: &OwnedFormatItem) -> Duration {

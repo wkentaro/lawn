@@ -2,6 +2,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 use super::*;
 use crate::config::{SidebarCollapsedModeConfig, TabBarPositionConfig, TabBarRightEntryConfig};
+use crate::core_client::tui::session::Operation;
+use crate::core_client::tui::surface::Pointed;
 use crate::protocol::CellData;
 
 fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface {
@@ -559,4 +561,478 @@ async fn a_cursor_below_a_one_row_pane_area_is_not_shown_on_the_bottom_tab_bar()
         Some((28, 0))
     );
     assert_eq!(cursor_in_a_one_row_pane_area(b"\x1b[2;1H\x1b[?25h"), None);
+}
+
+fn point(surface: &mut Surface, kind: MouseEventKind, column: u16, row: u16) -> Option<Operation> {
+    match surface.mouse(mouse_at(kind, column, row), std::time::Instant::now()) {
+        Some(Pointed::Act(action)) => surface.act(action, false),
+        Some(Pointed::Copied(text)) => unreachable!("{text}"),
+        None => None,
+    }
+}
+
+fn tap(surface: &mut Surface, column: u16, row: u16) -> Option<Operation> {
+    let pressed = point(
+        surface,
+        MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+    );
+    let released = point(surface, MouseEventKind::Up(MouseButton::Left), column, row);
+    pressed.or(released)
+}
+
+fn wheel(surface: &mut Surface, down: bool, column: u16, row: u16) {
+    let kind = if down {
+        MouseEventKind::ScrollDown
+    } else {
+        MouseEventKind::ScrollUp
+    };
+    point(surface, kind, column, row);
+}
+
+fn workspace(surface: &Surface) -> &str {
+    surface
+        .session
+        .focused_workspace()
+        .map_or("", |workspace| workspace.id.as_str())
+}
+
+fn tab(surface: &Surface) -> &str {
+    surface.session.focused_tab().unwrap_or_default()
+}
+
+fn many(count: usize) -> Layout {
+    let names: Vec<String> = (0..count).map(|index| format!("ws{index}")).collect();
+    let workspaces: Vec<(Option<&str>, &[Option<&str>])> = names
+        .iter()
+        .map(|name| (Some(name.as_str()), &[None][..]))
+        .collect();
+    spaces(&workspaces)
+}
+
+fn thumb_rows(surface: &Surface, x: u16) -> Vec<u16> {
+    let thumb = styled(Style::default().fg(Palette::catppuccin().overlay0)).fg;
+    (0..surface.host.rows)
+        .filter(|y| cell(surface, x, *y).symbol == "▕" && cell(surface, x, *y).fg == thumb)
+        .collect()
+}
+
+fn pane_inner(surface: &Surface, terminal: &str) -> Rect {
+    super::super::visible(&surface.views, id_of(surface, terminal))
+        .expect("visible")
+        .1
+}
+
+#[tokio::test]
+async fn a_workspace_row_takes_focus_when_released_where_it_was_pressed() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    let pressed = point(&mut surface, MouseEventKind::Down(MouseButton::Left), 5, 3);
+    assert_eq!(pressed, None);
+    assert_eq!(workspace(&surface), "w0");
+
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 9, 3);
+    assert_eq!(workspace(&surface), "w1");
+}
+
+#[tokio::test]
+async fn a_press_released_off_its_row_or_tab_focuses_nothing() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[
+        (Some("main"), &[None, None]),
+        (Some("other"), &[None]),
+    ]));
+    frame(&mut surface, &HashSet::new());
+    let second = find(&surface, 0, " 2 ");
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 5, 3);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 5, 2);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 5, 2);
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        second + 1,
+        0,
+    );
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 60, 5);
+
+    assert_eq!((workspace(&surface), tab(&surface)), ("w0", "tab1"));
+}
+
+#[tokio::test]
+async fn a_row_that_replaced_the_pressed_one_takes_no_focus() {
+    let mut surface = plain(120, 30);
+    surface.update(many(3));
+    frame(&mut surface, &HashSet::new());
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 5, 3);
+    let mut closed = many(3);
+    closed.workspaces.remove(1);
+    surface.update(closed);
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 5, 3);
+
+    assert_eq!(workspace(&surface), "w0");
+}
+
+#[tokio::test]
+async fn a_tab_that_replaced_the_pressed_one_takes_no_focus() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None, None, None])]));
+    frame(&mut surface, &HashSet::new());
+    let second = find(&surface, 0, " 2 ") + 1;
+
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        second,
+        0,
+    );
+    let mut closed = spaces(&[(None, &[None, None, None])]);
+    closed.workspaces[0].tabs.remove(1);
+    surface.update(closed);
+    frame(&mut surface, &HashSet::new());
+    point(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        second,
+        0,
+    );
+
+    assert_eq!(tab(&surface), "tab1");
+}
+
+#[tokio::test]
+async fn a_tab_takes_focus_when_released_where_it_was_pressed() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None, None, Some("logs")])]));
+    frame(&mut surface, &HashSet::new());
+
+    let (logs, second) = (find(&surface, 0, "logs"), find(&surface, 0, " 2 ") + 1);
+
+    tap(&mut surface, logs, 0);
+    assert_eq!(tab(&surface), "tab3");
+    tap(&mut surface, second, 0);
+    assert_eq!(tab(&surface), "tab2");
+}
+
+#[tokio::test]
+async fn new_and_plus_start_a_workspace_and_a_tab_like_their_keys() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    let plus = find(&surface, 0, " + ") + 1;
+
+    let workspace = tap(&mut surface, 2, 28);
+    let tab = tap(&mut surface, plus, 0);
+
+    assert!(workspace.is_some() && tab.is_some());
+    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
+    assert_eq!(tab, surface.act(KeybindAction::NewTab, false));
+    assert_eq!(tap(&mut surface, 6, 28), None);
+}
+
+#[tokio::test]
+async fn the_sidebar_glyphs_collapse_and_expand_it() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(tap(&mut surface, 24, 29), None);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 4);
+
+    assert_eq!(cell(&surface, 1, 29).symbol, "»");
+    tap(&mut surface, 1, 29);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 26);
+}
+
+#[tokio::test]
+async fn the_tab_scroll_buttons_move_the_strip_and_a_redraw_keeps_it() {
+    let tabs = [None; 20];
+    let mut surface = plain(90, 10);
+    surface.update(spaces(&[(Some("main"), &tabs)]));
+    frame(&mut surface, &HashSet::new());
+    let right = find(&surface, 0, " > ") + 1;
+    assert!(span(&surface, 0, 26..90).contains(" 1 "));
+
+    tap(&mut surface, right, 0);
+    assert!(surface.needs_frame());
+    frame(&mut surface, &HashSet::new());
+    let bar = span(&surface, 0, 26..90);
+    assert!(!bar.contains(" 1 ") && bar.contains(" 2 "), "{bar:?}");
+
+    surface.update(spaces(&[(Some("renamed"), &tabs)]));
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" renamed "));
+    assert!(!span(&surface, 0, 26..90).contains(" 1 "));
+
+    tap(&mut surface, 27, 0);
+    frame(&mut surface, &HashSet::new());
+    assert!(span(&surface, 0, 26..90).contains(" 1 "));
+    assert_eq!(tab(&surface), "tab1");
+}
+
+#[tokio::test]
+async fn the_wheel_over_the_tabs_goes_to_the_previous_or_next_tab_and_wraps() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None, None, None])]));
+    frame(&mut surface, &HashSet::new());
+    let first = find(&surface, 0, " 1 ") + 1;
+    let plus = find(&surface, 0, " + ") + 1;
+
+    wheel(&mut surface, true, first, 0);
+    assert_eq!(tab(&surface), "tab2");
+    wheel(&mut surface, false, plus, 0);
+    assert_eq!(tab(&surface), "tab1");
+    wheel(&mut surface, false, first, 0);
+    assert_eq!(tab(&surface), "tab3");
+    wheel(&mut surface, true, first, 0);
+    assert_eq!(tab(&surface), "tab1");
+
+    wheel(&mut surface, true, 100, 0);
+    assert_eq!(tab(&surface), "tab1");
+}
+
+#[tokio::test]
+async fn the_wheel_scrolls_the_workspace_list_and_redraws_keep_it_until_focus_moves() {
+    let mut surface = plain(120, 12);
+    surface.update(many(12));
+    frame(&mut surface, &HashSet::new());
+
+    wheel(&mut surface, true, 5, 4);
+    wheel(&mut surface, true, 5, 4);
+    wheel(&mut surface, false, 5, 4);
+    assert!(surface.needs_frame());
+    frame(&mut surface, &HashSet::new());
+    assert!(
+        line(&surface, 2).starts_with(" ws1 "),
+        "{:?}",
+        line(&surface, 2)
+    );
+    assert_eq!(workspace(&surface), "w0");
+
+    let mut renamed = many(12);
+    renamed.workspaces[11].name = Some("last".to_owned());
+    surface.update(renamed);
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" ws1 "));
+
+    surface.act(KeybindAction::NextWorkspace, false);
+    surface.act(KeybindAction::PreviousWorkspace, false);
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" ws1 "));
+    surface.act(KeybindAction::NextWorkspace, false);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::PreviousWorkspace, false);
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" ws0 "));
+}
+
+#[tokio::test]
+async fn a_workspace_closed_above_the_focused_one_keeps_a_list_scrolled_by_hand() {
+    let mut surface = plain(120, 12);
+    surface.update(many(12));
+    surface.act(KeybindAction::PreviousWorkspace, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(workspace(&surface), "w11");
+    assert!(!line(&surface, 2).starts_with(" ws0 "));
+
+    for _ in 0..12 {
+        wheel(&mut surface, false, 5, 4);
+    }
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" ws0 "));
+
+    let mut closed = many(12);
+    closed.workspaces.remove(1);
+    surface.update(closed);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(workspace(&surface), "w11");
+    assert!(
+        line(&surface, 2).starts_with(" ws0 "),
+        "{:?}",
+        line(&surface, 2)
+    );
+    assert!(line(&surface, 3).starts_with(" ws2 "));
+}
+
+#[tokio::test]
+async fn the_list_scrollbar_jumps_on_a_track_press_and_follows_a_thumb_drag() {
+    let mut surface = plain(120, 12);
+    surface.update(many(12));
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(thumb_rows(&surface, 24).first(), Some(&2));
+
+    tap(&mut surface, 24, 9);
+    frame(&mut surface, &HashSet::new());
+    let shown: Vec<String> = (2..10).map(|y| line(&surface, y)).collect();
+    assert!(
+        shown.iter().any(|row| row.starts_with(" ws11 ")),
+        "{shown:#?}"
+    );
+    let thumb = thumb_rows(&surface, 24);
+    assert_eq!(thumb.last(), Some(&9));
+
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        24,
+        thumb[0],
+    );
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 60, 1);
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 2).starts_with(" ws0 "));
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 60, 1);
+
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 24, 9);
+    assert!(!surface.needs_frame());
+}
+
+#[tokio::test]
+async fn a_click_on_a_collapsed_workspace_number_focuses_it() {
+    let mut surface = dressed(120, 30, |config| config.ui.sidebar_start_collapsed = true);
+    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    tap(&mut surface, 2, 1);
+    assert_eq!(workspace(&surface), "w1");
+    tap(&mut surface, 0, 0);
+    assert_eq!(workspace(&surface), "w0");
+}
+
+#[tokio::test]
+async fn chrome_events_reach_no_pane_and_move_no_focus() {
+    let mut surface = plain(120, 30);
+    let mut layout = spaces(&[(None, &[None, None])]);
+    layout.workspaces[0].tabs[0].root =
+        serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
+    surface.update(layout);
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    let focused = surface.focused_id();
+    let right = pane_inner(&surface, "t9");
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    for (kind, column, row) in [
+        (MouseEventKind::Moved, 5, 2),
+        (MouseEventKind::Down(MouseButton::Left), 5, 2),
+        (MouseEventKind::Drag(MouseButton::Left), right.x, right.y),
+        (MouseEventKind::Up(MouseButton::Left), right.x, right.y),
+        (MouseEventKind::Down(MouseButton::Right), 100, 0),
+        (MouseEventKind::Up(MouseButton::Right), right.x, right.y),
+        (MouseEventKind::ScrollDown, 5, 10),
+        (MouseEventKind::ScrollUp, 100, 0),
+    ] {
+        point(&mut surface, kind, column, row);
+    }
+
+    for input in &mut inputs {
+        assert_eq!(reports(input), b"");
+    }
+    assert_eq!(surface.focused_id(), focused);
+    assert!(surface.gesture.is_none() && surface.select.shown().is_none());
+}
+
+#[tokio::test]
+async fn a_left_press_on_the_chrome_clears_the_selection_and_the_wheel_does_not() {
+    let mut surface = plain(120, 30);
+    surface.select = super::super::Select::new(false);
+    surface.update(spaces(&[(None, &[None])]));
+    attach_with_input(&mut surface, b"hello world");
+    frame(&mut surface, &HashSet::new());
+    let inner = pane_inner(&surface, "t1");
+    let select = |surface: &mut Surface| {
+        mouse(surface, click(inner.x, inner.y));
+        mouse(surface, drag_to(inner.x + 4, inner.y));
+        mouse(surface, release_at(inner.x + 4, inner.y));
+        assert!(surface.select.shown().is_some());
+    };
+
+    select(&mut surface);
+    wheel(&mut surface, true, 5, 5);
+    wheel(&mut surface, true, 100, 0);
+    assert!(surface.select.shown().is_some());
+
+    tap(&mut surface, 5, 10);
+    assert!(surface.select.shown().is_none());
+}
+
+#[tokio::test]
+async fn a_pane_selection_dragged_over_the_chrome_keeps_selecting_and_copies_on_release() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None, None])]));
+    attach_with_input(&mut surface, b"hello world");
+    frame(&mut surface, &HashSet::new());
+    let inner = pane_inner(&surface, "t1");
+
+    mouse(&mut surface, click(inner.x + 4, inner.y));
+    mouse(&mut surface, drag_to(10, inner.y));
+    mouse(&mut surface, mouse_at(MouseEventKind::ScrollDown, 30, 0));
+    let copied = mouse(&mut surface, release_at(10, inner.y));
+
+    assert_eq!(copied.as_deref(), Some("hello"));
+    assert_eq!(tab(&surface), "tab1");
+}
+
+#[tokio::test]
+async fn a_press_on_the_chrome_keeps_copy_mode_and_its_keyboard_selection() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"hello");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    frame(&mut surface, &dirty);
+    surface.enter_copy_mode();
+    for key in ['h', 'v', 'h'] {
+        surface.copy_mode_key(&TerminalKey::new(KeyCode::Char(key), KeyModifiers::NONE));
+    }
+    assert_eq!(shown_text(&surface).as_deref(), Some("lo"));
+
+    tap(&mut surface, 5, 10);
+    frame(&mut surface, &dirty);
+    assert!(surface.copy_mode());
+    assert_eq!(shown_text(&surface).as_deref(), Some("lo"));
+
+    tap(&mut surface, 5, 3);
+    frame_attaching(&mut surface, &HashSet::new());
+    assert_eq!(workspace(&surface), "w1");
+    assert!(!surface.copy_mode());
+
+    tap(&mut surface, 5, 2);
+    assert_eq!(workspace(&surface), "w0");
+    assert!(surface.copy_mode());
+}
+
+#[tokio::test]
+async fn tabs_under_the_copy_mode_bar_take_no_clicks_or_wheel() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+    });
+    surface.update(spaces(&[(None, &[None, None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"hello");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    frame(&mut surface, &dirty);
+    let second = find(&surface, 29, " 2 ") + 1;
+    surface.enter_copy_mode();
+    frame(&mut surface, &dirty);
+    assert_eq!(surface.painted.copy.bar, surface.areas.tab_bar);
+
+    tap(&mut surface, second, 29);
+    assert_eq!(tab(&surface), "tab1");
+    wheel(&mut surface, true, second, 29);
+    assert_eq!(tab(&surface), "tab1");
+
+    surface.copy_mode_key(&TerminalKey::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    frame(&mut surface, &dirty);
+    tap(&mut surface, second, 29);
+    assert_eq!(tab(&surface), "tab2");
 }

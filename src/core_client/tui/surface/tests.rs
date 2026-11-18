@@ -160,7 +160,14 @@ fn feed(surface: &Surface, terminal: &str, bytes: &[u8]) {
 }
 
 fn mouse(surface: &mut Surface, event: MouseEvent) -> Option<String> {
-    surface.mouse(event, std::time::Instant::now())
+    copied_text(surface.mouse(event, std::time::Instant::now()))
+}
+
+fn copied_text(pointed: Option<super::Pointed>) -> Option<String> {
+    match pointed? {
+        super::Pointed::Copied(text) => Some(text),
+        super::Pointed::Act(action) => unreachable!("{action:?}"),
+    }
 }
 
 fn click(column: u16, row: u16) -> MouseEvent {
@@ -1293,7 +1300,7 @@ async fn a_drag_selects_and_its_release_copies_the_text() {
 
     assert_eq!(surface.mouse(click(inner.x, inner.y), now), None);
     surface.mouse(drag_to(inner.x + 5, inner.y + 1), now);
-    let copied = surface.mouse(release_at(inner.x + 5, inner.y + 1), now);
+    let copied = copied_text(surface.mouse(release_at(inner.x + 5, inner.y + 1), now));
 
     assert_eq!(copied.as_deref(), Some("hello world\nsecond"));
     assert!(surface.select.shown().is_none());
@@ -1336,7 +1343,7 @@ async fn a_double_click_selects_and_copies_a_word_that_flashes_briefly() {
     surface.mouse(release_at(inner.x + 7, inner.y), now);
     surface.mouse(click(inner.x + 8, inner.y), later);
     assert_eq!(shown_text(&surface).as_deref(), Some("world"));
-    let copied = surface.mouse(release_at(inner.x + 8, inner.y), later);
+    let copied = copied_text(surface.mouse(release_at(inner.x + 8, inner.y), later));
 
     assert_eq!(copied.as_deref(), Some("world"));
     let flash = later + std::time::Duration::from_millis(500);
@@ -1379,7 +1386,7 @@ async fn a_drag_after_a_double_click_extends_by_whole_words() {
     surface.mouse(drag_to(inner.x + 1, inner.y), now);
     assert_eq!(shown_text(&surface).as_deref(), Some("hello world"));
 
-    let copied = surface.mouse(release_at(inner.x + 1, inner.y), now);
+    let copied = copied_text(surface.mouse(release_at(inner.x + 1, inner.y), now));
     assert_eq!(copied.as_deref(), Some("hello world"));
     assert!(surface.select.shown().is_none());
 }
@@ -1399,7 +1406,7 @@ async fn a_drag_past_the_top_scrolls_at_once_and_then_on_each_tick() {
     surface.tick(tick);
     assert_eq!(metrics(&surface, "t0").offset_from_bottom, 4);
 
-    let copied = surface.mouse(release_at(inner.x + 2, inner.y - 1), tick);
+    let copied = copied_text(surface.mouse(release_at(inner.x + 2, inner.y - 1), tick));
     assert_eq!(copied.as_deref().map(|text| &text[..6]), Some("ne-29\n"));
     assert_eq!(surface.deadline(), None);
 }
@@ -1417,7 +1424,7 @@ async fn the_wheel_during_a_drag_scrolls_and_extends_to_the_pointer() {
     );
 
     assert_eq!(metrics(&surface, "t0").offset_from_bottom, 3);
-    let copied = surface.mouse(release_at(inner.x + 2, inner.y + 1), now);
+    let copied = copied_text(surface.mouse(release_at(inner.x + 2, inner.y + 1), now));
     assert_eq!(
         copied.as_deref(),
         Some("ne-31\nline-32\nline-33\nline-34\nline-35\nl")
@@ -1569,14 +1576,14 @@ async fn a_drag_over_the_scrollbar_selects_to_the_last_terminal_column() {
     let now = std::time::Instant::now();
 
     surface.mouse(click(inner.x, inner.y), now);
-    let copied = surface.mouse(release_at(inner.right(), inner.y), now);
+    let copied = copied_text(surface.mouse(release_at(inner.right(), inner.y), now));
     assert_eq!(copied, None);
     surface.mouse(
         click(inner.x, inner.y),
         now + std::time::Duration::from_secs(1),
     );
     surface.mouse(drag_to(inner.right(), inner.y), now);
-    let copied = surface.mouse(release_at(inner.right(), inner.y), now);
+    let copied = copied_text(surface.mouse(release_at(inner.right(), inner.y), now));
 
     let row = "0123456789abcdefghij";
     assert_eq!(copied.as_deref(), Some(&row[..usize::from(inner.width)]));
@@ -1656,11 +1663,11 @@ async fn a_press_starts_no_selection_while_a_program_holds_synchronized_output()
                 surface.mouse(click(inner.x + 1, bottom), now);
                 surface.mouse(release_at(inner.x + 1, bottom), now);
                 surface.mouse(click(inner.x + 1, bottom), now);
-                surface.mouse(release_at(inner.x + 1, bottom), now)
+                copied_text(surface.mouse(release_at(inner.x + 1, bottom), now))
             } else {
                 surface.mouse(click(inner.x, bottom), now);
                 surface.mouse(drag_to(inner.x + 5, bottom), now);
-                surface.mouse(release_at(inner.x + 5, bottom), now)
+                copied_text(surface.mouse(release_at(inner.x + 5, bottom), now))
             }
         };
 
@@ -1687,7 +1694,7 @@ async fn a_double_click_reads_no_word_until_the_screen_shows_the_new_text() {
     let now = std::time::Instant::now();
     let click_once = |surface: &mut Surface| {
         surface.mouse(click(inner.x + 1, bottom), now);
-        surface.mouse(release_at(inner.x + 1, bottom), now)
+        copied_text(surface.mouse(release_at(inner.x + 1, bottom), now))
     };
     feed(&surface, "t0", b"\x1b[?2026h\r\x1b[2Khidden\x1b[?2026l");
 
@@ -1839,7 +1846,7 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
     surface.mouse(click(inner.x, inner.y), now);
     surface.mouse(release_at(inner.x, inner.y), now);
     surface.mouse(click(inner.x, inner.y), now);
-    let word = surface.mouse(release_at(inner.x, inner.y), now);
+    let word = copied_text(surface.mouse(release_at(inner.x, inner.y), now));
     assert_eq!(word.as_deref(), Some("ab"));
 }
 
