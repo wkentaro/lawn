@@ -1,0 +1,4659 @@
+[
+  {
+    "cursor": null,
+    "frame_sha256": "2a2dcdb87ad901e14f39a960462285fe2fd09b0f571efa20374665a09d3d8c94",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        51,
+        16,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        36,
+        16,
+        13,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "confirm_close",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                  ┌──────────────────────────────────────────────────────────────┐                  ",
+      "                  │ Close workspace?                                             │                  ",
+      "                  │ 解 析  workspace — 1 pane                                      │                  ",
+      "                  │                                                              │                  ",
+      "                  │                   ↵ confirm     esc cancel                   │                  ",
+      "                  └──────────────────────────────────────────────────────────────┘                  ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "ce6950632e4e760ddbf302edd2cf6a2e02f650293214ce5d7365c3931347d06e",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        21,
+        6,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        6,
+        6,
+        13,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "confirm_close_small",
+    "rows": [
+      " ○ client-shell         tab 1 │         ",
+      " 1 working                    │ switch  ",
+      "LI┌──────────────────────────────────┐  ",
+      "PA│ Close workspace?                 │  ",
+      "  │ 解 析  workspace — 1 pane          │  ",
+      "  │                                  │  ",
+      "  │     ↵ confirm     esc cancel     │  ",
+      "  └──────────────────────────────────┘  ",
+      "                                        ",
+      "                                        "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "bf31caf9eaa23dc842ec64d3e9e19b431f1170e9f7def1f4404c65523ea1efb8",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        51,
+        16,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        36,
+        16,
+        13,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "confirm_close_reset",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                  ┌──────────────────────────────────────────────────────────────┐                  ",
+      "                  │ Close workspace?                                             │                  ",
+      "                  │ 解 析  workspace — 1 pane                                      │                  ",
+      "                  │                                                              │                  ",
+      "                  │                   ↵ confirm     esc cancel                   │                  ",
+      "                  └──────────────────────────────────────────────────────────────┘                  ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      42,
+      14,
+      1,
+      0
+    ],
+    "frame_sha256": "f7c3cfc1b35de0dca5c17b1b21801435e4255b384e29044d5bf7a789bb1de3fa",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        55,
+        15,
+        12,
+        1
+      ],
+      "clear": [
+        43,
+        15,
+        10,
+        1
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        33,
+        15,
+        8,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "rename",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                      ┌──────────────────────────────────────────────────────┐                      ",
+      "                      │rename workspace                                      │                      ",
+      "                      │                                                      │                      ",
+      "                      │ client-shell 模 块  é                                  │                      ",
+      "                      │           ↵ save    ^c clear    esc cancel           │                      ",
+      "                      │                                                      │                      ",
+      "                      └──────────────────────────────────────────────────────┘                      ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      22,
+      4,
+      1,
+      0
+    ],
+    "frame_sha256": "d8d4bb98595213c6909aa4c5cf74eebea5ea9957ae9974d5ab3bc1e7e9daf8a8",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        25,
+        5,
+        12,
+        1
+      ],
+      "clear": [
+        13,
+        5,
+        10,
+        1
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        3,
+        5,
+        8,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "rename_small",
+    "rows": [
+      " ○ client-shell         tab 1 │         ",
+      " 1┌──────────────────────────────────┐  ",
+      "LI│rename workspace                  │  ",
+      "PA│                                  │  ",
+      "  │ client-shell 模 块  é              │  ",
+      "  │ ↵ save    ^c clear    esc cancel │  ",
+      "  │                                  │  ",
+      "  └──────────────────────────────────┘  ",
+      "                                        ",
+      "                                        "
+    ]
+  },
+  {
+    "cursor": [
+      25,
+      14,
+      1,
+      0
+    ],
+    "frame_sha256": "dc2b373535d9bdb3e05949fd601f2cbef4761ef10d139906a73ee0784986c980",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        55,
+        15,
+        12,
+        1
+      ],
+      "clear": [
+        43,
+        15,
+        10,
+        1
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        33,
+        15,
+        8,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "new_tab",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                      ┌──────────────────────────────────────────────────────┐                      ",
+      "                      │new tab                                               │                      ",
+      "                      │                                                      │                      ",
+      "                      │ 2                                                    │                      ",
+      "                      │           ↵ save    ^c clear    esc cancel           │                      ",
+      "                      │                                                      │                      ",
+      "                      └──────────────────────────────────────────────────────┘                      ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "f4b2fa487da0aa4fb8150f846ba23958b38a38ca759786fcfa96054d0589f155",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        74,
+        5,
+        13,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 49,
+      "help_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "help_scroll": [
+        46,
+        49,
+        15
+      ],
+      "help_scrollbar": [
+        86,
+        8,
+        1,
+        15
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "help",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │keybinds                                                       esc close  │            ",
+      "            │ / press / to filter by command or shortcut                               │            ",
+      "            │                                                                          │            ",
+      "            │ prefix+s                     settings                                   ▐│            ",
+      "            │ prefix+q                     detach                                     ▐│            ",
+      "            │ prefix+shift+r               reload config                              ▐│            ",
+      "            │ prefix+o                     open notification target                   ▐│            ",
+      "            │                                                                         ▐│            ",
+      "            │ navigation                                                              ▐│            ",
+      "            │ esc                          back                                       ▐│            ",
+      "            │ up / down                    workspace list                             ▐│            ",
+      "            │ h / j / k / l / left / right move focus                                 ▐│            ",
+      "            │ tab / shift+tab              cycle pane                                 ▐│            ",
+      "            │ enter                        open workspace                             ▐│            ",
+      "            │ 1..9                         switch workspace                           ▐│            ",
+      "            │                                                                         ▐│            ",
+      "            │ workspaces / tabs                                                       ▐│            ",
+      "            │ prefix+w                     workspace navigation                       ▐│            ",
+      "            │                                                                          │            ",
+      "            │ search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter                     │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      6,
+      1,
+      0
+    ],
+    "frame_sha256": "a5392cf52848d51a1846bd79429c6e617fe23ccc8f0668c5dd06b82eb3a9661a",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        74,
+        5,
+        13,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "help_scroll": [
+        0,
+        0,
+        15
+      ],
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "help_search",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │keybinds                                                       esc back   │            ",
+      "            │ / split                                                                  │            ",
+      "            │                                                                          │            ",
+      "            │ panes                                                                    │            ",
+      "            │ prefix+v split vertical                                                  │            ",
+      "            │ prefix+- split horizontal                                                │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      20,
+      6,
+      1,
+      0
+    ],
+    "frame_sha256": "7213a7ceba15f2cb9c329b1c860705719564ab193194e91b053094b64938610b",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        74,
+        5,
+        13,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "help_scroll": [
+        0,
+        0,
+        15
+      ],
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "help_empty",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │keybinds                                                       esc back   │            ",
+      "            │ / zzzz                                                                   │            ",
+      "            │                                                                          │            ",
+      "            │ no matching keybinds                                                     │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "aa5a42f8c304592f2ca0cfcf5a96ec53ab7a035841a551050c8bb7642da344e5",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        24,
+        2,
+        13,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 119,
+      "help_popup": [
+        2,
+        1,
+        36,
+        8
+      ],
+      "help_scroll": [
+        116,
+        119,
+        1
+      ],
+      "help_scrollbar": [
+        36,
+        5,
+        1,
+        1
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "help_small",
+    "rows": [
+      " ○ client-shell         tab 1 │         ",
+      " 1┌──────────────────────────────────┐  ",
+      "LI│keybinds               esc close  │  ",
+      "PA│ / press / to filter by command or│  ",
+      "  │                                  │  ",
+      "  │ prefix+?                        ▐│  ",
+      "  │                                  │  ",
+      "  │ search / · scroll j/k/↑↓/pgup/pgd│  ",
+      "  └──────────────────────────────────┘  ",
+      "                                        "
+    ]
+  },
+  {
+    "cursor": [
+      6,
+      2,
+      1,
+      0
+    ],
+    "frame_sha256": "1f7f288fd8dce88021ef1a6fc97cf0a03db3cdbe4b28e90517242374242bf059",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        88,
+        27,
+        9,
+        1
+      ],
+      "navigator_popup": [
+        2,
+        1,
+        96,
+        28
+      ],
+      "navigator_preview": [
+        3,
+        27,
+        11,
+        1
+      ],
+      "navigator_rows": [
+        [
+          [
+            3,
+            4,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_1\" }"
+        ],
+        [
+          [
+            3,
+            5,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_1\" }"
+        ],
+        [
+          [
+            3,
+            6,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_2\" }"
+        ],
+        [
+          [
+            3,
+            7,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_2\" }"
+        ]
+      ],
+      "navigator_scroll": [
+        0,
+        0,
+        21
+      ],
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        3,
+        2,
+        94,
+        1
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "navigator",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "  ┌─ active ─────────────────────────────────────────────────────────────────────────────────────┐  ",
+      " c│ /                                                                                 2 terminals│  ",
+      " 解│──────────────────────────────────────────────────────────────────────────────────────────────│  ",
+      "  │ client-shell                             │ Preview · read-only                               │  ",
+      "  │ └─ ◆ client-shell                terminal│ Loading…                                          │  ",
+      "  │ 解 析  workspace                           │                                                   │  ",
+      "  │ └─ ● server                            pi│                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │ client-shell / 1 / pane_1                                                                    │  ",
+      " a│ /repo                                                                                        │  ",
+      " p│ Open Enter ↑↓ select · type to search                                               Esc close│  ",
+      " n└──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      10,
+      2,
+      1,
+      0
+    ],
+    "frame_sha256": "9e08ebbc5213001ff84a47d4f168165d7e09551188a3ea4b54d3447dc420522e",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        88,
+        27,
+        9,
+        1
+      ],
+      "navigator_popup": [
+        2,
+        1,
+        96,
+        28
+      ],
+      "navigator_preview": [
+        3,
+        27,
+        11,
+        1
+      ],
+      "navigator_rows": [
+        [
+          [
+            3,
+            4,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_2\" }"
+        ],
+        [
+          [
+            3,
+            5,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_2\" }"
+        ]
+      ],
+      "navigator_scroll": [
+        0,
+        0,
+        21
+      ],
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        3,
+        2,
+        94,
+        1
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "navigator_search",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "  ┌─ active ─────────────────────────────────────────────────────────────────────────────────────┐  ",
+      " c│ / serv                                                                             1 terminal│  ",
+      " 解│──────────────────────────────────────────────────────────────────────────────────────────────│  ",
+      "  │ 解 析  workspace                           │ Preview · read-only                               │  ",
+      "  │ └─ ● server                            pi│ Loading…                                          │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │ 解 析  workspace / build / pane_2                                                              │  ",
+      " a│ /other                                                                                       │  ",
+      " p│ Open Enter ↑↓ select · type to search                                               Esc close│  ",
+      " n└──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      6,
+      2,
+      1,
+      0
+    ],
+    "frame_sha256": "ecfac3211af6efe142aaaff5ea0f684d0e3165a48d80af1028b4d8274ba927e8",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        28,
+        7,
+        9,
+        1
+      ],
+      "navigator_popup": [
+        2,
+        1,
+        36,
+        8
+      ],
+      "navigator_preview": [
+        3,
+        7,
+        11,
+        1
+      ],
+      "navigator_rows": [
+        [
+          [
+            3,
+            3,
+            34,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_1\" }"
+        ],
+        [
+          [
+            3,
+            4,
+            34,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_1\" }"
+        ],
+        [
+          [
+            3,
+            5,
+            34,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_2\" }"
+        ],
+        [
+          [
+            3,
+            6,
+            34,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_2\" }"
+        ]
+      ],
+      "navigator_scroll": [
+        0,
+        0,
+        4
+      ],
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        3,
+        2,
+        34,
+        1
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "navigator_small",
+    "rows": [
+      " ○ client-shell         tab 1 │         ",
+      " 1┌─ active ─────────────────────────┐  ",
+      "LI│ /                     2 terminals│  ",
+      "PA│ client-shell                     │  ",
+      "  │ └─ ◆ client-shell                │  ",
+      "  │ 解 析  workspace                   │  ",
+      "  │ └─ ● server                      │  ",
+      "  │ Open Enter ↑↓ select · tEsc close│  ",
+      "  └──────────────────────────────────┘  ",
+      "                                        "
+    ]
+  },
+  {
+    "cursor": [
+      6,
+      2,
+      1,
+      0
+    ],
+    "frame_sha256": "94fd3ff82ce46bdc48d6f72baec9c519f2c1ef68c03a41050ef1ecedde2e57a1",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        88,
+        27,
+        9,
+        1
+      ],
+      "navigator_popup": [
+        2,
+        1,
+        96,
+        28
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [
+        [
+          [
+            3,
+            4,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_1\" }"
+        ],
+        [
+          [
+            3,
+            5,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_1\" }"
+        ],
+        [
+          [
+            3,
+            6,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_2\" }"
+        ],
+        [
+          [
+            3,
+            7,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_2\" }"
+        ],
+        [
+          [
+            3,
+            8,
+            42,
+            1
+          ],
+          "NewWorkspace"
+        ]
+      ],
+      "navigator_scroll": [
+        0,
+        0,
+        21
+      ],
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        3,
+        2,
+        94,
+        1
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "move_pane",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "  ┌─ move client-shell ──────────────────────────────────────────────────────────────────────────┐  ",
+      " c│ /                                                                                 2 terminals│  ",
+      " 解│──────────────────────────────────────────────────────────────────────────────────────────────│  ",
+      "  │ client-shell                             │ Preview · read-only                               │  ",
+      "  │ └─ ◆ client-shell                  moving│ Loading…                                          │  ",
+      "  │ 解 析  workspace                           │                                                   │  ",
+      "  │ └─ ● server                            pi│                                                   │  ",
+      "  │ + New workspace                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │ client-shell / 1 / pane_1                                                                    │  ",
+      " a│ /repo                                                                                        │  ",
+      " p│ Move Enter ↑↓ select · type to search                                               Esc close│  ",
+      " n└──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": [
+      6,
+      2,
+      1,
+      0
+    ],
+    "frame_sha256": "e25d0edc1c5cfcd38ed88db27db3f5966dfaaf73040790f0ca0cf16c48b36648",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        88,
+        27,
+        9,
+        1
+      ],
+      "navigator_popup": [
+        2,
+        1,
+        96,
+        28
+      ],
+      "navigator_preview": [
+        3,
+        27,
+        16,
+        1
+      ],
+      "navigator_rows": [
+        [
+          [
+            3,
+            4,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_1\" }"
+        ],
+        [
+          [
+            3,
+            5,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_1\" }"
+        ],
+        [
+          [
+            3,
+            6,
+            42,
+            1
+          ],
+          "Workspace { endpoint_id: Local, workspace_id: \"ws_2\" }"
+        ],
+        [
+          [
+            3,
+            7,
+            42,
+            1
+          ],
+          "Pane { endpoint_id: Local, pane_id: \"pane_2\" }"
+        ]
+      ],
+      "navigator_scroll": [
+        0,
+        0,
+        21
+      ],
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        3,
+        2,
+        94,
+        1
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "move_tab",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "  ┌─ move 1 ─────────────────────────────────────────────────────────────────────────────────────┐  ",
+      " c│ /                                                                                 2 terminals│  ",
+      " 解│──────────────────────────────────────────────────────────────────────────────────────────────│  ",
+      "  │ client-shell                             │ Preview · read-only                               │  ",
+      "  │ └─ ◆ client-shell                terminal│ Select a terminal                                 │  ",
+      "  │ 解 析  workspace                           │                                                   │  ",
+      "  │ └─ ● server                            pi│                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │                                          │                                                   │  ",
+      "  │ /repo                                                                                        │  ",
+      " a│                                                                                              │  ",
+      " p│ Move here Enter ↑↓ select · type to search                                          Esc close│  ",
+      " n└──────────────────────────────────────────────────────────────────────────────────────────────┘  ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "58d611348581bcd300b2222af599c81dd74120e0ddf7f381e9a8376071cc4dcd",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [
+        [
+          [
+            4,
+            5,
+            12,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            4,
+            6,
+            12,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            4,
+            7,
+            12,
+            1
+          ],
+          2
+        ]
+      ],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "workspace_menu",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "   ┌────────────┐        │                                                                          ",
+      "   │Rename      │        │                                                                          ",
+      "   │Park        │        │                                                                          ",
+      "   │Close       │        │                                                                          ",
+      "   └────────────┘        │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "5557a9b17877019052d25d0c605eb555db01d6a203e7e1698d3c586330eb800a",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [
+        [
+          [
+            71,
+            25,
+            12,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            71,
+            26,
+            12,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            71,
+            27,
+            12,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            71,
+            28,
+            12,
+            1
+          ],
+          3
+        ]
+      ],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "tab_menu",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                            ┌────────────┐                ",
+      "                         │                                            │New tab     │                ",
+      " active                2 │                                            │Rename      │                ",
+      " parked                0 │                                            │Close       │                ",
+      " new               ● menu│                                            │Move to...  │                ",
+      "                        «│                                            └────────────┘                "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "055d5fe9b1abac143597979f5b249701f043ee98b1f27854c15519aa4e2ef6e6",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [
+        [
+          [
+            31,
+            3,
+            28,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            31,
+            4,
+            28,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            31,
+            5,
+            28,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            31,
+            6,
+            28,
+            1
+          ],
+          3
+        ],
+        [
+          [
+            31,
+            7,
+            28,
+            1
+          ],
+          4
+        ],
+        [
+          [
+            31,
+            8,
+            28,
+            1
+          ],
+          5
+        ],
+        [
+          [
+            31,
+            9,
+            28,
+            1
+          ],
+          6
+        ],
+        [
+          [
+            31,
+            10,
+            28,
+            1
+          ],
+          7
+        ],
+        [
+          [
+            31,
+            11,
+            28,
+            1
+          ],
+          8
+        ]
+      ],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "pane_menu",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE┌────────────────────────────┐                                        ",
+      " 解 析  workspace          │    │Rename pane                 │                                        ",
+      "                         │    │Clear pane name             │                                        ",
+      "                         │    │Swap with focused pane      │                                        ",
+      "                         │    │Move to...                  │                                        ",
+      "                         │    │Split right                 │                                        ",
+      "                         │    │Split down                  │                                        ",
+      "                         │    │Zoom                        │                                        ",
+      "                         │    │Use Herdr right-click menu  │                                        ",
+      "                         │    │Close pane                  │                                        ",
+      "                         │    └────────────────────────────┘                                        ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "0a2742d708cca931f655b73e7b5de328c854efae1591f0de65c4253bbb2d30aa",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [
+        [
+          [
+            11,
+            1,
+            28,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            11,
+            2,
+            28,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            11,
+            3,
+            28,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            11,
+            4,
+            28,
+            1
+          ],
+          3
+        ],
+        [
+          [
+            11,
+            5,
+            28,
+            1
+          ],
+          4
+        ],
+        [
+          [
+            11,
+            6,
+            28,
+            1
+          ],
+          5
+        ],
+        [
+          [
+            11,
+            7,
+            28,
+            1
+          ],
+          6
+        ],
+        [
+          [
+            11,
+            8,
+            28,
+            1
+          ],
+          7
+        ]
+      ],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "pane_menu_small",
+    "rows": [
+      " ○ client-┌────────────────────────────┐",
+      " 1 working│Rename pane                 │",
+      "LIVE      │Clear pane name             │",
+      "PANE      │Swap with focused pane      │",
+      "          │Move to...                  │",
+      "          │Split right                 │",
+      "          │Split down                  │",
+      "          │Zoom                        │",
+      "          │Use Herdr right-click menu  │",
+      "          └────────────────────────────┘"
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "b2523b71aa1b24fb7e0897148edfc854ef153db31cd89239bcb8c0af98644b32",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [
+        [
+          [
+            8,
+            22,
+            16,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            8,
+            23,
+            16,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            8,
+            24,
+            16,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            8,
+            25,
+            16,
+            1
+          ],
+          3
+        ],
+        [
+          [
+            8,
+            26,
+            16,
+            1
+          ],
+          4
+        ]
+      ],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "global_menu",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "       ┌────────────────┐│                                                                          ",
+      "       │ ● settings     ││                                                                          ",
+      "       │ keybinds       ││                                                                          ",
+      "       │ reload config  ││                                                                          ",
+      "       │ ● update ready ││                                                                          ",
+      " active│ detach         ││                                                                          ",
+      " parked└────────────────┘│                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "f42e338c6d1ce679dcee5d384c21032a2962d2b2d7673d17b2bd9207bca3259b",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [
+        [
+          [
+            8,
+            22,
+            16,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            8,
+            23,
+            16,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            8,
+            24,
+            16,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            8,
+            25,
+            16,
+            1
+          ],
+          3
+        ],
+        [
+          [
+            8,
+            26,
+            16,
+            1
+          ],
+          4
+        ]
+      ],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "global_menu_reset",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "       ┌────────────────┐│                                                                          ",
+      "       │ ● settings     ││                                                                          ",
+      "       │ keybinds       ││                                                                          ",
+      "       │ reload config  ││                                                                          ",
+      "       │ ● update ready ││                                                                          ",
+      " active│ detach         ││                                                                          ",
+      " parked└────────────────┘│                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "bf31f22267e0124450848902e787248e653475e70cd29b2fa261088eac0e78d9",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        50,
+        24,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        38,
+        24,
+        10,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [
+        [
+          [
+            13,
+            9,
+            74,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            13,
+            10,
+            74,
+            1
+          ],
+          3
+        ],
+        [
+          [
+            13,
+            11,
+            74,
+            1
+          ],
+          4
+        ],
+        [
+          [
+            13,
+            12,
+            74,
+            1
+          ],
+          5
+        ],
+        [
+          [
+            13,
+            13,
+            74,
+            1
+          ],
+          6
+        ],
+        [
+          [
+            13,
+            14,
+            74,
+            1
+          ],
+          7
+        ],
+        [
+          [
+            13,
+            15,
+            74,
+            1
+          ],
+          8
+        ],
+        [
+          [
+            13,
+            16,
+            74,
+            1
+          ],
+          9
+        ],
+        [
+          [
+            13,
+            17,
+            74,
+            1
+          ],
+          10
+        ],
+        [
+          [
+            13,
+            18,
+            74,
+            1
+          ],
+          11
+        ],
+        [
+          [
+            13,
+            19,
+            74,
+            1
+          ],
+          12
+        ],
+        [
+          [
+            13,
+            20,
+            74,
+            1
+          ],
+          13
+        ],
+        [
+          [
+            13,
+            21,
+            74,
+            1
+          ],
+          14
+        ]
+      ],
+      "settings_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "settings_tabs": [
+        [
+          [
+            13,
+            6,
+            7,
+            1
+          ],
+          "Theme"
+        ],
+        [
+          [
+            21,
+            6,
+            12,
+            1
+          ],
+          "Indicators"
+        ],
+        [
+          [
+            34,
+            6,
+            7,
+            1
+          ],
+          "Sound"
+        ],
+        [
+          [
+            42,
+            6,
+            8,
+            1
+          ],
+          "Toast"
+        ],
+        [
+          [
+            51,
+            6,
+            16,
+            1
+          ],
+          "Integrations"
+        ]
+      ]
+    },
+    "name": "settings_theme",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │ settings                                                                 │            ",
+      "            │ theme   indicators   sound   toasts   ● integrations                     │            ",
+      "            │──────────────────────────────────────────────────────────────────────────│            ",
+      "            │                                                                          │            ",
+      "            │   terminal                                                               │            ",
+      "            │   tokyo-night ✓                                                          │            ",
+      "            │   tokyo-night-day                                                        │            ",
+      "            │   dracula                                                                │            ",
+      "            │   nord                                                                   │            ",
+      "            │   gruvbox                                                                │            ",
+      "            │   gruvbox-light                                                          │            ",
+      "            │   one-dark                                                               │            ",
+      "            │   one-light                                                              │            ",
+      "            │   solarized                                                              │            ",
+      "            │   solarized-light                                                        │            ",
+      "            │   kanagawa                                                               │            ",
+      "            │ ▸ kanagawa-lotus                                                         │            ",
+      "            │                                                                          │            ",
+      "            │ ↑↓ select  tab section                                                   │            ",
+      "            │                          ↵ apply     esc close                           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "b919e625dd51dffb845264f9380814a20da716f1068e201806e8d8b3522d66f4",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        50,
+        24,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        38,
+        24,
+        10,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [
+        [
+          [
+            13,
+            12,
+            74,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            13,
+            13,
+            74,
+            1
+          ],
+          1
+        ]
+      ],
+      "settings_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "settings_tabs": [
+        [
+          [
+            13,
+            6,
+            7,
+            1
+          ],
+          "Theme"
+        ],
+        [
+          [
+            21,
+            6,
+            12,
+            1
+          ],
+          "Indicators"
+        ],
+        [
+          [
+            34,
+            6,
+            7,
+            1
+          ],
+          "Sound"
+        ],
+        [
+          [
+            42,
+            6,
+            8,
+            1
+          ],
+          "Toast"
+        ],
+        [
+          [
+            51,
+            6,
+            16,
+            1
+          ],
+          "Integrations"
+        ]
+      ]
+    },
+    "name": "settings_indicators",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │ settings                                                                 │            ",
+      "            │ theme   indicators   sound   toasts   ● integrations                     │            ",
+      "            │──────────────────────────────────────────────────────────────────────────│            ",
+      "            │                                                                          │            ",
+      "            │agent status indicators                                                   │            ",
+      "            │choose color dots or distinct symbols for each state                      │            ",
+      "            │                                                                          │            ",
+      "            │   color dots  ● ● ● ○ ·                                                  │            ",
+      "            │ ▸ distinct symbols  × ◐ ✓ ○ ·                                            │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ ↑↓ select  tab section                                                   │            ",
+      "            │                          ↵ apply     esc close                           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "ac8d85781f721c0f84e3763d3bb18a576be12358448cfd7f0015a3eee727c399",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        50,
+        24,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        38,
+        24,
+        10,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [
+        [
+          [
+            13,
+            12,
+            74,
+            1
+          ],
+          0
+        ],
+        [
+          [
+            13,
+            14,
+            74,
+            1
+          ],
+          1
+        ],
+        [
+          [
+            13,
+            16,
+            74,
+            1
+          ],
+          2
+        ],
+        [
+          [
+            13,
+            18,
+            74,
+            1
+          ],
+          3
+        ]
+      ],
+      "settings_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "settings_tabs": [
+        [
+          [
+            13,
+            6,
+            7,
+            1
+          ],
+          "Theme"
+        ],
+        [
+          [
+            21,
+            6,
+            12,
+            1
+          ],
+          "Indicators"
+        ],
+        [
+          [
+            34,
+            6,
+            7,
+            1
+          ],
+          "Sound"
+        ],
+        [
+          [
+            42,
+            6,
+            8,
+            1
+          ],
+          "Toast"
+        ],
+        [
+          [
+            51,
+            6,
+            16,
+            1
+          ],
+          "Integrations"
+        ]
+      ]
+    },
+    "name": "settings_toast",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │ settings                                                                 │            ",
+      "            │ theme   indicators   sound   toasts   ● integrations                     │            ",
+      "            │──────────────────────────────────────────────────────────────────────────│            ",
+      "            │                                                                          │            ",
+      "            │notification popups                                                       │            ",
+      "            │choose where background popup notifications should appear                 │            ",
+      "            │                                                                          │            ",
+      "            │   off                                                                    │            ",
+      "            │                                                                          │            ",
+      "            │ ▸ inside herdr                                                           │            ",
+      "            │                                                                          │            ",
+      "            │   via terminal                                                           │            ",
+      "            │                                                                          │            ",
+      "            │   via system                                                             │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ ↑↓ select  tab section                                                   │            ",
+      "            │                          ↵ apply     esc close                           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "44a454cd1aaaa6b11a86f7421e42c3887af826d5899fbb83531ac4945984b00e",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        50,
+        24,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        38,
+        24,
+        10,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "settings_tabs": [
+        [
+          [
+            13,
+            6,
+            7,
+            1
+          ],
+          "Theme"
+        ],
+        [
+          [
+            21,
+            6,
+            12,
+            1
+          ],
+          "Indicators"
+        ],
+        [
+          [
+            34,
+            6,
+            7,
+            1
+          ],
+          "Sound"
+        ],
+        [
+          [
+            42,
+            6,
+            8,
+            1
+          ],
+          "Toast"
+        ],
+        [
+          [
+            51,
+            6,
+            16,
+            1
+          ],
+          "Integrations"
+        ]
+      ]
+    },
+    "name": "settings_integrations",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │ settings                                                                 │            ",
+      "            │ theme   indicators   sound   toasts   ● integrations                     │            ",
+      "            │──────────────────────────────────────────────────────────────────────────│            ",
+      "            │                                                                          │            ",
+      "            │agent integrations                                                        │            ",
+      "            │enable session restore and, where supported, direct status updates        │            ",
+      "            │                                                                          │            ",
+      "            │ ✓ claude     installed                                                   │            ",
+      "            │ ↻ codex      update available                                            │            ",
+      "            │ + pi         available                                                   │            ",
+      "            │ – opencode   not found                                                   │            ",
+      "            │                                                                          │            ",
+      "            │ installing…ted                                                           │            ",
+      "            │ pi: installed                                                            │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ ↑↓ select  tab section                                                   │            ",
+      "            │                          ↵ install   esc close                           │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "6e2a501cb612f687c06cb1205dd716cac9e4a2ecb56bef5d11e27df6916597df",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        44,
+        24,
+        12,
+        1
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        12,
+        4,
+        76,
+        22
+      ],
+      "settings_tabs": [
+        [
+          [
+            13,
+            6,
+            7,
+            1
+          ],
+          "Theme"
+        ],
+        [
+          [
+            21,
+            6,
+            12,
+            1
+          ],
+          "Indicators"
+        ],
+        [
+          [
+            34,
+            6,
+            7,
+            1
+          ],
+          "Sound"
+        ],
+        [
+          [
+            42,
+            6,
+            8,
+            1
+          ],
+          "Toast"
+        ],
+        [
+          [
+            51,
+            6,
+            16,
+            1
+          ],
+          "Integrations"
+        ]
+      ]
+    },
+    "name": "settings_loading",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "            ┌──────────────────────────────────────────────────────────────────────────┐            ",
+      "            │ settings                                                                 │            ",
+      "            │ theme   indicators   sound   toasts   ● integrations                     │            ",
+      "            │──────────────────────────────────────────────────────────────────────────│            ",
+      "            │                                                                          │            ",
+      "            │agent integrations                                                        │            ",
+      "            │enable session restore and, where supported, direct status updates        │            ",
+      "            │                                                                          │            ",
+      "            │ loading integrations…                                                    │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │                                                                          │            ",
+      "            │ ↑↓ select  tab section                                                   │            ",
+      "            │                                esc close                                 │            ",
+      "            └──────────────────────────────────────────────────────────────────────────┘            ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": null,
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "settings_theme_small",
+    "rows": null
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "f9983deab512e4bce61289b84580de053616c5422687f3e56b8d6ac0880a4ca6",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        19,
+        21,
+        12,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "onboarding",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  workspace          │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                  ┌──────────────────────────────────────────────────────────────┐                  ",
+      "                  │  herdr                                                       │                  ",
+      "                  │  terminal workspace manager for coding agents                │                  ",
+      "                  │                                                              │                  ",
+      "                  │  this is a mouse-first terminal.                             │                  ",
+      "                  │  click the sidebar to switch workspaces, drag pane           │                  ",
+      "                  │  borders to resize, right-click for context menus.           │                  ",
+      "                  │                                                              │                  ",
+      "                  │  ctrl+b enters prefix mode · ? shows keybinds and settings   │                  ",
+      "                  │  next: install optional agent integrations for more reliable │                  ",
+      "                  │                                                              │                  ",
+      "                  │                                                              │                  ",
+      "                  │                                                              │                  ",
+      "                  │                                                              │                  ",
+      "                  │ ↵ continue                                                   │                  ",
+      "                  └──────────────────────────────────────────────────────────────┘                  ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      "                         │                                                                          ",
+      " active                2 │                                                                          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "477443303c1358098b86603a33da4272a556337534f368077d4a5b59686a6a18",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        78,
+        4,
+        11,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "release_notes",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  work┌──────────────────────────────────────────────────────────────────────────────┐          ",
+      "          │ v1.2.3                                                             esc close │          ",
+      "          │ update ready                                                                 │          ",
+      "          │                                                                              │          ",
+      "          │ ● update ready                                                               │          ",
+      "          │ detach, run herdr update, then run Lawn again to reconnect                   │          ",
+      "          │                                                                              │          ",
+      "          │ ## Fixed                                                                     │          ",
+      "          │                                                                              │          ",
+      "          │ • one                                                                        │          ",
+      "          │ • two                                                                        │          ",
+      "          │ • three                                                                      │          ",
+      "          │ • four                                                                       │          ",
+      "          │ • five                                                                       │          ",
+      "          │ • six                                                                        │          ",
+      "          │ • seven                                                                      │          ",
+      "          │ • eight                                                                      │          ",
+      "          │ • nine                                                                       │          ",
+      "          │ • ten                                                                        │          ",
+      "          │ • eleven                                                                     │          ",
+      "          │ • twelve                                                                     │          ",
+      "          │                                                                              │          ",
+      "          │ scroll wheel ↑↓  ·  close esc / enter                                        │          ",
+      " active   └──────────────────────────────────────────────────────────────────────────────┘          ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  },
+  {
+    "cursor": null,
+    "frame_sha256": "ca0f895b66a599149fb35e3842d925720d336efd195fdb88e064857eebfad46d",
+    "hits": {
+      "announcement_max_scroll": 0,
+      "announcement_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "cancel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clear": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "context_menu": [],
+      "global_menu": [],
+      "help_max_scroll": 0,
+      "help_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "help_scroll": null,
+      "help_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_close": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_preview": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_rows": [],
+      "navigator_scroll": null,
+      "navigator_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "navigator_search": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "primary": [
+        82,
+        4,
+        11,
+        1
+      ],
+      "release_notes_max_scroll": 0,
+      "release_notes_scrollbar": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_choices": [],
+      "settings_popup": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "settings_tabs": []
+    },
+    "name": "announcement",
+    "rows": [
+      " spaces                  │   1      +                                                               ",
+      "                         │LIVE                                                                      ",
+      " client-shell            │PANE                                                                      ",
+      " 解 析  ┌──────────────────────────────────────────────────────────────────────────────────────┐      ",
+      "      │ Lawn news                                                                  esc close │      ",
+      "      │ product announcement · v1.2.3                                                        │      ",
+      "      │                                                                                      │      ",
+      "      │ A short note.                                                                        │      ",
+      "      │                                                                                      │      ",
+      "      │ • first                                                                              │      ",
+      "      │ • second                                                                             │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │                                                                                      │      ",
+      "      │ scroll wheel ↑↓  ·  close esc / enter                                                │      ",
+      " activ└──────────────────────────────────────────────────────────────────────────────────────┘      ",
+      " parked                0 │                                                                          ",
+      " new               ● menu│                                                                          ",
+      "                        «│                                                                          "
+    ]
+  }
+]
