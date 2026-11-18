@@ -7,6 +7,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Session, Tiles};
@@ -159,6 +160,8 @@ pub(super) struct Surface {
     host_focused: bool,
     tiles: Tiles,
     chrome: PaneChrome,
+    outer: Chrome,
+    areas: crate::ui::chrome::Layout,
     palette: Palette,
     host: Geometry,
     scrollbars: bool,
@@ -178,6 +181,7 @@ impl Surface {
     pub(super) fn new(
         host: Geometry,
         chrome: PaneChrome,
+        outer: Chrome,
         palette: Palette,
         scrollbars: bool,
         copying: Copying,
@@ -194,6 +198,8 @@ impl Surface {
             host_focused: true,
             tiles: Tiles::default(),
             chrome,
+            outer,
+            areas: crate::ui::chrome::Layout::default(),
             palette,
             host,
             scrollbars,
@@ -217,7 +223,12 @@ impl Surface {
     }
 
     pub(super) fn act(&mut self, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
-        let area = Rect::new(0, 0, self.host.cols, self.host.rows);
+        if action == KeybindAction::ToggleSidebar {
+            self.outer.toggle();
+            self.relayout = true;
+            return None;
+        }
+        let area = self.lay_out_chrome().pane_surface;
         if self.session.navigate(action, area, self.chrome) {
             self.relayout = true;
             self.sync_focus();
@@ -257,9 +268,11 @@ impl Surface {
     pub(super) fn resize(&mut self, host: Geometry) {
         self.host = host;
         self.relayout = true;
-        if let (Some(toast), Some(position)) = (&mut self.toast, self.toast_at) {
-            toast.image = toast_image(host, position, &self.palette);
-        }
+    }
+
+    fn lay_out_chrome(&self) -> crate::ui::chrome::Layout {
+        self.outer
+            .layout(self.host.cols, self.host.rows, &self.session)
     }
 
     pub(super) fn copyable(&self) -> bool {
@@ -365,7 +378,7 @@ impl Surface {
         if let Some(position) = self.toast_at {
             self.toast = Some(Toast {
                 until: now + TOAST,
-                image: toast_image(self.host, position, &self.palette),
+                image: toast_image(self.areas.pane_surface, position, &self.palette),
             });
         }
     }
@@ -375,6 +388,7 @@ impl Surface {
             .deadline()
             .into_iter()
             .chain(self.toast.as_ref().map(|toast| toast.until))
+            .chain(self.outer.deadline())
             .min()
     }
 
@@ -382,6 +396,7 @@ impl Surface {
         if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
             self.toast = None;
         }
+        self.outer.tick(now);
         let view = self
             .select
             .pane()
@@ -390,7 +405,7 @@ impl Surface {
     }
 
     pub(super) fn needs_frame(&self) -> bool {
-        self.relayout || self.overlays() != self.painted
+        self.relayout || self.outer.stale() || self.overlays() != self.painted
     }
 
     pub(super) fn forget(&mut self, id: PaneId) {
@@ -696,6 +711,11 @@ impl Surface {
         if relayout {
             self.lay_out(attach, leave);
         }
+        let host = Rect::new(0, 0, self.host.cols, self.host.rows);
+        let chrome = (relayout || self.outer.stale())
+            && self
+                .outer
+                .refresh(host, self.areas, &self.session, &self.palette);
         let focused = self.session.focused_id();
         if let Some(copy) = self.copy.as_mut() {
             if let Some((view, inner)) = visible(&self.views, copy.pane()) {
@@ -721,6 +741,9 @@ impl Surface {
                     }
                 }
             }
+            if chrome {
+                rows.extend_from_slice(self.outer.rows());
+            }
             if !self.canvas.is_empty() {
                 crate::protocol::surface_delta::apply_rows(&mut self.canvas, self.host.cols, &rows);
             }
@@ -744,7 +767,7 @@ impl Surface {
                 Some(selection.visible_rects(inner, drawn_scroll(view)))
             })
             .unwrap_or_default();
-        let area = Rect::new(0, 0, self.host.cols, self.host.rows);
+        let area = self.outer.bar_area(&self.areas);
         let copy = self
             .copy
             .as_ref()
@@ -838,8 +861,14 @@ impl Surface {
         mut attach: impl FnMut(&str, PaneId, Geometry),
         mut leave: impl FnMut(PaneId, &View),
     ) {
-        let area = Rect::new(0, 0, self.host.cols, self.host.rows);
-        self.tiles = self.session.tiles(area, self.chrome);
+        let areas = self.lay_out_chrome();
+        if areas.pane_surface != self.areas.pane_surface {
+            if let (Some(toast), Some(position)) = (&mut self.toast, self.toast_at) {
+                toast.image = toast_image(areas.pane_surface, position, &self.palette);
+            }
+        }
+        self.areas = areas;
+        self.tiles = self.session.tiles(areas.pane_surface, self.chrome);
         let mut views = std::mem::take(&mut self.views);
         for tile in &self.tiles.tiles {
             if tile.info.inner_rect.is_empty() {
@@ -925,6 +954,7 @@ impl Surface {
             .iter()
             .map(CellData::from_ratatui_cell)
             .collect();
+        crate::protocol::surface_delta::apply_rows(&mut cells, cols, self.outer.rows());
         let focused = self.session.focused_id();
         for (id, shown) in &mut self.views {
             let Place::Visible {
@@ -987,7 +1017,9 @@ impl Surface {
         else {
             return None;
         };
-        let mut cursor = view.cursor()?;
+        let mut cursor = view
+            .cursor()
+            .filter(|cursor| cursor.x < inner.width && cursor.y < inner.height)?;
         cursor.x += inner.x;
         cursor.y += inner.y;
         Some(cursor)
@@ -1024,11 +1056,10 @@ fn covers(rect: &Rect, y: u16) -> bool {
 }
 
 fn toast_image(
-    host: Geometry,
+    area: Rect,
     position: ToastClipboardPosition,
     palette: &Palette,
 ) -> (Rect, Vec<CellData>) {
-    let area = Rect::new(0, 0, host.cols, host.rows);
     let mut buffer = Buffer::empty(area);
     let feedback = crate::app::state::CopyFeedback {
         message: "copied to clipboard".to_owned(),

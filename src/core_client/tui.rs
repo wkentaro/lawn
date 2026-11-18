@@ -1,5 +1,6 @@
 use std::io;
 
+mod chrome;
 mod copy_mode;
 mod follow;
 mod keys;
@@ -69,6 +70,7 @@ mod unix {
     use tokio::time::Instant;
     use tracing::warn;
 
+    use super::chrome::Chrome;
     use super::keys::{Keys, Mode, Routed};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
@@ -172,6 +174,7 @@ mod unix {
                 gaps: config.ui.pane_gaps,
                 outer_borders: config.ui.pane_outer_borders,
             },
+            Chrome::new(&config),
             crate::ui::theme::client_palette_from_config(&config),
             config.ui.pane_scrollbars,
             Copying {

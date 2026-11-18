@@ -7,8 +7,10 @@ use ratatui::layout::Rect;
 use serde_json::{json, Value};
 
 use super::Surface;
+use crate::config::Config;
 use crate::config::PaneBordersConfig;
 use crate::config::ToastClipboardPosition;
+use crate::core_client::tui::chrome::Chrome;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
 use crate::core_client::view::{Geometry, View};
@@ -27,6 +29,12 @@ fn host(cols: u16, rows: u16) -> Geometry {
     }
 }
 
+fn panes_only() -> Chrome {
+    let mut config = Config::default();
+    config.ui.mobile_width_threshold = u16::MAX;
+    Chrome::new(&config)
+}
+
 fn surface(cols: u16, rows: u16) -> Surface {
     surface_with_scrollbars(cols, rows, true)
 }
@@ -39,6 +47,7 @@ fn surface_with_scrollbars(cols: u16, rows: u16, scrollbars: bool) -> Surface {
             gaps: false,
             outer_borders: true,
         },
+        panes_only(),
         Palette::catppuccin(),
         scrollbars,
         Copying {
@@ -472,6 +481,7 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
             gaps: false,
             outer_borders: true,
         },
+        panes_only(),
         Palette::catppuccin(),
         true,
         Copying {
@@ -1833,4 +1843,5 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
     assert_eq!(word.as_deref(), Some("ab"));
 }
 
+mod chrome;
 mod copy_mode;

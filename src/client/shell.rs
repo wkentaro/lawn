@@ -33,7 +33,7 @@ pub(crate) use navigator_preview::PreviewDisplay;
 mod overlay_input;
 mod preferences;
 mod render;
-mod scroll;
+pub(crate) mod scroll;
 mod settings;
 mod state;
 mod surface_patch;

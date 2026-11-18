@@ -1,7 +1,7 @@
 use crate::config::{SidebarCollapsedModeConfig, TabBarPositionConfig};
 use ratatui::layout::Rect;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Layout {
     pub sidebar: Rect,
     pub tab_bar: Rect,

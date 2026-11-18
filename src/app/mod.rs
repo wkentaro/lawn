@@ -24,7 +24,7 @@ mod popup;
 mod runtime;
 mod session;
 pub mod state;
-mod tab_bar_status;
+pub(crate) mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
