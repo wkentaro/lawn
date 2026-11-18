@@ -77,7 +77,7 @@ mod unix {
         HostSizes, Stop, FRAME,
     };
     use crate::core_client::screen::Screen;
-    use crate::core_client::view::{Event, Events, Geometry, View, Wake};
+    use crate::core_client::view::{Event, Events, Geometry, Scrollback, View, Wake};
     use crate::core_lifecycle::Lifecycle;
     use crate::hc::Core;
     use crate::input::{KeybindAction, KeybindMatch};
@@ -184,6 +184,7 @@ mod unix {
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
         let mut bindings = bindings(&config, keys);
+        let scrollback = Scrollback::from(&config);
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
@@ -204,7 +205,8 @@ mod unix {
                         );
                         tokio::spawn(async move {
                             let view = tokio::task::spawn_blocking(move || {
-                                View::attach(connected(core)?, &terminal, geometry, id, &wake, &events)
+                                let core = connected(core)?;
+                                View::attach(core, &terminal, geometry, id, &wake, &events, scrollback)
                             })
                             .await
                             .unwrap_or_else(|error| Err(io::Error::other(error)));

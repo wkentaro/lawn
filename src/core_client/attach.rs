@@ -43,6 +43,7 @@ fn run(terminal: &str) -> io::Result<()> {
             crate::layout::PaneId::from_raw(0),
             &wake,
             &events.sender(),
+            super::view::Scrollback::from(&crate::config::Config::load().config),
         )?;
         let mut guard = super::host::enter(false)?;
         unix::show(view, &wake, events, geometry, &mut guard, stop).await

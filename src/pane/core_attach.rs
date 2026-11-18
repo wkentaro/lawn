@@ -466,7 +466,19 @@ pub(super) fn start(
 
 /// Attaches to a terminal `start` just made.
 fn attach_new(core: &Core, address: &str, rows: u16, cols: u16) -> std::io::Result<Attached> {
-    match core.attach(serde_json::json!({"terminal": address, "cols": cols, "rows": rows})) {
+    attach_unless_finished(
+        core,
+        address,
+        serde_json::json!({"terminal": address, "cols": cols, "rows": rows}),
+    )
+}
+
+fn attach_unless_finished(
+    core: &Core,
+    address: &str,
+    params: serde_json::Value,
+) -> std::io::Result<Attached> {
+    match core.attach(params) {
         // A short command can end before the attach. It still ran, so the
         // pane shows what it left and then exits like any other.
         Err(err) if err.kind() == Some("finished") => core.finished(address),
@@ -492,18 +504,20 @@ impl PaneRuntime {
         address: &str,
         rows: u16,
         cols: u16,
+        scrollback_limit_bytes: usize,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
-        let attached = attach_new(&core, address, rows, cols)?;
+        let attached =
+            attach_unless_finished(&core, address, reattach_params(address, rows, cols))?;
         Self::attach_core(
             pane_id,
             core,
             attached,
             rows,
             cols,
-            0,
+            scrollback_limit_bytes,
             crate::terminal_theme::TerminalTheme::default(),
             None,
             events,

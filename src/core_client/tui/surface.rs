@@ -190,9 +190,15 @@ impl Surface {
             return;
         };
         let id = tile.info.id;
-        if event.kind == MouseEventKind::Down(MouseButton::Left)
-            && self.session.focus(&tile.terminal)
-        {
+        let focuses = matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        );
+        if focuses && self.session.focus(&tile.terminal) {
             self.relayout = true;
             self.sync_focus();
         }

@@ -531,6 +531,36 @@ async fn moving_focus_tells_both_panes() {
 }
 
 #[tokio::test]
+async fn the_wheel_focuses_and_scrolls_the_pane_under_the_pointer() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
+    frame(&mut surface, &HashSet::new());
+    let lines: Vec<u8> = (1..=30)
+        .flat_map(|line| format!("\r\nline-{line}").into_bytes())
+        .collect();
+    feed(&surface, "t1", &lines);
+    let right = surface.tiles.tiles[1].info.inner_rect;
+    let revealed = format!("line-{}", 30 - right.height - 2);
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    assert!(!text(&frame(&mut surface, &dirty)).contains(&revealed));
+    reports(&mut inputs[0]);
+    reports(&mut inputs[1]);
+
+    surface.mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: right.x + 1,
+        row: right.y + 1,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    assert_eq!(surface.focused_id(), Some(id_of(&surface, "t1")));
+    assert_eq!(reports(&mut inputs[0]), b"\x1b[O");
+    assert_eq!(reports(&mut inputs[1]), b"\x1b[I");
+    assert!(text(&frame(&mut surface, &HashSet::new())).contains(&revealed));
+}
+
+#[tokio::test]
 async fn parking_the_focused_pane_moves_focus_before_the_next_frame() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
