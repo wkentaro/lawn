@@ -38,6 +38,7 @@ mod settings;
 mod state;
 mod surface_patch;
 pub(crate) mod text_editor;
+pub(crate) use input::is_modal_paste_shortcut;
 mod word_selection;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;

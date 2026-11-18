@@ -340,6 +340,11 @@ mod unix {
                                     continue;
                                 }
                                 Routed::CopyMode(key) => {
+                                    if surface
+                                        .paste_shortcut(&key, crate::platform::read_clipboard_text)
+                                    {
+                                        continue;
+                                    }
                                     if let Some(text) = surface.copy_mode_key(&key) {
                                         copy.send(text.into_bytes()).ok();
                                     }

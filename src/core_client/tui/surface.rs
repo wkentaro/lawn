@@ -296,6 +296,20 @@ impl Surface {
         true
     }
 
+    pub(super) fn paste_shortcut(
+        &mut self,
+        key: &TerminalKey,
+        clipboard: impl FnOnce() -> Option<String>,
+    ) -> bool {
+        if !self.prompting() || !crate::client::is_modal_paste_shortcut(key) {
+            return false;
+        }
+        if let Some(text) = clipboard() {
+            self.copy_mode_input(&RawInputEvent::Paste(text));
+        }
+        true
+    }
+
     pub(super) fn enter_copy_mode(&mut self) {
         let Some(pane) = self.session.focused_id() else {
             return;
