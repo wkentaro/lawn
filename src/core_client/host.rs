@@ -307,6 +307,20 @@ pub(super) fn enter(mouse_capture: bool) -> io::Result<TerminalGuard> {
     Ok(guard)
 }
 
+pub(super) fn clipboard(
+) -> io::Result<(mpsc::UnboundedSender<Vec<u8>>, mpsc::UnboundedReceiver<()>)> {
+    let (copy, mut copies) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (done, copied) = mpsc::unbounded_channel();
+    crate::thread_spawn::spawn_named("lawn-clipboard", move || {
+        while let Some(bytes) = copies.blocking_recv() {
+            if crate::selection::write_osc52_bytes(&bytes) && done.send(()).is_err() {
+                return;
+            }
+        }
+    })?;
+    Ok((copy, copied))
+}
+
 pub(super) fn relay(event: Event, out: &mut impl io::Write) {
     match event {
         Event::Copy(content) => {

@@ -112,6 +112,7 @@ impl Events {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Frame {
+    pub(crate) revision: u64,
     pub(crate) scroll: Option<ScrollMetrics>,
 }
 
@@ -198,6 +199,7 @@ impl View {
         if !self.repaint {
             if let Some(snapshot) = self.runtime.collect_dirty_patch_snapshot(cols, rows) {
                 self.frame = Some(Frame {
+                    revision: snapshot.content_revision,
                     scroll: snapshot.scroll_metrics,
                 });
                 match snapshot.patch {
@@ -242,6 +244,7 @@ impl View {
                 let _writers = self.runtime.exclude_writers();
                 if self.runtime.try_render(target, area, true) {
                     drawn = Some(Frame {
+                        revision: self.runtime.content_seq(),
                         scroll: self.runtime.scroll_metrics(),
                     });
                 }
@@ -298,6 +301,22 @@ impl View {
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
         self.runtime.scroll_metrics()
+    }
+
+    pub(crate) fn still(&self) -> impl Drop + '_ {
+        self.runtime.exclude_writers()
+    }
+
+    pub(crate) fn content_revision(&self) -> u64 {
+        self.runtime.content_seq()
+    }
+
+    pub(crate) fn wheel_lines(&self) -> usize {
+        self.wheel_lines
+    }
+
+    pub(crate) fn selected_text(&self, selection: &crate::selection::Selection) -> Option<String> {
+        self.runtime.extract_selection(selection)
     }
 
     pub(crate) fn scroll_to(&self, offset_from_bottom: usize) {

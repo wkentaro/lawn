@@ -1,12 +1,15 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Session, Tiles};
+use crate::config::ToastClipboardPosition;
 use crate::core_client::view::{Geometry, View};
 use crate::input::KeybindAction;
 use crate::layout::PaneId;
@@ -15,6 +18,8 @@ use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::session_doc::Layout;
 use crate::ui::theme::Palette;
 use crate::ui::ScrollbarThumb;
+
+const TOAST: Duration = Duration::from_secs(2);
 
 struct Shown {
     view: View,
@@ -50,6 +55,28 @@ enum Owner {
     Terminal { last: MouseEvent },
     Thumb { grab: u16 },
     Track,
+    Select,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct Overlays {
+    selection: [Rect; 3],
+    toast: Rect,
+}
+
+impl Overlays {
+    fn rects(&self) -> impl Iterator<Item = &Rect> {
+        self.selection.iter().chain([&self.toast])
+    }
+
+    fn covers(&self, y: u16) -> bool {
+        self.rects().any(|rect| covers(rect, y))
+    }
+}
+
+struct Toast {
+    until: Instant,
+    image: (Rect, Vec<CellData>),
 }
 
 enum Retained {
@@ -129,6 +156,11 @@ pub(super) struct Surface {
     host: Geometry,
     scrollbars: bool,
     gesture: Option<Gesture>,
+    select: Select,
+    toast_at: Option<ToastClipboardPosition>,
+    toast: Option<Toast>,
+    highlight: CellData,
+    painted: Overlays,
     relayout: bool,
     canvas: Vec<CellData>,
     canvas_cols: u16,
@@ -140,7 +172,13 @@ impl Surface {
         chrome: PaneChrome,
         palette: Palette,
         scrollbars: bool,
+        copying: Copying,
     ) -> Self {
+        let mut highlight = ratatui::buffer::Cell::default();
+        highlight.set_style(crate::ui::automatic_selection_style(
+            &palette,
+            crate::terminal_theme::TerminalTheme::default(),
+        ));
         Self {
             session: Session::default(),
             views: HashMap::new(),
@@ -152,6 +190,11 @@ impl Surface {
             host,
             scrollbars,
             gesture: None,
+            select: Select::new(copying.on_select),
+            toast_at: copying.toast,
+            toast: None,
+            highlight: CellData::from_ratatui_cell(&highlight),
+            painted: Overlays::default(),
             relayout: true,
             canvas: Vec::new(),
             canvas_cols: 0,
@@ -193,6 +236,9 @@ impl Surface {
     }
 
     fn sync_focus(&mut self) {
+        if self.select.pane() != self.session.focused_id() {
+            self.select.clear();
+        }
         let focused = self.reporting_focus();
         for (id, shown) in &mut self.views {
             shown.tell_focus(focused == Some(*id));
@@ -202,6 +248,57 @@ impl Surface {
     pub(super) fn resize(&mut self, host: Geometry) {
         self.host = host;
         self.relayout = true;
+        if let (Some(toast), Some(position)) = (&mut self.toast, self.toast_at) {
+            toast.image = toast_image(host, position, &self.palette);
+        }
+    }
+
+    pub(super) fn copyable(&self) -> bool {
+        self.select.copyable()
+    }
+
+    pub(super) fn copy(&mut self) -> Option<String> {
+        let shown = self
+            .select
+            .pane()
+            .and_then(|pane| visible(&self.views, pane));
+        self.select.copy(shown)
+    }
+
+    pub(super) fn deselect(&mut self) {
+        self.select.clear();
+    }
+
+    pub(super) fn copied(&mut self, now: Instant) {
+        if let Some(position) = self.toast_at {
+            self.toast = Some(Toast {
+                until: now + TOAST,
+                image: toast_image(self.host, position, &self.palette),
+            });
+        }
+    }
+
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.select
+            .deadline()
+            .into_iter()
+            .chain(self.toast.as_ref().map(|toast| toast.until))
+            .min()
+    }
+
+    pub(super) fn tick(&mut self, now: Instant) {
+        if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
+            self.toast = None;
+        }
+        let view = self
+            .select
+            .pane()
+            .and_then(|pane| visible(&self.views, pane));
+        self.select.tick(view, now);
+    }
+
+    pub(super) fn needs_frame(&self) -> bool {
+        self.relayout || self.overlays() != self.painted
     }
 
     pub(super) fn forget(&mut self, id: PaneId) {
@@ -241,10 +338,6 @@ impl Surface {
         self.sync_focus();
     }
 
-    pub(super) fn needs_layout(&self) -> bool {
-        self.relayout
-    }
-
     pub(super) fn terminal(&self, id: PaneId) -> Option<&str> {
         self.tiles
             .tiles
@@ -272,13 +365,14 @@ impl Surface {
         Some(&self.views.get(&id)?.view)
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent) {
+    pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<String> {
         if let Some(mut gesture) = self.gesture {
             match event.kind {
                 MouseEventKind::Drag(button) | MouseEventKind::Up(button)
                     if button == gesture.button =>
                 {
                     let up = matches!(event.kind, MouseEventKind::Up(_));
+                    let mut copied = None;
                     match &mut gesture.owner {
                         Owner::Terminal { last } => {
                             if let Some((delivered, _)) = self.to_terminal(gesture.pane, event) {
@@ -287,14 +381,34 @@ impl Surface {
                         }
                         Owner::Thumb { grab } => self.drag_bar(gesture.pane, *grab, event.row),
                         Owner::Track => {}
+                        Owner::Select if up => {
+                            let shown = visible(&self.views, gesture.pane);
+                            copied = self.select.release(shown, now);
+                        }
+                        Owner::Select => {
+                            if let Some((view, inner)) = visible(&self.views, gesture.pane) {
+                                self.select.drag(view, inner, event.column, event.row, now);
+                            }
+                        }
                     }
                     self.gesture = (!up).then_some(gesture);
-                    return;
+                    return copied;
                 }
-                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return,
+                MouseEventKind::Down(_) | MouseEventKind::Drag(_) | MouseEventKind::Up(_) => {
+                    return None
+                }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if matches!(gesture.owner, Owner::Select) =>
+                {
+                    if let Some((view, inner)) = visible(&self.views, gesture.pane) {
+                        self.select.wheel(view, inner, event);
+                    }
+                    return None;
+                }
                 _ => {}
             }
         }
+        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
         let point = ratatui::layout::Position::new(event.column, event.row);
         let Some(tile) = self
             .tiles
@@ -302,11 +416,13 @@ impl Surface {
             .iter()
             .find(|tile| tile.info.inner_rect.contains(point))
         else {
-            return;
+            if press {
+                self.select.press(None, event, now);
+            }
+            return None;
         };
         let id = tile.info.id;
         let on_bar = self.track(id).is_some_and(|track| track.contains(point));
-        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
         let focuses = press
             || !on_bar
                 && matches!(
@@ -322,12 +438,12 @@ impl Surface {
         }
         let button = match event.kind {
             MouseEventKind::Down(button) => button,
-            MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return,
+            MouseEventKind::Drag(_) | MouseEventKind::Up(_) => return None,
             _ => {
                 if !on_bar {
                     self.to_terminal(id, event);
                 }
-                return;
+                return None;
             }
         };
         let owner = if on_bar {
@@ -335,14 +451,23 @@ impl Surface {
         } else {
             match self.to_terminal(id, event) {
                 Some((last, true)) => Owner::Terminal { last },
+                Some(_) if press => Owner::Select,
                 _ => Owner::Track,
             }
         };
+        if press {
+            let target = matches!(owner, Owner::Select)
+                .then(|| visible(&self.views, id))
+                .flatten()
+                .map(|(view, inner)| (id, view, inner));
+            self.select.press(target, event, now);
+        }
         self.gesture = Some(Gesture {
             pane: id,
             button,
             owner,
         });
+        None
     }
 
     fn to_terminal(&self, id: PaneId, mut event: MouseEvent) -> Option<(MouseEvent, bool)> {
@@ -374,6 +499,9 @@ impl Surface {
             return;
         }
         self.gesture = None;
+        if matches!(gesture.owner, Owner::Select) {
+            self.select.end(visible(&self.views, gesture.pane));
+        }
         let Owner::Terminal { last } = gesture.owner else {
             return;
         };
@@ -462,7 +590,7 @@ impl Surface {
                 self.relayout = self.relayout || shown.gutter_is_stale(self.scrollbars);
             }
         }
-        let rows = if self.relayout {
+        let mut rows = if self.relayout {
             self.relayout = false;
             self.lay_out(attach, leave);
             self.compose()
@@ -487,7 +615,85 @@ impl Surface {
             }
             rows
         };
+        let selected = self
+            .select
+            .pane()
+            .and_then(|pane| visible(&self.views, pane));
+        self.select.follow(selected);
+        self.paint(&mut rows);
         (rows, self.cursor())
+    }
+
+    fn overlays(&self) -> Overlays {
+        let selection = self
+            .select
+            .shown()
+            .and_then(|selection| {
+                let (view, inner) = visible(&self.views, selection.pane_id)?;
+                Some(selection.visible_rects(inner, drawn_scroll(view)))
+            })
+            .unwrap_or_default();
+        Overlays {
+            selection,
+            toast: self
+                .toast
+                .as_ref()
+                .map_or_else(Rect::default, |toast| toast.image.0),
+        }
+    }
+
+    fn paint(&mut self, rows: &mut Vec<PaneSurfacePatchRow>) {
+        let overlays = self.overlays();
+        let painted = std::mem::replace(&mut self.painted, overlays);
+        if overlays == Overlays::default() && painted == overlays {
+            return;
+        }
+        let mut ys: BTreeSet<u16> = rows
+            .iter()
+            .map(|row| row.y)
+            .filter(|y| overlays.covers(*y))
+            .collect();
+        if painted != overlays {
+            for rect in painted.rects().chain(overlays.rects()) {
+                ys.extend(rect.y..rect.bottom());
+            }
+        }
+        rows.retain(|row| !ys.contains(&row.y));
+        let cols = usize::from(self.canvas_cols);
+        for y in ys {
+            let start = usize::from(y) * cols;
+            let Some(cells) = self.canvas.get(start..start + cols) else {
+                continue;
+            };
+            let mut cells = cells.to_vec();
+            for rect in overlays.selection.iter().filter(|rect| covers(rect, y)) {
+                for cell in cells
+                    .get_mut(usize::from(rect.x)..usize::from(rect.right()))
+                    .into_iter()
+                    .flatten()
+                {
+                    cell.fg = self.highlight.fg;
+                    cell.bg = self.highlight.bg;
+                    cell.modifier = self.highlight.modifier;
+                }
+            }
+            if let Some((rect, image)) = self
+                .toast
+                .as_ref()
+                .map(|toast| &toast.image)
+                .filter(|(rect, _)| covers(rect, y))
+            {
+                let width = usize::from(rect.width);
+                let from = usize::from(y - rect.y) * width;
+                if let (Some(to), Some(from)) = (
+                    cells.get_mut(usize::from(rect.x)..usize::from(rect.right())),
+                    image.get(from..from + width),
+                ) {
+                    to.clone_from_slice(from);
+                }
+            }
+            rows.push(PaneSurfacePatchRow { x: 0, y, cells });
+        }
     }
 
     fn lay_out(
@@ -646,6 +852,40 @@ impl Surface {
         cursor.y += inner.y;
         Some(cursor)
     }
+}
+
+fn visible(views: &HashMap<PaneId, Shown>, id: PaneId) -> Option<(&View, Rect)> {
+    match views.get(&id)? {
+        Shown {
+            view,
+            place: Place::Visible { inner, .. },
+            ..
+        } => Some((view, *inner)),
+        _ => None,
+    }
+}
+
+fn covers(rect: &Rect, y: u16) -> bool {
+    rect.y <= y && y < rect.bottom()
+}
+
+fn toast_image(
+    host: Geometry,
+    position: ToastClipboardPosition,
+    palette: &Palette,
+) -> (Rect, Vec<CellData>) {
+    let area = Rect::new(0, 0, host.cols, host.rows);
+    let mut buffer = Buffer::empty(area);
+    let feedback = crate::app::state::CopyFeedback {
+        message: "copied to clipboard".to_owned(),
+    };
+    let rect =
+        crate::ui::render_copy_feedback_buffer(&mut buffer, area, &feedback, 0, position, palette);
+    let cells = (rect.y..rect.bottom())
+        .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
+        .map(|position| CellData::from_ratatui_cell(&buffer[position]))
+        .collect();
+    (rect, cells)
 }
 
 fn drawn_scroll(view: &View) -> Option<ScrollMetrics> {

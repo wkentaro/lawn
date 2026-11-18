@@ -894,7 +894,7 @@ pub(crate) fn render_selection_highlight<P: PartialEq>(
 
 type Rgb = (u8, u8, u8);
 
-fn automatic_selection_style(
+pub(crate) fn automatic_selection_style(
     p: &Palette,
     host_theme: crate::terminal_theme::TerminalTheme,
 ) -> Style {

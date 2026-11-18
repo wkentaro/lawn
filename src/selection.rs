@@ -284,7 +284,7 @@ fn viewport_row_for_absolute_row(absolute_row: u32, metrics: Option<ScrollMetric
         .unwrap_or(0)
 }
 
-fn clamp_to_pane(screen_col: u16, screen_row: u16, pane_inner: Rect) -> (u16, u16) {
+pub(crate) fn clamp_to_pane(screen_col: u16, screen_row: u16, pane_inner: Rect) -> (u16, u16) {
     let clamped_col = screen_col.clamp(
         pane_inner.x,
         pane_inner.x + pane_inner.width.saturating_sub(1),
