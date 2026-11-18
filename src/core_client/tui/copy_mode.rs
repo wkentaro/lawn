@@ -4,13 +4,17 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use super::select::{Screen, Select};
+use crate::client::text_editor::{self, TextEditor};
 use crate::copy_mode::{
     copy_mode_command_char, copy_mode_page_lines, first_non_blank_col, last_character_col,
 };
-use crate::core_client::view::View;
+use crate::core_client::view::{Frame, View};
 use crate::input::TerminalKey;
 use crate::layout::PaneId;
-use crate::pane::{ScrollMetrics, TerminalWordMotion};
+use crate::pane::{
+    ScrollMetrics, TerminalSearchDirection, TerminalSearchWindow, TerminalTextPoint,
+    TerminalWordMotion,
+};
 use crate::protocol::CellData;
 use crate::selection::Selection;
 use crate::ui::theme::Palette;
@@ -34,6 +38,8 @@ enum Command {
     FirstNonBlank,
     Word(TerminalWordMotion),
     Paragraph(i8),
+    Search(TerminalSearchDirection),
+    Repeat { reverse: bool },
 }
 
 impl Command {
@@ -82,6 +88,10 @@ impl Command {
                 'E' => Self::Word(TerminalWordMotion::NextBigEnd),
                 '{' => Self::Paragraph(-1),
                 '}' => Self::Paragraph(1),
+                '/' => Self::Search(TerminalSearchDirection::Forward),
+                '?' => Self::Search(TerminalSearchDirection::Backward),
+                'n' => Self::Repeat { reverse: false },
+                'N' => Self::Repeat { reverse: true },
                 _ => return None,
             },
         })
@@ -93,11 +103,21 @@ pub(super) enum Step {
     Leave(Option<String>),
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct Marks {
     pub(super) cursor: Rect,
     pub(super) bar: Rect,
     pub(super) selecting: bool,
+    pub(super) matches: Vec<Rect>,
+    pub(super) current: Vec<Rect>,
+    query: bool,
+    count: Option<(usize, usize)>,
+    prompt: Option<(TerminalSearchDirection, TextEditor)>,
+}
+
+struct Found {
+    revision: u64,
+    window: TerminalSearchWindow,
 }
 
 pub(super) struct CopyMode {
@@ -107,6 +127,10 @@ pub(super) struct CopyMode {
     anchor: Option<Anchor>,
     entry: usize,
     history: usize,
+    prompt: Option<(TerminalSearchDirection, TextEditor)>,
+    query: String,
+    direction: Option<TerminalSearchDirection>,
+    found: Option<Found>,
 }
 
 impl CopyMode {
@@ -134,6 +158,10 @@ impl CopyMode {
             anchor: None,
             entry: metrics.offset_from_bottom,
             history: metrics.max_offset_from_bottom,
+            prompt: None,
+            query: String::new(),
+            direction: None,
+            found: None,
         })
     }
 
@@ -150,6 +178,16 @@ impl CopyMode {
         self.anchor = None;
     }
 
+    pub(super) fn prompting(&self) -> bool {
+        self.prompt.is_some()
+    }
+
+    pub(super) fn type_text(&mut self, text: &str) {
+        if let Some((_, editor)) = self.prompt.as_mut() {
+            editor.insert(text);
+        }
+    }
+
     pub(super) fn quit(&self, view: &View) {
         let _still = view.still();
         view.scroll_to(self.entry);
@@ -161,6 +199,19 @@ impl CopyMode {
         key: &TerminalKey,
         select: &mut Select,
     ) -> Step {
+        if let Some((_, editor)) = self.prompt.as_mut() {
+            match key.code {
+                KeyCode::Enter => {}
+                KeyCode::Esc => {
+                    self.prompt = None;
+                    return Step::Stay;
+                }
+                _ => {
+                    editor.handle_key(key);
+                    return Step::Stay;
+                }
+            }
+        }
         let Some((view, inner)) = shown else {
             return Step::Stay;
         };
@@ -168,6 +219,17 @@ impl CopyMode {
         let Some(metrics) = self.settle(view, inner, select, true) else {
             return Step::Leave(None);
         };
+        if let Some((direction, editor)) = self.prompt.take() {
+            self.search(
+                view,
+                inner,
+                select,
+                editor.as_str().to_owned(),
+                direction,
+                false,
+            );
+            return Step::Stay;
+        }
         match Command::of(key) {
             Some(command) => self.run(command, view, inner, metrics, select),
             None => Step::Stay,
@@ -178,14 +240,31 @@ impl CopyMode {
         &self,
         inner: Rect,
         area: Rect,
-        drawn: Option<ScrollMetrics>,
+        drawn: Option<Frame>,
         select: &Select,
+        active: bool,
     ) -> Marks {
         if inner.is_empty() || area.is_empty() {
             return Marks::default();
         }
+        let scroll = drawn.and_then(|frame| frame.scroll);
+        let found = self
+            .found
+            .as_ref()
+            .filter(|found| drawn.is_some_and(|frame| frame.revision == found.revision));
+        let (matches, current) = found
+            .zip(scroll)
+            .map(|(found, metrics)| highlights(&found.window, metrics, inner))
+            .unwrap_or_default();
+        if !active {
+            return Marks {
+                matches,
+                current,
+                ..Marks::default()
+            };
+        }
         let (row, col) = self.cursor;
-        let cursor = drawn
+        let cursor = scroll
             .and_then(|metrics| u16::try_from(row.checked_sub(top(metrics))?).ok())
             .filter(|y| *y < inner.height && col < inner.width)
             .map_or_else(Rect::default, |y| {
@@ -195,6 +274,12 @@ impl CopyMode {
             cursor,
             bar: Rect::new(area.x, area.bottom() - 1, area.width, 1),
             selecting: self.selecting(select),
+            matches,
+            current,
+            query: !self.query.is_empty(),
+            count: found
+                .and_then(|found| Some((found.window.current_global? + 1, found.window.total))),
+            prompt: self.prompt.clone(),
         }
     }
 
@@ -216,9 +301,18 @@ impl CopyMode {
         let screen = Screen::of(view, inner);
         let erased = metrics.max_offset_from_bottom < self.history;
         self.history = metrics.max_offset_from_bottom;
+        let drawn = view.frame().map(|frame| frame.revision);
+        if self
+            .found
+            .as_ref()
+            .is_some_and(|found| Some(found.revision) != drawn)
+        {
+            self.found = None;
+        }
         if screen != self.screen || erased {
             self.screen = screen;
             self.anchor = None;
+            self.found = None;
             if select.pane() == Some(self.pane) {
                 select.clear();
             }
@@ -245,9 +339,12 @@ impl CopyMode {
         let last_row = last_row(metrics, inner.height);
         let (row, col) = self.cursor;
         match command {
-            Command::Escape if self.selecting(select) => {
+            Command::Escape if self.selecting(select) || !self.query.is_empty() => {
                 self.anchor = None;
                 select.clear();
+                self.query.clear();
+                self.direction = None;
+                self.found = None;
                 return Step::Stay;
             }
             Command::Escape | Command::Quit => return self.leave(view, select, false),
@@ -323,6 +420,25 @@ impl CopyMode {
                 }
                 self.reveal(view, inner.height, metrics);
             }
+            Command::Search(direction) => {
+                self.prompt = Some((direction, TextEditor::default()));
+                return Step::Stay;
+            }
+            Command::Repeat { reverse } => {
+                if let Some(direction) = self.direction {
+                    let direction = match (direction, reverse) {
+                        (TerminalSearchDirection::Forward, true) => {
+                            TerminalSearchDirection::Backward
+                        }
+                        (TerminalSearchDirection::Backward, true) => {
+                            TerminalSearchDirection::Forward
+                        }
+                        (direction, false) => direction,
+                    };
+                    self.search(view, inner, select, self.query.clone(), direction, true);
+                }
+                return Step::Stay;
+            }
         }
         self.sync(select, last_col);
         Step::Stay
@@ -347,6 +463,52 @@ impl CopyMode {
         );
     }
 
+    fn search(
+        &mut self,
+        view: &View,
+        inner: Rect,
+        select: &mut Select,
+        query: String,
+        direction: TerminalSearchDirection,
+        repeat: bool,
+    ) {
+        let revision = view.content_revision();
+        if query.is_empty() || view.frame().map(|frame| frame.revision) != Some(revision) {
+            return;
+        }
+        let Some(metrics) = view.scroll_metrics() else {
+            return;
+        };
+        let last_col = inner.width.saturating_sub(1);
+        let previous = self
+            .current()
+            .filter(|(_, start, _)| repeat && (start.row, start.col.min(last_col)) == self.cursor)
+            .map(|(_, start, end)| (start, end));
+        let Some(window) = view.search(&query, direction, point(self.cursor), previous) else {
+            return;
+        };
+        let target = window
+            .current
+            .and_then(|index| window.matches.get(index))
+            .map(|found| found.start);
+        self.query = query;
+        if !repeat {
+            self.direction = Some(direction);
+        }
+        self.found = Some(Found { revision, window });
+        if let Some(target) = target {
+            self.cursor = (target.row, target.col.min(last_col));
+            self.reveal(view, inner.height.saturating_sub(1), metrics);
+            self.sync(select, last_col);
+        }
+    }
+
+    fn current(&self) -> Option<(u64, TerminalTextPoint, TerminalTextPoint)> {
+        let found = self.found.as_ref()?;
+        let current = found.window.matches.get(found.window.current?)?;
+        Some((found.revision, current.start, current.end))
+    }
+
     fn sync(&self, select: &mut Select, last_col: u16) {
         let Some(anchor) = self.anchor else {
             return;
@@ -359,8 +521,15 @@ impl CopyMode {
     }
 
     fn leave(&self, view: &View, select: &mut Select, copy: bool) -> Step {
+        let found = self
+            .current()
+            .filter(|(revision, _, _)| *revision == view.content_revision())
+            .map(|(_, start, end)| {
+                Selection::absolute_range(self.pane, (start.row, start.col), (end.row, end.col))
+            });
         let text = select
             .shown()
+            .or(found.as_ref())
             .filter(|_| copy)
             .and_then(|selection| view.selected_text(selection))
             .filter(|text| !text.is_empty());
@@ -370,8 +539,8 @@ impl CopyMode {
     }
 }
 
-pub(super) fn bar(width: u16, selecting: bool, palette: &Palette) -> Vec<CellData> {
-    let area = Rect::new(0, 0, width, 1);
+pub(super) fn bar(marks: &Marks, palette: &Palette) -> Vec<CellData> {
+    let area = Rect::new(0, 0, marks.bar.width, 1);
     let mut buffer = Buffer::empty(area);
     let base = Style::default().fg(palette.overlay0).bg(palette.panel_bg);
     buffer.set_style(area, base);
@@ -379,36 +548,92 @@ pub(super) fn bar(width: u16, selecting: bool, palette: &Palette) -> Vec<CellDat
         .fg(palette.accent)
         .bg(palette.panel_bg)
         .add_modifier(Modifier::BOLD);
-    let (select, exit_keys, exit) = if selecting {
-        (" selecting  ", "esc", " clear  q exit")
+    if let Some((direction, editor)) = &marks.prompt {
+        prompt(&mut buffer, *direction, editor, (base, key), palette);
     } else {
-        (" select  ", "q/esc", " exit")
-    };
-    let mut x = 0;
-    for (text, style) in [
-        (" COPY ", accent(palette)),
-        (" ", base),
-        ("h/j/k/l w/b/e { }", key),
-        (" move  ", base),
-        ("v/space", key),
-        (select, base),
-        ("y/enter", key),
-        (" copy  ", base),
-        (exit_keys, key),
-        (exit, base),
-    ] {
-        if x >= width {
-            break;
+        let count = marks
+            .count
+            .map(|(current, total)| format!(" {current}/{total}"))
+            .or_else(|| marks.query.then(|| " 0/0".to_owned()))
+            .unwrap_or_default();
+        let repeat = format!(" repeat{count}  ");
+        let select = if marks.selecting {
+            " selecting  "
+        } else {
+            " select  "
+        };
+        let (exit_keys, exit) = if marks.query || marks.selecting {
+            ("esc", " clear  q exit")
+        } else {
+            ("q/esc", " exit")
+        };
+        let mut x = 0;
+        for (text, style) in [
+            (" COPY ", accent(palette)),
+            (" ", base),
+            ("h/j/k/l w/b/e { }", key),
+            (" move  ", base),
+            ("/ ?", key),
+            (" search  ", base),
+            ("n/N", key),
+            (repeat.as_str(), base),
+            ("v/space", key),
+            (select, base),
+            ("y/enter", key),
+            (" copy  ", base),
+            (exit_keys, key),
+            (exit, base),
+        ] {
+            if x >= area.width {
+                break;
+            }
+            x = buffer
+                .set_stringn(x, 0, text, usize::from(area.width - x), style)
+                .0;
         }
-        x = buffer
-            .set_stringn(x, 0, text, usize::from(width - x), style)
-            .0;
     }
     buffer
         .content
         .iter()
         .map(CellData::from_ratatui_cell)
         .collect()
+}
+
+fn prompt(
+    buffer: &mut Buffer,
+    direction: TerminalSearchDirection,
+    editor: &TextEditor,
+    (base, key): (Style, Style),
+    palette: &Palette,
+) {
+    let width = buffer.area.width;
+    buffer.set_stringn(0, 0, " COPY ", usize::from(width), accent(palette));
+    let marker = match direction {
+        TerminalSearchDirection::Forward => "/",
+        TerminalSearchDirection::Backward => "?",
+    };
+    if width >= 8 {
+        buffer.set_string(7, 0, marker, key);
+    }
+    let footer = "  enter search  esc cancel";
+    let footer_width = if width >= 50 { footer.len() as u16 } else { 0 };
+    let prefix = width.min(8);
+    let field = Rect::new(prefix, 0, width.saturating_sub(prefix + footer_width), 1);
+    let text = Style::default().fg(palette.text).bg(palette.panel_bg);
+    if let Some(cell) = text_editor::render(buffer, field, editor, text)
+        .and_then(|cursor| buffer.cell_mut((cursor.x, cursor.y)))
+    {
+        cell.set_style(Style::default().fg(palette.panel_bg).bg(palette.text));
+    }
+    if footer_width > 0 {
+        buffer.set_string(width - footer_width, 0, footer, base);
+    }
+}
+
+pub(super) fn match_cell(palette: &Palette) -> CellData {
+    let mut cell = Cell::default();
+    cell.set_style(Style::default().fg(palette.text).bg(palette.surface1));
+    CellData::from_ratatui_cell(&cell)
 }
 
 pub(super) fn cursor_cell(palette: &Palette) -> CellData {
@@ -422,6 +647,55 @@ fn accent(palette: &Palette) -> Style {
         .fg(crate::ui::chrome::panel_contrast_fg(palette))
         .bg(palette.accent)
         .add_modifier(Modifier::BOLD)
+}
+
+fn highlights(
+    window: &TerminalSearchWindow,
+    metrics: ScrollMetrics,
+    inner: Rect,
+) -> (Vec<Rect>, Vec<Rect>) {
+    let top = top(metrics);
+    let bottom = top.saturating_add(u32::from(inner.height.saturating_sub(1)));
+    let last_col = inner.width.saturating_sub(1);
+    let (mut matches, mut current) = (Vec::new(), Vec::new());
+    let first = window.matches.partition_point(|found| found.end.row < top);
+    for (index, found) in window
+        .matches
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take_while(|(_, found)| found.start.row <= bottom)
+    {
+        let rects = if window.current == Some(index) {
+            &mut current
+        } else {
+            &mut matches
+        };
+        for row in found.start.row.max(top)..=found.end.row.min(bottom) {
+            let start = if row == found.start.row {
+                found.start.col
+            } else {
+                0
+            };
+            let end = if row == found.end.row {
+                found.end.col
+            } else {
+                last_col
+            }
+            .min(last_col);
+            let Ok(y) = u16::try_from(row - top) else {
+                continue;
+            };
+            if start <= end {
+                rects.push(Rect::new(inner.x + start, inner.y + y, end - start + 1, 1));
+            }
+        }
+    }
+    (matches, current)
+}
+
+fn point((row, col): (u32, u16)) -> TerminalTextPoint {
+    TerminalTextPoint { row, col }
 }
 
 fn scroll(view: &View, metrics: ScrollMetrics, offset_from_bottom: usize) {

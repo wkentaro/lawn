@@ -16,12 +16,19 @@ pub(super) enum Routed {
     CopyMode(TerminalKey),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mode {
+    Panes,
+    Copy,
+    Prompt,
+}
+
 pub(super) struct Keys {
     config: LiveKeybindConfig,
     erase_is_ctrl_h: bool,
     reports_releases: bool,
     prefix: bool,
-    leases: InputLeaseTable<(), (bool, bool), PaneId>,
+    leases: InputLeaseTable<(), (bool, Mode), PaneId>,
 }
 
 impl Keys {
@@ -44,12 +51,12 @@ impl Keys {
         key: TerminalKey,
         focused: Option<PaneId>,
         copyable: bool,
-        copy_mode: bool,
+        mode: Mode,
         committed: impl for<'k> FnOnce(&'k TerminalKey) -> Option<&'k str>,
     ) -> Vec<Routed> {
         let key = key.with_host_erase(self.erase_is_ctrl_h);
         let mut routed = Vec::new();
-        if !self.prefix && !copy_mode {
+        if !self.prefix && mode == Mode::Panes {
             if let Some(text) = committed(&key) {
                 routed.extend(focused.map(|pane| Routed::Text(pane, text.to_owned())));
                 return routed;
@@ -73,8 +80,8 @@ impl Keys {
                 routed.push(Routed::Copy);
             }
             KeyEventKind::Press => {
-                let initial = (self.prefix, copy_mode);
-                let target = self.press(&key, focused, copy_mode, &mut routed);
+                let initial = (self.prefix, mode);
+                let target = self.press(&key, focused, mode, &mut routed);
                 if let Some(target) = target {
                     routed.push(Routed::Key(target, key.clone()));
                 }
@@ -82,16 +89,16 @@ impl Keys {
                     lease_key,
                     &key,
                     Some(&initial),
-                    Some(&(self.prefix, copy_mode)),
+                    Some(&(self.prefix, mode)),
                     target,
                 );
-                self.repeat(lease_key, key, plan, focused, copy_mode, &mut routed);
+                self.repeat(lease_key, key, plan, focused, mode, &mut routed);
             }
             KeyEventKind::Repeat => {
-                let plan =
-                    self.leases
-                        .plan_repeat(lease_key, &key, Some(&(self.prefix, copy_mode)));
-                self.repeat(lease_key, key, plan, focused, copy_mode, &mut routed);
+                let plan = self
+                    .leases
+                    .plan_repeat(lease_key, &key, Some(&(self.prefix, mode)));
+                self.repeat(lease_key, key, plan, focused, mode, &mut routed);
             }
             KeyEventKind::Release => {
                 if let Some(InputLease::Forwarded(lease)) =
@@ -133,13 +140,13 @@ impl Keys {
         &mut self,
         lease_key: InputLeaseKey<()>,
         key: TerminalKey,
-        plan: RepeatPlan<(bool, bool), PaneId>,
+        plan: RepeatPlan<(bool, Mode), PaneId>,
         focused: Option<PaneId>,
-        copy_mode: bool,
+        mode: Mode,
         routed: &mut Vec<Routed>,
     ) {
         match plan {
-            RepeatPlan::Forwarded(_) if copy_mode => {}
+            RepeatPlan::Forwarded(_) if mode != Mode::Panes => {}
             RepeatPlan::Forwarded(target) => routed.push(Routed::Key(target, key)),
             RepeatPlan::Reprocess {
                 context,
@@ -150,7 +157,7 @@ impl Keys {
                     if !self.leases.reprocess_allowed(
                         lease_key,
                         &context,
-                        Some(&(self.prefix, copy_mode)),
+                        Some(&(self.prefix, mode)),
                         tracked,
                     ) {
                         break;
@@ -159,7 +166,7 @@ impl Keys {
                         .clone()
                         .with_repeat_count(1)
                         .with_kind(KeyEventKind::Repeat);
-                    if let Some(target) = self.press(&repeated, focused, copy_mode, routed) {
+                    if let Some(target) = self.press(&repeated, focused, mode, routed) {
                         routed.push(Routed::Key(target, repeated));
                     }
                 }
@@ -172,21 +179,25 @@ impl Keys {
         &mut self,
         key: &TerminalKey,
         focused: Option<PaneId>,
-        copy_mode: bool,
+        mode: Mode,
         routed: &mut Vec<Routed>,
     ) -> Option<PaneId> {
         if matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
         let to_focus = |routed: &mut Vec<Routed>| {
-            if copy_mode {
+            if mode != Mode::Panes {
                 routed.push(Routed::CopyMode(key.clone()));
                 return None;
             }
             focused
         };
+        if mode == Mode::Prompt {
+            self.prefix = false;
+            return to_focus(routed);
+        }
         if !std::mem::take(&mut self.prefix) {
-            if let Some(binding) = (!copy_mode)
+            if let Some(binding) = (mode == Mode::Panes)
                 .then(|| crate::input::resolve_direct_binding(&self.config.keybinds, key))
                 .flatten()
             {
@@ -215,7 +226,7 @@ impl Keys {
         &mut self,
         lease_key: &InputLeaseKey<()>,
         key: &TerminalKey,
-    ) -> Option<InputLease<(bool, bool), PaneId>> {
+    ) -> Option<InputLease<(bool, Mode), PaneId>> {
         if let Some(lease) = self.leases.remove(lease_key) {
             return Some(lease);
         }

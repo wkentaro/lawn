@@ -69,7 +69,7 @@ mod unix {
     use tokio::time::Instant;
     use tracing::warn;
 
-    use super::keys::{Keys, Routed};
+    use super::keys::{Keys, Mode, Routed};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
     use super::surface::Surface;
@@ -293,7 +293,7 @@ mod unix {
                                 continue;
                             }
                             event => {
-                                if surface.copy_mode() {
+                                if surface.copy_mode_input(&event) {
                                     continue;
                                 }
                                 if matches!(event, RawInputEvent::Text(_) | RawInputEvent::Paste(_)) {
@@ -312,7 +312,11 @@ mod unix {
                             key,
                             focused,
                             surface.copyable(),
-                            surface.copy_mode(),
+                            match (surface.copy_mode(), surface.prompting()) {
+                                (false, _) => Mode::Panes,
+                                (true, false) => Mode::Copy,
+                                (true, true) => Mode::Prompt,
+                            },
                             |key| keys.committed_text(key),
                         );
                         for routed in routes {
