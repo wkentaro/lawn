@@ -3,7 +3,7 @@ use std::io;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crossterm::event::{MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use tokio::sync::{mpsc, Notify};
 
@@ -11,7 +11,7 @@ use crate::events::AppEvent;
 use crate::hc::Core;
 use crate::input::TerminalKey;
 use crate::layout::PaneId;
-use crate::pane::TerminalDirtyPatchOutcome;
+use crate::pane::{TerminalDirtyPatchOutcome, WheelRouting};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalRuntime;
@@ -25,6 +25,21 @@ pub(crate) struct Geometry {
     pub(crate) rows: u16,
     pub(crate) cell_width_px: u32,
     pub(crate) cell_height_px: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Scrollback {
+    pub(crate) limit_bytes: usize,
+    pub(crate) wheel_lines: usize,
+}
+
+impl From<&crate::config::Config> for Scrollback {
+    fn from(config: &crate::config::Config) -> Self {
+        Self {
+            limit_bytes: config.advanced.scrollback_limit_bytes,
+            wheel_lines: config.ui.mouse_scroll_lines(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -99,6 +114,9 @@ impl Events {
 /// its screen changes.
 pub(crate) struct View {
     runtime: TerminalRuntime,
+    id: PaneId,
+    wake: Wake,
+    wheel_lines: usize,
     repaint: bool,
     cursor: Option<CursorState>,
 }
@@ -113,6 +131,7 @@ impl View {
         id: PaneId,
         wake: &Wake,
         events: &EventSender,
+        scrollback: Scrollback,
     ) -> io::Result<Self> {
         let runtime = TerminalRuntime::attach_core_terminal(
             id,
@@ -120,18 +139,22 @@ impl View {
             address,
             geometry.rows,
             geometry.cols,
+            scrollback.limit_bytes,
             events.0.clone(),
             wake.notify.clone(),
             wake.dirty.clone(),
         )?;
-        let mut view = Self::new(runtime);
+        let mut view = Self::new(runtime, id, wake.clone(), scrollback.wheel_lines);
         view.resize(geometry);
         Ok(view)
     }
 
-    fn new(runtime: TerminalRuntime) -> Self {
+    fn new(runtime: TerminalRuntime, id: PaneId, wake: Wake, wheel_lines: usize) -> Self {
         Self {
             runtime,
+            id,
+            wake,
+            wheel_lines: wheel_lines.max(1),
             repaint: true,
             cursor: None,
         }
@@ -222,7 +245,7 @@ impl View {
             .map(|cursor| CursorState {
                 x: cursor.x,
                 y: cursor.y,
-                visible: cursor.visible,
+                visible: cursor.visible && !crate::ui::pane_is_scrolled_back(&self.runtime),
                 shape: cursor.shape,
             });
         self.cursor.clone()
@@ -244,21 +267,77 @@ impl View {
     }
 
     pub(crate) fn key(&self, key: TerminalKey) {
+        let event = key.as_key_event();
+        if matches!(event.code, KeyCode::PageUp | KeyCode::PageDown)
+            && event.modifiers.is_empty()
+            && self.runtime.plain_page_keys_use_host_scrollback() == Some(true)
+        {
+            if event.kind != KeyEventKind::Release {
+                let page = usize::from(self.runtime.current_size().0);
+                self.scroll(event.code == KeyCode::PageUp, page);
+            }
+            return;
+        }
+        self.to_bottom();
         self.send(self.runtime.encode_terminal_key(key));
     }
 
     pub(crate) fn text(&self, text: &str) {
+        self.to_bottom();
         self.send(text.as_bytes().to_vec());
     }
 
     pub(crate) fn paste(&self, text: String) {
+        self.to_bottom();
         if let Err(error) = self.runtime.try_send_paste(text) {
             tracing::debug!(%error, "paste did not reach the core terminal");
         }
     }
 
     pub(crate) fn mouse(&self, event: MouseEvent) {
-        self.send(self.mouse_report(event).unwrap_or_default());
+        let report = match event.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                match self.runtime.wheel_routing() {
+                    Some(WheelRouting::MouseReport) => self.mouse_report(event),
+                    Some(WheelRouting::AlternateScroll) => {
+                        self.runtime.encode_alternate_scroll(event.kind)
+                    }
+                    Some(WheelRouting::HostScroll) | None => {
+                        let up = event.kind == MouseEventKind::ScrollUp;
+                        return self.scroll(up, self.wheel_lines);
+                    }
+                }
+            }
+            _ => self.mouse_report(event),
+        }
+        .unwrap_or_default();
+        if !report.is_empty() && event.kind != MouseEventKind::Moved {
+            self.to_bottom();
+        }
+        self.send(report);
+    }
+
+    fn scroll(&self, up: bool, lines: usize) {
+        let lines = lines.max(1);
+        if up {
+            self.runtime.scroll_up(lines);
+        } else {
+            self.runtime.scroll_down(lines);
+        }
+        self.redraw();
+    }
+
+    fn to_bottom(&self) {
+        if crate::ui::pane_is_scrolled_back(&self.runtime) {
+            self.runtime.scroll_reset();
+            self.redraw();
+        }
+    }
+
+    fn redraw(&self) {
+        if self.wake.dirty.request_pty(self.id) {
+            self.wake.notify.notify_one();
+        }
     }
 
     fn mouse_report(&self, event: MouseEvent) -> Option<Vec<u8>> {
@@ -277,10 +356,10 @@ impl View {
             MouseEventKind::ScrollUp
             | MouseEventKind::ScrollDown
             | MouseEventKind::ScrollLeft
-            | MouseEventKind::ScrollRight => self
-                .runtime
-                .encode_mouse_wheel(event.kind, position, event.modifiers)
-                .or_else(|| self.runtime.encode_alternate_scroll(event.kind)),
+            | MouseEventKind::ScrollRight => {
+                self.runtime
+                    .encode_mouse_wheel(event.kind, position, event.modifiers)
+            }
         }
     }
 
@@ -305,16 +384,26 @@ impl View {
 
 #[cfg(test)]
 impl View {
+    fn test_new(runtime: TerminalRuntime) -> Self {
+        Self::new(
+            runtime,
+            PaneId::from_raw(0),
+            Wake::default(),
+            crate::config::DEFAULT_MOUSE_SCROLL_LINES,
+        )
+    }
+
     pub(in crate::core_client) fn test(cols: u16, rows: u16) -> Self {
-        Self::new(TerminalRuntime::test_with_screen_bytes(cols, rows, b""))
+        Self::test_new(TerminalRuntime::test_with_screen_bytes(cols, rows, b""))
     }
 
     pub(in crate::core_client) fn test_with_input(
         cols: u16,
         rows: u16,
     ) -> (Self, tokio::sync::mpsc::Receiver<Bytes>) {
-        let (runtime, input) = TerminalRuntime::test_with_channel_capacity(cols, rows, 16);
-        (Self::new(runtime), input)
+        let (runtime, input) =
+            TerminalRuntime::test_with_channel_and_scrollback_bytes(cols, rows, 100_000, b"", 16);
+        (Self::test_new(runtime), input)
     }
 
     pub(in crate::core_client) fn test_feed(&self, bytes: &[u8]) {
