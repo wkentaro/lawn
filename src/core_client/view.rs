@@ -320,6 +320,10 @@ impl View {
         self.wheel_lines
     }
 
+    pub(crate) fn scrollback_text(&self) -> String {
+        self.runtime.recent_unwrapped_text_snapshot(usize::MAX).text
+    }
+
     pub(crate) fn selected_text(&self, selection: &crate::selection::Selection) -> Option<String> {
         self.runtime.extract_selection(selection)
     }

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
-use super::session::Operation;
+use super::session::{Operation, Overlay, ScrollbackText};
 use super::{run_with_bounded_shutdown, SHUTDOWN_GRACE};
 use crate::session_doc::{Destination, Direction};
 
@@ -84,7 +84,7 @@ fn beside(terminal: &str) -> Destination {
 fn answers_to(
     core: std::io::Result<std::sync::Arc<crate::hc::Core>>,
     operation: Operation,
-) -> Vec<(u64, Option<(String, u64)>)> {
+) -> Vec<super::unix::Answer> {
     let (started, mut answers) = tokio::sync::mpsc::unbounded_channel();
     super::unix::perform(
         core,
@@ -124,7 +124,7 @@ fn a_start_the_core_refuses_answers_its_request_once_without_a_terminal() {
     );
 
     assert!(methods.try_iter().any(|method| method == "terminal.run"));
-    assert_eq!(answers, [(7, None)]);
+    assert_eq!(answers, [(7, None, None)]);
 }
 
 #[test]
@@ -134,7 +134,155 @@ fn a_start_with_the_core_unreachable_answers_its_request_once_without_a_terminal
         Operation::Start(7, beside("t1")),
     );
 
-    assert_eq!(answers, [(7, None)]);
+    assert_eq!(answers, [(7, None, None)]);
+}
+
+fn edit(request: u64, text: &str) -> Operation {
+    Operation::Overlay(Overlay {
+        request,
+        destination: Destination::Split {
+            beside: "t1".to_owned(),
+            direction: Direction::Right,
+            ratio: 0.5,
+        },
+        argv: Vec::new(),
+        env: Vec::new(),
+        scrollback: Some(ScrollbackText(text.to_owned())),
+    })
+}
+
+fn scratch_temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lawn-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::env::set_var("TMPDIR", &dir);
+    dir
+}
+
+fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .expect("scratch directory")
+        .map(|entry| entry.expect("entry").path())
+        .collect()
+}
+
+#[test]
+fn edits_start_in_the_order_they_were_asked_whatever_their_write_time() {
+    let bound = Duration::from_secs(10);
+    let dir = scratch_temp_dir("edit-order");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()
+        .expect("runtime");
+    let _entered = runtime.enter();
+    let (report, reports) = std::sync::mpsc::channel();
+    let (open, gate) = std::sync::mpsc::channel::<()>();
+    let queue = super::unix::operations(move |operation, _cwd| {
+        let Operation::Overlay(overlay) = operation else {
+            return;
+        };
+        if overlay.request == 1 {
+            gate.recv_timeout(bound).ok();
+        }
+        let scrollback = overlay.scrollback.expect("a scrollback");
+        let (temp_file, _argv) = super::unix::editing(&scrollback).expect("written");
+        let written = std::fs::read_to_string(&temp_file).expect("readable");
+        std::fs::remove_file(temp_file).ok();
+        report.send((overlay.request, written)).ok();
+    });
+
+    for (request, text) in [(1, "first"), (2, "second")] {
+        queue
+            .send((edit(request, text), PathBuf::new()))
+            .expect("queued");
+    }
+    assert!(reports.try_recv().is_err());
+    open.send(()).expect("opened");
+    let started = [(); 2].map(|()| reports.recv_timeout(bound).expect("the edit ran"));
+
+    assert_eq!(started, [(1, "first".to_owned()), (2, "second".to_owned())]);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn a_queued_edit_writes_no_file_until_the_worker_reaches_it() {
+    let bound = Duration::from_secs(10);
+    let dir = scratch_temp_dir("edit-queued");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(1)
+        .build()
+        .expect("runtime");
+    let _entered = runtime.enter();
+    let (report, reports) = std::sync::mpsc::channel();
+    let (open, gate) = std::sync::mpsc::channel::<()>();
+    let queue = super::unix::operations(move |operation, _cwd| match operation {
+        Operation::Start(..) => {
+            report.send(None).ok();
+            gate.recv_timeout(bound).ok();
+        }
+        Operation::Overlay(overlay) => {
+            let scrollback = overlay.scrollback.expect("a scrollback");
+            let (temp_file, _argv) = super::unix::editing(&scrollback).expect("written");
+            report.send(Some(temp_file)).ok();
+        }
+        _ => {}
+    });
+    let split = Destination::Split {
+        beside: "t1".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    };
+    queue
+        .send((Operation::Start(1, split), PathBuf::new()))
+        .expect("queued");
+    assert_eq!(reports.recv_timeout(bound).expect("the split began"), None);
+
+    queue
+        .send((edit(2, "text"), PathBuf::new()))
+        .expect("queued");
+
+    assert!(files_in(&dir).is_empty());
+    open.send(()).expect("opened");
+    let temp_file = reports
+        .recv_timeout(bound)
+        .expect("the edit ran")
+        .expect("a temporary file");
+    assert_eq!(files_in(&dir), std::slice::from_ref(&temp_file));
+    assert_eq!(
+        std::fs::read_to_string(temp_file).expect("readable"),
+        "text"
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn an_edit_whose_start_recovery_placed_first_keeps_its_file_until_its_pane_closes() {
+    let dir = scratch_temp_dir("edit-recovered");
+    let (temp_file, _argv) =
+        super::unix::editing(&ScrollbackText("text".to_owned())).expect("written");
+    let (started, mut answers) = tokio::sync::mpsc::unbounded_channel();
+    let recovered = crate::session_doc::Created {
+        terminal: "t9".to_owned(),
+        workspace: None,
+        tab: None,
+        version: 4,
+    };
+
+    super::unix::answer(&started, 3, Ok(recovered), Some(temp_file.clone()));
+    let (request, placed, kept) = answers.try_recv().expect("an answer");
+    let mut scrollbacks = std::collections::HashMap::new();
+    super::unix::keep(&mut scrollbacks, &placed, kept);
+
+    assert_eq!((request, placed), (3, Some(("t9".to_owned(), 4))));
+    assert!(temp_file.exists());
+    assert!(super::unix::forget(&mut scrollbacks, ["t8".to_owned()]).is_none());
+    assert!(temp_file.exists());
+    super::unix::forget(&mut scrollbacks, ["t9".to_owned()])
+        .expect("the file is forgotten")
+        .await
+        .expect("removed");
+    assert!(!temp_file.exists());
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[tokio::test]
@@ -163,4 +311,23 @@ async fn a_shell_command_runs_detached_in_the_pane_directory_with_the_command_en
     std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
     assert!(status.success());
     assert_eq!(written.expect("the command wrote its output"), expected);
+}
+
+#[test]
+fn an_edit_under_a_relative_temp_dir_opens_and_tracks_its_file_by_an_absolute_path() {
+    let dir = scratch_temp_dir("edit-relative");
+    std::env::set_current_dir(dir.parent().expect("temp root")).expect("current directory");
+    std::env::set_var("TMPDIR", dir.file_name().expect("scratch name"));
+
+    let (temp_file, argv) =
+        super::unix::editing(&ScrollbackText("text".to_owned())).expect("written");
+
+    assert!(temp_file.is_absolute());
+    assert_eq!(
+        std::fs::read_to_string(&temp_file).expect("the file"),
+        "text"
+    );
+    let shown = temp_file.display().to_string();
+    assert!(argv.iter().any(|arg| arg.contains(&shown)), "{argv:?}");
+    std::fs::remove_dir_all(&dir).ok();
 }

@@ -364,7 +364,7 @@ fn a_created_terminal_takes_focus_when_its_layout_arrives_after_the_start() {
     let mut session = Session::default();
     session.lay_out(two_tabs(&[]));
     let request = start(&mut session);
-    assert!(!session.started(request, placed(&session, "e")));
+    assert!(!session.started(request, placed(&session, "e")).0);
     assert_eq!(session.focused(), Some("a"));
     session.lay_out(with_new_tab());
     assert_eq!(session.focused(), Some("e"));
@@ -381,7 +381,7 @@ fn a_created_terminal_takes_focus_when_its_layout_arrived_first() {
     let request = start(&mut session);
     session.lay_out(with_new_tab());
     assert_eq!(session.focused(), Some("a"));
-    assert!(session.started(request, placed(&session, "e")));
+    assert!(session.started(request, placed(&session, "e")).0);
     assert_eq!(session.focused(), Some("e"));
 }
 
@@ -514,7 +514,7 @@ fn a_start_result_waits_for_its_pane_to_come_back_after_it_left() {
     session.lay_out(beside_a(&["p"]));
     session.lay_out(beside_a(&[]));
 
-    assert!(!session.started(request, placed(&session, "p")));
+    assert!(!session.started(request, placed(&session, "p")).0);
     session.lay_out(beside_a(&["p"]));
 
     assert_eq!(session.focused(), Some("p"));
@@ -528,7 +528,7 @@ fn a_failed_start_is_forgotten() {
     let request = start(&mut session);
     session.lay_out(beside_a(&["p1"]));
 
-    assert!(!session.started(request, None));
+    assert!(!session.started(request, None).0);
     assert!(session.starts.tracked().is_empty());
     session.lay_out(beside_a(&["p1"]));
     assert_eq!(session.focused(), Some("a"));
@@ -568,7 +568,7 @@ fn nested_from_b(zoomed: bool) -> Session {
     for (index, name) in ["f", "g"].into_iter().enumerate() {
         let request = command(&mut session);
         session.lay_out(beside_b(&["e", "f", "g"][..index + 2]));
-        assert!(session.started(request, placed(&session, name)));
+        assert!(session.started(request, placed(&session, name)).0);
         assert_eq!(session.focused(), Some(name));
     }
     session
@@ -583,7 +583,7 @@ fn opened_from_b(zoomed: bool) -> Session {
     }
     let request = command(&mut session);
     session.lay_out(beside_b(&["e"]));
-    assert!(session.started(request, placed(&session, "e")));
+    assert!(session.started(request, placed(&session, "e")).0);
     session
 }
 
@@ -656,7 +656,7 @@ fn a_pane_command_registered_after_its_opener_exited_returns_to_the_nearest_pane
         session.lay_out(beside_b(&["f"]));
         assert_eq!(session.focused(), Some("b"));
 
-        assert!(session.started(request, placed(&session, "f")));
+        assert!(session.started(request, placed(&session, "f")).0);
         assert_eq!(session.focused(), Some("f"));
         assert!(session.zoomed());
 
@@ -803,7 +803,7 @@ fn moving_focus_by_hand_after_asking_for_a_command_keeps_it_from_taking_focus() 
     assert_eq!(session.focused(), Some("c"));
 
     session.lay_out(beside_b(&["e"]));
-    assert!(!session.started(e, placed(&session, "e")));
+    assert!(!session.started(e, placed(&session, "e")).0);
     session.lay_out(beside_b(&["e"]));
 
     assert_eq!(session.focused(), Some("c"));
@@ -825,11 +825,11 @@ fn moving_focus_by_hand_after_asking_for_a_start_keeps_it_from_taking_focus() {
         assert_eq!(session.focused(), Some("c"));
 
         if result_first {
-            assert!(!session.started(request, placed(&session, "e")));
+            assert!(!session.started(request, placed(&session, "e")).0);
             session.lay_out(with_new_tab());
         } else {
             session.lay_out(with_new_tab());
-            assert!(!session.started(request, placed(&session, "e")));
+            assert!(!session.started(request, placed(&session, "e")).0);
         }
 
         assert_eq!(session.focused(), Some("c"), "result first {result_first}");
@@ -1052,13 +1052,88 @@ fn a_new_version_of_the_same_layout_that_finds_a_command_gone_still_settles_it()
     session.started(f, Some(("f".to_owned(), version + 1)));
     assert_eq!(session.starts.tracked().len(), 2);
 
-    session.update(beside_b(&["e"]), version + 2);
+    let closed = session.update(beside_b(&["e"]), version + 2);
 
+    assert_eq!(closed, Some(vec!["f".to_owned()]));
     assert_eq!(session.starts.tracked().len(), 1);
     assert_eq!(session.focused(), Some("e"));
     session.update(two_tabs(&[]), version + 3);
     assert_eq!(session.focused(), Some("b"));
     assert!(session.zoomed());
+}
+
+#[test]
+fn an_update_names_a_pane_command_only_once_it_closes() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]), 1);
+    assert!(session.focus("b"));
+    let request = command(&mut session);
+    session.started(request, Some(("e".to_owned(), 3)));
+
+    assert!(closed_by(&mut session, two_tabs(&[]), 2).is_empty());
+    assert!(closed_by(&mut session, beside_b(&["e"]), 3).is_empty());
+    assert_eq!(closed_by(&mut session, two_tabs(&[]), 4), ["e"]);
+    assert!(closed_by(&mut session, two_tabs(&[]), 5).is_empty());
+}
+
+#[test]
+fn an_update_names_each_nested_pane_command_that_closes_with_it() {
+    let mut session = nested_from_b(false);
+    let version = session.starts.version();
+
+    assert_eq!(
+        closed_by(&mut session, beside_b(&["e", "g"]), version + 1),
+        ["f"]
+    );
+
+    let mut closed = closed_by(&mut session, beside_b(&[]), version + 2);
+    closed.sort();
+    assert_eq!(closed, ["e", "g"]);
+}
+
+#[test]
+fn a_start_result_names_a_pane_command_that_closed_before_it_arrived() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]), 1);
+    assert!(session.focus("b"));
+    let request = command(&mut session);
+    assert!(closed_by(&mut session, beside_b(&["e"]), 2).is_empty());
+    assert!(closed_by(&mut session, two_tabs(&[]), 3).is_empty());
+
+    let (moved, closed) = session.started(request, Some(("e".to_owned(), 2)));
+
+    assert!(!moved);
+    assert_eq!(closed, ["e"]);
+    assert!(closed_by(&mut session, two_tabs(&[]), 4).is_empty());
+    assert!(session.starts.tracked().is_empty());
+}
+
+#[test]
+fn a_pane_command_that_ended_before_any_layout_owned_it_is_named_once_in_either_order() {
+    for result_first in [true, false] {
+        let mut session = Session::default();
+        session.update(two_tabs(&[]), 1);
+        assert!(session.focus("b"));
+        let request = command(&mut session);
+        session.heard(super::Report::Ended("e".to_owned()));
+
+        let closed = if result_first {
+            let (_, early) = session.started(request, Some(("e".to_owned(), 2)));
+            assert!(early.is_empty());
+            closed_by(&mut session, two_tabs(&[]), 3)
+        } else {
+            assert!(closed_by(&mut session, two_tabs(&[]), 3).is_empty());
+            session.started(request, Some(("e".to_owned(), 2))).1
+        };
+
+        assert_eq!(closed, ["e"], "result first {result_first}");
+        assert!(closed_by(&mut session, two_tabs(&[]), 4).is_empty());
+        assert!(session.starts.tracked().is_empty());
+    }
+}
+
+fn closed_by(session: &mut Session, layout: Layout, version: u64) -> Vec<String> {
+    session.update(layout, version).unwrap_or_default()
 }
 
 fn operation(

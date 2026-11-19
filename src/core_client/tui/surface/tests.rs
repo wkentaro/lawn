@@ -1981,6 +1981,66 @@ async fn a_pane_command_splits_right_of_the_focused_pane_and_runs_in_the_shell()
     assert_eq!(env_of(&overlay.env)["HERDR_ACTIVE_PANE_ID"], "t1");
 }
 
+#[tokio::test]
+async fn the_scrollback_is_taken_at_key_press_and_opens_beside_the_focused_pane() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)), 0);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::FocusPaneRight, true);
+    feed(&surface, "t0", b"left");
+    feed(&surface, "t1", b"right");
+
+    let Some(super::Operation::Overlay(overlay)) = surface.scrollback(None) else {
+        panic!("an overlay beside the focused pane");
+    };
+    feed(&surface, "t1", b" later");
+
+    assert_eq!(
+        overlay.scrollback,
+        Some(super::ScrollbackText("right".to_owned()))
+    );
+    assert!(overlay.argv.is_empty());
+    assert!(!format!("{overlay:?}").contains("right"));
+    assert_eq!(
+        overlay.destination,
+        crate::session_doc::Destination::Split {
+            beside: "t1".to_owned(),
+            direction: crate::session_doc::Direction::Right,
+            ratio: 0.5,
+        }
+    );
+    assert_eq!(env_of(&overlay.env)["HERDR_ACTIVE_PANE_ID"], "t1");
+}
+
+#[tokio::test]
+async fn the_scrollback_editor_comes_from_the_tui_environment_when_set() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(1)), 0);
+    frame(&mut surface, &HashSet::new());
+
+    let editors: Vec<Option<String>> = [Some("nvim -f"), Some(""), None]
+        .map(|editor| {
+            let Some(super::Operation::Overlay(overlay)) =
+                surface.scrollback(editor.map(str::to_owned))
+            else {
+                panic!("an overlay beside the focused pane");
+            };
+            env_of(&overlay.env)
+                .get("EDITOR")
+                .map(|editor| editor.to_string())
+        })
+        .into();
+
+    assert_eq!(editors, [Some("nvim -f".to_owned()), None, None]);
+}
+
+#[test]
+fn the_scrollback_without_a_focused_pane_opens_nothing() {
+    let mut surface = surface(40, 10);
+    surface.update(Layout::default(), 0);
+    assert!(surface.scrollback(Some("vi".to_owned())).is_none());
+}
+
 #[test]
 fn a_pane_command_without_a_focused_pane_starts_nothing() {
     let mut surface = surface(40, 10);
