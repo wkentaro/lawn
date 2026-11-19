@@ -780,3 +780,35 @@ async fn a_dialog_over_the_switcher_hides_it_and_the_switcher_returns_once_the_d
     screen.show(&mut surface, &HashSet::new());
     assert_eq!(screen.lines(0..20), switcher);
 }
+
+#[tokio::test]
+async fn a_click_on_a_switcher_closed_by_key_but_still_drawn_does_not_reach_the_pane_under_it() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    let pane = pane_inner(&surface, "t1");
+    tap(&mut surface, 58, 1);
+    frame(&mut surface, &HashSet::new());
+    inputs.iter_mut().for_each(|input| {
+        reports(input);
+    });
+
+    surface.close_switcher();
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        pane.x + 1,
+        pane.y + 4,
+    );
+    point(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        pane.x + 1,
+        pane.y + 4,
+    );
+
+    for input in &mut inputs {
+        assert_eq!(reports(input), b"");
+    }
+}

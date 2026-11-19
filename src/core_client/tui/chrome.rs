@@ -191,6 +191,7 @@ pub(super) struct Chrome {
     collapsed_manual: bool,
     divider_click: Option<Instant>,
     preferences: Option<PathBuf>,
+    unsaved: bool,
     recheck: bool,
     redraw: bool,
     tab_bar: TabBarState,
@@ -259,6 +260,7 @@ impl Chrome {
             collapsed_manual: false,
             divider_click: None,
             preferences: None,
+            unsaved: false,
             recheck: false,
             redraw: false,
             tab_bar: TabBarState::default(),
@@ -331,10 +333,11 @@ impl Chrome {
         if width != self.width {
             self.width = width;
             self.width_manual = true;
+            self.unsaved = true;
         }
     }
 
-    fn save(&self) {
+    fn save(&mut self) {
         let Some(path) = &self.preferences else {
             return;
         };
@@ -343,9 +346,11 @@ impl Chrome {
             sidebar_collapsed: self.collapsed_manual.then_some(self.collapsed),
             ..preferences::load(path).unwrap_or_default()
         };
-        if let Err(error) = preferences::store(path, preferences) {
+        let stored = preferences::store(path, preferences);
+        if let Err(error) = &stored {
             tracing::warn!(%error, path = %path.display(), "the sidebar preferences were not saved");
         }
+        self.unsaved = stored.is_err();
     }
 
     pub(super) fn claim(&mut self, event: MouseEvent, hidden: Rect) -> bool {
@@ -373,6 +378,19 @@ impl Chrome {
                         .iter()
                         .any(|rect| rect.contains(point))
                 })
+    }
+
+    pub(super) fn let_go(&mut self) {
+        if let Some(Press::Width) = self.press.take() {
+            self.divider_click = None;
+            self.save_unsaved();
+        }
+    }
+
+    fn save_unsaved(&mut self) {
+        if self.unsaved {
+            self.save();
+        }
     }
 
     pub(super) fn switching(&self) -> bool {
@@ -455,7 +473,6 @@ impl Chrome {
                 self.save();
             } else {
                 self.press = Some(Press::Width);
-                self.resize_to(point.x);
             }
             return None;
         }
@@ -596,7 +613,7 @@ impl Chrome {
         let press = self.press.take()?;
         match (press, self.end_drag()) {
             (Press::Width, _) => {
-                self.save();
+                self.save_unsaved();
                 None
             }
             (Press::Thumb(_), _) => None,

@@ -143,6 +143,12 @@ impl Overlays {
     fn covers(&self, y: u16) -> bool {
         self.rects().any(|rect| covers(rect, y))
     }
+
+    fn hides(&self, point: ratatui::layout::Position) -> bool {
+        [self.cover, self.dialog]
+            .iter()
+            .any(|rect| rect.contains(point))
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -346,9 +352,14 @@ impl Surface {
     }
 
     fn open(&mut self, dialog: Dialog) {
+        self.let_go();
+        self.dialog = Some(Modal::new(dialog));
+    }
+
+    fn let_go(&mut self) {
         self.end_gesture(None);
         self.end_drags();
-        self.dialog = Some(Modal::new(dialog));
+        self.outer.let_go();
     }
 
     pub(super) fn dialog_open(&self) -> bool {
@@ -776,6 +787,10 @@ impl Surface {
                 _ => {}
             }
         }
+        let point = Position::new(event.column, event.row);
+        if !self.outer.switching() && self.painted.hides(point) {
+            return None;
+        }
         let hidden = match self.painted.resize.is_empty() {
             true => self.painted.copy.bar,
             false => self.painted.resize,
@@ -800,7 +815,6 @@ impl Surface {
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed;
         }
-        let point = Position::new(event.column, event.row);
         if press && !hidden.contains(point) {
             self.splitting = self.split_at(point);
             if self.splitting.is_some() {
