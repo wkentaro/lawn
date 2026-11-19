@@ -3,7 +3,7 @@ use ratatui::style::Style;
 
 use super::*;
 use crate::core_client::tui::session::Operation;
-use crate::session_doc::Layout;
+use crate::session_doc::{Arrangement, Direction, Layout};
 
 const COLS: u16 = 60;
 const ROWS: u16 = 12;
@@ -22,7 +22,10 @@ fn grid_layout() -> Layout {
 }
 
 fn grid() -> Surface {
-    let mut surface = surface(COLS, ROWS);
+    laid_out(surface(COLS, ROWS))
+}
+
+fn laid_out(mut surface: Surface) -> Surface {
     surface.update(grid_layout());
     frame_attaching(&mut surface, &HashSet::new());
     surface
@@ -214,4 +217,493 @@ async fn swapping_picks_the_neighbour_by_the_panes_before_gaps_shrink_them() {
     landed(&mut tall, surface.act(KeybindAction::SwapPaneRight, false));
 
     assert_eq!(tall.workspaces[0].tabs[0].root.terminals(), ["b", "a", "c"]);
+}
+
+fn gapped() -> Surface {
+    laid_out(Surface::new(
+        host(COLS, ROWS),
+        PaneChrome {
+            borders: PaneBordersConfig::Auto,
+            gaps: true,
+            outer_borders: true,
+        },
+        panes_only(),
+        Palette::catppuccin(),
+        true,
+        Copying {
+            on_select: true,
+            toast: None,
+        },
+        keybinds(),
+    ))
+}
+
+fn split(surface: &Surface, path: &[bool]) -> crate::layout::SplitBorder {
+    surface
+        .tiles
+        .splits
+        .iter()
+        .find(|split| split.path == path)
+        .cloned()
+        .expect("split")
+}
+
+fn pointed(
+    surface: &mut Surface,
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    now: std::time::Instant,
+) -> Option<Operation> {
+    match surface.mouse(mouse_at(kind, column, row), now) {
+        Some(super::super::Pointed::Run(operation)) => Some(operation),
+        _ => None,
+    }
+}
+
+fn set(first: &str, second: &str, direction: Direction, ratio: f32) -> Option<Operation> {
+    Some(Operation::Arrange(Arrangement::SetRatio {
+        first: first.to_owned(),
+        second: second.to_owned(),
+        direction,
+        ratio,
+    }))
+}
+
+const PRESS: MouseEventKind = MouseEventKind::Down(MouseButton::Left);
+const DRAG: MouseEventKind = MouseEventKind::Drag(MouseButton::Left);
+const RELEASE: MouseEventKind = MouseEventKind::Up(MouseButton::Left);
+
+#[tokio::test]
+async fn dragging_a_split_border_sets_that_splits_ratio_under_the_pointer() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let (outer, inner) = (split(&surface, &[]), split(&surface, &[false]));
+    let across = |x: u16| f32::from(x - outer.area.x) / f32::from(outer.area.width);
+    let down = |y: u16| f32::from(y - inner.area.y) / f32::from(inner.area.height);
+
+    assert_eq!(pointed(&mut surface, PRESS, outer.pos, 9, now), None);
+    assert_eq!(
+        pointed(&mut surface, DRAG, 45, 9, now),
+        set("b", "c", Direction::Right, across(45))
+    );
+    pointed(&mut surface, RELEASE, 45, 9, now);
+
+    assert_eq!(pointed(&mut surface, PRESS, 10, inner.pos, now), None);
+    assert_eq!(
+        pointed(&mut surface, DRAG, 10, 3, now),
+        set("a", "b", Direction::Down, down(3))
+    );
+}
+
+fn landing(
+    surface: &mut Surface,
+    layout: &mut Layout,
+    operation: Option<Operation>,
+) -> Option<Operation> {
+    if let Some(Operation::Arrange(arrangement)) = &operation {
+        layout.arrange(arrangement);
+        surface.update(layout.clone());
+        frame_attaching(surface, &HashSet::new());
+    }
+    operation
+}
+
+#[tokio::test]
+async fn a_split_drag_sends_at_most_every_33_ms_and_on_release_the_ratio_under_the_pointer() {
+    let mut surface = grid();
+    let mut layout = grid_layout();
+    let start = std::time::Instant::now();
+    let at = |ms| start + std::time::Duration::from_millis(ms);
+    let outer = split(&surface, &[]);
+    let across = |x: u16| f32::from(x - outer.area.x) / f32::from(outer.area.width);
+    let mut landed = |surface: &mut Surface, kind, x, y, ms| {
+        let operation = pointed(surface, kind, x, y, at(ms));
+        landing(surface, &mut layout, operation)
+    };
+
+    landed(&mut surface, PRESS, outer.pos, 5, 0);
+    assert_eq!(
+        landed(&mut surface, DRAG, 40, 5, 0),
+        set("b", "c", Direction::Right, across(40))
+    );
+    assert_eq!(landed(&mut surface, DRAG, 41, 5, 32), None);
+    assert_eq!(
+        landed(&mut surface, DRAG, 42, 5, 33),
+        set("b", "c", Direction::Right, across(42))
+    );
+    assert_eq!(landed(&mut surface, DRAG, 43, 5, 40), None);
+    assert_eq!(
+        landed(&mut surface, RELEASE, 43, 5, 41),
+        set("b", "c", Direction::Right, across(43))
+    );
+
+    let outer = split(&surface, &[]);
+    landed(&mut surface, PRESS, outer.pos, 5, 100);
+    assert_eq!(
+        landed(&mut surface, DRAG, 44, 5, 100),
+        set("b", "c", Direction::Right, across(44))
+    );
+    assert_eq!(landed(&mut surface, DRAG, 44, 6, 200), None);
+    assert_eq!(landed(&mut surface, RELEASE, 44, 6, 201), None);
+    assert_eq!(landed(&mut surface, DRAG, 46, 6, 300), None);
+}
+
+#[tokio::test]
+async fn a_drag_motion_the_33_ms_limit_holds_back_is_sent_once_the_limit_allows() {
+    let mut surface = grid();
+    let start = std::time::Instant::now();
+    let at = |ms| start + std::time::Duration::from_millis(ms);
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 5, at(0));
+    assert_eq!(
+        pointed(&mut surface, DRAG, 40, 5, at(0)),
+        set("b", "c", Direction::Right, across(&outer, 40))
+    );
+
+    assert_eq!(pointed(&mut surface, DRAG, 43, 5, at(10)), None);
+
+    assert_eq!(surface.deadline(), Some(at(33)));
+    assert_eq!(surface.tick(at(32)), None);
+    assert_eq!(
+        surface.tick(at(33)),
+        set("b", "c", Direction::Right, across(&outer, 43))
+    );
+    assert_eq!(surface.deadline(), None);
+    assert_eq!(surface.tick(at(80)), None);
+}
+
+#[tokio::test]
+async fn a_release_supersedes_a_drag_motion_the_33_ms_limit_holds_back() {
+    let mut surface = grid();
+    let start = std::time::Instant::now();
+    let at = |ms| start + std::time::Duration::from_millis(ms);
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 5, at(0));
+    pointed(&mut surface, DRAG, 40, 5, at(0));
+    pointed(&mut surface, DRAG, 43, 5, at(10));
+
+    assert_eq!(
+        pointed(&mut surface, RELEASE, 45, 5, at(12)),
+        set("b", "c", Direction::Right, across(&outer, 45))
+    );
+    assert_eq!(surface.deadline(), None);
+    assert_eq!(surface.tick(at(33)), None);
+}
+
+#[tokio::test]
+async fn a_split_drag_past_the_ratio_limit_sends_the_clamped_ratio_once() {
+    let mut surface = laid_out(surface(100, ROWS));
+    let mut layout = grid_layout();
+    let start = std::time::Instant::now();
+    let at = |ms| start + std::time::Duration::from_millis(ms);
+    let outer = split(&surface, &[]);
+    assert_eq!(outer.area.width, 100);
+
+    pointed(&mut surface, PRESS, outer.pos, 5, at(0));
+    let sent: Vec<Operation> = [(92, 0), (95, 33), (98, 66)]
+        .into_iter()
+        .filter_map(|(offset, ms)| {
+            let operation = pointed(&mut surface, DRAG, outer.area.x + offset, 5, at(ms));
+            landing(&mut surface, &mut layout, operation)
+        })
+        .collect();
+
+    assert_eq!(sent, [set("b", "c", Direction::Right, 0.9).expect("set")]);
+}
+
+#[tokio::test]
+async fn a_split_grabbed_beside_its_line_keeps_that_offset_while_dragging() {
+    let mut surface = gapped();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    let across = |x: u16| f32::from(x - outer.area.x) / f32::from(outer.area.width);
+
+    assert_eq!(pointed(&mut surface, PRESS, outer.pos - 1, 5, now), None);
+    assert_eq!(
+        pointed(&mut surface, DRAG, 40, 5, now),
+        set("b", "c", Direction::Right, across(41))
+    );
+}
+
+#[tokio::test]
+async fn a_split_drag_ends_when_the_host_loses_focus() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    surface.host_focus(false);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+    assert_eq!(pointed(&mut surface, RELEASE, 45, 9, now), None);
+}
+
+fn nested(ratio: f32) -> Layout {
+    serde_json::from_value(
+        json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": {
+            "kind": "split", "direction": "right", "ratio": ratio,
+            "first": {"kind": "split", "direction": "right", "ratio": 0.5,
+                "first": {"kind": "pane", "terminal": "a"},
+                "second": {"kind": "pane", "terminal": "b"}},
+            "second": {"kind": "pane", "terminal": "c"},
+        }}]}]}),
+    )
+    .expect("layout")
+}
+
+fn across(split: &crate::layout::SplitBorder, x: u16) -> f32 {
+    f32::from(x - split.area.x) / f32::from(split.area.width)
+}
+
+#[tokio::test]
+async fn a_child_split_drag_follows_its_bounds_when_another_client_moves_the_parent() {
+    let mut surface = surface(100, ROWS);
+    surface.update(nested(0.5));
+    frame_attaching(&mut surface, &HashSet::new());
+    let now = std::time::Instant::now();
+    let pressed = split(&surface, &[false]);
+    pointed(&mut surface, PRESS, pressed.pos, 5, now);
+
+    surface.update(nested(0.8));
+    frame_attaching(&mut surface, &HashSet::new());
+    let moved = split(&surface, &[false]);
+    assert!(moved.area.width > pressed.area.width);
+
+    assert_eq!(
+        pointed(&mut surface, DRAG, 35, 5, now),
+        set("a", "b", Direction::Right, across(&moved, 35))
+    );
+}
+
+#[tokio::test]
+async fn a_split_drag_survives_another_client_setting_that_splits_ratio() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    let mut moved = grid_layout();
+    moved.arrange(&Arrangement::SetRatio {
+        first: "b".to_owned(),
+        second: "c".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.7,
+    });
+    surface.update(moved);
+    frame_attaching(&mut surface, &HashSet::new());
+
+    assert_eq!(
+        pointed(&mut surface, DRAG, 45, 9, now),
+        set("b", "c", Direction::Right, across(&outer, 45))
+    );
+}
+
+#[tokio::test]
+async fn a_split_drag_follows_its_bounds_through_a_host_resize_not_yet_drawn() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    surface.resize(host(COLS * 2, ROWS));
+    let released = pointed(&mut surface, RELEASE, 45, 9, now);
+    frame_attaching(&mut surface, &HashSet::new());
+
+    assert_eq!(
+        released,
+        set(
+            "b",
+            "c",
+            Direction::Right,
+            across(&split(&surface, &[]), 45)
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_split_drag_follows_its_bounds_through_a_sidebar_toggle_not_yet_drawn() {
+    let mut surface = laid_out(surface(100, ROWS));
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 5, now);
+
+    surface.act(KeybindAction::ToggleSidebar, false);
+    let dragged = pointed(&mut surface, DRAG, 55, 5, now);
+    frame_attaching(&mut surface, &HashSet::new());
+    let shifted = split(&surface, &[]);
+    assert_ne!(shifted.area, outer.area);
+
+    assert_eq!(
+        dragged,
+        set("b", "c", Direction::Right, across(&shifted, 55))
+    );
+}
+
+#[tokio::test]
+async fn a_press_on_the_resize_bar_over_a_split_border_starts_no_drag_and_one_row_above_does() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    surface.act(KeybindAction::EnterResizeMode, false);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(pointed(&mut surface, PRESS, outer.pos, ROWS - 1, now), None);
+    assert_eq!(pointed(&mut surface, DRAG, 45, ROWS - 1, now), None);
+    assert_eq!(pointed(&mut surface, RELEASE, 45, ROWS - 1, now), None);
+
+    let across = |x: u16| f32::from(x - outer.area.x) / f32::from(outer.area.width);
+    pointed(&mut surface, PRESS, outer.pos, ROWS - 2, now);
+    assert_eq!(
+        pointed(&mut surface, DRAG, 45, ROWS - 2, now),
+        set("b", "c", Direction::Right, across(45))
+    );
+}
+
+#[tokio::test]
+async fn a_press_on_the_copy_bar_over_a_split_border_starts_no_drag() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    surface.enter_copy_mode();
+    frame(&mut surface, &HashSet::new());
+    assert!(surface.copy_mode());
+
+    pointed(&mut surface, PRESS, outer.pos, ROWS - 1, now);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, ROWS - 1, now), None);
+}
+
+#[tokio::test]
+async fn a_split_drag_ends_when_a_dialog_opens() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    surface.act(KeybindAction::Help, false);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_fresh_press_replaces_a_split_drag_whose_release_was_lost() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    pointed(&mut surface, PRESS, 10, 9, now);
+
+    assert_eq!(surface.session.focused(), Some("b"));
+    assert_eq!(pointed(&mut surface, DRAG, 12, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_split_drag_ends_when_the_panes_around_it_change() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    let mut parked = grid_layout();
+    parked.parked.insert("b".to_owned());
+    surface.update(parked);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_split_drag_ends_when_the_focused_tab_changes() {
+    let mut surface = grid();
+    let mut tabs = grid_layout();
+    tabs.add_tab("w0", None, "d".to_owned());
+    surface.update(tabs);
+    frame_attaching(&mut surface, &HashSet::new());
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    surface.act(KeybindAction::NextTab, false);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_press_on_a_border_laid_out_before_a_tab_switch_starts_no_drag() {
+    let mut surface = grid();
+    let mut tabs = grid_layout();
+    tabs.add_tab("w0", None, "d".to_owned());
+    tabs.workspaces[0].tabs[1].root = serde_json::from_value(json!({
+        "kind": "split", "direction": "right", "ratio": 0.5,
+        "first": {"kind": "pane", "terminal": "d"},
+        "second": {"kind": "pane", "terminal": "e"},
+    }))
+    .expect("root");
+    surface.update(tabs);
+    frame_attaching(&mut surface, &HashSet::new());
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+
+    surface.act(KeybindAction::NextTab, false);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+    assert_eq!(pointed(&mut surface, RELEASE, 45, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_split_drag_ends_when_the_pane_zooms() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+
+    surface.act(KeybindAction::Zoom, false);
+
+    assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
+    assert_eq!(pointed(&mut surface, RELEASE, 45, 9, now), None);
+}
+
+#[tokio::test]
+async fn a_release_sends_its_ratio_when_another_client_set_that_split_since_the_last_send() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 9, now);
+    assert_eq!(
+        pointed(&mut surface, DRAG, 45, 9, now),
+        set("b", "c", Direction::Right, across(&outer, 45))
+    );
+
+    let mut moved = grid_layout();
+    moved.arrange(&Arrangement::SetRatio {
+        first: "b".to_owned(),
+        second: "c".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.7,
+    });
+    surface.update(moved);
+    frame_attaching(&mut surface, &HashSet::new());
+
+    assert_eq!(
+        pointed(&mut surface, RELEASE, 45, 9, now),
+        set("b", "c", Direction::Right, across(&outer, 45))
+    );
+}
+
+#[tokio::test]
+async fn a_split_whose_area_is_empty_along_its_axis_gets_no_ratio_from_a_drag_or_release() {
+    let mut surface = grid();
+    let now = std::time::Instant::now();
+    let inner = split(&surface, &[false]);
+    pointed(&mut surface, PRESS, 10, inner.pos, now);
+
+    surface.resize(host(COLS, 0));
+    frame_attaching(&mut surface, &HashSet::new());
+    assert_eq!(split(&surface, &[false]).area.height, 0);
+
+    assert_eq!(pointed(&mut surface, DRAG, 10, 0, now), None);
+    assert_eq!(pointed(&mut surface, RELEASE, 10, 0, now), None);
 }

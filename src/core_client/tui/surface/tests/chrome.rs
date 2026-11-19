@@ -1795,6 +1795,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
     assert!(surface.needs_frame());
 }
 
+mod drag;
 mod mobile;
 
 #[tokio::test]

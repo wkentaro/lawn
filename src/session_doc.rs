@@ -11,7 +11,7 @@ mod legacy;
 mod start;
 mod tiling;
 
-pub(crate) use edit::{Arrangement, Place, Placement};
+pub(crate) use edit::{Arrangement, Place, Placement, MAX_RATIO, MIN_RATIO};
 pub(crate) use start::{Created, Destination, PendingStart};
 
 const SCHEMA: u64 = 3;
