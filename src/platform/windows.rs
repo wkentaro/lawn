@@ -1935,6 +1935,10 @@ fn process_belongs_to_pane(
         })
 }
 
+pub fn boot_id() -> Option<String> {
+    None
+}
+
 /// Creation time of `pid`. It tells a process apart from a later one that
 /// reuses its pid.
 pub fn process_start_token(pid: u32) -> Option<u64> {
