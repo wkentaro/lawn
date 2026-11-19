@@ -17,6 +17,23 @@ pub(crate) fn enabled() -> bool {
     std::env::var_os(REWRITE_ENV).is_some_and(|value| value == "1")
 }
 
+pub(crate) const LOG_FILE: &str = "herdr-client.log";
+
+pub(crate) fn log_dir() -> std::path::PathBuf {
+    log_dir_in(
+        &crate::config::state_dir(),
+        crate::session::active_name().as_deref(),
+    )
+}
+
+fn log_dir_in(state: &std::path::Path, session: Option<&str>) -> std::path::PathBuf {
+    let root = state.join("core-client");
+    match session {
+        Some(name) => root.join("sessions").join(name),
+        None => root,
+    }
+}
+
 fn core() -> std::io::Result<std::sync::Arc<crate::hc::Core>> {
     crate::hc::backend()
         .unwrap_or_else(crate::hc::Core::connect)

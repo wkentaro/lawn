@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::cli::parse;
 use super::commands::{Command, Program};
@@ -175,6 +175,25 @@ fn ls_text_lists_a_parked_terminal_only_under_parked() {
         super::commands::ls_text(&layout),
         "ws0 main\n  tab1\n    t1\nparked:\n  t2\n"
     );
+}
+
+#[test]
+fn the_default_session_and_one_named_like_it_log_to_different_directories() {
+    let state = Path::new("/state");
+    let default = super::log_dir_in(state, None);
+    let named = super::log_dir_in(state, Some("Default"));
+    assert_ne!(
+        default.to_string_lossy().to_lowercase(),
+        named.to_string_lossy().to_lowercase()
+    );
+}
+
+#[test]
+fn a_session_log_is_not_among_the_old_session_directories_under_a_shared_root() {
+    let root = Path::new("/shared");
+    let dir = super::log_dir_in(root, Some("fresh"));
+    assert!(dir.starts_with(root.join("core-client")));
+    assert!(!dir.starts_with(root.join("sessions")));
 }
 
 #[cfg(unix)]
