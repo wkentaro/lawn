@@ -19,6 +19,19 @@ fn bold() -> u16 {
 }
 
 #[tokio::test]
+async fn opening_the_switcher_ends_resize_mode() {
+    let mut surface = plain(64, 20);
+    surface.update(two_workspaces());
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::EnterResizeMode, false);
+
+    assert_eq!(tap(&mut surface, 58, 1), None);
+
+    assert!(surface.switching());
+    assert!(!surface.resizing());
+}
+
+#[tokio::test]
 async fn at_the_mobile_width_threshold_a_header_sits_above_the_panes_and_one_column_more_brings_back_the_sidebar(
 ) {
     let mut surface = plain(64, 20);
@@ -419,6 +432,28 @@ async fn in_copy_mode_a_press_on_the_switch_button_does_not_open_the_switcher() 
     frame(&mut surface, &dirty);
     tap(&mut surface, 58, 1);
     assert!(surface.switching());
+}
+
+#[tokio::test]
+async fn in_resize_mode_over_copy_mode_the_switch_button_opens_the_switcher_and_copy_mode_resumes_after_it(
+) {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    feed(&surface, "t1", b"hello");
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    frame(&mut surface, &dirty);
+    surface.enter_copy_mode();
+    surface.act(KeybindAction::EnterResizeMode, false);
+    frame(&mut surface, &dirty);
+
+    tap(&mut surface, 58, 1);
+    assert!(surface.switching());
+    assert!(!surface.resizing());
+
+    surface.close_switcher();
+    frame(&mut surface, &dirty);
+    assert!(surface.copy_mode());
 }
 
 #[tokio::test]

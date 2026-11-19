@@ -9,8 +9,9 @@ use crate::hc::Core;
 mod edit;
 mod legacy;
 mod start;
+mod tiling;
 
-pub(crate) use edit::{Arrangement, Placement};
+pub(crate) use edit::{Arrangement, Place, Placement};
 pub(crate) use start::{Created, Destination, PendingStart};
 
 const SCHEMA: u64 = 3;

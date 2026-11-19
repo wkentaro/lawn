@@ -1796,3 +1796,58 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 }
 
 mod mobile;
+
+#[tokio::test]
+async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+    });
+    surface.update(spaces(&[(None, &[None, None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    let (second, plus) = (find(&surface, 29, " 2 ") + 1, find(&surface, 29, " + ") + 1);
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        second,
+        29,
+    );
+    surface.act(KeybindAction::EnterResizeMode, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.painted.resize, surface.areas.tab_bar);
+
+    point(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        second,
+        29,
+    );
+    assert_eq!(tab(&surface), "tab1");
+    assert_eq!(tap(&mut surface, plus, 29), None);
+    tap(&mut surface, second, 29);
+    wheel(&mut surface, true, second, 29);
+    assert_eq!(tab(&surface), "tab1");
+}
+
+#[tokio::test]
+async fn the_resize_bar_hides_the_cursor_on_its_row() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame_attaching(&mut surface, &HashSet::new());
+    let dirty = HashSet::from([id_of(&surface, "t1")]);
+    let inner = pane_inner(&surface, "t1");
+    feed(
+        &surface,
+        "t1",
+        format!("\x1b[{};3H\x1b[?25h", inner.height).as_bytes(),
+    );
+    frame(&mut surface, &dirty);
+    assert_eq!(
+        surface.cursor().map(|cursor| cursor.y),
+        Some(inner.bottom() - 1)
+    );
+
+    surface.act(KeybindAction::EnterResizeMode, false);
+    frame(&mut surface, &dirty);
+    assert_eq!(surface.painted.resize.y, inner.bottom() - 1);
+    assert_eq!(surface.cursor(), None);
+}

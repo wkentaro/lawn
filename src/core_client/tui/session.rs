@@ -7,7 +7,9 @@ use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
 use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
-use crate::session_doc::{Arrangement, Destination, Direction, Layout, Node, Tab, Workspace};
+use crate::session_doc::{
+    Arrangement, Destination, Direction, Layout, Node, Place, Tab, Workspace,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PaneChrome {
@@ -78,6 +80,10 @@ pub(super) struct Session {
 }
 
 impl Session {
+    pub(super) fn holds(&self, layout: &Layout) -> bool {
+        self.layout == *layout
+    }
+
     pub(super) fn update(&mut self, layout: Layout) {
         self.layout = layout;
         self.ids.retain(|terminal, _| self.layout.owns(terminal));
@@ -228,6 +234,44 @@ impl Session {
             None => self.switched(&focus, action),
         };
         next.is_some_and(|next| self.move_focus(next))
+    }
+
+    pub(super) fn arrangement(&self, action: KeybindAction, area: Rect) -> Option<Arrangement> {
+        let focus = self.focus.as_ref()?;
+        match action {
+            KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
+                Some(Arrangement::MoveTab {
+                    tab: focus.tab.clone(),
+                    to: match action {
+                        KeybindAction::MoveTabNext => Place::Next,
+                        _ => Place::Previous,
+                    },
+                })
+            }
+            KeybindAction::SwapPaneLeft
+            | KeybindAction::SwapPaneDown
+            | KeybindAction::SwapPaneUp
+            | KeybindAction::SwapPaneRight => {
+                let (terminal, toward) = (focus.terminal.clone()?, nav_direction(action)?);
+                Some(Arrangement::Swap {
+                    terminal,
+                    toward,
+                    area,
+                })
+            }
+            KeybindAction::ResizePaneLeft
+            | KeybindAction::ResizePaneDown
+            | KeybindAction::ResizePaneUp
+            | KeybindAction::ResizePaneRight => {
+                let (terminal, toward) = (focus.terminal.clone()?, nav_direction(action)?);
+                Some(Arrangement::Resize {
+                    terminal,
+                    toward,
+                    area,
+                })
+            }
+            _ => None,
+        }
     }
 
     pub(super) fn operation(&self, action: KeybindAction, confirm_close: bool) -> Option<Request> {
@@ -515,11 +559,7 @@ impl Session {
     }
 
     pub(super) fn id(&mut self, terminal: &str) -> PaneId {
-        let next_id = &mut self.next_id;
-        *self.ids.entry(terminal.to_owned()).or_insert_with(|| {
-            *next_id += 1;
-            PaneId::from_raw(*next_id)
-        })
+        assigned(&mut self.ids, &mut self.next_id, terminal)
     }
 
     pub(super) fn tiles(&mut self, area: Rect, chrome: PaneChrome) -> Tiles {
@@ -590,27 +630,10 @@ impl Session {
     }
 
     fn project(&mut self, node: &Node) -> Option<crate::layout::Node> {
-        match node {
-            Node::Pane { terminal } if self.layout.parked.contains(terminal) => None,
-            Node::Pane { terminal } => Some(crate::layout::Node::Pane(self.id(terminal))),
-            Node::Split {
-                direction,
-                ratio,
-                first,
-                second,
-            } => match (self.project(first), self.project(second)) {
-                (Some(first), Some(second)) => Some(crate::layout::Node::Split {
-                    direction: match direction {
-                        Direction::Right => ratatui::layout::Direction::Horizontal,
-                        Direction::Down => ratatui::layout::Direction::Vertical,
-                    },
-                    ratio: *ratio,
-                    first: Box::new(first),
-                    second: Box::new(second),
-                }),
-                (first, second) => first.or(second),
-            },
-        }
+        let (ids, next_id) = (&mut self.ids, &mut self.next_id);
+        node.shown(&self.layout.parked, &mut |terminal| {
+            assigned(ids, next_id, terminal)
+        })
     }
 
     fn locate(&self, terminal: &str) -> Option<Focus> {
@@ -655,6 +678,23 @@ impl Session {
 
 fn naming(workspace: &Workspace) -> Option<&str> {
     Some(workspace.tabs.first()?.root.first_terminal())
+}
+
+fn nav_direction(action: KeybindAction) -> Option<NavDirection> {
+    match action {
+        KeybindAction::SwapPaneLeft | KeybindAction::ResizePaneLeft => Some(NavDirection::Left),
+        KeybindAction::SwapPaneDown | KeybindAction::ResizePaneDown => Some(NavDirection::Down),
+        KeybindAction::SwapPaneUp | KeybindAction::ResizePaneUp => Some(NavDirection::Up),
+        KeybindAction::SwapPaneRight | KeybindAction::ResizePaneRight => Some(NavDirection::Right),
+        _ => None,
+    }
+}
+
+fn assigned(ids: &mut HashMap<String, PaneId>, next_id: &mut u32, terminal: &str) -> PaneId {
+    *ids.entry(terminal.to_owned()).or_insert_with(|| {
+        *next_id += 1;
+        PaneId::from_raw(*next_id)
+    })
 }
 
 fn wrapped(index: usize, step: isize, len: usize) -> usize {

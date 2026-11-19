@@ -15,6 +15,7 @@ pub(super) enum Routed {
     Copy,
     CopyMode(TerminalKey),
     Dialog(TerminalKey),
+    Resize(TerminalKey),
     Dismiss,
 }
 
@@ -25,6 +26,7 @@ pub(super) enum Mode {
     Prompt,
     Switcher,
     Dialog,
+    Resize,
 }
 
 pub(super) struct Keys {
@@ -203,6 +205,11 @@ impl Keys {
         if mode == Mode::Dialog {
             self.prefix = false;
             routed.push(Routed::Dialog(key.clone()));
+            return None;
+        }
+        if mode == Mode::Resize {
+            self.prefix = false;
+            routed.push(Routed::Resize(key.clone()));
             return None;
         }
         if mode == Mode::Switcher {

@@ -4,7 +4,7 @@ use serde_json::json;
 use super::{Operation, PaneChrome, Request, Session};
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
-use crate::session_doc::{Destination, Direction, Layout};
+use crate::session_doc::{Arrangement, Destination, Direction, Layout, Place};
 
 fn layout(value: serde_json::Value) -> Layout {
     serde_json::from_value(value).expect("layout")
@@ -578,4 +578,270 @@ fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_
         json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t1", "root": pane("c")}]}]}),
     ));
     assert_eq!(session.confirmed(&workspace), close(&["c"]));
+}
+
+fn arranged(session: &mut Session, action: KeybindAction) -> Option<Arrangement> {
+    session.arrangement(action, AREA)
+}
+
+fn three_tabs() -> Layout {
+    layout(json!({"workspaces": [
+        {"id": "w0", "tabs": [
+            {"id": "t0", "root": pane("a")},
+            {"id": "t1", "root": pane("b")},
+            {"id": "t2", "root": pane("c")},
+        ]},
+        {"id": "w1", "tabs": [{"id": "t3", "root": pane("d")}]},
+    ]}))
+}
+
+fn moved(tab: &str, to: Place) -> Option<Arrangement> {
+    Some(Arrangement::MoveTab {
+        tab: tab.to_owned(),
+        to,
+    })
+}
+
+#[test]
+fn moving_a_tab_names_the_focused_tab() {
+    let mut session = Session::default();
+    session.update(three_tabs());
+    navigate(&mut session, KeybindAction::SwitchTab(1));
+    assert_eq!(
+        arranged(&mut session, KeybindAction::MoveTabNext),
+        moved("t1", Place::Next)
+    );
+    assert_eq!(
+        arranged(&mut session, KeybindAction::MoveTabPrevious),
+        moved("t1", Place::Previous)
+    );
+}
+
+#[test]
+fn a_tab_move_asked_before_a_new_tab_lands_still_moves_past_it() {
+    let mut session = Session::default();
+    session.update(three_tabs());
+    navigate(&mut session, KeybindAction::NextWorkspace);
+    let asked = [arranged(&mut session, KeybindAction::MoveTabNext)];
+
+    let mut opened = three_tabs();
+    opened.add_tab("w1", None, "e".to_owned());
+    let after = landed(opened, &asked);
+
+    let ids: Vec<&str> = after.workspaces[1]
+        .tabs
+        .iter()
+        .map(|tab| tab.id.as_str())
+        .collect();
+    assert_eq!(ids[1], "t3");
+}
+
+#[test]
+fn swapping_trades_places_with_the_unzoomed_neighbour_and_does_nothing_at_an_edge() {
+    let mut session = Session::default();
+    session.update(grid());
+    let swapped = |session: &mut Session, action| {
+        let asked = [arranged(session, action)];
+        order(&landed(grid(), &asked)).join(" ")
+    };
+    assert_eq!(swapped(&mut session, KeybindAction::SwapPaneRight), "c b a");
+    assert_eq!(swapped(&mut session, KeybindAction::SwapPaneDown), "b a c");
+    assert_eq!(swapped(&mut session, KeybindAction::SwapPaneLeft), "a b c");
+    assert_eq!(swapped(&mut session, KeybindAction::SwapPaneUp), "a b c");
+    navigate(&mut session, KeybindAction::Zoom);
+    assert_eq!(swapped(&mut session, KeybindAction::SwapPaneRight), "c b a");
+}
+
+#[test]
+fn a_swapped_pane_keeps_focus_and_zoom_in_its_new_place() {
+    let mut session = Session::default();
+    session.update(grid());
+    navigate(&mut session, KeybindAction::Zoom);
+    let asked = [arranged(&mut session, KeybindAction::SwapPaneRight)];
+    session.update(landed(grid(), &asked));
+    assert_eq!(session.focused(), Some("a"));
+    assert_eq!(shown(&mut session), ["a"]);
+    navigate(&mut session, KeybindAction::Zoom);
+    assert_eq!(shown(&mut session), ["c", "b", "a"]);
+}
+
+fn resized(session: &mut Session, action: KeybindAction) -> Vec<f32> {
+    let asked = [arranged(session, action)];
+    ratios(&landed(grid(), &asked).workspaces[0].tabs[0].root)
+}
+
+#[test]
+fn resizing_steps_the_nearest_split_toward_the_key_or_else_the_one_behind_the_pane() {
+    let mut session = Session::default();
+    session.update(grid());
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneRight),
+        [0.55, 0.5]
+    );
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneLeft),
+        [0.45, 0.5]
+    );
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneDown),
+        [0.5, 0.55]
+    );
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneUp),
+        [0.5, 0.45]
+    );
+    navigate(&mut session, KeybindAction::FocusPaneRight);
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneDown),
+        [0.5, 0.5]
+    );
+    assert_eq!(
+        resized(&mut session, KeybindAction::ResizePaneRight),
+        [0.55, 0.5]
+    );
+}
+
+#[test]
+fn resizing_skips_splits_a_parked_pane_leaves_hidden() {
+    let mut session = Session::default();
+    let mut parked = grid();
+    parked.parked.insert("b".to_owned());
+    session.update(parked.clone());
+    let asked = [
+        arranged(&mut session, KeybindAction::ResizePaneDown),
+        arranged(&mut session, KeybindAction::ResizePaneRight),
+    ];
+    assert_eq!(
+        ratios(&landed(parked, &asked).workspaces[0].tabs[0].root),
+        [0.55, 0.5]
+    );
+}
+
+fn one_tab(root: serde_json::Value) -> Layout {
+    layout(json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": root}]}]}))
+}
+
+fn down(first: serde_json::Value, second: serde_json::Value) -> serde_json::Value {
+    json!({"kind": "split", "direction": "down", "ratio": 0.5, "first": first, "second": second})
+}
+
+fn order(layout: &Layout) -> Vec<&str> {
+    layout.workspaces[0].tabs[0].root.terminals()
+}
+
+fn landed(mut layout: Layout, arrangements: &[Option<Arrangement>]) -> Layout {
+    for arrangement in arrangements.iter().flatten() {
+        layout.arrange(arrangement);
+    }
+    layout
+}
+
+#[test]
+fn two_swaps_asked_before_either_lands_move_the_pane_two_places() {
+    let row = one_tab(split(pane("a"), split(pane("b"), pane("c"))));
+    let mut session = Session::default();
+    session.update(row.clone());
+
+    let asked = [
+        arranged(&mut session, KeybindAction::SwapPaneRight),
+        arranged(&mut session, KeybindAction::SwapPaneRight),
+    ];
+
+    assert_eq!(order(&landed(row, &asked)), ["b", "c", "a"]);
+}
+
+#[test]
+fn a_swap_back_asked_before_the_first_swap_lands_returns_the_pane() {
+    let row = one_tab(split(pane("a"), split(pane("b"), pane("c"))));
+    let mut session = Session::default();
+    session.update(row.clone());
+
+    let asked = [
+        arranged(&mut session, KeybindAction::SwapPaneRight),
+        arranged(&mut session, KeybindAction::SwapPaneLeft),
+    ];
+
+    assert_eq!(order(&landed(row, &asked)), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_resize_asked_after_a_swap_that_gives_the_pane_its_split_still_lands() {
+    let columns = one_tab(split(pane("a"), down(pane("b"), pane("c"))));
+    let mut session = Session::default();
+    session.update(columns.clone());
+
+    let asked = [
+        arranged(&mut session, KeybindAction::SwapPaneRight),
+        arranged(&mut session, KeybindAction::ResizePaneDown),
+    ];
+
+    let after = landed(columns, &asked);
+    assert_eq!(order(&after), ["b", "a", "c"]);
+    assert_eq!(ratios(&after.workspaces[0].tabs[0].root), [0.5, 0.55]);
+}
+
+#[test]
+fn a_swap_passes_over_a_neighbour_parked_before_it_lands() {
+    let row = one_tab(split(pane("a"), split(pane("b"), pane("c"))));
+    let mut session = Session::default();
+    session.update(row.clone());
+    let asked = [arranged(&mut session, KeybindAction::SwapPaneRight)];
+
+    let mut parked = row;
+    parked.parked.insert("b".to_owned());
+
+    assert_eq!(order(&landed(parked, &asked)), ["c", "b", "a"]);
+}
+
+fn ratios(node: &crate::session_doc::Node) -> Vec<f32> {
+    match node {
+        crate::session_doc::Node::Pane { .. } => Vec::new(),
+        crate::session_doc::Node::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } => [*ratio]
+            .into_iter()
+            .chain(ratios(first))
+            .chain(ratios(second))
+            .collect(),
+    }
+}
+
+#[test]
+fn a_resize_asked_before_a_swap_lands_still_resizes_along_its_key() {
+    let mut session = Session::default();
+    session.update(one_tab(split(down(pane("a"), pane("b")), pane("c"))));
+    let asked = [arranged(&mut session, KeybindAction::ResizePaneDown)];
+
+    let swapped = one_tab(split(down(pane("a"), pane("c")), pane("b")));
+    let after = landed(swapped, &asked);
+
+    assert_eq!(ratios(&after.workspaces[0].tabs[0].root), [0.5, 0.55]);
+}
+
+#[test]
+fn a_tab_move_asked_before_an_earlier_tab_closes_still_steps_past_its_neighbour() {
+    let tabs = layout(json!({"workspaces": [{"id": "w0", "tabs": [
+        {"id": "t0", "root": pane("a")},
+        {"id": "t1", "root": pane("b")},
+        {"id": "t2", "root": pane("c")},
+        {"id": "t3", "root": pane("d")},
+    ]}]}));
+    let mut session = Session::default();
+    session.update(tabs.clone());
+    navigate(&mut session, KeybindAction::SwitchTab(1));
+    let asked = [arranged(&mut session, KeybindAction::MoveTabNext)];
+
+    let mut closed = tabs;
+    closed.workspaces[0].tabs.remove(0);
+    let after = landed(closed, &asked);
+
+    let ids: Vec<&str> = after.workspaces[0]
+        .tabs
+        .iter()
+        .map(|tab| tab.id.as_str())
+        .collect();
+    assert_eq!(ids, ["t2", "t1", "t3"]);
 }

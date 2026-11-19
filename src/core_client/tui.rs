@@ -4,6 +4,7 @@ mod chrome;
 mod copy_mode;
 mod dialog;
 mod follow;
+mod gate;
 mod keys;
 mod select;
 mod session;
@@ -62,6 +63,7 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(500
 
 #[cfg(unix)]
 mod unix {
+    use std::cell::Cell;
     use std::io;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
@@ -73,6 +75,7 @@ mod unix {
     use tracing::warn;
 
     use super::chrome::Chrome;
+    use super::gate::Gate;
     use super::keys::{Keys, Mode, Routed};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
@@ -90,7 +93,7 @@ mod unix {
     use crate::hc::Core;
     use crate::input::{KeybindAction, KeybindMatch};
     use crate::raw_input::RawInputEvent;
-    use crate::session_doc::Layout;
+    use crate::session_doc::Loaded;
 
     const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -129,12 +132,12 @@ mod unix {
         operation: Operation,
         cwd: &std::path::Path,
         created: &mpsc::UnboundedSender<String>,
-    ) {
+    ) -> Option<u64> {
         let core = match connected(core.clone()) {
             Ok(core) => core,
             Err(error) => {
                 warn!(%error, ?operation, "the core is unreachable");
-                return;
+                return None;
             }
         };
         let lifecycle = || Lifecycle::new(core.clone(), session);
@@ -163,18 +166,20 @@ mod unix {
                 }
             }
             Operation::Arrange(arrangement) => {
-                if let Err(error) = lifecycle().arrange(&arrangement) {
+                return lifecycle().arrange(&arrangement).unwrap_or_else(|error| {
                     warn!(%error, "the session was not rearranged");
-                }
+                    None
+                });
             }
         }
+        None
     }
 
     pub(super) async fn show(
         core: Arc<Core>,
         session: String,
         launched_in: PathBuf,
-        mut layouts: mpsc::UnboundedReceiver<Layout>,
+        mut layouts: mpsc::UnboundedReceiver<Loaded>,
         mut host: Geometry,
         guard: &mut TerminalGuard,
         mut stop: Stop,
@@ -215,6 +220,9 @@ mod unix {
         let mut events = Events::default();
         let (attached_tx, mut attached) = mpsc::unbounded_channel();
         let (created_tx, mut created) = mpsc::unbounded_channel();
+        let (finished_tx, mut finished) = mpsc::unbounded_channel();
+        let mut gate = Gate::default();
+        let edits = Cell::new(0);
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
         let mut bindings = Keys::new(keybinds, keys.erase_is_ctrl_h, keys.kitty);
@@ -225,7 +233,11 @@ mod unix {
         let operations = {
             let (core, session) = (core.clone(), session.clone());
             operations(move |operation, cwd| {
-                perform(&core, &session, operation, &cwd, &created_tx);
+                let arranging = matches!(operation, Operation::Arrange(_));
+                let written = perform(&core, &session, operation, &cwd, &created_tx);
+                if arranging {
+                    finished_tx.send(written).ok();
+                }
             })
         };
         let run = |surface: &Surface, operation: Operation| {
@@ -233,6 +245,9 @@ mod unix {
                 .focused()
                 .and_then(View::cwd)
                 .unwrap_or_else(|| launched_in.clone());
+            if matches!(operation, Operation::Arrange(_)) {
+                edits.set(edits.get() + 1);
+            }
             operations.send((operation, cwd)).ok();
         };
         let act = |surface: &mut Surface, action: KeybindAction| {
@@ -241,6 +256,7 @@ mod unix {
             }
         };
         loop {
+            gate.queued(edits.take(), std::time::Instant::now());
             tokio::select! {
                 () = wake.wait() => {
                     due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
@@ -273,6 +289,7 @@ mod unix {
                         }
                     });
                     screen.present(&mut out, (host.cols, host.rows), rows, cursor)?;
+                    gate.drawn();
                     let all_keys = surface.focused().is_some_and(View::reports_all_keys);
                     follow_key_reporting(all_keys, &mut keys.all, &mut out)?;
                     last_draw = Instant::now();
@@ -304,21 +321,32 @@ mod unix {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                layout = layouts.recv() => {
-                    let Some(layout) = layout else {
+                loaded = layouts.recv() => {
+                    let Some(loaded) = loaded else {
                         return Err(io::Error::other("lawn stopped following the session"));
                     };
-                    surface.update(layout);
-                    due.get_or_insert_with(Instant::now);
+                    let redraws = !surface.holds(&loaded.layout);
+                    gate.arrived(loaded.version, redraws);
+                    if redraws {
+                        surface.update(loaded.layout);
+                        due.get_or_insert_with(Instant::now);
+                    }
                 }
-                batch = input.recv() => {
+                Some(written) = finished.recv() => gate.finished(written),
+                () = wait(gate.deadline().map(Instant::from_std)) => {}
+                batch = gate.next(&mut input) => {
                     let Some(batch) = batch else {
                         return Ok(());
                     };
                     if crate::raw_input::events_require_host_mode_refresh(&batch) {
                         refresh_host_modes(guard, &mouse_capture, keys.all, false);
                     }
-                    for event in batch {
+                    let mut batch = batch.into_iter();
+                    while let Some(event) = batch.next() {
+                        if edits.get() > 0 {
+                            gate.unread(std::iter::once(event).chain(batch));
+                            break;
+                        }
                         let key = match event {
                             RawInputEvent::Key(key) => key,
                             RawInputEvent::Mouse(mouse) => {
@@ -343,6 +371,7 @@ mod unix {
                             event => {
                                 if surface.dialog_input(&event)
                                     || surface.switching()
+                                    || surface.resizing()
                                     || surface.copy_mode_input(&event)
                                 {
                                     continue;
@@ -367,14 +396,16 @@ mod unix {
                             match (
                                 surface.dialog_open(),
                                 surface.switching(),
+                                surface.resizing(),
                                 surface.copy_mode(),
                                 surface.prompting(),
                             ) {
                                 (true, ..) => Mode::Dialog,
                                 (false, true, ..) => Mode::Switcher,
-                                (false, false, false, _) => Mode::Panes,
-                                (false, false, true, false) => Mode::Copy,
-                                (false, false, true, true) => Mode::Prompt,
+                                (false, false, true, ..) => Mode::Resize,
+                                (false, false, false, false, _) => Mode::Panes,
+                                (false, false, false, true, false) => Mode::Copy,
+                                (false, false, false, true, true) => Mode::Prompt,
                             },
                             |key| keys.committed_text(key),
                         );
@@ -416,6 +447,12 @@ mod unix {
                                         continue;
                                     }
                                     if let Some(operation) = surface.dialog_key(&key) {
+                                        run(&surface, operation);
+                                    }
+                                    continue;
+                                }
+                                Routed::Resize(key) => {
+                                    if let Some(operation) = surface.resize_key(&key) {
                                         run(&surface, operation);
                                     }
                                     continue;

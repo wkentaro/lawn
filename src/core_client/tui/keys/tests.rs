@@ -14,6 +14,7 @@ enum Outcome {
     Copy,
     CopyMode,
     Dialog,
+    Resize,
     Dismiss,
 }
 
@@ -57,6 +58,7 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
             Routed::Copy => Outcome::Copy,
             Routed::CopyMode(_) => Outcome::CopyMode,
             Routed::Dialog(_) => Outcome::Dialog,
+            Routed::Resize(_) => Outcome::Resize,
             Routed::Dismiss => Outcome::Dismiss,
         })
         .collect()
@@ -600,6 +602,38 @@ fn a_prefix_pending_when_a_dialog_opens_runs_no_binding_there_or_after() {
     assert_eq!(
         in_a_dialog(&mut keys, &key('z', KeyModifiers::NONE)),
         [Outcome::Dialog]
+    );
+    assert_eq!(
+        press(&mut keys, &key('z', KeyModifiers::NONE)),
+        [Outcome::Pane(left())]
+    );
+}
+
+fn resizing(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
+    outcomes(
+        keys.route_host(key.clone(), Some(left()), false, Mode::Resize, |_| {
+            Some("j")
+        }),
+    )
+}
+
+#[test]
+fn in_resize_mode_every_key_and_its_repeats_go_to_resizing_and_none_to_a_pane_or_a_binding() {
+    let mut keys = keys();
+    let typed = key('j', KeyModifiers::NONE);
+    for key in [
+        typed.clone(),
+        typed.clone().with_kind(KeyEventKind::Repeat),
+        key('z', KeyModifiers::NONE),
+        key('n', KeyModifiers::CONTROL),
+        TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE),
+        prefix(),
+    ] {
+        assert_eq!(resizing(&mut keys, &key), [Outcome::Resize], "{key:?}");
+    }
+    assert_eq!(
+        resizing(&mut keys, &typed.with_kind(KeyEventKind::Release)),
+        []
     );
     assert_eq!(
         press(&mut keys, &key('z', KeyModifiers::NONE)),
