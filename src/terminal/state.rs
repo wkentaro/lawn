@@ -1388,7 +1388,7 @@ impl TerminalState {
                 })
     }
 
-    fn session_report_allows_session_replacement(
+    pub(crate) fn session_report_allows_session_replacement(
         source: &str,
         agent_label: &str,
         session_start_source: Option<&str>,

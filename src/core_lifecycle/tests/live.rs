@@ -610,3 +610,181 @@ fn an_agent_that_quit_from_a_shown_shell_is_forgotten() {
         json!([])
     );
 }
+
+fn environment(test: &TestCore, terminal: &str, tag: &str) -> String {
+    let printed = test
+        .core
+        .request(
+            "terminal.wait",
+            json!({"terminal": terminal, "output": format!("env:{tag}:"), "timeout": 20}),
+        )
+        .unwrap();
+    let print = format!(
+        r#"printf '%s%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s\n' en v {tag} "$HERDR_ENV" "$LAWN_REWRITE" "$HERDR_BIN_PATH" "${{HERDR_SOCKET_PATH:-none}}" "${{HERDR_PANE_ID:-none}}" "${{CODEX_THREAD_ID:-none}}" "${{OMPCODE:-none}}" "${{CLAUDE_CODE_SESSION_ID:-none}}" "${{CLAUDE_CODE_MESSAGING_TOKEN:-none}}" "${{CLAUDECODE:-none}}" "${{CLAUDE_CODE_CHILD_SESSION:-none}}" "$HC_TERMINAL_ID""#
+    );
+    test.core
+        .call(
+            "terminal.send",
+            json!({"terminal": terminal, "text": print}),
+        )
+        .unwrap();
+    printed.wait(std::time::Duration::from_secs(30)).unwrap();
+    let screen = test
+        .core
+        .call("terminal.read", json!({"terminal": terminal}))
+        .unwrap();
+    screen["text"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with(&format!("env:{tag}:")))
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn started_and_recovered_shells_get_the_environment_agent_hooks_need() {
+    let inherited = [
+        ("HERDR_SOCKET_PATH", "/nonexistent/herdr.sock"),
+        ("HERDR_PANE_ID", "w9:p9"),
+        ("CODEX_THREAD_ID", "parent-thread"),
+        ("OMPCODE", "1"),
+        ("CLAUDE_CODE_SESSION_ID", "parent-session"),
+        ("CLAUDE_CODE_MESSAGING_TOKEN", "parent-token"),
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_CHILD_SESSION", "1"),
+    ];
+    let Some(test) = core_with(&inherited) else {
+        return;
+    };
+    let terminal = Lifecycle::new(test.core.clone(), "work")
+        .start(workspace(), Path::new("/tmp"), &["sh".to_owned()])
+        .unwrap()
+        .terminal;
+    let bin = crate::platform::launch_executable().unwrap();
+    let bin = bin.to_str().unwrap();
+    assert_eq!(
+        environment(&test, &terminal, "started"),
+        format!("env:started:1:1:{bin}:none:none:none:none:none:none:none:none:{terminal}")
+    );
+
+    let pid = u32::try_from(record(&test.core, &terminal)["pid"].as_u64().unwrap()).unwrap();
+    wait_for(&test.core, &terminal, "restarted", || {
+        crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill)
+    });
+    assert_eq!(
+        environment(&test, &terminal, "recovered"),
+        format!("env:recovered:1:1:{bin}:none:none:none:none:none:none:none:none:{terminal}")
+    );
+}
+
+fn hook_report(
+    test: &TestCore,
+    socket: Option<&TestCore>,
+    launch: impl Fn(&str) -> String,
+) -> (Value, Value) {
+    let quote = crate::app::agent_resume::shell_quote;
+    let words = "lawn pane report-agent-session elsewhere --source herdr:codex --agent codex \
+        --seq 1 --agent-session-id c-1 --session-start-source startup";
+    let mut child = vec![format!("env -u {}", crate::config::CONFIG_PATH_ENV_VAR)];
+    let other = socket.map(|other| other.env()[0].clone());
+    for (name, value) in test.env() {
+        let value = match &other {
+            Some((other_name, other_value)) if *other_name == name => other_value.clone(),
+            _ => value,
+        };
+        child.push(quote(&format!("{name}={}", value.to_str().unwrap())));
+    }
+    child.push(quote(&format!("LAWN_TEST_NESTED_WORDS={words}")));
+    child.push(quote(std::env::current_exe().unwrap().to_str().unwrap()));
+    child
+        .push("--exact core_client::tests::a_child_runs_the_words_it_was_given --nocapture".into());
+    let script = launch(&child.join(" "));
+    let terminal = Lifecycle::new(test.core.clone(), "work")
+        .start(
+            workspace(),
+            Path::new("/tmp"),
+            &["sh".to_owned(), "-c".to_owned(), script],
+        )
+        .unwrap()
+        .terminal;
+    let root = record(&test.core, &terminal)["pid"].clone();
+    let ran = test
+        .core
+        .request(
+            "terminal.wait",
+            json!({"terminal": terminal, "output": "the command ran"}),
+        )
+        .unwrap();
+    test.core
+        .call("terminal.send", json!({"terminal": terminal, "text": ""}))
+        .unwrap();
+    ran.wait(std::time::Duration::from_secs(30)).unwrap();
+
+    let name = format!("{}-resume-{terminal}", crate::config::app_dir_name());
+    let reports = test.core.doc_get(&name, None).unwrap().value["reports"].clone();
+    (reports, root)
+}
+
+fn in_a_foreground_job(hook: &str) -> String {
+    format!("set -m; read line && {hook}")
+}
+
+#[test]
+fn a_hook_report_from_the_panes_own_program_is_recorded_without_a_job() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let (reports, root) = hook_report(&test, None, |hook| format!("read line && exec {hook}"));
+    assert_eq!(reports[0]["program"]["pid"], root, "{reports}");
+    assert_eq!(reports[0].get("job"), None, "{reports}");
+}
+
+#[test]
+fn a_hook_detached_into_its_own_group_under_a_foreground_job_is_recorded_with_that_job() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let (reports, root) = hook_report(&test, None, |hook| {
+        let detached = format!("set -m; {hook} & wait");
+        in_a_foreground_job(&format!(
+            "sh -c {}",
+            crate::app::agent_resume::shell_quote(&detached)
+        ))
+    });
+    assert_eq!(reports[0]["program"]["pid"], root, "{reports}");
+    assert!(
+        reports[0]["job"]
+            .as_u64()
+            .is_some_and(|job| json!(job) != root),
+        "{reports}"
+    );
+}
+
+#[test]
+fn a_hook_report_inside_a_core_pane_reaches_the_recorder() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let (reports, root) = hook_report(&test, None, in_a_foreground_job);
+    assert_eq!(reports[0]["agent"], "codex", "{reports}");
+    assert_eq!(reports[0]["argv"][0], "codex", "{reports}");
+    assert_eq!(reports[0]["program"]["pid"], root, "{reports}");
+    assert!(
+        reports[0]["job"]
+            .as_u64()
+            .is_some_and(|job| json!(job) != root),
+        "{reports}"
+    );
+}
+
+#[test]
+fn a_hook_report_reaches_the_core_that_issued_its_terminal_over_another_selected_one() {
+    let (Some(test), Some(other)) = (TestCore::start(), TestCore::start()) else {
+        return;
+    };
+    let (reports, root) = hook_report(&test, Some(&other), in_a_foreground_job);
+    assert_eq!(reports[0]["agent"], "codex", "{reports}");
+    assert_eq!(reports[0]["program"]["pid"], root, "{reports}");
+}

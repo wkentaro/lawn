@@ -44,6 +44,16 @@ impl TestCore {
         crate::platform::signal_processes(&[self.core.child.id()], crate::platform::Signal::Kill);
     }
 
+    #[cfg(unix)]
+    pub(crate) fn env(&self) -> [(&'static str, std::path::PathBuf); 4] {
+        [
+            ("HC_SOCKET", self.state.join("hc.sock")),
+            ("HC_SESSION", self.session.clone().into()),
+            ("XDG_STATE_HOME", self.state.join("state")),
+            ("XDG_CONFIG_HOME", self.state.join("config")),
+        ]
+    }
+
     pub(crate) fn share(&self) {
         #[cfg(unix)]
         std::env::set_var("HC_SOCKET", self.state.join("hc.sock"));
