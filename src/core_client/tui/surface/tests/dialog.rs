@@ -681,3 +681,93 @@ async fn text_and_pastes_go_into_the_rename_field() {
         workspace_named("workspace main site!")
     );
 }
+
+#[tokio::test]
+async fn a_drag_held_in_a_pane_when_a_dialog_opens_by_key_stops_reaching_the_pane() {
+    let mut surface = one_pane();
+    surface.forget(id_of(&surface, "t0"));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h").remove(0);
+    frame(&mut surface, &HashSet::new());
+    let pane = inner(&surface);
+    left(&mut surface, pane.x + 1, pane.y + 1);
+    at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        pane.x + 2,
+        pane.y + 1,
+    );
+    reports(&mut input);
+
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(reports(&mut input), b"\x1b[<0;3;2m");
+    at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        pane.x + 3,
+        pane.y + 2,
+    );
+    at(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        pane.x + 3,
+        pane.y + 2,
+    );
+
+    assert_eq!(reports(&mut input), b"");
+}
+
+#[tokio::test]
+async fn a_click_on_a_dialog_closed_by_key_but_still_drawn_does_not_reach_the_pane_under_it() {
+    let mut surface = one_pane();
+    surface.forget(id_of(&surface, "t0"));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+    let area = help(0, "", false).area;
+
+    press(&mut surface, KeyCode::Esc);
+    assert!(!surface.dialog_open());
+    left(&mut surface, area.x + 2, area.y + 5);
+    at(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        area.x + 2,
+        area.y + 5,
+    );
+    at(
+        &mut surface,
+        MouseEventKind::ScrollDown,
+        area.x + 2,
+        area.y + 5,
+    );
+
+    assert_eq!(reports(&mut input), b"");
+}
+
+#[tokio::test]
+async fn a_dialog_opened_and_closed_before_a_frame_releases_a_held_pane_button_once_and_the_next_click_works(
+) {
+    let mut surface = one_pane();
+    surface.forget(id_of(&surface, "t0"));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+    frame(&mut surface, &HashSet::new());
+    let pane = inner(&surface);
+    left(&mut surface, pane.x + 1, pane.y + 1);
+
+    surface.act(KeybindAction::Help, false);
+    at(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        pane.x + 1,
+        pane.y + 1,
+    );
+    press(&mut surface, KeyCode::Enter);
+    assert!(!surface.dialog_open());
+    frame(&mut surface, &HashSet::new());
+    left(&mut surface, pane.x + 2, pane.y + 1);
+
+    assert_eq!(reports(&mut input), b"\x1b[<0;2;2M\x1b[<0;2;2m\x1b[<0;3;2M");
+}

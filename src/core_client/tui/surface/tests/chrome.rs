@@ -1796,3 +1796,128 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 }
 
 mod mobile;
+
+#[tokio::test]
+async fn a_divider_drag_held_when_a_dialog_opens_ends_there_and_saves_the_width_it_reached() {
+    let dir = scratch("drag-into-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(saved(&path), None);
+
+    surface.act(KeybindAction::Help, false);
+    assert_eq!(saved(&path), Some((Some(34), None)));
+
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 40, 5);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 45, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 45, 5);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 34);
+    assert_eq!(saved(&path), Some((Some(34), None)));
+}
+
+#[tokio::test]
+async fn a_divider_press_that_never_moved_saves_nothing_when_a_dialog_opens() {
+    let dir = scratch("still-press-into-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |config| {
+        config.ui.sidebar_width = 80;
+        config.ui.sidebar_max_width = 80;
+        config.ui.mobile_width_threshold = 64;
+    });
+    surface.resize(host(70, 30));
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 69);
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 68, 5);
+    surface.act(KeybindAction::Help, false);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 68, 5);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(saved(&path), None);
+}
+
+#[tokio::test]
+async fn a_divider_press_right_after_a_drag_ended_by_a_dialog_starts_a_drag_and_resets_nothing() {
+    let dir = scratch("regrab-after-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    let start = std::time::Instant::now();
+    point_at(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        25,
+        5,
+        start,
+    );
+    point_at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        33,
+        5,
+        start,
+    );
+    surface.act(KeybindAction::Help, false);
+    point_at(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        33,
+        5,
+        start,
+    );
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    frame(&mut surface, &HashSet::new());
+
+    let soon = start + std::time::Duration::from_millis(100);
+    point_at(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        33,
+        5,
+        soon,
+    );
+    assert_eq!(saved(&path), Some((Some(34), None)));
+    point_at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        30,
+        5,
+        soon,
+    );
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 31);
+}
+
+#[tokio::test]
+async fn a_press_and_drag_on_a_dialog_still_drawn_after_esc_do_not_resize_the_sidebar() {
+    let dir = scratch("drag-on-closed-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 33, 5);
+
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        60,
+        10,
+    );
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 40, 5);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 34);
+    assert!(saved(&path).is_none_or(|(width, _)| width == Some(34)));
+}

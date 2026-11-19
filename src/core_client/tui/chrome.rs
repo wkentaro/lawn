@@ -102,7 +102,7 @@ enum Press {
     Workspace(String),
     Tab(String),
     Thumb(u16),
-    Width,
+    Width(u16),
 }
 
 impl Drawn {
@@ -329,6 +329,15 @@ impl Chrome {
                 })
     }
 
+    pub(super) fn let_go(&mut self) {
+        if let Some(Press::Width(pressed)) = self.press.take() {
+            self.divider_click = None;
+            if self.width != pressed {
+                self.save();
+            }
+        }
+    }
+
     pub(super) fn switching(&self) -> bool {
         self.switcher.is_some()
     }
@@ -369,7 +378,7 @@ impl Chrome {
             MouseEventKind::Down(MouseButton::Left) => self.press_at(point, now),
             MouseEventKind::Drag(MouseButton::Left) => {
                 match (&self.press, self.hits.list) {
-                    (Some(Press::Width), _) => self.resize_to(point.x),
+                    (Some(Press::Width(_)), _) => self.resize_to(point.x),
                     (Some(Press::Thumb(grab)), Some(metrics)) => {
                         let offset = crate::ui::scrollbar_offset_from_drag_row(
                             metrics,
@@ -404,8 +413,8 @@ impl Chrome {
                 self.width_manual = false;
                 self.save();
             } else {
-                self.press = Some(Press::Width);
                 self.resize_to(point.x);
+                self.press = Some(Press::Width(self.width));
             }
             return None;
         }
@@ -459,7 +468,7 @@ impl Chrome {
 
     fn release(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
         match self.press.take()? {
-            Press::Width => {
+            Press::Width(_) => {
                 self.save();
                 None
             }
@@ -1067,7 +1076,7 @@ fn focusing(press: Press, session: &Session) -> Option<KeybindAction> {
             .iter()
             .position(|tab| tab.id == id)
             .map(KeybindAction::SwitchTab),
-        Press::Thumb(_) | Press::Width => None,
+        Press::Thumb(_) | Press::Width(_) => None,
     }
 }
 

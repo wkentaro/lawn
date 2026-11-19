@@ -90,6 +90,12 @@ impl Overlays {
     fn covers(&self, y: u16) -> bool {
         self.rects().any(|rect| covers(rect, y))
     }
+
+    fn hides(&self, point: ratatui::layout::Position) -> bool {
+        [self.cover, self.dialog]
+            .iter()
+            .any(|rect| rect.contains(point))
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -278,8 +284,13 @@ impl Surface {
     }
 
     fn open(&mut self, dialog: Dialog) {
-        self.end_gesture(None);
+        self.let_go();
         self.dialog = Some(Modal::new(dialog));
+    }
+
+    fn let_go(&mut self) {
+        self.end_gesture(None);
+        self.outer.let_go();
     }
 
     pub(super) fn dialog_open(&self) -> bool {
@@ -644,6 +655,10 @@ impl Surface {
             }
         }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        let point = ratatui::layout::Position::new(event.column, event.row);
+        if !self.outer.switching() && self.painted.hides(point) {
+            return None;
+        }
         if self.outer.claim(event, self.painted.copy.bar) {
             if press {
                 self.select.press(None, event, now);
@@ -660,7 +675,6 @@ impl Surface {
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed.map(Pointed::Act);
         }
-        let point = ratatui::layout::Position::new(event.column, event.row);
         let Some(tile) = self
             .tiles
             .tiles
