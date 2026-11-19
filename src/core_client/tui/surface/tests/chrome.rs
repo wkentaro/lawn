@@ -1799,6 +1799,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 
 mod drag;
 mod mobile;
+mod navigate;
 
 #[tokio::test]
 async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {

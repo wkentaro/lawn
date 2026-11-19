@@ -61,7 +61,8 @@ struct Drawn {
     statuses: Vec<AgentStatus>,
     tab_marks: Vec<Option<(AgentStatus, usize)>>,
     agents: Vec<Agent>,
-    switching: bool,
+    navigating: bool,
+    selected: Option<usize>,
     tab_drop: Option<usize>,
     dragged: Option<usize>,
     workspace_drop: Option<u16>,
@@ -89,6 +90,8 @@ struct Hits {
     divider: Rect,
     body: Rect,
     list: Option<ScrollMetrics>,
+    compact: Rect,
+    compact_max: usize,
     track: Rect,
     workspaces: Vec<(Rect, usize)>,
     new_workspace: Rect,
@@ -117,6 +120,11 @@ impl Hits {
             }
         }
     }
+}
+
+struct Navigate {
+    selected: Option<String>,
+    switcher: Switcher,
 }
 
 #[derive(PartialEq)]
@@ -196,7 +204,8 @@ pub(super) struct Chrome {
     redraw: bool,
     tab_bar: TabBarState,
     workspace_scroll: usize,
-    reveal_workspace: bool,
+    reveal_selection: bool,
+    reveal_focus: bool,
     drawn: Option<Drawn>,
     rows: Vec<PaneSurfacePatchRow>,
     hits: Hits,
@@ -204,9 +213,12 @@ pub(super) struct Chrome {
     hidden: Rect,
     pressed: Position,
     drag: Option<Drag>,
-    switcher: Option<Switcher>,
+    navigate: Option<Navigate>,
+    navigate_sessions: u64,
     cover: Option<(Rect, Vec<CellData>)>,
     reveal: Option<String>,
+    bar: Option<(Rect, Vec<CellData>)>,
+    help: String,
 }
 
 impl Chrome {
@@ -265,7 +277,8 @@ impl Chrome {
             redraw: false,
             tab_bar: TabBarState::default(),
             workspace_scroll: 0,
-            reveal_workspace: true,
+            reveal_selection: false,
+            reveal_focus: true,
             drawn: None,
             rows: Vec::new(),
             hits: Hits::default(),
@@ -273,9 +286,16 @@ impl Chrome {
             hidden: Rect::default(),
             pressed: Position::default(),
             drag: None,
-            switcher: None,
+            navigate: None,
+            navigate_sessions: 0,
             cover: None,
             reveal: None,
+            bar: None,
+            help: config
+                .keybinds()
+                .help
+                .prefix_rhs_label()
+                .unwrap_or_else(|| "unset".to_owned()),
         };
         chrome.width = chrome.bounded(chrome.width);
         chrome
@@ -316,6 +336,7 @@ impl Chrome {
     pub(super) fn toggle(&mut self) {
         self.collapsed = !self.collapsed;
         self.collapsed_manual = true;
+        self.reveal_selection = true;
         self.save();
     }
 
@@ -365,8 +386,9 @@ impl Chrome {
                 event.kind,
                 MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
             );
-        held || self.switcher.is_some()
+        held || self.switching()
             || !hidden.contains(point)
+                && self.bar.as_ref().is_none_or(|bar| !bar.0.contains(point))
                 && self.drawn.as_ref().is_some_and(|drawn| {
                     let Layout {
                         sidebar,
@@ -393,12 +415,36 @@ impl Chrome {
         }
     }
 
-    pub(super) fn switching(&self) -> bool {
-        self.switcher.is_some()
+    pub(super) fn navigating(&self) -> bool {
+        self.navigate.is_some()
     }
 
-    pub(super) fn close(&mut self) {
-        if self.switcher.take().is_some() {
+    pub(super) fn navigate_session(&self) -> Option<u64> {
+        self.navigate.as_ref().map(|_| self.navigate_sessions)
+    }
+
+    pub(super) fn switching(&self) -> bool {
+        self.navigating()
+            && self
+                .drawn
+                .as_ref()
+                .is_some_and(|drawn| !drawn.layout.mobile_header.is_empty())
+    }
+
+    pub(super) fn navigate(&mut self, session: &Session) {
+        self.navigate_sessions += 1;
+        self.navigate = Some(Navigate {
+            selected: session
+                .focused_workspace()
+                .map(|workspace| workspace.id.clone()),
+            switcher: Switcher::default(),
+        });
+        self.reveal_selection = true;
+        self.redraw = true;
+    }
+
+    pub(super) fn leave(&mut self) {
+        if self.navigate.take().is_some() {
             self.redraw = true;
         }
     }
@@ -407,8 +453,56 @@ impl Chrome {
         self.reveal.take()
     }
 
+    pub(super) fn selected(&self) -> Option<&str> {
+        self.navigate.as_ref()?.selected.as_deref()
+    }
+
+    pub(super) fn vanished(&self, session: &Session) -> bool {
+        self.selected().is_some_and(|id| {
+            session
+                .workspaces()
+                .iter()
+                .all(|workspace| workspace.id != id)
+        })
+    }
+
+    pub(super) fn select(&mut self, by: isize, switching: bool, session: &Session) {
+        let workspaces = session.workspaces();
+        let Some(navigate) = self.navigate.as_mut().filter(|_| !workspaces.is_empty()) else {
+            return;
+        };
+        let last = workspaces.len() - 1;
+        let current = navigate
+            .selected
+            .as_deref()
+            .and_then(|id| workspaces.iter().position(|workspace| workspace.id == id));
+        let next = match current {
+            Some(current) if switching => current.saturating_add_signed(by).min(last),
+            Some(current) => (current as isize + by).rem_euclid(workspaces.len() as isize) as usize,
+            None if by < 0 => last,
+            None => 0,
+        };
+        navigate.selected = Some(workspaces[next].id.clone());
+        navigate.switcher.reveal = switching;
+        self.reveal_selection |= !switching;
+        self.redraw = true;
+    }
+
+    pub(super) fn accept(&mut self, session: &Session) -> Option<KeybindAction> {
+        let action = match self.navigate.as_ref()?.selected.clone() {
+            Some(id) => Some(focusing(Press::Workspace(id), session)?),
+            None => None,
+        };
+        self.leave();
+        action
+    }
+
     pub(super) fn cover(&self) -> Option<&(Rect, Vec<CellData>)> {
-        self.switcher.as_ref().and(self.cover.as_ref())
+        self.navigate.as_ref().and(self.cover.as_ref())
+    }
+
+    pub(super) fn bar(&self) -> Option<&(Rect, Vec<CellData>)> {
+        self.navigate.as_ref().and(self.bar.as_ref())
     }
 
     pub(super) fn mouse(
@@ -416,17 +510,16 @@ impl Chrome {
         event: MouseEvent,
         session: &Session,
         now: Instant,
-        copying: bool,
+        entering: bool,
     ) -> Option<Pointed> {
-        if self.switcher.is_some() {
+        if self.switching() {
             return self.switcher_mouse(event, session).map(Pointed::Act);
         }
         let point = Position::new(event.column, event.row);
         match event.kind {
             MouseEventKind::Down(MouseButton::Left) if self.hits.switch.contains(point) => {
-                if !copying {
-                    self.switcher = Some(Switcher::default());
-                    self.redraw = true;
+                if entering {
+                    self.navigate(session);
                 }
                 None
             }
@@ -511,8 +604,12 @@ impl Chrome {
         None
     }
 
+    fn covered(&self, point: Position) -> bool {
+        self.hidden.contains(point) || self.bar.as_ref().is_some_and(|bar| bar.0.contains(point))
+    }
+
     fn over(&self, point: Position) -> Option<Press> {
-        if self.hidden.contains(point) {
+        if self.covered(point) {
             return None;
         }
         let drawn = self.drawn.as_ref()?;
@@ -555,14 +652,12 @@ impl Chrome {
     }
 
     fn tab_drop(&self, point: Position) -> Option<usize> {
-        if self.hidden.contains(point) {
-            return None;
-        }
         let hits = &self.hits;
         let count = self.drawn.as_ref()?.tabs.len();
         let &(first_rect, first) = hits.tabs.first()?;
         let &(_, last) = hits.tabs.last()?;
-        if point.y != first_rect.y {
+        if point.y != first_rect.y || self.covered(point) || self.covered(first_rect.as_position())
+        {
             return None;
         }
         if hits.scroll_left.contains(point) {
@@ -592,7 +687,7 @@ impl Chrome {
 
     fn workspace_drop(&self, point: Position) -> Option<(usize, u16)> {
         let hits = &self.hits;
-        if self.hidden.contains(point)
+        if self.covered(point)
             || hits.body.height == 0
             || point.y < hits.body.y.saturating_sub(1)
             || point.y >= hits.new_workspace.y
@@ -624,7 +719,8 @@ impl Chrome {
                 let to = place(tabs, &tab, before)?;
                 Some(arranging(Arrangement::MoveTab { tab, to }))
             }
-            (Press::Workspace(workspace), Some(Drag::Workspace(Some((index, _))))) => {
+            (Press::Workspace(workspace), Some(Drag::Workspace(_))) => {
+                let (index, _) = self.workspace_drop(point)?;
                 let before = self
                     .drawn
                     .as_ref()?
@@ -642,7 +738,7 @@ impl Chrome {
     }
 
     fn switcher_mouse(&mut self, event: MouseEvent, session: &Session) -> Option<KeybindAction> {
-        let switcher = self.switcher.as_mut()?;
+        let switcher = &mut self.navigate.as_mut()?.switcher;
         let scroll = match event.kind {
             MouseEventKind::ScrollUp => switcher.scroll.saturating_sub(mobile::WHEEL_ROWS),
             MouseEventKind::ScrollDown => switcher
@@ -663,7 +759,7 @@ impl Chrome {
 
     fn choose(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
         if self.hits.close.contains(point) {
-            self.close();
+            self.leave();
             return None;
         }
         let target = self
@@ -683,11 +779,11 @@ impl Chrome {
             Target::Tab(index) => focusing(Press::Tab(id(&drawn.tabs, index)?), session)?,
             Target::Agent(index) => {
                 self.reveal = Some(drawn.agents.get(index)?.terminal.clone());
-                self.close();
+                self.leave();
                 return None;
             }
         };
-        self.close();
+        self.leave();
         Some(action)
     }
 
@@ -708,6 +804,13 @@ impl Chrome {
             let last = hits
                 .list
                 .map_or(0, |metrics| metrics.max_offset_from_bottom);
+            self.scroll_list(if up {
+                self.workspace_scroll.saturating_sub(1)
+            } else {
+                self.workspace_scroll.saturating_add(1).min(last)
+            });
+        } else if hits.compact.contains(point) {
+            let last = hits.compact_max;
             self.scroll_list(if up {
                 self.workspace_scroll.saturating_sub(1)
             } else {
@@ -772,8 +875,15 @@ impl Chrome {
         palette: &Palette,
     ) -> bool {
         self.recheck = false;
-        if layout.mobile_header.is_empty() {
-            self.switcher = None;
+        if let Some(navigate) = self
+            .navigate
+            .as_mut()
+            .filter(|navigate| navigate.selected.is_none())
+        {
+            navigate.selected = session
+                .focused_workspace()
+                .map(|workspace| workspace.id.clone());
+            navigate.switcher.reveal = !layout.mobile_header.is_empty();
         }
         let redraw = std::mem::take(&mut self.redraw);
         let drawn = self.drawn(host, layout, session);
@@ -785,9 +895,11 @@ impl Chrome {
         let refocused = previous
             .as_ref()
             .is_none_or(|previous| previous.focused_workspace_id() != drawn.focused_workspace_id());
-        self.reveal_workspace |= refocused;
-        if let (Some(switcher), Some(previous)) = (&mut self.switcher, &previous) {
-            switcher.reveal |= previous.switching && (refocused || previous.host != drawn.host);
+        self.reveal_focus |= refocused;
+        if let (Some(navigate), Some(previous)) = (&mut self.navigate, &previous) {
+            let resized = previous.host != drawn.host;
+            navigate.switcher.reveal |= resized;
+            self.reveal_selection |= resized;
         }
         if previous.as_ref().is_none_or(|previous| {
             previous.tabs != drawn.tabs
@@ -911,7 +1023,10 @@ impl Chrome {
             } else {
                 Vec::new()
             },
-            switching: self.switcher.is_some(),
+            navigating: self.navigate.is_some(),
+            selected: self
+                .selected()
+                .and_then(|id| workspaces.iter().position(|workspace| workspace.id == id)),
             tab_drop: match self.drag {
                 Some(Drag::Tab(insert)) => insert,
                 _ => None,
@@ -996,24 +1111,34 @@ impl Chrome {
                     .collect(),
             })
             .collect();
-        self.cover = self.switcher.as_mut().map(|switcher| {
-            mobile::draw_switcher(
-                &mut buffer,
-                drawn,
-                switcher,
-                self.indicators,
-                palette,
-                &mut self.hits,
-            );
-            (
-                drawn.host,
-                buffer
-                    .content
-                    .iter()
-                    .map(CellData::from_ratatui_cell)
-                    .collect(),
-            )
-        });
+        let switching = !mobile_header.is_empty();
+        self.bar = self
+            .navigate
+            .as_ref()
+            .filter(|_| !switching)
+            .and_then(|_| self.navigate_bar(&drawn.layout, palette));
+        self.cover = self
+            .navigate
+            .as_mut()
+            .filter(|_| switching)
+            .map(|navigate| {
+                mobile::draw_switcher(
+                    &mut buffer,
+                    drawn,
+                    &mut navigate.switcher,
+                    self.indicators,
+                    palette,
+                    &mut self.hits,
+                );
+                (
+                    drawn.host,
+                    buffer
+                        .content
+                        .iter()
+                        .map(CellData::from_ratatui_cell)
+                        .collect(),
+                )
+            });
         rows
     }
 
@@ -1094,22 +1219,22 @@ impl Chrome {
             .collect();
         let mut metrics =
             scroll::list_scroll_metrics(&heights, &gaps, body.height, self.workspace_scroll);
-        if !body.is_empty() && std::mem::take(&mut self.reveal_workspace) {
-            if let Some(target) = drawn.focused_workspace {
-                self.workspace_scroll = scroll::list_scroll_start_to_reveal(
-                    &heights,
-                    &gaps,
-                    body.height,
-                    self.workspace_scroll,
-                    target,
-                );
-                metrics = scroll::list_scroll_metrics(
-                    &heights,
-                    &gaps,
-                    body.height,
-                    self.workspace_scroll,
-                );
-            }
+        let reveal_selection = !body.is_empty() && std::mem::take(&mut self.reveal_selection);
+        let reveal_focus = !body.is_empty() && std::mem::take(&mut self.reveal_focus);
+        let target = drawn
+            .selected
+            .filter(|_| reveal_selection)
+            .or(drawn.focused_workspace.filter(|_| reveal_focus));
+        if let Some(target) = target {
+            self.workspace_scroll = scroll::list_scroll_start_to_reveal(
+                &heights,
+                &gaps,
+                body.height,
+                self.workspace_scroll,
+                target,
+            );
+            metrics =
+                scroll::list_scroll_metrics(&heights, &gaps, body.height, self.workspace_scroll);
         }
         self.workspace_scroll = metrics
             .max_offset_from_bottom
@@ -1133,8 +1258,8 @@ impl Chrome {
                     status: crate::api::schema::AgentStatus::Unknown,
                     rows,
                     focused: drawn.focused_workspace == Some(index),
-                    selected: false,
-                    navigating: false,
+                    selected: drawn.selected == Some(index),
+                    navigating: drawn.selected.is_some(),
                     dragged: drawn.dragged == Some(index),
                 },
                 self.indicators,
@@ -1186,11 +1311,27 @@ impl Chrome {
         let area = drawn.layout.sidebar;
         paint::render_sidebar_background(buffer, area, palette);
         let list = self.list_area(area);
-        let active = paint::workspace_active_background(palette, false);
-        for index in 0..drawn.workspaces.len().min(usize::from(list.height)) {
-            let rect = Rect::new(list.x, list.y + index as u16, list.width, 1);
+        let selection = paint::workspace_selection_background(palette);
+        let active = paint::workspace_active_background(palette, drawn.selected.is_some());
+        let height = usize::from(list.height);
+        let max = drawn.workspaces.len().saturating_sub(height);
+        self.hits.compact = list;
+        self.hits.compact_max = max;
+        self.workspace_scroll = self.workspace_scroll.min(max);
+        let reveal = std::mem::take(&mut self.reveal_selection);
+        if let Some(target) = drawn.selected.filter(|_| reveal && height > 0) {
+            self.workspace_scroll = self
+                .workspace_scroll
+                .clamp((target + 1).saturating_sub(height), target);
+        }
+        let start = self.workspace_scroll;
+        for index in start..drawn.workspaces.len().min(start + height) {
+            let rect = Rect::new(list.x, list.y + (index - start) as u16, list.width, 1);
             self.hits.workspaces.push((rect, index));
-            let style = if drawn.focused_workspace == Some(index) {
+            let style = if drawn.selected == Some(index) {
+                buffer.set_style(rect, Style::default().bg(selection));
+                Style::default().fg(palette.overlay1).bg(selection)
+            } else if drawn.focused_workspace == Some(index) {
                 buffer.set_style(rect, Style::default().bg(active));
                 Style::default().fg(palette.text).bg(active)
             } else {
@@ -1221,6 +1362,45 @@ impl Chrome {
                 Style::default().fg(palette.overlay0),
             );
         }
+    }
+
+    fn navigate_bar(&self, layout: &Layout, palette: &Palette) -> Option<(Rect, Vec<CellData>)> {
+        let area = self.bar_area(layout);
+        if area.is_empty() {
+            return None;
+        }
+        let bar = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+        let mut buffer = Buffer::empty(bar);
+        let base = Style::default().fg(palette.overlay0).bg(palette.panel_bg);
+        let key = Style::default()
+            .fg(palette.accent)
+            .bg(palette.panel_bg)
+            .add_modifier(Modifier::BOLD);
+        buffer.set_style(bar, base);
+        let mut x = bar.x;
+        for (text, style) in [
+            (" NAVIGATE ", super::copy_mode::accent(palette)),
+            (" esc back  ", base),
+            ("↑/↓", key),
+            (" workspace  ", base),
+            ("tab", key),
+            (" pane  ", base),
+            (self.help.as_str(), key),
+            (" keybinds", base),
+        ] {
+            if x >= bar.right() {
+                break;
+            }
+            x = buffer
+                .set_stringn(x, bar.y, text, usize::from(bar.right() - x), style)
+                .0;
+        }
+        let cells = buffer
+            .content
+            .iter()
+            .map(CellData::from_ratatui_cell)
+            .collect();
+        Some((bar, cells))
     }
 
     fn draw_tab_bar(&mut self, buffer: &mut Buffer, drawn: &Drawn, palette: &Palette) {

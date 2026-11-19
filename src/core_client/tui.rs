@@ -370,7 +370,7 @@ mod unix {
                             }
                             event => {
                                 if surface.dialog_input(&event)
-                                    || surface.switching()
+                                    || surface.navigating()
                                     || surface.resizing()
                                     || surface.copy_mode_input(&event)
                                 {
@@ -395,20 +395,24 @@ mod unix {
                             surface.copyable(),
                             match (
                                 surface.dialog_open(),
-                                surface.switching(),
+                                surface.navigate_session(),
                                 surface.resizing(),
                                 surface.copy_mode(),
                                 surface.prompting(),
                             ) {
                                 (true, ..) => Mode::Dialog,
-                                (false, true, ..) => Mode::Switcher,
-                                (false, false, true, ..) => Mode::Resize,
-                                (false, false, false, false, _) => Mode::Panes,
-                                (false, false, false, true, false) => Mode::Copy,
-                                (false, false, false, true, true) => Mode::Prompt,
+                                (false, Some(session), ..) if surface.selection_vanished() => {
+                                    Mode::NavigateVanished(session)
+                                }
+                                (false, Some(session), ..) => Mode::Navigate(session),
+                                (false, None, true, ..) => Mode::Resize,
+                                (false, None, false, false, _) => Mode::Panes,
+                                (false, None, false, true, false) => Mode::Copy,
+                                (false, None, false, true, true) => Mode::Prompt,
                             },
                             |key| keys.committed_text(key),
                         );
+                        surface.hold_prefix(bindings.prefixed());
                         for routed in routes {
                             let action = match routed {
                                 Routed::Copy => {
@@ -458,9 +462,13 @@ mod unix {
                                     continue;
                                 }
                                 Routed::Dismiss => {
-                                    surface.close_switcher();
+                                    surface.leave_navigate();
                                     continue;
                                 }
+                                Routed::Navigate(step) => match surface.navigate(step) {
+                                    Some(action) => action,
+                                    None => continue,
+                                },
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::CopyMode)) => {
                                     surface.enter_copy_mode();
                                     continue;

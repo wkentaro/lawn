@@ -20,7 +20,7 @@ fn is_retained_selection_copy_key(key: &crate::input::TerminalKey) -> bool {
 ///
 /// Navigate mode checks this only after keybinding dispatch, so a configured
 /// Ctrl+[ binding keeps working and this stays a fallback cancel.
-fn is_ctrl_bracket_key(key: &crate::input::TerminalKey) -> bool {
+pub(crate) fn is_ctrl_bracket_key(key: &crate::input::TerminalKey) -> bool {
     key.code == KeyCode::Char('[') && key.modifiers == KeyModifiers::CONTROL
 }
 
