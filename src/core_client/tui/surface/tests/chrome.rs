@@ -28,6 +28,7 @@ fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
             on_select: true,
             toast: Some(ToastClipboardPosition::BottomCenter),
         },
+        keybinds(),
     )
 }
 
@@ -570,6 +571,7 @@ fn point_at(
 ) -> Option<Operation> {
     match surface.mouse(mouse_at(kind, column, row), now) {
         Some(Pointed::Act(action)) => surface.act(action, false),
+        Some(Pointed::Run(operation)) => Some(operation),
         Some(Pointed::Copied(text)) => unreachable!("{text}"),
         None => None,
     }

@@ -607,12 +607,7 @@ impl Chrome {
                 .iter()
                 .map(|workspace| Label {
                     id: workspace.id.clone(),
-                    text: workspace
-                        .name
-                        .as_deref()
-                        .or_else(|| session.folder_name(workspace))
-                        .unwrap_or("workspace")
-                        .to_owned(),
+                    text: session.label(workspace).to_owned(),
                     custom: workspace.name.is_some(),
                 })
                 .collect(),

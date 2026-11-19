@@ -42,6 +42,25 @@ pub(super) enum Operation {
     Park(String),
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) enum Request {
+    Run(Operation),
+    Confirm(Closing),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Closing {
+    action: KeybindAction,
+    focus: Focus,
+    detail: String,
+}
+
+impl Closing {
+    pub(super) fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Session {
     layout: Layout,
@@ -74,8 +93,12 @@ impl Session {
         })
     }
 
-    pub(super) fn folder_name(&self, workspace: &Workspace) -> Option<&str> {
-        self.terminals.folder_name(naming(workspace)?)
+    pub(super) fn label<'a>(&'a self, workspace: &'a Workspace) -> &'a str {
+        workspace
+            .name
+            .as_deref()
+            .or_else(|| self.terminals.folder_name(naming(workspace)?))
+            .unwrap_or("workspace")
     }
 
     pub(super) fn created(&mut self, terminal: String) -> bool {
@@ -132,21 +155,34 @@ impl Session {
         next.is_some_and(|next| self.move_focus(next))
     }
 
-    pub(super) fn operation(
+    pub(super) fn operation(&self, action: KeybindAction, confirm_close: bool) -> Option<Request> {
+        if action == KeybindAction::NewWorkspace {
+            return Some(Request::Run(Operation::Start(Destination::Workspace {
+                name: None,
+            })));
+        }
+        self.operation_at(self.focus.as_ref()?, action, confirm_close)
+    }
+
+    pub(super) fn confirmed(&self, closing: &Closing) -> Option<Operation> {
+        match self.operation_at(&closing.focus, closing.action, false)? {
+            Request::Run(operation) => Some(operation),
+            Request::Confirm(_) => None,
+        }
+    }
+
+    fn operation_at(
         &self,
+        focus: &Focus,
         action: KeybindAction,
         confirm_close: bool,
-    ) -> Option<Operation> {
-        if action == KeybindAction::NewWorkspace {
-            return Some(Operation::Start(Destination::Workspace { name: None }));
-        }
-        let focus = self.focus.as_ref()?;
+    ) -> Option<Request> {
         let workspace = self
             .layout
             .workspaces
             .iter()
             .find(|workspace| workspace.id == focus.workspace)?;
-        let tab = workspace.tabs.iter().find(|tab| tab.id == focus.tab)?;
+        let tab = workspace.tabs.iter().find(|tab| tab.id == focus.tab);
         let shown = |tab: &Tab| -> Vec<String> {
             tab.root
                 .terminals()
@@ -163,9 +199,16 @@ impl Session {
                 .count()
                 <= 1
         };
+        let confirm = || {
+            Some(Request::Confirm(Closing {
+                action,
+                focus: focus.clone(),
+                detail: self.closing_detail(workspace),
+            }))
+        };
         let closing = match action {
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
-                return Some(Operation::Start(Destination::Split {
+                return Some(Request::Run(Operation::Start(Destination::Split {
                     beside: focus.terminal.clone()?,
                     direction: if action == KeybindAction::SplitVertical {
                         Direction::Right
@@ -173,22 +216,30 @@ impl Session {
                         Direction::Down
                     },
                     ratio: 0.5,
-                }));
+                })));
             }
             KeybindAction::NewTab => {
-                return Some(Operation::Start(Destination::Tab {
+                return Some(Request::Run(Operation::Start(Destination::Tab {
                     workspace: Some(workspace.id.clone()),
                     name: None,
-                }));
+                })));
             }
-            KeybindAction::ParkPane => return Some(Operation::Park(focus.terminal.clone()?)),
-            KeybindAction::ClosePane if confirm_close && shown(tab).len() == 1 && alone() => {
-                return None
+            KeybindAction::ParkPane => {
+                return Some(Request::Run(Operation::Park(focus.terminal.clone()?)))
             }
-            KeybindAction::ClosePane => vec![focus.terminal.clone()?],
-            KeybindAction::CloseTab if confirm_close && alone() => return None,
-            KeybindAction::CloseTab => shown(tab),
-            KeybindAction::CloseWorkspace if confirm_close => return None,
+            KeybindAction::ClosePane if confirm_close && shown(tab?).len() == 1 && alone() => {
+                return confirm()
+            }
+            KeybindAction::ClosePane => {
+                let shown = shown(tab?);
+                vec![focus
+                    .terminal
+                    .clone()
+                    .filter(|terminal| shown.contains(terminal))?]
+            }
+            KeybindAction::CloseTab if confirm_close && alone() => return confirm(),
+            KeybindAction::CloseTab => shown(tab?),
+            KeybindAction::CloseWorkspace if confirm_close => return confirm(),
             KeybindAction::CloseWorkspace => workspace
                 .tabs
                 .iter()
@@ -197,7 +248,27 @@ impl Session {
                 .collect(),
             _ => return None,
         };
-        (!closing.is_empty()).then_some(Operation::Close(closing))
+        (!closing.is_empty()).then_some(Request::Run(Operation::Close(closing)))
+    }
+
+    fn closing_detail(&self, workspace: &Workspace) -> String {
+        let terminals: Vec<&str> = workspace
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.root.terminals())
+            .collect();
+        let panes = terminals.len();
+        let parked = terminals
+            .iter()
+            .filter(|terminal| self.layout.parked.contains(**terminal))
+            .count();
+        let counted = match (panes, parked) {
+            (1, 0) => "1 pane".to_owned(),
+            (_, 0) => format!("{panes} panes"),
+            (1, _) => "1 parked pane".to_owned(),
+            _ => format!("{panes} panes, {parked} parked"),
+        };
+        format!("{} — {counted}", self.label(workspace))
     }
 
     fn toward(

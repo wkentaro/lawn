@@ -13,6 +13,7 @@ enum Outcome {
     Command,
     Copy,
     CopyMode,
+    Dialog,
     Dismiss,
 }
 
@@ -55,6 +56,7 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
             Routed::Binding(KeybindMatch::Command(_)) => Outcome::Command,
             Routed::Copy => Outcome::Copy,
             Routed::CopyMode(_) => Outcome::CopyMode,
+            Routed::Dialog(_) => Outcome::Dialog,
             Routed::Dismiss => Outcome::Dismiss,
         })
         .collect()
@@ -559,6 +561,48 @@ fn a_key_held_before_the_switcher_opened_stops_repeating_and_its_release_reaches
     );
     assert_eq!(
         in_the_switcher(&mut keys, &down.with_kind(KeyEventKind::Release)),
+        [Outcome::Pane(left())]
+    );
+}
+
+fn in_a_dialog(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
+    outcomes(
+        keys.route_host(key.clone(), Some(left()), false, Mode::Dialog, |_| {
+            Some("j")
+        }),
+    )
+}
+
+#[test]
+fn in_a_dialog_every_key_and_its_repeats_go_to_the_dialog_and_none_to_a_pane_or_a_binding() {
+    let mut keys = keys();
+    let typed = key('j', KeyModifiers::NONE);
+    for key in [
+        typed.clone(),
+        typed.clone().with_kind(KeyEventKind::Repeat),
+        prefix(),
+        key('z', KeyModifiers::NONE),
+        key('n', KeyModifiers::CONTROL),
+        TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE),
+    ] {
+        assert_eq!(in_a_dialog(&mut keys, &key), [Outcome::Dialog], "{key:?}");
+    }
+    assert_eq!(
+        in_a_dialog(&mut keys, &typed.with_kind(KeyEventKind::Release)),
+        []
+    );
+}
+
+#[test]
+fn a_prefix_pending_when_a_dialog_opens_runs_no_binding_there_or_after() {
+    let mut keys = keys();
+    press(&mut keys, &prefix());
+    assert_eq!(
+        in_a_dialog(&mut keys, &key('z', KeyModifiers::NONE)),
+        [Outcome::Dialog]
+    );
+    assert_eq!(
+        press(&mut keys, &key('z', KeyModifiers::NONE)),
         [Outcome::Pane(left())]
     );
 }

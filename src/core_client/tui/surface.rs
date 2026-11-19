@@ -9,10 +9,11 @@ use ratatui::layout::Rect;
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
+use super::dialog::{Dialog, Modal, Outcome};
 use super::select::{Copying, Select};
-use super::session::{Operation, PaneChrome, Session, Tiles};
+use super::session::{Operation, PaneChrome, Request, Session, Tiles};
 use super::terminals::Report;
-use crate::config::ToastClipboardPosition;
+use crate::config::{LiveKeybindConfig, ToastClipboardPosition};
 use crate::core_client::view::{Geometry, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
@@ -68,6 +69,7 @@ struct Overlays {
     copy: Marks,
     toast: Rect,
     cover: Rect,
+    dialog: Rect,
 }
 
 impl Overlays {
@@ -76,7 +78,13 @@ impl Overlays {
             .iter()
             .chain(&self.copy.matches)
             .chain(&self.copy.current)
-            .chain([&self.copy.cursor, &self.copy.bar, &self.toast, &self.cover])
+            .chain([
+                &self.copy.cursor,
+                &self.copy.bar,
+                &self.toast,
+                &self.cover,
+                &self.dialog,
+            ])
     }
 
     fn covers(&self, y: u16) -> bool {
@@ -88,6 +96,7 @@ impl Overlays {
 pub(super) enum Pointed {
     Copied(String),
     Act(KeybindAction),
+    Run(Operation),
 }
 
 struct Toast {
@@ -176,6 +185,8 @@ pub(super) struct Surface {
     gesture: Option<Gesture>,
     select: Select,
     copy: Option<CopyMode>,
+    dialog: Option<Modal>,
+    keybinds: LiveKeybindConfig,
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
     highlight: CellData,
@@ -193,6 +204,7 @@ impl Surface {
         palette: Palette,
         scrollbars: bool,
         copying: Copying,
+        keybinds: LiveKeybindConfig,
     ) -> Self {
         let mut highlight = ratatui::buffer::Cell::default();
         highlight.set_style(crate::ui::automatic_selection_style(
@@ -214,6 +226,8 @@ impl Surface {
             gesture: None,
             select: Select::new(copying.on_select),
             copy: None,
+            dialog: None,
+            keybinds,
             toast_at: copying.toast,
             toast: None,
             highlight: CellData::from_ratatui_cell(&highlight),
@@ -236,12 +250,59 @@ impl Surface {
             self.relayout = true;
             return None;
         }
+        if action == KeybindAction::Help {
+            self.open(Dialog::Help(Default::default()));
+            return None;
+        }
         let area = self.lay_out_chrome().pane_surface;
         if self.session.navigate(action, area, self.chrome) {
             self.relayout = true;
             self.sync_focus();
         }
-        self.session.operation(action, confirm_close)
+        match self.session.operation(action, confirm_close)? {
+            Request::Run(operation) => Some(operation),
+            Request::Confirm(closing) => {
+                self.open(Dialog::Confirm(closing));
+                None
+            }
+        }
+    }
+
+    fn open(&mut self, dialog: Dialog) {
+        self.end_gesture(None);
+        self.dialog = Some(Modal::new(dialog));
+    }
+
+    pub(super) fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
+    pub(super) fn dialog_input(&mut self, event: &RawInputEvent) -> bool {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        match event {
+            RawInputEvent::Text(text) => dialog.text(text.as_str()),
+            RawInputEvent::Paste(text) => dialog.text(text),
+            _ => {}
+        }
+        true
+    }
+
+    pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Operation> {
+        let outcome = self.dialog.as_mut()?.key(key);
+        self.settle(outcome)
+    }
+
+    fn settle(&mut self, outcome: Outcome) -> Option<Operation> {
+        if outcome == Outcome::Stay {
+            return None;
+        }
+        let dialog = self.dialog.take()?;
+        match outcome {
+            Outcome::Accept => self.session.confirmed(dialog.closing()?),
+            Outcome::Stay | Outcome::Close => None,
+        }
     }
 
     pub(super) fn heard(&mut self, report: Report) {
@@ -290,7 +351,7 @@ impl Surface {
     }
 
     pub(super) fn copyable(&self) -> bool {
-        !self.copy_mode() && self.select.copyable()
+        self.dialog.is_none() && !self.copy_mode() && self.select.copyable()
     }
 
     pub(super) fn switching(&self) -> bool {
@@ -336,11 +397,18 @@ impl Surface {
         key: &TerminalKey,
         clipboard: impl FnOnce() -> Option<String>,
     ) -> bool {
-        if !self.prompting() || !crate::ui::text_editor::is_modal_paste_shortcut(key) {
+        let edits = self
+            .dialog
+            .as_ref()
+            .map_or_else(|| self.prompting(), Modal::edits);
+        if !edits || !crate::ui::text_editor::is_modal_paste_shortcut(key) {
             return false;
         }
         if let Some(text) = clipboard() {
-            self.copy_mode_input(&RawInputEvent::Paste(text));
+            let paste = RawInputEvent::Paste(text);
+            if !self.dialog_input(&paste) {
+                self.copy_mode_input(&paste);
+            }
         }
         true
     }
@@ -427,7 +495,17 @@ impl Surface {
     }
 
     pub(super) fn needs_frame(&self) -> bool {
-        self.relayout || self.outer.stale() || self.overlays() != self.painted
+        self.relayout
+            || self.outer.stale()
+            || self.overlays() != self.painted
+            || self
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.stale(self.host_area()))
+    }
+
+    fn host_area(&self) -> Rect {
+        Rect::new(0, 0, self.host.cols, self.host.rows)
     }
 
     pub(super) fn forget(&mut self, id: PaneId) {
@@ -498,6 +576,10 @@ impl Surface {
     }
 
     pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<Pointed> {
+        if let Some(dialog) = self.dialog.as_mut() {
+            let outcome = dialog.mouse(event);
+            return self.settle(outcome).map(Pointed::Run);
+        }
         if let Some(mut gesture) = self.gesture {
             match event.kind {
                 MouseEventKind::Drag(button) | MouseEventKind::Up(button)
@@ -743,7 +825,7 @@ impl Surface {
         if relayout {
             self.lay_out(attach, leave);
         }
-        let host = Rect::new(0, 0, self.host.cols, self.host.rows);
+        let host = self.host_area();
         let chrome = (relayout || self.outer.stale())
             && self
                 .outer
@@ -789,6 +871,13 @@ impl Surface {
         if chrome && self.outer.cover().is_some() {
             self.painted.cover = Rect::default();
         }
+        if self
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.stale(host))
+        {
+            self.painted.dialog = Rect::default();
+        }
         self.paint(&mut rows);
         (rows, self.cursor())
     }
@@ -823,6 +912,10 @@ impl Surface {
                 .outer
                 .cover()
                 .map_or_else(Rect::default, |cover| cover.0),
+            dialog: self
+                .dialog
+                .as_ref()
+                .map_or_else(Rect::default, |_| self.host_area()),
         }
     }
 
@@ -831,7 +924,7 @@ impl Surface {
         let painted = std::mem::replace(&mut self.painted, overlays);
         let overlays = &self.painted;
         if painted == *overlays {
-            if !overlays.cover.is_empty() {
+            if !overlays.cover.is_empty() || !overlays.dialog.is_empty() {
                 rows.clear();
                 return;
             }
@@ -883,21 +976,36 @@ impl Surface {
                 to.clone_from_slice(bar);
             }
             let images = self.toast.as_ref().map(|toast| &toast.image);
-            for (rect, image) in images
-                .into_iter()
-                .chain(self.outer.cover())
-                .filter(|(rect, _)| covers(rect, y))
-            {
-                let width = usize::from(rect.width);
-                let from = usize::from(y - rect.y) * width;
-                if let (Some(to), Some(from)) = (
-                    cells.get_mut(usize::from(rect.x)..usize::from(rect.right())),
-                    image.get(from..from + width),
-                ) {
-                    to.clone_from_slice(from);
-                }
+            let switcher = self.outer.cover().filter(|_| self.dialog.is_none());
+            for image in images.into_iter().chain(switcher) {
+                place(&mut cells, image, y);
             }
             rows.push(PaneSurfacePatchRow { x: 0, y, cells });
+        }
+        let host = self.host_area();
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        if dialog.stale(host) {
+            let mut cells =
+                vec![CellData::from_ratatui_cell(&Default::default()); host.area() as usize];
+            crate::protocol::surface_delta::apply_rows(&mut cells, host.width, rows);
+            let seed = crate::protocol::FrameData {
+                cells,
+                width: host.width,
+                height: host.height,
+                cursor: None,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            }
+            .to_ratatui_buffer()
+            .unwrap_or_else(|| Buffer::empty(host));
+            dialog.draw(seed, &self.keybinds, &self.palette);
+        }
+        if let Some(image) = dialog.image() {
+            for row in rows.iter_mut() {
+                place(&mut row.cells, image, row.y);
+            }
         }
     }
 
@@ -1051,6 +1159,9 @@ impl Surface {
     }
 
     fn cursor(&mut self) -> Option<CursorState> {
+        if let Some(dialog) = &self.dialog {
+            return dialog.cursor();
+        }
         if self.copy_mode() || self.switching() {
             return None;
         }
@@ -1098,6 +1209,20 @@ fn tint(cells: &mut [CellData], rects: &[Rect], y: u16, style: &CellData) {
 
 fn covers(rect: &Rect, y: u16) -> bool {
     rect.y <= y && y < rect.bottom()
+}
+
+fn place(cells: &mut [CellData], (rect, image): &(Rect, Vec<CellData>), y: u16) {
+    if !covers(rect, y) {
+        return;
+    }
+    let width = usize::from(rect.width);
+    let from = usize::from(y - rect.y) * width;
+    if let (Some(to), Some(from)) = (
+        cells.get_mut(usize::from(rect.x)..usize::from(rect.right())),
+        image.get(from..from + width),
+    ) {
+        to.clone_from_slice(from);
+    }
 }
 
 fn toast_image(
