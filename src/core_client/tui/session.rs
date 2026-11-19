@@ -407,6 +407,24 @@ impl Session {
             .map(|tile| tile.terminal)
     }
 
+    pub(super) fn between(&self, path: &[bool]) -> Option<(String, String)> {
+        let (first, second) = self.layout.split_sides(self.focused()?, path)?;
+        Some((first.to_owned(), second.to_owned()))
+    }
+
+    pub(super) fn split(
+        &self,
+        area: Rect,
+        direction: ratatui::layout::Direction,
+        sides: (&str, &str),
+    ) -> Option<SplitBorder> {
+        if self.zoomed {
+            return None;
+        }
+        self.layout
+            .split_between(self.focused()?, area, direction, sides)
+    }
+
     fn cycled(&self, focus: &Focus, step: isize) -> Option<String> {
         let terminals: Vec<&str> = tab(&self.layout, focus)?
             .root

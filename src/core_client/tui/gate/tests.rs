@@ -444,3 +444,17 @@ fn input_held_behind_an_edit_becomes_ready_when_the_edit_finishes_without_new_in
 
     assert_eq!(polled(gate.ready(&mut input)), Some(Some(())));
 }
+
+#[test]
+fn the_gate_holds_from_a_queued_edit_until_it_opens() {
+    let mut gate = Gate::default();
+    let now = Instant::now();
+    assert!(!gate.holding());
+    editing(&mut gate, now);
+    assert!(gate.holding());
+
+    gate.finished(None);
+    drained(&mut gate, now);
+
+    assert!(!gate.holding());
+}

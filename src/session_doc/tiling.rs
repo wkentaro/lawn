@@ -1,20 +1,15 @@
 use std::collections::BTreeSet;
 
-#[cfg(any(unix, test))]
 use ratatui::layout::Rect;
 
+use super::{Direction, Layout, Node};
 #[cfg(any(unix, test))]
-use super::Layout;
-use super::{Direction, Node};
-use crate::layout::PaneId;
-#[cfg(any(unix, test))]
-use crate::layout::{NavDirection, PaneInfo, TileLayout};
+use crate::layout::{NavDirection, PaneInfo};
+use crate::layout::{PaneId, SplitBorder, TileLayout};
 
-#[cfg(any(unix, test))]
 struct Tiled<'a> {
     layout: TileLayout,
     shown: Vec<&'a str>,
-    panes: Vec<PaneInfo>,
 }
 
 impl Node {
@@ -47,27 +42,29 @@ impl Node {
     }
 }
 
-#[cfg(any(unix, test))]
 impl Layout {
+    #[cfg(any(unix, test))]
     pub(crate) fn neighbour(
         &self,
         terminal: &str,
         toward: NavDirection,
         area: Rect,
     ) -> Option<&str> {
-        let tiled = self.tiled(terminal, area)?;
-        let to = crate::layout::find_in_direction(tiled.focused()?, toward, &tiled.panes)?;
+        let tiled = self.tiled(terminal)?;
+        let panes = tiled.layout.panes(area);
+        let to = crate::layout::find_in_direction(tiled.focused(&panes)?, toward, &panes)?;
         tiled.terminal(to)
     }
 
+    #[cfg(any(unix, test))]
     pub(crate) fn resized_split(
         &self,
         terminal: &str,
         toward: NavDirection,
         area: Rect,
     ) -> Option<(&str, &str)> {
-        let tiled = self.tiled(terminal, area)?;
-        let rect = tiled.focused()?.rect;
+        let tiled = self.tiled(terminal)?;
+        let rect = tiled.focused(&tiled.layout.panes(area))?.rect;
         let axis = match toward {
             NavDirection::Left | NavDirection::Right => ratatui::layout::Direction::Horizontal,
             NavDirection::Up | NavDirection::Down => ratatui::layout::Direction::Vertical,
@@ -85,7 +82,27 @@ impl Layout {
         tiled.sides(tiled.layout.root(), &split.path)
     }
 
-    fn tiled<'a>(&'a self, terminal: &str, area: Rect) -> Option<Tiled<'a>> {
+    pub(crate) fn split_sides(&self, terminal: &str, path: &[bool]) -> Option<(&str, &str)> {
+        let tiled = self.tiled(terminal)?;
+        tiled.sides(tiled.layout.root(), path)
+    }
+
+    pub(crate) fn split_between(
+        &self,
+        terminal: &str,
+        area: Rect,
+        direction: ratatui::layout::Direction,
+        (first, second): (&str, &str),
+    ) -> Option<SplitBorder> {
+        let tiled = self.tiled(terminal)?;
+        tiled.layout.split_where(area, |along, before, after| {
+            along == direction
+                && tiled.terminal(edge(before, true)) == Some(first)
+                && tiled.terminal(edge(after, false)) == Some(second)
+        })
+    }
+
+    fn tiled<'a>(&'a self, terminal: &str) -> Option<Tiled<'a>> {
         if self.parked.contains(terminal) {
             return None;
         }
@@ -100,21 +117,18 @@ impl Layout {
             PaneId::from_raw(shown.len() as u32 - 1)
         })?;
         let focused = shown.iter().position(|shown| *shown == terminal)?;
-        let layout = TileLayout::from_saved(root, PaneId::from_raw(focused as u32));
-        let panes = layout.panes(area);
         Some(Tiled {
-            layout,
+            layout: TileLayout::from_saved(root, PaneId::from_raw(focused as u32)),
             shown,
-            panes,
         })
     }
 }
 
-#[cfg(any(unix, test))]
 impl<'a> Tiled<'a> {
-    fn focused(&self) -> Option<&PaneInfo> {
+    #[cfg(any(unix, test))]
+    fn focused<'p>(&self, panes: &'p [PaneInfo]) -> Option<&'p PaneInfo> {
         let focused = self.layout.focused();
-        self.panes.iter().find(|pane| pane.id == focused)
+        panes.iter().find(|pane| pane.id == focused)
     }
 
     fn terminal(&self, id: PaneId) -> Option<&'a str> {
@@ -127,8 +141,8 @@ impl<'a> Tiled<'a> {
         };
         match path.split_first() {
             None => Some((
-                self.terminal(leading(first))?,
-                self.terminal(leading(second))?,
+                self.terminal(edge(first, true))?,
+                self.terminal(edge(second, false))?,
             )),
             Some((false, rest)) => self.sides(first, rest),
             Some((true, rest)) => self.sides(second, rest),
@@ -136,10 +150,10 @@ impl<'a> Tiled<'a> {
     }
 }
 
-#[cfg(any(unix, test))]
-fn leading(node: &crate::layout::Node) -> PaneId {
+fn edge(node: &crate::layout::Node, last: bool) -> PaneId {
     match node {
         crate::layout::Node::Pane(id) => *id,
-        crate::layout::Node::Split { first, .. } => leading(first),
+        crate::layout::Node::Split { second, .. } if last => edge(second, last),
+        crate::layout::Node::Split { first, .. } => edge(first, last),
     }
 }

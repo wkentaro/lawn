@@ -536,3 +536,122 @@ fn arrange_steps_the_split_beside_a_pane_along_its_key_within_its_bounds_and_rep
     assert!(!layout.arrange(&resizing("z", NavDirection::Left)));
     assert_eq!(layout, before);
 }
+
+#[test]
+fn arrange_moves_a_workspace_before_another_or_to_the_end_and_reports_a_missing_one() {
+    let mut layout = Layout::default();
+    for terminal in ["a", "b", "c"] {
+        layout.add_workspace(None, terminal.to_owned());
+    }
+    let workspaces = |layout: &Layout| {
+        layout
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let moving = |workspace: &str, to| Arrangement::MoveWorkspace {
+        workspace: workspace.to_owned(),
+        to,
+    };
+    let before = |workspace: &str| Place::Before(workspace.to_owned());
+    assert_eq!(workspaces(&layout), "ws0 ws2 ws4");
+    assert!(layout.arrange(&moving("ws0", before("ws4"))));
+    assert_eq!(workspaces(&layout), "ws2 ws0 ws4");
+    assert!(layout.arrange(&moving("ws4", before("ws2"))));
+    assert_eq!(workspaces(&layout), "ws4 ws2 ws0");
+    assert!(layout.arrange(&moving("ws4", Place::End)));
+    assert_eq!(workspaces(&layout), "ws2 ws0 ws4");
+
+    let unmoved = layout.clone();
+    assert!(!layout.arrange(&moving("ws0", before("ws9"))));
+    assert!(!layout.arrange(&moving("ws9", Place::End)));
+    assert_eq!(layout, unmoved);
+}
+
+#[test]
+fn arrange_sets_the_split_between_two_panes_along_its_axis_within_its_bounds_and_reports_only_a_missing_pane(
+) {
+    let mut layout = one_workspace(split(
+        Direction::Right,
+        split(Direction::Down, pane("a"), pane("b")),
+        pane("c"),
+    ));
+    let setting = |first: &str, second: &str, ratio| Arrangement::SetRatio {
+        first: first.to_owned(),
+        second: second.to_owned(),
+        direction: if second == "c" {
+            Direction::Right
+        } else {
+            Direction::Down
+        },
+        ratio,
+    };
+    let root = |layout: &Layout| ratios(&layout.workspaces[0].tabs[0].root);
+    assert!(layout.arrange(&setting("a", "b", 0.3)));
+    assert_eq!(root(&layout), [0.5, 0.3]);
+    assert!(layout.arrange(&setting("b", "c", 0.7)));
+    assert_eq!(root(&layout), [0.7, 0.3]);
+    assert!(layout.arrange(&setting("b", "c", 0.95)));
+    assert_eq!(root(&layout), [MAX_RATIO, 0.3]);
+    assert!(layout.arrange(&setting("a", "b", 0.0)));
+    assert_eq!(root(&layout), [MAX_RATIO, MIN_RATIO]);
+
+    let before = layout.clone();
+    assert!(layout.arrange(&setting("b", "a", 0.5)));
+    assert!(layout.arrange(&setting("a", "z", 0.5)));
+    assert!(!layout.arrange(&setting("z", "b", 0.5)));
+    assert!(layout.arrange(&Arrangement::SetRatio {
+        first: "a".to_owned(),
+        second: "b".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    }));
+    assert_eq!(layout, before);
+}
+
+fn right_ratio(first: &str, second: &str) -> Arrangement {
+    Arrangement::SetRatio {
+        first: first.to_owned(),
+        second: second.to_owned(),
+        direction: Direction::Right,
+        ratio: 0.3,
+    }
+}
+
+#[test]
+fn a_ratio_lands_only_on_the_split_whose_border_the_two_panes_share() {
+    let row = |first, second, third| {
+        one_workspace(split(
+            Direction::Right,
+            split(Direction::Right, pane(first), pane(second)),
+            pane(third),
+        ))
+    };
+    let mut layout = row("a", "b", "c");
+    assert!(layout.arrange(&right_ratio("a", "b")));
+    assert_eq!(ratios(&layout.workspaces[0].tabs[0].root), [0.5, 0.3]);
+
+    let mut swapped = row("a", "c", "b");
+    let before = swapped.clone();
+    assert!(swapped.arrange(&right_ratio("a", "b")));
+    assert!(swapped.arrange(&right_ratio("b", "c")));
+    assert_eq!(swapped, before);
+}
+
+#[test]
+fn a_parked_pane_hands_its_border_to_the_pane_shown_beside_it() {
+    let mut layout = one_workspace(split(
+        Direction::Right,
+        split(Direction::Right, pane("a"), pane("b")),
+        pane("c"),
+    ));
+    layout.parked.insert("b".to_owned());
+    let before = layout.clone();
+
+    assert!(layout.arrange(&right_ratio("b", "c")));
+    assert_eq!(layout, before);
+    assert!(layout.arrange(&right_ratio("a", "c")));
+    assert_eq!(ratios(&layout.workspaces[0].tabs[0].root), [0.3, 0.5]);
+}

@@ -99,7 +99,7 @@ impl Gate {
         self.read.pop_front()
     }
 
-    fn holding(&self) -> bool {
+    pub(super) fn holding(&self) -> bool {
         matches!(self.hold, Hold::Closed(_))
     }
 }

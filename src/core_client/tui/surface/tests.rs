@@ -1403,9 +1403,9 @@ async fn a_double_click_selects_and_copies_a_word_that_flashes_briefly() {
     assert_eq!(copied.as_deref(), Some("world"));
     let flash = later + std::time::Duration::from_millis(500);
     assert_eq!(surface.deadline(), Some(flash));
-    surface.tick(flash - std::time::Duration::from_millis(1));
+    surface.tick(flash - std::time::Duration::from_millis(1), false);
     assert!(surface.select.shown().is_some());
-    surface.tick(flash);
+    surface.tick(flash, false);
     assert!(surface.select.shown().is_none());
     assert_eq!(surface.deadline(), None);
 }
@@ -1458,7 +1458,7 @@ async fn a_drag_past_the_top_scrolls_at_once_and_then_on_each_tick() {
 
     let tick = now + std::time::Duration::from_millis(30);
     assert_eq!(surface.deadline(), Some(tick));
-    surface.tick(tick);
+    surface.tick(tick, false);
     assert_eq!(metrics(&surface, "t0").offset_from_bottom, 4);
 
     let copied = copied_text(surface.mouse(release_at(inner.x + 2, inner.y - 1), tick));
@@ -1515,6 +1515,23 @@ async fn any_left_press_clears_the_selection() {
     surface.mouse(click(0, 0), now);
 
     assert!(surface.select.shown().is_none());
+}
+
+#[tokio::test]
+async fn a_press_on_a_split_border_clears_the_selection() {
+    let (mut surface, inner, _input) = selecting(false, b"hello world");
+    let now = std::time::Instant::now();
+    surface.mouse(click(inner.x, inner.y), now);
+    surface.mouse(drag_to(inner.x + 4, inner.y), now);
+    surface.mouse(release_at(inner.x + 4, inner.y), now);
+    assert!(surface.copyable());
+    let border = surface.tiles.splits[0].pos;
+
+    surface.mouse(click(border, inner.y), now);
+    surface.mouse(release_at(border, inner.y), now);
+
+    assert!(surface.select.shown().is_none());
+    assert!(!surface.copyable());
 }
 
 fn kept_selection(surface: &mut Surface, terminal: &str) {
@@ -1792,7 +1809,7 @@ async fn the_copied_toast_shows_for_two_seconds() {
     let expiry = now + std::time::Duration::from_secs(2);
     assert_eq!(surface.deadline(), Some(expiry));
 
-    surface.tick(expiry);
+    surface.tick(expiry, false);
     assert!(surface.needs_frame());
     let rows = frame(&mut surface, &HashSet::new());
     assert!(!rows.is_empty());
