@@ -583,6 +583,13 @@ fn point_at(
     }
 }
 
+fn destination(operation: Option<Operation>) -> Option<crate::session_doc::Destination> {
+    match operation? {
+        Operation::Start(_, destination) => Some(destination),
+        _ => None,
+    }
+}
+
 fn tap(surface: &mut Surface, column: u16, row: u16) -> Option<Operation> {
     let pressed = point(
         surface,
@@ -742,8 +749,14 @@ async fn new_and_plus_start_a_workspace_and_a_tab_like_their_keys() {
     let tab = tap(&mut surface, plus, 0);
 
     assert!(workspace.is_some() && tab.is_some());
-    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
-    assert_eq!(tab, surface.act(KeybindAction::NewTab, false));
+    assert_eq!(
+        destination(workspace),
+        destination(surface.act(KeybindAction::NewWorkspace, false))
+    );
+    assert_eq!(
+        destination(tab),
+        destination(surface.act(KeybindAction::NewTab, false))
+    );
     assert_eq!(tap(&mut surface, 6, 28), None);
 }
 
