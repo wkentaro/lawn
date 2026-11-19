@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
-use super::dialog::{Dialog, Modal, Outcome};
+use super::dialog::{Dialog, Modal, Outcome, Rename};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Request, Session, Tiles};
 use super::terminals::Report;
@@ -254,6 +254,15 @@ impl Surface {
             self.open(Dialog::Help(Default::default()));
             return None;
         }
+        if matches!(
+            action,
+            KeybindAction::RenameWorkspace | KeybindAction::RenameTab
+        ) {
+            if let Some(rename) = Rename::of(action, &self.session) {
+                self.open(Dialog::Rename(rename));
+            }
+            return None;
+        }
         let area = self.lay_out_chrome().pane_surface;
         if self.session.navigate(action, area, self.chrome) {
             self.relayout = true;
@@ -300,7 +309,7 @@ impl Surface {
         }
         let dialog = self.dialog.take()?;
         match outcome {
-            Outcome::Accept => self.session.confirmed(dialog.closing()?),
+            Outcome::Accept => dialog.accepted(&self.session),
             Outcome::Stay | Outcome::Close => None,
         }
     }

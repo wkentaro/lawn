@@ -111,48 +111,63 @@ mod unix {
             })
     }
 
-    fn perform(
-        core: Arc<Core>,
-        session: String,
-        operation: Operation,
-        cwd: PathBuf,
-        created: mpsc::UnboundedSender<String>,
-    ) {
+    pub(super) fn operations(
+        mut perform: impl FnMut(Operation, PathBuf) + Send + 'static,
+    ) -> std::sync::mpsc::Sender<(Operation, PathBuf)> {
+        let (queue, queued) = std::sync::mpsc::channel();
         tokio::task::spawn_blocking(move || {
-            let core = match connected(core) {
-                Ok(core) => core,
-                Err(error) => {
-                    warn!(%error, ?operation, "the core is unreachable");
-                    return;
-                }
-            };
-            let lifecycle = || Lifecycle::new(core.clone(), &session);
-            match operation {
-                Operation::Start(destination) => {
-                    let report = |error| warn!(%error, session, "recovery failed");
-                    match creation_lifecycle(&core, &session, report)
-                        .and_then(|lifecycle| lifecycle.start(destination, &cwd, &[]))
-                    {
-                        Ok(started) => {
-                            created.send(started.terminal).ok();
-                        }
-                        Err(error) => warn!(%error, "the program did not start"),
+            for (operation, cwd) in queued {
+                perform(operation, cwd);
+            }
+        });
+        queue
+    }
+
+    fn perform(
+        core: &Arc<Core>,
+        session: &str,
+        operation: Operation,
+        cwd: &std::path::Path,
+        created: &mpsc::UnboundedSender<String>,
+    ) {
+        let core = match connected(core.clone()) {
+            Ok(core) => core,
+            Err(error) => {
+                warn!(%error, ?operation, "the core is unreachable");
+                return;
+            }
+        };
+        let lifecycle = || Lifecycle::new(core.clone(), session);
+        match operation {
+            Operation::Start(destination) => {
+                let report = |error| warn!(%error, session, "recovery failed");
+                match creation_lifecycle(&core, session, report)
+                    .and_then(|lifecycle| lifecycle.start(destination, cwd, &[]))
+                {
+                    Ok(started) => {
+                        created.send(started.terminal).ok();
                     }
+                    Err(error) => warn!(%error, "the program did not start"),
                 }
-                Operation::Close(terminals) => {
-                    for terminal in terminals {
-                        if let Err(error) = lifecycle().close(&terminal) {
-                            warn!(%error, terminal, "the pane did not close");
-                        }
-                    }
-                }
-                Operation::Park(terminal) => {
-                    if let Err(error) = lifecycle().park(&terminal) {
-                        warn!(%error, terminal, "the pane did not park");
+            }
+            Operation::Close(terminals) => {
+                for terminal in terminals {
+                    if let Err(error) = lifecycle().close(&terminal) {
+                        warn!(%error, terminal, "the pane did not close");
                     }
                 }
             }
-        });
+            Operation::Park(terminal) => {
+                if let Err(error) = lifecycle().park(&terminal) {
+                    warn!(%error, terminal, "the pane did not park");
+                }
+            }
+            Operation::Arrange(arrangement) => {
+                if let Err(error) = lifecycle().arrange(&arrangement) {
+                    warn!(%error, "the session was not rearranged");
+                }
+            }
+        }
     }
 
     pub(super) async fn show(
@@ -207,18 +222,18 @@ mod unix {
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
+        let operations = {
+            let (core, session) = (core.clone(), session.clone());
+            operations(move |operation, cwd| {
+                perform(&core, &session, operation, &cwd, &created_tx);
+            })
+        };
         let run = |surface: &Surface, operation: Operation| {
             let cwd = surface
                 .focused()
                 .and_then(View::cwd)
                 .unwrap_or_else(|| launched_in.clone());
-            perform(
-                core.clone(),
-                session.clone(),
-                operation,
-                cwd,
-                created_tx.clone(),
-            );
+            operations.send((operation, cwd)).ok();
         };
         let act = |surface: &mut Surface, action: KeybindAction| {
             if let Some(operation) = surface.act(action, config.ui.confirm_close) {
@@ -443,13 +458,9 @@ mod unix {
                         let Some(terminal) = surface.terminal(id).map(str::to_owned) else {
                             continue;
                         };
-                        perform(
-                            core.clone(),
-                            session.clone(),
-                            Operation::Close(vec![terminal]),
-                            launched_in.clone(),
-                            created_tx.clone(),
-                        );
+                        operations
+                            .send((Operation::Close(vec![terminal]), launched_in.clone()))
+                            .ok();
                     }
                     Event::Detached(id) => {
                         surface.forget(id);

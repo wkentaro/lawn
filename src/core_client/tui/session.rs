@@ -7,7 +7,7 @@ use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
 use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
-use crate::session_doc::{Destination, Direction, Layout, Node, Tab, Workspace};
+use crate::session_doc::{Arrangement, Destination, Direction, Layout, Node, Tab, Workspace};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct PaneChrome {
@@ -41,6 +41,7 @@ pub(super) enum Operation {
     Start(Destination),
     Close(Vec<String>),
     Park(String),
+    Arrange(Arrangement),
 }
 
 #[derive(Debug, PartialEq)]
