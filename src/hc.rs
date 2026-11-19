@@ -531,6 +531,13 @@ impl Core {
         lock(&self.routes).closed
     }
 
+    pub(crate) fn has_method(&self, method: &str) -> bool {
+        self.hello
+            .get("methods")
+            .and_then(Value::as_array)
+            .is_some_and(|methods| methods.iter().any(|m| m == method))
+    }
+
     pub(crate) fn has_feature(&self, feature: &str) -> bool {
         self.hello
             .get("features")

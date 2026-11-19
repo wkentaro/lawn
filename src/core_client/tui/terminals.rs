@@ -16,6 +16,8 @@ pub(super) enum Report {
     Folder(String, PathBuf),
     Statuses(HashMap<String, CoreStatus>),
     Status(String, CoreStatus),
+    Resume(Option<String>),
+    Forget(Option<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,6 +99,7 @@ impl Terminals {
                     })
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows),
+            Report::Resume(_) | Report::Forget(_) => false,
         }
     }
 
@@ -170,9 +173,12 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
     };
     if reports.send(snapshot(&subscription.snapshot)).is_err()
         || reports.send(statuses(&subscription.snapshot)).is_err()
+        || reports.send(Report::Resume(None)).is_err()
+        || reports.send(Report::Forget(None)).is_err()
     {
         return false;
     }
+    let mut roots = roots(&subscription.snapshot);
     crate::pane::read_events(
         &core,
         subscription.channel,
@@ -182,6 +188,12 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
                 reports.send(report).ok();
             }
             if let Some(report) = status_reported(message) {
+                reports.send(report).ok();
+            }
+            if let Some(report) = resume_reported(message) {
+                reports.send(report).ok();
+            }
+            if let Some(report) = forget_reported(message, &mut roots) {
                 reports.send(report).ok();
             }
         },
@@ -201,6 +213,60 @@ fn reported(message: &Value) -> Option<Report> {
             params["data"]["cwd"].as_str()?.into(),
         )),
         ("missed", _) => Some(snapshot(params)),
+        _ => None,
+    }
+}
+
+fn resume_reported(message: &Value) -> Option<Report> {
+    match (
+        message["method"].as_str()?,
+        message["params"]["type"].as_str(),
+    ) {
+        ("event", Some("restarted")) => Some(Report::Resume(Some(
+            message["params"]["terminal"].as_str()?.to_owned(),
+        ))),
+        ("missed", _) => Some(Report::Resume(None)),
+        _ => None,
+    }
+}
+
+fn roots(snapshot: &Value) -> HashMap<String, u64> {
+    snapshot["terminals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(root)
+        .collect()
+}
+
+fn root(record: &Value) -> Option<(String, u64)> {
+    Some((
+        record["address"].as_str()?.to_owned(),
+        record["pid"].as_u64()?,
+    ))
+}
+
+fn forget_reported(message: &Value, roots: &mut HashMap<String, u64>) -> Option<Report> {
+    let params = &message["params"];
+    match (message["method"].as_str()?, params["type"].as_str()) {
+        ("event", Some("created" | "restarted")) => {
+            let (terminal, pid) = root(&params["data"])?;
+            roots.insert(terminal, pid);
+            None
+        }
+        ("event", Some("foreground")) => {
+            let terminal = params["terminal"].as_str()?;
+            let pid = params["data"]["pid"].as_u64()?;
+            (roots.get(terminal) == Some(&pid)).then(|| Report::Forget(Some(terminal.to_owned())))
+        }
+        ("event", Some("removed")) => {
+            roots.remove(params["terminal"].as_str()?);
+            None
+        }
+        ("missed", _) => {
+            *roots = self::roots(params);
+            Some(Report::Forget(None))
+        }
         _ => None,
     }
 }

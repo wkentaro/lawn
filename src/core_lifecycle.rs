@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(any(unix, test))]
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
@@ -12,6 +14,50 @@ const KEEP_SETTLE_ATTEMPTS: usize = 4;
 fn utf8(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
+}
+
+#[cfg(any(unix, test))]
+pub(crate) struct Pace {
+    spacing: Duration,
+    last: Option<Instant>,
+    stop: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(any(unix, test))]
+impl Pace {
+    fn wait(&self, now: Instant) -> Duration {
+        self.last.map_or(Duration::ZERO, |last| {
+            (last + self.spacing).saturating_duration_since(now)
+        })
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        matches!(
+            self.stop.recv_timeout(self.wait(now)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        )
+    }
+
+    fn sent(&mut self, at: Instant) {
+        self.last = Some(at);
+    }
+}
+
+#[cfg(any(unix, test))]
+pub(crate) fn drain<T>(
+    queue: std::sync::mpsc::Receiver<T>,
+    stop: std::sync::mpsc::Receiver<()>,
+    spacing: Duration,
+    mut each: impl FnMut(T, &mut Pace),
+) {
+    let mut pace = Pace {
+        spacing,
+        last: None,
+        stop,
+    };
+    for request in queue {
+        each(request, &mut pace);
+    }
 }
 
 pub(crate) struct Lifecycle {
@@ -156,6 +202,39 @@ impl Lifecycle {
             }
         })?;
         finished
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn resume_agents(&self, only: Option<&str>, pace: &mut Pace) -> Result<(), String> {
+        let layout = self.store.load()?.layout;
+        for terminal in layout
+            .terminals()
+            .filter(|terminal| only.is_none_or(|only| only == *terminal))
+        {
+            if !pace.ready(Instant::now()) {
+                break;
+            }
+            match crate::core_resume::resume(&self.core, terminal) {
+                Ok(true) => pace.sent(Instant::now()),
+                Ok(false) => {}
+                Err(error) => tracing::warn!(%error, terminal, "the agent did not resume"),
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn forget_agents(&self, only: Option<&str>) -> Result<(), String> {
+        let layout = self.store.load()?.layout;
+        for terminal in layout
+            .terminals()
+            .filter(|terminal| only.is_none_or(|only| only == *terminal))
+        {
+            if let Err(error) = crate::core_resume::forget(&self.core, terminal) {
+                tracing::warn!(%error, terminal, "the quit agent's resume command stays");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn close(&self, terminal: &str) -> Result<(), String> {
