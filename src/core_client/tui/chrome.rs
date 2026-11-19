@@ -10,9 +10,12 @@ use time::format_description::OwnedFormatItem;
 
 use self::mobile::{Switcher, Target};
 use super::session::Session;
+use tokio::sync::mpsc::Sender;
+
 use crate::api::schema::AgentStatus;
 use crate::app::tab_bar_status::{
     format_local_datetime, sanitize_literal_text, sanitize_separator, sanitize_status_text,
+    spawn_status_command, TabBarCommandRuntime,
 };
 use crate::client::preferences::{self, ClientChromePreferences};
 use crate::client::scroll;
@@ -20,6 +23,7 @@ use crate::config::{
     AgentPanelSortConfig, Config, SidebarCollapsedModeConfig, SpacesSidebarConfig,
     StatusIndicatorStyle, TabBarPositionConfig, TabBarRightEntryConfig,
 };
+use crate::events::AppEvent;
 use crate::input::KeybindAction;
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
@@ -35,6 +39,7 @@ enum Entry {
     Zoom,
     Text(Option<String>),
     Clock(Clock),
+    Status(TabBarCommandRuntime, Option<String>),
 }
 
 struct Clock {
@@ -148,6 +153,7 @@ pub(super) struct Chrome {
     indicators: StatusIndicatorStyle,
     sort: AgentPanelSortConfig,
     entries: Vec<Entry>,
+    reports: Sender<AppEvent>,
     separator: String,
     collapsed: bool,
     collapsed_manual: bool,
@@ -168,10 +174,10 @@ pub(super) struct Chrome {
 }
 
 impl Chrome {
-    pub(super) fn new(config: &Config) -> Self {
+    pub(super) fn new(config: &Config, reports: Sender<AppEvent>) -> Self {
         let ui = &config.ui;
         let now = Instant::now();
-        let entries = ui
+        let mut entries: Vec<Entry> = ui
             .tab_bar_right
             .iter()
             .take(crate::config::MAX_TAB_BAR_RIGHT_ENTRIES)
@@ -194,9 +200,38 @@ impl Chrome {
                 TabBarRightEntryConfig::Text { text } => {
                     Some(Entry::Text(sanitize_literal_text(text)))
                 }
-                TabBarRightEntryConfig::Command { .. } => None,
+                TabBarRightEntryConfig::Command {
+                    command,
+                    interval_seconds,
+                    timeout_seconds,
+                } => {
+                    let runs = crate::platform::status_commands_supported()
+                        && !command.trim().is_empty()
+                        && (1..=crate::config::MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS)
+                            .contains(interval_seconds)
+                        && (1..=crate::config::MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS)
+                            .contains(timeout_seconds);
+                    runs.then(|| {
+                        Entry::Status(
+                            TabBarCommandRuntime {
+                                segment_index: 0,
+                                command: command.clone(),
+                                interval: Duration::from_secs(*interval_seconds),
+                                timeout: Duration::from_secs(*timeout_seconds),
+                                next_run_at: now,
+                                task: None,
+                            },
+                            None,
+                        )
+                    })
+                }
             })
             .collect();
+        for (index, entry) in entries.iter_mut().enumerate() {
+            if let Entry::Status(runtime, _) = entry {
+                runtime.segment_index = index;
+            }
+        }
         let mut chrome = Self {
             settings: LayoutSettings {
                 sidebar_min_width: ui.sidebar_min_width,
@@ -213,6 +248,7 @@ impl Chrome {
             indicators: ui.status_indicators,
             sort: ui.agent_panel_sort,
             entries,
+            reports,
             separator: sanitize_separator(&ui.tab_bar_right_separator),
             collapsed: ui.sidebar_start_collapsed,
             collapsed_manual: false,
@@ -559,29 +595,77 @@ impl Chrome {
         }
     }
 
-    pub(super) fn deadline(&self) -> Option<Instant> {
-        self.clocks().map(|clock| clock.due).min()
+    pub(super) fn deadline(&self, pane_ready: bool) -> Option<Instant> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Clock(clock) => Some(clock.due),
+                Entry::Status(runtime, _) if pane_ready && runtime.task.is_none() => {
+                    Some(runtime.next_run_at)
+                }
+                _ => None,
+            })
+            .min()
     }
 
-    pub(super) fn tick(&mut self, now: Instant) {
+    pub(super) fn tick(
+        &mut self,
+        now: Instant,
+        pane: impl Fn() -> Option<(Vec<(String, String)>, Option<PathBuf>)>,
+    ) {
         let mut ticked = false;
+        let mut context = None;
         for entry in &mut self.entries {
-            let Entry::Clock(clock) = entry else {
-                continue;
-            };
-            if now < clock.due {
-                continue;
+            match entry {
+                Entry::Clock(clock) if now >= clock.due => {
+                    clock.due = next_change(clock.period, now);
+                    let text = format_local_datetime(&clock.format);
+                    ticked |= text != clock.text;
+                    clock.text = text;
+                }
+                Entry::Status(runtime, _)
+                    if runtime.task.is_none() && now >= runtime.next_run_at =>
+                {
+                    let Some((env, cwd)) = context
+                        .get_or_insert_with(|| {
+                            pane().map(|(env, cwd)| (env, cwd.filter(|cwd| cwd.is_dir())))
+                        })
+                        .as_ref()
+                    else {
+                        continue;
+                    };
+                    runtime.next_run_at = now.checked_add(runtime.interval).unwrap_or(now);
+                    runtime.task = Some(spawn_status_command(
+                        self.reports.clone(),
+                        0,
+                        runtime.segment_index,
+                        runtime.command.clone(),
+                        runtime.timeout,
+                        env.clone(),
+                        cwd.clone(),
+                    ));
+                }
+                _ => {}
             }
-            clock.due = next_change(clock.period, now);
-            let text = format_local_datetime(&clock.format);
-            ticked |= text != clock.text;
-            clock.text = text;
         }
         self.recheck |= ticked;
     }
 
     pub(super) fn recheck(&mut self) {
         self.recheck = true;
+    }
+
+    pub(super) fn finished(&mut self, entry: usize, result: Result<Option<String>, String>) {
+        let Some(Entry::Status(runtime, text)) = self.entries.get_mut(entry) else {
+            return;
+        };
+        runtime.task = None;
+        let output = result.unwrap_or_else(|error| {
+            tracing::warn!(command = %runtime.command, error, "tab bar status command failed");
+            None
+        });
+        self.recheck |= *text != output;
+        *text = output;
     }
 
     pub(super) fn stale(&self) -> bool {
@@ -635,13 +719,6 @@ impl Chrome {
         true
     }
 
-    fn clocks(&self) -> impl Iterator<Item = &Clock> {
-        self.entries.iter().filter_map(|entry| match entry {
-            Entry::Clock(clock) => Some(clock),
-            _ => None,
-        })
-    }
-
     fn drawn(&self, host: Rect, layout: Layout, session: &Session) -> Drawn {
         let workspaces = session.workspaces();
         let focused = session.focused_workspace();
@@ -683,7 +760,9 @@ impl Chrome {
                 .iter()
                 .filter_map(|entry| match entry {
                     Entry::Zoom => zoomed.then(|| ("ZOOM".to_owned(), true)),
-                    Entry::Text(text) | Entry::Clock(Clock { text, .. }) => text
+                    Entry::Text(text)
+                    | Entry::Clock(Clock { text, .. })
+                    | Entry::Status(_, text) => text
                         .clone()
                         .filter(|text| !text.is_empty())
                         .map(|text| (text, false)),

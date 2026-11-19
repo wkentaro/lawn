@@ -10,6 +10,27 @@ fn layout(value: serde_json::Value) -> Layout {
     serde_json::from_value(value).expect("layout")
 }
 
+trait LaidOut {
+    fn lay_out(&mut self, layout: Layout);
+}
+
+impl LaidOut for Session {
+    fn lay_out(&mut self, layout: Layout) {
+        let version = self.starts.version() + 1;
+        self.update(layout, version);
+    }
+}
+
+fn placed(session: &Session, terminal: &str) -> Option<(String, u64)> {
+    let version = session.starts.version();
+    let version = if session.layout.owns(terminal) {
+        version
+    } else {
+        version + 1
+    };
+    Some((terminal.to_owned(), version))
+}
+
 fn pane(terminal: &str) -> serde_json::Value {
     json!({"kind": "pane", "terminal": terminal})
 }
@@ -49,7 +70,7 @@ fn shown(session: &mut Session) -> Vec<String> {
 #[test]
 fn a_new_session_focuses_the_first_pane_of_the_first_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert_eq!(session.focused(), Some("a"));
     assert_eq!(shown(&mut session), ["a", "b"]);
 }
@@ -57,9 +78,9 @@ fn a_new_session_focuses_the_first_pane_of_the_first_tab() {
 #[test]
 fn focus_follows_its_terminal_when_it_moves_to_another_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert!(session.focus("b"));
-    session.update(layout(json!({"workspaces": [
+    session.lay_out(layout(json!({"workspaces": [
         {"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]},
         {"id": "w1", "tabs": [{"id": "t2", "root": split(pane("d"), pane("b"))}]},
     ]})));
@@ -70,8 +91,8 @@ fn focus_follows_its_terminal_when_it_moves_to_another_tab() {
 #[test]
 fn parking_the_focused_pane_moves_focus_to_the_tabs_next_shown_pane() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
-    session.update(two_tabs(&["a"]));
+    session.lay_out(two_tabs(&[]));
+    session.lay_out(two_tabs(&["a"]));
     assert_eq!(session.focused(), Some("b"));
     assert_eq!(shown(&mut session), ["b"]);
 }
@@ -79,19 +100,19 @@ fn parking_the_focused_pane_moves_focus_to_the_tabs_next_shown_pane() {
 #[test]
 fn a_fully_parked_tab_stays_focused_and_draws_nothing() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
-    session.update(two_tabs(&["a", "b"]));
+    session.lay_out(two_tabs(&[]));
+    session.lay_out(two_tabs(&["a", "b"]));
     assert_eq!(session.focused(), None);
     assert!(shown(&mut session).is_empty());
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     assert_eq!(session.focused(), Some("a"));
 }
 
 #[test]
 fn a_removed_tab_falls_back_to_its_workspaces_first_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
-    session.update(layout(json!({"workspaces": [
+    session.lay_out(two_tabs(&[]));
+    session.lay_out(layout(json!({"workspaces": [
         {"id": "w0", "tabs": [{"id": "t1", "root": pane("c")}]},
     ]})));
     assert_eq!(session.focused(), Some("c"));
@@ -100,8 +121,8 @@ fn a_removed_tab_falls_back_to_its_workspaces_first_tab() {
 #[test]
 fn a_session_without_workspaces_has_no_focus() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
-    session.update(Layout::default());
+    session.lay_out(two_tabs(&[]));
+    session.lay_out(Layout::default());
     assert_eq!(session.focused(), None);
     assert!(shown(&mut session).is_empty());
 }
@@ -109,7 +130,7 @@ fn a_session_without_workspaces_has_no_focus() {
 #[test]
 fn focus_only_moves_to_a_shown_pane_of_the_focused_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     assert!(!session.focus("b"));
     assert!(!session.focus("c"));
     assert!(!session.focus("a"));
@@ -119,7 +140,7 @@ fn focus_only_moves_to_a_shown_pane_of_the_focused_tab() {
 #[test]
 fn tiles_mark_the_focused_pane_and_inset_content_inside_borders() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     session.focus("b");
     let tiles = session.tiles(Rect::new(0, 0, 40, 10), CHROME);
     let focused: Vec<_> = tiles
@@ -141,11 +162,11 @@ fn tiles_mark_the_focused_pane_and_inset_content_inside_borders() {
 #[test]
 fn pane_ids_stay_stable_while_a_terminal_is_owned() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     let a = session.id("a");
-    session.update(two_tabs(&["a"]));
+    session.lay_out(two_tabs(&["a"]));
     assert_eq!(session.id("a"), a);
-    session.update(layout(json!({"workspaces": [
+    session.lay_out(layout(json!({"workspaces": [
         {"id": "w0", "tabs": [{"id": "t0", "root": pane("b")}]},
     ]})));
     assert_ne!(session.id("a"), a);
@@ -173,7 +194,7 @@ fn navigate(session: &mut Session, action: KeybindAction) -> bool {
 #[test]
 fn directional_focus_moves_to_the_neighbouring_pane() {
     let mut session = Session::default();
-    session.update(grid());
+    session.lay_out(grid());
     assert!(navigate(&mut session, KeybindAction::FocusPaneDown));
     assert_eq!(session.focused(), Some("b"));
     assert!(navigate(&mut session, KeybindAction::FocusPaneRight));
@@ -187,7 +208,7 @@ fn directional_focus_moves_to_the_neighbouring_pane() {
 #[test]
 fn cycling_wraps_through_the_shown_panes_of_the_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert!(navigate(&mut session, KeybindAction::CyclePaneNext));
     assert_eq!(session.focused(), Some("b"));
     assert!(navigate(&mut session, KeybindAction::CyclePaneNext));
@@ -195,14 +216,14 @@ fn cycling_wraps_through_the_shown_panes_of_the_tab() {
     assert!(navigate(&mut session, KeybindAction::CyclePanePrevious));
     assert_eq!(session.focused(), Some("b"));
 
-    session.update(two_tabs(&["a"]));
+    session.lay_out(two_tabs(&["a"]));
     assert!(!navigate(&mut session, KeybindAction::CyclePaneNext));
 }
 
 #[test]
 fn last_pane_returns_to_the_previous_pane_of_the_tab_while_it_is_shown() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert!(!navigate(&mut session, KeybindAction::LastPane));
     session.focus("b");
     assert!(navigate(&mut session, KeybindAction::LastPane));
@@ -210,7 +231,7 @@ fn last_pane_returns_to_the_previous_pane_of_the_tab_while_it_is_shown() {
     assert!(navigate(&mut session, KeybindAction::LastPane));
     assert_eq!(session.focused(), Some("b"));
 
-    session.update(two_tabs(&["a"]));
+    session.lay_out(two_tabs(&["a"]));
     assert!(!navigate(&mut session, KeybindAction::LastPane));
     assert_eq!(session.focused(), Some("b"));
 }
@@ -218,7 +239,7 @@ fn last_pane_returns_to_the_previous_pane_of_the_tab_while_it_is_shown() {
 #[test]
 fn switching_tabs_wraps_and_returns_to_the_pane_focused_there() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     session.focus("b");
     assert!(navigate(&mut session, KeybindAction::NextTab));
     assert_eq!(session.focused(), Some("c"));
@@ -235,7 +256,7 @@ fn switching_tabs_wraps_and_returns_to_the_pane_focused_there() {
 #[test]
 fn a_fully_parked_tab_can_be_selected() {
     let mut session = Session::default();
-    session.update(two_tabs(&["c"]));
+    session.lay_out(two_tabs(&["c"]));
     assert!(navigate(&mut session, KeybindAction::SwitchTab(1)));
     assert_eq!(session.focused(), None);
     assert!(shown(&mut session).is_empty());
@@ -246,7 +267,7 @@ fn a_fully_parked_tab_can_be_selected() {
 #[test]
 fn switching_workspaces_returns_to_the_tab_and_pane_focused_there() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     navigate(&mut session, KeybindAction::NextTab);
     assert!(navigate(&mut session, KeybindAction::NextWorkspace));
     assert_eq!(session.focused(), Some("d"));
@@ -262,10 +283,10 @@ fn switching_workspaces_returns_to_the_tab_and_pane_focused_there() {
 #[test]
 fn a_remembered_pane_that_left_falls_back_to_the_first_shown_one() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     session.focus("b");
     navigate(&mut session, KeybindAction::NextWorkspace);
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     navigate(&mut session, KeybindAction::PreviousWorkspace);
     assert_eq!(session.focused(), Some("a"));
 }
@@ -273,7 +294,7 @@ fn a_remembered_pane_that_left_falls_back_to_the_first_shown_one() {
 #[test]
 fn zoom_shows_only_the_focused_pane_until_focus_moves() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     session.focus("b");
     assert!(navigate(&mut session, KeybindAction::Zoom));
     let tiles = session.tiles(AREA, CHROME);
@@ -299,20 +320,20 @@ fn zoom_shows_only_the_focused_pane_until_focus_moves() {
 #[test]
 fn zoom_survives_layout_updates_until_the_zoomed_pane_leaves() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     navigate(&mut session, KeybindAction::Zoom);
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert_eq!(shown(&mut session), ["a"]);
-    session.update(two_tabs(&["a"]));
+    session.lay_out(two_tabs(&["a"]));
     assert_eq!(session.focused(), Some("b"));
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert_eq!(shown(&mut session), ["a", "b"]);
 }
 
 #[test]
 fn zoom_needs_a_focused_pane() {
     let mut session = Session::default();
-    session.update(two_tabs(&["a", "b"]));
+    session.lay_out(two_tabs(&["a", "b"]));
     assert!(!navigate(&mut session, KeybindAction::Zoom));
 }
 
@@ -341,26 +362,26 @@ fn start(session: &mut Session) -> u64 {
 #[test]
 fn a_created_terminal_takes_focus_when_its_layout_arrives_after_the_start() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     let request = start(&mut session);
-    assert!(!session.started(request, Some("e".to_owned())));
+    assert!(!session.started(request, placed(&session, "e")));
     assert_eq!(session.focused(), Some("a"));
-    session.update(with_new_tab());
+    session.lay_out(with_new_tab());
     assert_eq!(session.focused(), Some("e"));
-    session.update(with_new_tab());
+    session.lay_out(with_new_tab());
     navigate(&mut session, KeybindAction::PreviousTab);
-    session.update(with_new_tab());
+    session.lay_out(with_new_tab());
     assert_eq!(session.focused(), Some("d"));
 }
 
 #[test]
 fn a_created_terminal_takes_focus_when_its_layout_arrived_first() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     let request = start(&mut session);
-    session.update(with_new_tab());
+    session.lay_out(with_new_tab());
     assert_eq!(session.focused(), Some("a"));
-    assert!(session.started(request, Some("e".to_owned())));
+    assert!(session.started(request, placed(&session, "e")));
     assert_eq!(session.focused(), Some("e"));
 }
 
@@ -452,7 +473,7 @@ fn the_latest_successful_start_result_takes_focus_once_its_pane_appears_in_every
             Arrival::Shown(&["p1", "p2"]),
         ]) {
             let mut session = Session::default();
-            session.update(beside_a(&[]));
+            session.lay_out(beside_a(&[]));
             assert_eq!([start(&mut session), start(&mut session)], [1, 2]);
             let mut base = Base {
                 focus: "a",
@@ -463,9 +484,12 @@ fn the_latest_successful_start_result_takes_focus_once_its_pane_appears_in_every
             for (step, arrival) in order.iter().enumerate() {
                 match *arrival {
                     Arrival::Started(request, terminal) => {
-                        session.started(request, terminal.map(str::to_owned));
+                        session.started(
+                            request,
+                            terminal.and_then(|terminal| placed(&session, terminal)),
+                        );
                     }
-                    Arrival::Shown(panes) => session.update(beside_a(panes)),
+                    Arrival::Shown(panes) => session.lay_out(beside_a(panes)),
                 }
                 base.arrive(*arrival);
                 assert_eq!(session.focused(), Some(base.focus), "{order:?} at {step}");
@@ -484,14 +508,14 @@ fn the_latest_successful_start_result_takes_focus_once_its_pane_appears_in_every
 #[test]
 fn a_start_result_waits_for_its_pane_to_come_back_after_it_left() {
     let mut session = Session::default();
-    session.update(beside_a(&[]));
+    session.lay_out(beside_a(&[]));
     navigate(&mut session, KeybindAction::Zoom);
     let request = start(&mut session);
-    session.update(beside_a(&["p"]));
-    session.update(beside_a(&[]));
+    session.lay_out(beside_a(&["p"]));
+    session.lay_out(beside_a(&[]));
 
-    assert!(!session.started(request, Some("p".to_owned())));
-    session.update(beside_a(&["p"]));
+    assert!(!session.started(request, placed(&session, "p")));
+    session.lay_out(beside_a(&["p"]));
 
     assert_eq!(session.focused(), Some("p"));
     assert!(session.starts.tracked().is_empty());
@@ -500,14 +524,541 @@ fn a_start_result_waits_for_its_pane_to_come_back_after_it_left() {
 #[test]
 fn a_failed_start_is_forgotten() {
     let mut session = Session::default();
-    session.update(beside_a(&[]));
+    session.lay_out(beside_a(&[]));
     let request = start(&mut session);
-    session.update(beside_a(&["p1"]));
+    session.lay_out(beside_a(&["p1"]));
 
     assert!(!session.started(request, None));
     assert!(session.starts.tracked().is_empty());
-    session.update(beside_a(&["p1"]));
+    session.lay_out(beside_a(&["p1"]));
     assert_eq!(session.focused(), Some("a"));
+}
+
+fn beside_b(commands: &[&str]) -> Layout {
+    let beside = commands
+        .iter()
+        .rev()
+        .fold(None, |nested, command| {
+            Some(match nested {
+                Some(nested) => split(pane(command), nested),
+                None => pane(command),
+            })
+        })
+        .map_or_else(|| pane("b"), |nested| split(pane("b"), nested));
+    layout(json!({
+        "workspaces": [
+            {"id": "w0", "tabs": [
+                {"id": "t0", "root": split(pane("a"), beside)},
+                {"id": "t1", "root": pane("c")},
+            ]},
+            {"id": "w1", "tabs": [{"id": "t2", "root": pane("d")}]},
+        ],
+    }))
+}
+
+fn command(session: &mut Session) -> u64 {
+    session
+        .overlay(Vec::new(), Vec::new())
+        .expect("a focused pane")
+        .request
+}
+
+fn nested_from_b(zoomed: bool) -> Session {
+    let mut session = opened_from_b(zoomed);
+    for (index, name) in ["f", "g"].into_iter().enumerate() {
+        let request = command(&mut session);
+        session.lay_out(beside_b(&["e", "f", "g"][..index + 2]));
+        assert!(session.started(request, placed(&session, name)));
+        assert_eq!(session.focused(), Some(name));
+    }
+    session
+}
+
+fn opened_from_b(zoomed: bool) -> Session {
+    let mut session = Session::default();
+    session.lay_out(two_tabs(&[]));
+    assert!(session.focus("b"));
+    if zoomed {
+        navigate(&mut session, KeybindAction::Zoom);
+    }
+    let request = command(&mut session);
+    session.lay_out(beside_b(&["e"]));
+    assert!(session.started(request, placed(&session, "e")));
+    session
+}
+
+#[test]
+fn a_pane_command_takes_focus_zoomed_once_it_starts() {
+    let session = opened_from_b(false);
+    assert_eq!(session.focused(), Some("e"));
+    assert!(session.zoomed());
+}
+
+#[test]
+fn a_pane_command_that_exits_returns_focus_and_zoom_to_the_pane_it_opened_from() {
+    for zoomed in [false, true] {
+        let mut session = opened_from_b(zoomed);
+        session.lay_out(two_tabs(&[]));
+        assert_eq!(session.focused(), Some("b"), "zoomed {zoomed}");
+        assert_eq!(session.zoomed(), zoomed);
+    }
+}
+
+#[test]
+fn nested_pane_commands_that_exit_together_return_to_the_pane_the_first_opened_from() {
+    for zoomed in [false, true] {
+        for _ in 0..32 {
+            let mut session = nested_from_b(zoomed);
+
+            session.lay_out(beside_b(&[]));
+
+            assert_eq!(session.focused(), Some("b"), "zoomed {zoomed}");
+            assert_eq!(session.zoomed(), zoomed);
+        }
+    }
+}
+
+#[test]
+fn nested_pane_commands_that_exit_one_by_one_return_to_the_nearest_pane_still_open() {
+    let orders = [
+        ["e", "f", "g"],
+        ["e", "g", "f"],
+        ["f", "e", "g"],
+        ["f", "g", "e"],
+        ["g", "e", "f"],
+        ["g", "f", "e"],
+    ];
+    for zoomed in [false, true] {
+        for order in orders {
+            let mut session = nested_from_b(zoomed);
+            let mut open = vec!["e", "f", "g"];
+            for exited in order {
+                open.retain(|command| *command != exited);
+                session.lay_out(beside_b(&open));
+                let nearest = open.last().copied().unwrap_or("b");
+                assert_eq!(session.focused(), Some(nearest), "{order:?} after {exited}");
+                assert_eq!(
+                    session.zoomed(),
+                    zoomed || !open.is_empty(),
+                    "{order:?} after {exited}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pane_command_registered_after_its_opener_exited_returns_to_the_nearest_pane_still_open() {
+    for zoomed in [false, true] {
+        let mut session = opened_from_b(zoomed);
+        let request = command(&mut session);
+        session.lay_out(beside_b(&["e", "f"]));
+        session.lay_out(beside_b(&["f"]));
+        assert_eq!(session.focused(), Some("b"));
+
+        assert!(session.started(request, placed(&session, "f")));
+        assert_eq!(session.focused(), Some("f"));
+        assert!(session.zoomed());
+
+        session.lay_out(beside_b(&[]));
+        assert_eq!(session.focused(), Some("b"), "zoomed {zoomed}");
+        assert_eq!(session.zoomed(), zoomed);
+    }
+}
+
+#[test]
+fn a_pane_command_that_exits_in_a_tab_left_behind_returns_that_tab_to_the_pane_it_opened_from() {
+    let mut session = opened_from_b(false);
+    navigate(&mut session, KeybindAction::NextTab);
+    session.lay_out(two_tabs(&[]));
+    assert_eq!(session.focused(), Some("c"));
+    navigate(&mut session, KeybindAction::PreviousTab);
+    assert_eq!(session.focused(), Some("b"));
+}
+
+#[test]
+fn a_command_opened_from_a_command_before_its_start_result_returns_to_the_first_opener() {
+    let mut session = Session::default();
+    session.lay_out(two_tabs(&[]));
+    assert!(session.focus("b"));
+    navigate(&mut session, KeybindAction::Zoom);
+    let e = command(&mut session);
+    session.lay_out(beside_b(&["e"]));
+    assert!(session.focus("e"));
+    let f = command(&mut session);
+    session.lay_out(beside_b(&["e", "f"]));
+    session.started(e, placed(&session, "e"));
+    session.lay_out(beside_b(&["f"]));
+    session.started(f, placed(&session, "f"));
+    assert_eq!(session.focused(), Some("f"));
+
+    session.lay_out(beside_b(&[]));
+
+    assert_eq!(session.focused(), Some("b"));
+    assert!(session.zoomed());
+}
+
+#[test]
+fn a_command_whose_result_arrives_before_its_layout_keeps_its_return_link() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]), 1);
+    assert!(session.focus("b"));
+    navigate(&mut session, KeybindAction::Zoom);
+    let e = command(&mut session);
+    let f = command(&mut session);
+    session.started(f, Some(("f".to_owned(), 3)));
+    session.started(e, Some(("e".to_owned(), 2)));
+    session.update(beside_b(&["e"]), 2);
+    session.update(beside_b(&["e", "f"]), 3);
+    assert!(session.focus("f"));
+
+    session.update(beside_b(&["e"]), 4);
+
+    assert_eq!(session.focused(), Some("b"));
+    assert!(session.zoomed());
+}
+
+#[test]
+fn a_layout_older_than_a_command_result_keeps_the_command_tracked() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]), 1);
+    assert!(session.focus("b"));
+    let e = command(&mut session);
+    session.started(e, Some(("e".to_owned(), 3)));
+
+    session.update(two_tabs(&[]), 2);
+    assert_eq!(session.starts.tracked(), [(e, Some("e"))]);
+    session.update(beside_b(&["e"]), 3);
+
+    assert_eq!(session.focused(), Some("e"));
+    assert!(session.zoomed());
+}
+
+#[test]
+fn a_command_closed_before_any_layout_owned_it_is_forgotten_in_either_order() {
+    for result_first in [true, false] {
+        let mut session = Session::default();
+        session.update(two_tabs(&[]), 1);
+        assert!(session.focus("b"));
+        let e = command(&mut session);
+        if result_first {
+            session.started(e, Some(("e".to_owned(), 2)));
+            session.update(two_tabs(&[]), 3);
+        } else {
+            session.update(two_tabs(&[]), 3);
+            session.started(e, Some(("e".to_owned(), 2)));
+        }
+
+        assert!(
+            session.starts.tracked().is_empty(),
+            "result first {result_first}"
+        );
+        assert_eq!(session.focused(), Some("b"));
+    }
+}
+
+#[test]
+fn a_command_whose_opener_is_gone_falls_back_to_the_tabs_first_pane() {
+    let mut session = opened_from_b(true);
+    session.lay_out(layout(json!({
+        "workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": split(pane("a"), pane("e"))}]}],
+    })));
+    assert_eq!(session.focused(), Some("e"));
+
+    session.lay_out(layout(json!({
+        "workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]}],
+    })));
+
+    assert_eq!(session.focused(), Some("a"));
+    assert!(!session.zoomed());
+}
+
+#[test]
+fn a_command_whose_opener_moved_to_another_tab_returns_without_its_zoom() {
+    let mut session = opened_from_b(true);
+    session.lay_out(layout(json!({
+        "workspaces": [{"id": "w0", "tabs": [
+            {"id": "t0", "root": pane("e")},
+            {"id": "t1", "root": pane("b")},
+        ]}],
+    })));
+    assert_eq!(session.focused(), Some("e"));
+
+    session.lay_out(layout(json!({
+        "workspaces": [{"id": "w0", "tabs": [{"id": "t1", "root": pane("b")}]}],
+    })));
+
+    assert_eq!(session.focused(), Some("b"));
+    assert!(!session.zoomed());
+}
+
+#[test]
+fn moving_focus_by_hand_after_asking_for_a_command_keeps_it_from_taking_focus() {
+    let mut session = Session::default();
+    session.lay_out(two_tabs(&[]));
+    assert!(session.focus("b"));
+    navigate(&mut session, KeybindAction::Zoom);
+    let e = command(&mut session);
+    navigate(&mut session, KeybindAction::NextTab);
+    assert_eq!(session.focused(), Some("c"));
+
+    session.lay_out(beside_b(&["e"]));
+    assert!(!session.started(e, placed(&session, "e")));
+    session.lay_out(beside_b(&["e"]));
+
+    assert_eq!(session.focused(), Some("c"));
+    assert!(!session.zoomed());
+    navigate(&mut session, KeybindAction::PreviousTab);
+    assert!(session.focus("e"));
+    session.lay_out(beside_b(&[]));
+    assert_eq!(session.focused(), Some("b"));
+    assert!(session.zoomed());
+}
+
+#[test]
+fn moving_focus_by_hand_after_asking_for_a_start_keeps_it_from_taking_focus() {
+    for result_first in [true, false] {
+        let mut session = Session::default();
+        session.lay_out(two_tabs(&[]));
+        let request = start(&mut session);
+        navigate(&mut session, KeybindAction::NextTab);
+        assert_eq!(session.focused(), Some("c"));
+
+        if result_first {
+            assert!(!session.started(request, placed(&session, "e")));
+            session.lay_out(with_new_tab());
+        } else {
+            session.lay_out(with_new_tab());
+            assert!(!session.started(request, placed(&session, "e")));
+        }
+
+        assert_eq!(session.focused(), Some("c"), "result first {result_first}");
+        assert!(session.starts.tracked().is_empty());
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    Result(usize),
+    Shown(usize),
+    Exit(usize),
+}
+
+const COMMANDS: [&str; 3] = ["e", "f", "g"];
+
+fn opened(openers: &[Option<usize>], done: &[Step], command: usize) -> bool {
+    openers[command].is_none_or(|opener| done.contains(&Step::Shown(opener)))
+}
+
+fn step_orders(
+    openers: &[Option<usize>],
+    exits_early: bool,
+    done: &mut Vec<Step>,
+    orders: &mut Vec<Vec<Step>>,
+) {
+    let steps = (0..openers.len()).flat_map(|command| {
+        [
+            Step::Result(command),
+            Step::Shown(command),
+            Step::Exit(command),
+        ]
+    });
+    let mut complete = true;
+    for step in steps {
+        if done.contains(&step) {
+            continue;
+        }
+        complete = false;
+        let ready = match step {
+            Step::Result(command) | Step::Shown(command) => opened(openers, done, command),
+            Step::Exit(command) => {
+                done.contains(&Step::Shown(command))
+                    && (exits_early || done.contains(&Step::Result(command)))
+            }
+        };
+        if ready {
+            done.push(step);
+            step_orders(openers, exits_early, done, orders);
+            done.pop();
+        }
+    }
+    if complete {
+        orders.push(done.clone());
+    }
+}
+
+fn skippable(openers: &[Option<usize>], order: &[Step]) -> Vec<usize> {
+    let documents: Vec<Step> = order
+        .iter()
+        .copied()
+        .filter(|step| !matches!(step, Step::Result(_)))
+        .collect();
+    documents
+        .windows(2)
+        .filter_map(|pair| match *pair {
+            [Step::Shown(command), Step::Exit(exited)]
+                if command == exited && !openers.contains(&Some(command)) =>
+            {
+                Some(command)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn ask(session: &mut Session, opener: Option<usize>) -> (u64, (Option<usize>, bool)) {
+    assert_eq!(
+        session.focused(),
+        Some(opener.map_or("b", |opener| COMMANDS[opener]))
+    );
+    let link = (opener, session.zoomed());
+    (command(session), link)
+}
+
+fn returns_to_the_nearest_living_opener(
+    layouts: &[Layout],
+    openers: &[Option<usize>],
+    zoomed: bool,
+    order: &[Step],
+    skipped: &[usize],
+) {
+    let mut version = 1;
+    let mut placed_at = [0; 3];
+    for step in order {
+        match *step {
+            Step::Shown(command) => {
+                version += 1;
+                placed_at[command] = version;
+            }
+            Step::Exit(_) => version += 1,
+            Step::Result(_) => {}
+        }
+    }
+    let mut session = Session::default();
+    session.update(layouts[0].clone(), 1);
+    assert!(session.focus("b"));
+    if zoomed {
+        navigate(&mut session, KeybindAction::Zoom);
+    }
+    let mut requests = [0; 3];
+    let mut links = [(None, false); 3];
+    for command in (0..openers.len()).filter(|command| openers[*command].is_none()) {
+        (requests[command], links[command]) = ask(&mut session, None);
+    }
+    let (mut answered, mut shown, mut exited) = ([false; 3], [false; 3], [false; 3]);
+    let living = |shown: &[bool; 3], exited: &[bool; 3]| {
+        let living = (0..3)
+            .filter(|command| shown[*command] && !exited[*command])
+            .fold(0, |living, command| living | 1 << command);
+        layouts[living].clone()
+    };
+    let mut version = 1;
+    for step in order {
+        match *step {
+            Step::Result(command) => {
+                answered[command] = true;
+                let placed = (COMMANDS[command].to_owned(), placed_at[command]);
+                session.started(requests[command], Some(placed));
+            }
+            Step::Shown(command) => {
+                version += 1;
+                shown[command] = true;
+                if skipped.contains(&command) {
+                    continue;
+                }
+                session.update(living(&shown, &exited), version);
+                for opened in (0..openers.len()).filter(|opened| openers[*opened] == Some(command))
+                {
+                    session.focus(COMMANDS[command]);
+                    (requests[opened], links[opened]) = ask(&mut session, Some(command));
+                }
+            }
+            Step::Exit(command) => {
+                version += 1;
+                let focused = session.focused() == Some(COMMANDS[command]);
+                exited[command] = true;
+                session.update(living(&shown, &exited), version);
+                if focused {
+                    let mut back = answered[command].then_some(links[command]);
+                    while let Some((Some(gone), _)) =
+                        back.filter(|(opener, _)| opener.is_some_and(|opener| exited[opener]))
+                    {
+                        back = answered[gone].then_some(links[gone]);
+                    }
+                    let (expected, zoom) = match back {
+                        Some((opener, zoom)) => {
+                            (opener.map_or("b", |opener| COMMANDS[opener]), zoom)
+                        }
+                        None => ("a", false),
+                    };
+                    assert_eq!(
+                        session.focused(),
+                        Some(expected),
+                        "{order:?} {skipped:?} at {step:?}"
+                    );
+                    assert_eq!(session.zoomed(), zoom, "{order:?} {skipped:?} at {step:?}");
+                }
+            }
+        }
+    }
+    assert!(session.starts.tracked().is_empty(), "{order:?} {skipped:?}");
+}
+
+#[test]
+fn a_command_pane_that_exits_while_focused_returns_to_its_nearest_living_opener_in_every_arrival_order(
+) {
+    let shapes = [
+        (&[None, None][..], true, &[false, true][..]),
+        (&[None, Some(0)], true, &[false, true]),
+        (&[None, Some(0), Some(1)], true, &[true]),
+        (&[None, Some(0), Some(0)], false, &[true]),
+    ];
+    let layouts: Vec<Layout> = (0..8)
+        .map(|living| {
+            let commands: Vec<&str> = (0..3)
+                .filter(|command| living & 1 << command != 0)
+                .map(|command| COMMANDS[command])
+                .collect();
+            beside_b(&commands)
+        })
+        .collect();
+    let mut covered = 0;
+    for (openers, exits_early, zooms) in shapes {
+        let mut orders = Vec::new();
+        step_orders(openers, exits_early, &mut Vec::new(), &mut orders);
+        for zoomed in zooms {
+            for order in &orders {
+                let skippable = skippable(openers, order);
+                for skipped in [&[][..], &skippable[..]] {
+                    returns_to_the_nearest_living_opener(
+                        &layouts, openers, *zoomed, order, skipped,
+                    );
+                    covered += 1;
+                    if skippable.is_empty() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(covered, 600 + 240 + 6930 + 4292);
+}
+
+#[test]
+fn a_new_version_of_the_same_layout_that_finds_a_command_gone_still_settles_it() {
+    let mut session = opened_from_b(true);
+    let version = session.starts.version();
+    let f = command(&mut session);
+    session.started(f, Some(("f".to_owned(), version + 1)));
+    assert_eq!(session.starts.tracked().len(), 2);
+
+    session.update(beside_b(&["e"]), version + 2);
+
+    assert_eq!(session.starts.tracked().len(), 1);
+    assert_eq!(session.focused(), Some("e"));
+    session.update(two_tabs(&[]), version + 3);
+    assert_eq!(session.focused(), Some("b"));
+    assert!(session.zoomed());
 }
 
 fn operation(
@@ -533,7 +1084,7 @@ fn close(terminals: &[&str]) -> Option<Operation> {
 #[test]
 fn starts_split_beside_the_focused_pane_or_open_a_tab_or_workspace() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     session.focus("b");
     assert_eq!(
         operation(&mut session, KeybindAction::SplitVertical, true),
@@ -573,7 +1124,7 @@ fn starts_split_beside_the_focused_pane_or_open_a_tab_or_workspace() {
     );
     assert_eq!(operation(&mut session, KeybindAction::Zoom, true), None);
 
-    session.update(Layout::default());
+    session.lay_out(Layout::default());
     assert_eq!(
         operation(&mut session, KeybindAction::NewWorkspace, true),
         Some(Operation::Start(4, Destination::Workspace { name: None }))
@@ -587,7 +1138,7 @@ fn starts_split_beside_the_focused_pane_or_open_a_tab_or_workspace() {
 #[test]
 fn closing_a_pane_asks_only_for_the_last_shown_pane_of_a_lone_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert_eq!(
         operation(&mut session, KeybindAction::ClosePane, true),
         close(&["a"])
@@ -602,7 +1153,7 @@ fn closing_a_pane_asks_only_for_the_last_shown_pane_of_a_lone_tab() {
         close(&["d"])
     );
 
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     navigate(&mut session, KeybindAction::PreviousWorkspace);
     assert_eq!(
         operation(&mut session, KeybindAction::ClosePane, true),
@@ -613,7 +1164,7 @@ fn closing_a_pane_asks_only_for_the_last_shown_pane_of_a_lone_tab() {
 #[test]
 fn closing_a_tab_closes_its_shown_panes_and_asks_for_a_lone_tab() {
     let mut session = Session::default();
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     assert_eq!(
         operation(&mut session, KeybindAction::CloseTab, true),
         close(&["a"])
@@ -625,7 +1176,7 @@ fn closing_a_tab_closes_its_shown_panes_and_asks_for_a_lone_tab() {
         close(&["d"])
     );
 
-    session.update(two_tabs(&["c"]));
+    session.lay_out(two_tabs(&["c"]));
     navigate(&mut session, KeybindAction::PreviousWorkspace);
     navigate(&mut session, KeybindAction::SwitchTab(1));
     assert_eq!(operation(&mut session, KeybindAction::CloseTab, true), None);
@@ -634,7 +1185,7 @@ fn closing_a_tab_closes_its_shown_panes_and_asks_for_a_lone_tab() {
 #[test]
 fn closing_a_workspace_closes_every_pane_and_always_asks_when_confirming() {
     let mut session = Session::default();
-    session.update(two_tabs(&["b"]));
+    session.lay_out(two_tabs(&["b"]));
     assert_eq!(
         operation(&mut session, KeybindAction::CloseWorkspace, true),
         None
@@ -648,7 +1199,7 @@ fn closing_a_workspace_closes_every_pane_and_always_asks_when_confirming() {
 #[test]
 fn a_tab_with_only_parked_panes_does_not_count_against_asking_to_close() {
     let mut session = Session::default();
-    session.update(two_tabs(&["b", "c"]));
+    session.lay_out(two_tabs(&["b", "c"]));
     assert_eq!(
         operation(&mut session, KeybindAction::ClosePane, true),
         None
@@ -670,7 +1221,7 @@ fn asked(session: &mut Session, action: KeybindAction) -> super::Closing {
 #[test]
 fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     assert_eq!(
         asked(&mut session, KeybindAction::CloseWorkspace).detail(),
         "workspace — 3 panes"
@@ -678,7 +1229,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
 
     let mut named = two_tabs(&["b"]);
     named.workspaces[0].name = Some("main".to_owned());
-    session.update(named);
+    session.lay_out(named);
     assert_eq!(
         asked(&mut session, KeybindAction::CloseWorkspace).detail(),
         "main — 3 panes, 1 parked"
@@ -690,7 +1241,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
         "workspace — 1 pane"
     );
 
-    session.update(layout(json!({
+    session.lay_out(layout(json!({
         "workspaces": [{"id": "w0", "tabs": [
             {"id": "t0", "root": split(pane("a"), pane("b"))},
         ]}],
@@ -700,7 +1251,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
         asked(&mut session, KeybindAction::CloseTab).detail(),
         "workspace — 2 panes, 1 parked"
     );
-    session.update(layout(json!({
+    session.lay_out(layout(json!({
         "workspaces": [
             {"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]},
             {"id": "w1", "tabs": [{"id": "t1", "root": pane("b")}]},
@@ -717,7 +1268,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
 #[test]
 fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_it_is_gone() {
     let mut session = Session::default();
-    session.update(two_tabs(&[]));
+    session.lay_out(two_tabs(&[]));
     let workspace = asked(&mut session, KeybindAction::CloseWorkspace);
     navigate(&mut session, KeybindAction::NextWorkspace);
     let last_pane = asked(&mut session, KeybindAction::ClosePane);
@@ -728,27 +1279,27 @@ fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_
         serde_json::from_value(split(pane("c"), pane("e"))).expect("root");
     grown.workspaces[1].tabs[0].root =
         serde_json::from_value(split(pane("d"), pane("f"))).expect("root");
-    session.update(grown);
+    session.lay_out(grown);
     assert_eq!(session.confirmed(&workspace), close(&["a", "b", "c", "e"]));
     assert_eq!(session.confirmed(&last_pane), close(&["d"]));
     assert_eq!(session.confirmed(&lone_tab), close(&["d", "f"]));
 
     let mut moved = two_tabs(&[]);
     moved.workspaces[1].tabs[0].root = serde_json::from_value(pane("f")).expect("root");
-    session.update(moved);
+    session.lay_out(moved);
     assert_eq!(session.confirmed(&last_pane), None);
     assert_eq!(session.confirmed(&lone_tab), close(&["f"]));
 
-    session.update(two_tabs(&["d"]));
+    session.lay_out(two_tabs(&["d"]));
     assert_eq!(session.confirmed(&last_pane), None);
 
-    session.update(layout(
+    session.lay_out(layout(
         json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]}]}),
     ));
     assert_eq!(session.confirmed(&workspace), close(&["a"]));
     assert_eq!(session.confirmed(&lone_tab), None);
 
-    session.update(layout(
+    session.lay_out(layout(
         json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t1", "root": pane("c")}]}]}),
     ));
     assert_eq!(session.confirmed(&workspace), close(&["c"]));

@@ -10,7 +10,7 @@ use crate::protocol::CellData;
 fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface {
     let mut config = Config::default();
     configure(&mut config);
-    around(cols, rows, Chrome::new(&config))
+    around(cols, rows, Chrome::new(&config, unheard()))
 }
 
 fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
@@ -95,7 +95,7 @@ fn pane_area(surface: &Surface) -> Rect {
 #[tokio::test]
 async fn the_sidebar_takes_its_default_width_and_the_tab_bar_the_top_row() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(surface.areas.sidebar, Rect::new(0, 0, 26, 30));
@@ -108,7 +108,7 @@ async fn the_sidebar_takes_its_default_width_and_the_tab_bar_the_top_row() {
 async fn the_sidebar_width_is_clamped_to_its_configured_bounds() {
     for (width, expected) in [(100, 36), (4, 18)] {
         let mut surface = dressed(120, 30, |config| config.ui.sidebar_width = width);
-        surface.update(spaces(&[(None, &[None])]));
+        surface.update(spaces(&[(None, &[None])]), 0);
         frame(&mut surface, &HashSet::new());
 
         assert_eq!(surface.areas.sidebar.width, expected, "{width}");
@@ -125,7 +125,7 @@ async fn a_collapsed_sidebar_is_four_columns_when_compact_and_gone_when_hidden()
             config.ui.sidebar_start_collapsed = true;
             config.ui.sidebar_collapsed_mode = mode;
         });
-        surface.update(spaces(&[(None, &[None])]));
+        surface.update(spaces(&[(None, &[None])]), 0);
         frame(&mut surface, &HashSet::new());
 
         assert_eq!(surface.areas.sidebar.width, expected);
@@ -139,7 +139,7 @@ async fn a_single_tab_hides_the_tab_bar_only_when_configured() {
         let mut surface = dressed(120, 30, |config| {
             config.ui.hide_tab_bar_when_single_tab = true;
         });
-        surface.update(spaces(&[(None, tabs)]));
+        surface.update(spaces(&[(None, tabs)]), 0);
         frame(&mut surface, &HashSet::new());
 
         assert_eq!(surface.areas.tab_bar.is_empty(), hidden);
@@ -152,7 +152,7 @@ async fn a_bottom_tab_bar_takes_the_last_row_below_the_panes() {
     let mut surface = dressed(120, 30, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(surface.areas.tab_bar, Rect::new(26, 29, 94, 1));
@@ -165,7 +165,7 @@ async fn the_copy_mode_bar_covers_a_bottom_tab_bar_and_sits_above_a_top_one() {
     for position in [TabBarPositionConfig::Bottom, TabBarPositionConfig::Top] {
         let row = 29;
         let mut surface = dressed(120, 30, |config| config.ui.tab_bar_position = position);
-        surface.update(spaces(&[(None, &[None])]));
+        surface.update(spaces(&[(None, &[None])]), 0);
         frame_attaching(&mut surface, &HashSet::new());
         feed(&surface, "t1", b"hello");
         let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -202,7 +202,7 @@ async fn the_copy_mode_bar_covers_a_bottom_tab_bar_and_sits_above_a_top_one() {
 #[tokio::test]
 async fn the_sidebar_lists_every_workspace_under_its_header_and_above_its_footer() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None]), (None, &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None]), (None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert!(line(&surface, 0).starts_with(" spaces "));
@@ -216,7 +216,10 @@ async fn the_sidebar_lists_every_workspace_under_its_header_and_above_its_footer
 #[tokio::test]
 async fn the_focused_workspace_row_takes_the_active_background() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
     let active = background(Palette::catppuccin().active_row_bg);
 
@@ -233,7 +236,10 @@ async fn the_focused_workspace_row_takes_the_active_background() {
 #[tokio::test]
 async fn a_collapsed_compact_sidebar_numbers_the_workspaces_and_offers_to_expand() {
     let mut surface = dressed(120, 30, |config| config.ui.sidebar_start_collapsed = true);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
 
     assert!(line(&surface, 0).starts_with("1  │"));
@@ -252,7 +258,7 @@ async fn a_collapsed_compact_sidebar_numbers_the_workspaces_and_offers_to_expand
 #[tokio::test]
 async fn the_toggle_key_collapses_and_expands_the_sidebar() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(surface.act(KeybindAction::ToggleSidebar, false), None);
@@ -274,7 +280,7 @@ async fn a_long_workspace_list_scrolls_to_reveal_the_focused_workspace() {
         .map(|name| (Some(name.as_str()), &[None][..]))
         .collect();
     let mut surface = plain(120, 12);
-    surface.update(spaces(&workspaces));
+    surface.update(spaces(&workspaces), 0);
     frame(&mut surface, &HashSet::new());
     assert!(line(&surface, 2).starts_with(" ws0 "));
     assert_eq!(cell(&surface, 24, 2).symbol, "▕");
@@ -296,7 +302,7 @@ async fn a_long_workspace_list_scrolls_to_reveal_the_focused_workspace() {
 #[tokio::test]
 async fn the_tab_bar_names_tabs_by_number_or_name_and_offers_a_new_one() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, Some("logs"), None])]));
+    surface.update(spaces(&[(None, &[None, Some("logs"), None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     let bar = span(&surface, 0, 26..120);
@@ -307,7 +313,7 @@ async fn the_tab_bar_names_tabs_by_number_or_name_and_offers_a_new_one() {
 #[tokio::test]
 async fn the_focused_tab_is_bold_and_underlined_and_a_named_tab_brighter() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, Some("logs"), None])]));
+    surface.update(spaces(&[(None, &[None, Some("logs"), None])]), 0);
     frame(&mut surface, &HashSet::new());
     let palette = Palette::catppuccin();
     let at = |label: &str| cell(&surface, find(&surface, 0, label), 0).clone();
@@ -333,7 +339,7 @@ async fn the_focused_tab_is_bold_and_underlined_and_a_named_tab_brighter() {
 async fn overflowing_tabs_scroll_to_keep_the_focused_tab_in_view() {
     let tabs = [None; 20];
     let mut surface = plain(90, 10);
-    surface.update(spaces(&[(None, &tabs)]));
+    surface.update(spaces(&[(None, &tabs)]), 0);
     frame(&mut surface, &HashSet::new());
     let bar = span(&surface, 0, 26..90);
     assert!(bar.starts_with(" < "), "{bar:?}");
@@ -369,7 +375,7 @@ async fn the_tab_bar_shows_text_and_hostname_entries_and_zoom_while_zoomed() {
         ];
         config.ui.tab_bar_right_separator = " | ".to_owned();
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     let hostname = crate::app::tab_bar_status::sanitize_status_text(
         crate::platform::hostname().as_deref().unwrap_or_default(),
@@ -430,7 +436,7 @@ async fn an_unchanged_datetime_does_not_redraw_the_tab_bar() {
             format: "%Y".to_owned(),
         }];
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     let due = surface.deadline().expect("deadline");
 
@@ -443,7 +449,7 @@ async fn an_unchanged_datetime_does_not_redraw_the_tab_bar() {
 #[tokio::test]
 async fn the_chrome_is_not_redrawn_when_nothing_it_shows_changed() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None, None])]));
+    surface.update(spaces(&[(Some("main"), &[None, None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let built = surface.outer.rows().as_ptr();
 
@@ -456,11 +462,11 @@ async fn the_chrome_is_not_redrawn_when_nothing_it_shows_changed() {
         "chrome rows"
     );
 
-    surface.update(spaces(&[(Some("main"), &[None, None])]));
+    surface.update(spaces(&[(Some("main"), &[None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(surface.outer.rows().as_ptr(), built);
 
-    surface.update(spaces(&[(Some("renamed"), &[None, None])]));
+    surface.update(spaces(&[(Some("renamed"), &[None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     assert_ne!(surface.outer.rows().as_ptr(), built);
     assert!(line(&surface, 2).starts_with(" renamed "));
@@ -469,7 +475,7 @@ async fn the_chrome_is_not_redrawn_when_nothing_it_shows_changed() {
 #[tokio::test]
 async fn a_press_on_the_chrome_reaches_no_pane_and_starts_no_selection() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"hello world");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -491,7 +497,7 @@ async fn a_press_on_the_chrome_reaches_no_pane_and_starts_no_selection() {
 #[tokio::test]
 async fn the_copy_toast_sits_inside_the_pane_area() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     surface.copied(std::time::Instant::now());
@@ -515,7 +521,7 @@ async fn a_changed_datetime_redraws_the_chrome_without_the_panes() {
             format: "%S".to_owned(),
         }];
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let before = line(&surface, 0);
     let due = surface.deadline().expect("deadline");
@@ -533,11 +539,270 @@ async fn a_changed_datetime_redraws_the_chrome_without_the_panes() {
     assert_ne!(line(&surface, 0), before);
 }
 
+fn status(command: &str) -> TabBarRightEntryConfig {
+    TabBarRightEntryConfig::Command {
+        command: command.to_owned(),
+        interval_seconds: 5,
+        timeout_seconds: 5,
+    }
+}
+
+#[tokio::test]
+async fn a_tab_bar_command_that_can_never_run_is_left_out() {
+    let surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_right = [(" ", 5, 5), ("true", 0, 5), ("true", 5, 0)]
+            .map(
+                |(command, interval_seconds, timeout_seconds)| TabBarRightEntryConfig::Command {
+                    command: command.to_owned(),
+                    interval_seconds,
+                    timeout_seconds,
+                },
+            )
+            .to_vec();
+    });
+
+    assert_eq!(surface.outer.deadline(true), None);
+}
+
+#[tokio::test]
+async fn drawing_never_runs_a_due_tab_bar_command() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_right = vec![status("true")];
+    });
+    surface.update(spaces(&[(None, &[None])]), 0);
+    frame(&mut surface, &HashSet::new());
+    let due = surface.deadline().expect("due at once");
+
+    frame(&mut surface, &HashSet::new());
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.deadline(), Some(due));
+}
+
+#[tokio::test]
+async fn a_tab_bar_command_waits_for_the_focused_pane_before_its_first_run() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_right = vec![status("true")];
+    });
+    surface.update(spaces(&[(None, &[None])]), 0);
+    let due = surface.outer.deadline(true).expect("due at once");
+
+    assert_eq!(surface.deadline(), None);
+    surface.tick(due);
+    assert_eq!(surface.outer.deadline(true), Some(due));
+
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.deadline(), Some(due));
+    surface.tick(due);
+    assert_eq!(surface.deadline(), None);
+}
+
+#[tokio::test]
+async fn a_tab_bar_command_waits_for_the_first_layout_before_its_first_run() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_right = vec![status("true")];
+    });
+    let due = surface.outer.deadline(true).expect("due at once");
+
+    assert_eq!(surface.deadline(), None);
+    surface.tick(due);
+    assert_eq!(surface.outer.deadline(true), Some(due));
+
+    surface.update(Layout::default(), 0);
+    assert_eq!(surface.deadline(), Some(due));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn commands_started_from_the_core_client_see_an_empty_herdr_socket_path() {
+    std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/lawn-test-herdr.sock");
+    let probe = "printf '[%s]\\n' \"${HERDR_SOCKET_PATH-unset}\"";
+    let (reports, mut statuses) = tokio::sync::mpsc::channel(4);
+    let mut config = Config::default();
+    config.ui.tab_bar_right = vec![status(probe)];
+    let mut surface = around(120, 30, Chrome::new(&config, reports));
+    surface.update(spaces(&[(None, &[None])]), 0);
+    frame(&mut surface, &HashSet::new());
+    let dir = scratch("socket-path");
+    let (env, _) = surface.command_env();
+
+    let shell = crate::core_client::tui::unix::detached(
+        format!("{probe} > out"),
+        env,
+        Some(dir.to_path_buf()),
+    )
+    .await
+    .expect("the command started")
+    .wait()
+    .await
+    .expect("the command ended");
+    surface.tick(surface.deadline().expect("due at once"));
+
+    assert!(shell.success());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("out")).expect("out"),
+        "[]\n"
+    );
+    let report = tokio::time::timeout(std::time::Duration::from_secs(10), statuses.recv())
+        .await
+        .expect("the command finished");
+    let Some(crate::events::AppEvent::TabBarCommandFinished { result, .. }) = report else {
+        panic!("a report for the command entry");
+    };
+    assert_eq!(result, Ok(Some("[]".to_owned())));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_first_tab_bar_run_before_the_core_reports_anything_runs_in_the_attached_panes_directory()
+{
+    let dir = scratch("attach");
+    let record = json!({"address": "t1", "cwd": dir.display().to_string()});
+    let core = crate::hc::test_support::answering(move |method, _| match method {
+        "terminal.attach" => Ok(json!({"channel": 9, "terminal": record})),
+        _ => Err(json!({"code": -32000, "message": "refused"})),
+    });
+    let (reports, mut statuses) = tokio::sync::mpsc::channel(4);
+    let mut config = Config::default();
+    config.ui.tab_bar_right = vec![status(
+        "printf '%s:%s\\n' \"$(basename \"$(pwd -P)\")\" \"$(basename \"${HERDR_ACTIVE_PANE_CWD-unset}\")\"",
+    )];
+    let mut surface = around(120, 30, Chrome::new(&config, reports));
+    surface.update(spaces(&[(None, &[None])]), 0);
+    let (_, id, geometry) = requests(&mut surface).remove(0);
+    let view = View::attach(
+        core,
+        "t1",
+        geometry,
+        id,
+        &crate::core_client::view::Wake::default(),
+        &crate::core_client::view::Events::default().sender(),
+        crate::core_client::view::Scrollback::from(&config),
+    )
+    .expect("attach");
+    surface.attached(id, geometry, Ok(view));
+
+    surface.tick(surface.deadline().expect("due at once"));
+
+    let report = tokio::time::timeout(std::time::Duration::from_secs(10), statuses.recv())
+        .await
+        .expect("the command finished");
+    let Some(crate::events::AppEvent::TabBarCommandFinished { result, .. }) = report else {
+        panic!("a report for the command entry");
+    };
+    let folder = dir.file_name().expect("scratch name").to_string_lossy();
+    assert_eq!(result, Ok(Some(format!("{folder}:{folder}"))));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tab_bar_command_runs_without_pane_variables_in_a_tab_with_no_focused_pane() {
+    let (reports, mut statuses) = tokio::sync::mpsc::channel(4);
+    let mut config = Config::default();
+    config.ui.tab_bar_right = vec![status("printf '[%s]\\n' \"${HERDR_ACTIVE_PANE_ID-unset}\"")];
+    let mut surface = around(120, 30, Chrome::new(&config, reports));
+    surface.update(
+        serde_json::from_value(json!({
+            "workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": {"kind": "pane", "terminal": "t1"}}]}],
+            "parked": ["t1"],
+        }))
+        .expect("layout"),
+        0,
+    );
+    frame(&mut surface, &HashSet::new());
+
+    let due = surface.deadline().expect("due at once");
+    surface.tick(due);
+
+    let report = tokio::time::timeout(std::time::Duration::from_secs(10), statuses.recv())
+        .await
+        .expect("the command finished");
+    let Some(crate::events::AppEvent::TabBarCommandFinished { result, .. }) = report else {
+        panic!("a report for the command entry");
+    };
+    assert_eq!(result, Ok(Some("[unset]".to_owned())));
+}
+
+#[tokio::test]
+async fn a_tab_bar_command_redraws_the_chrome_only_when_its_text_changes() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_right = vec![
+            TabBarRightEntryConfig::Text {
+                text: "left".to_owned(),
+            },
+            status("true"),
+        ];
+        config.ui.tab_bar_right_separator = " | ".to_owned();
+    });
+    surface.update(spaces(&[(None, &[None])]), 0);
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 0).ends_with(" left"));
+
+    surface.finished(1, Ok(Some("ready".to_owned())));
+    assert!(surface.needs_frame());
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 0).ends_with("left | ready"));
+
+    surface.finished(1, Ok(Some("ready".to_owned())));
+    assert!(!surface.needs_frame());
+
+    surface.finished(1, Err("exited with exit status: 1".to_owned()));
+    assert!(surface.needs_frame());
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 0).ends_with(" left"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_due_tab_bar_command_runs_once_in_the_command_env_and_reports_its_last_line() {
+    let home = scratch("status-command");
+    let (reports, mut statuses) = tokio::sync::mpsc::channel(4);
+    let mut config = Config::default();
+    config.ui.tab_bar_right = vec![
+        TabBarRightEntryConfig::Zoom,
+        status("printf 'old\\n%s:%s\\n' \"$LAWN_PROBE\" \"$(basename \"$(pwd -P)\")\""),
+    ];
+    let mut surface = around(120, 30, Chrome::new(&config, reports));
+    let due = surface.outer.deadline(true).expect("due at once");
+    let next = due + std::time::Duration::from_secs(5);
+    let env = || {
+        Some((
+            vec![
+                ("HOME".to_owned(), home.display().to_string()),
+                ("LAWN_PROBE".to_owned(), "probe".to_owned()),
+            ],
+            Some(home.to_path_buf()),
+        ))
+    };
+
+    surface.outer.tick(due, env);
+    assert_eq!(surface.outer.deadline(true), None);
+    surface.outer.tick(next, env);
+
+    let report = tokio::time::timeout(std::time::Duration::from_secs(10), statuses.recv())
+        .await
+        .expect("the command finished");
+    let Some(crate::events::AppEvent::TabBarCommandFinished {
+        segment_index: 1,
+        result,
+        ..
+    }) = report
+    else {
+        panic!("a report for the command entry");
+    };
+    let folder = home.file_name().expect("scratch name").to_string_lossy();
+    let expected = format!("probe:{folder}");
+    assert_eq!(result, Ok(Some(expected)));
+    surface.finished(1, result);
+    assert_eq!(surface.outer.deadline(true), Some(next));
+    assert!(statuses.try_recv().is_err());
+}
+
 fn cursor_in_a_one_row_pane_area(output: &[u8]) -> Option<(u16, u16)> {
     let mut surface = dressed(120, 5, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let dirty = HashSet::from([id_of(&surface, "t1")]);
     surface.resize(host(120, 2));
@@ -640,7 +905,10 @@ fn pane_inner(surface: &Surface, terminal: &str) -> Rect {
 #[tokio::test]
 async fn a_workspace_row_takes_focus_when_released_where_it_was_pressed() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
 
     let pressed = point(&mut surface, MouseEventKind::Down(MouseButton::Left), 5, 3);
@@ -654,10 +922,10 @@ async fn a_workspace_row_takes_focus_when_released_where_it_was_pressed() {
 #[tokio::test]
 async fn a_press_released_off_its_row_or_tab_focuses_nothing() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[
-        (Some("main"), &[None, None]),
-        (Some("other"), &[None]),
-    ]));
+    surface.update(
+        spaces(&[(Some("main"), &[None, None]), (Some("other"), &[None])]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
     let second = find(&surface, 0, " 2 ");
 
@@ -678,13 +946,13 @@ async fn a_press_released_off_its_row_or_tab_focuses_nothing() {
 #[tokio::test]
 async fn a_row_that_replaced_the_pressed_one_takes_no_focus() {
     let mut surface = plain(120, 30);
-    surface.update(many(3));
+    surface.update(many(3), 0);
     frame(&mut surface, &HashSet::new());
 
     point(&mut surface, MouseEventKind::Down(MouseButton::Left), 5, 3);
     let mut closed = many(3);
     closed.workspaces.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
     point(&mut surface, MouseEventKind::Up(MouseButton::Left), 5, 3);
 
@@ -694,7 +962,7 @@ async fn a_row_that_replaced_the_pressed_one_takes_no_focus() {
 #[tokio::test]
 async fn a_tab_that_replaced_the_pressed_one_takes_no_focus() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let second = find(&surface, 0, " 2 ") + 1;
 
@@ -706,7 +974,7 @@ async fn a_tab_that_replaced_the_pressed_one_takes_no_focus() {
     );
     let mut closed = spaces(&[(None, &[None, None, None])]);
     closed.workspaces[0].tabs.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
     point(
         &mut surface,
@@ -721,7 +989,7 @@ async fn a_tab_that_replaced_the_pressed_one_takes_no_focus() {
 #[tokio::test]
 async fn a_tab_takes_focus_when_released_where_it_was_pressed() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None, Some("logs")])]));
+    surface.update(spaces(&[(None, &[None, None, Some("logs")])]), 0);
     frame(&mut surface, &HashSet::new());
 
     let (logs, second) = (find(&surface, 0, "logs"), find(&surface, 0, " 2 ") + 1);
@@ -735,7 +1003,7 @@ async fn a_tab_takes_focus_when_released_where_it_was_pressed() {
 #[tokio::test]
 async fn new_and_plus_start_a_workspace_and_a_tab_like_their_keys() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     let plus = find(&surface, 0, " + ") + 1;
 
@@ -757,7 +1025,7 @@ async fn new_and_plus_start_a_workspace_and_a_tab_like_their_keys() {
 #[tokio::test]
 async fn the_sidebar_glyphs_collapse_and_expand_it() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(tap(&mut surface, 24, 29), None);
@@ -774,7 +1042,7 @@ async fn the_sidebar_glyphs_collapse_and_expand_it() {
 async fn the_tab_scroll_buttons_move_the_strip_and_a_redraw_keeps_it() {
     let tabs = [None; 20];
     let mut surface = plain(90, 10);
-    surface.update(spaces(&[(Some("main"), &tabs)]));
+    surface.update(spaces(&[(Some("main"), &tabs)]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     assert!(span(&surface, 0, 26..90).contains(" 1 "));
@@ -785,7 +1053,7 @@ async fn the_tab_scroll_buttons_move_the_strip_and_a_redraw_keeps_it() {
     let bar = span(&surface, 0, 26..90);
     assert!(!bar.contains(" 1 ") && bar.contains(" 2 "), "{bar:?}");
 
-    surface.update(spaces(&[(Some("renamed"), &tabs)]));
+    surface.update(spaces(&[(Some("renamed"), &tabs)]), 0);
     frame(&mut surface, &HashSet::new());
     assert!(line(&surface, 2).starts_with(" renamed "));
     assert!(!span(&surface, 0, 26..90).contains(" 1 "));
@@ -799,7 +1067,7 @@ async fn the_tab_scroll_buttons_move_the_strip_and_a_redraw_keeps_it() {
 #[tokio::test]
 async fn the_wheel_over_the_tabs_goes_to_the_previous_or_next_tab_and_wraps() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let first = find(&surface, 0, " 1 ") + 1;
     let plus = find(&surface, 0, " + ") + 1;
@@ -820,7 +1088,7 @@ async fn the_wheel_over_the_tabs_goes_to_the_previous_or_next_tab_and_wraps() {
 #[tokio::test]
 async fn the_wheel_scrolls_the_workspace_list_and_redraws_keep_it_until_focus_moves() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
 
     wheel(&mut surface, true, 5, 4);
@@ -837,7 +1105,7 @@ async fn the_wheel_scrolls_the_workspace_list_and_redraws_keep_it_until_focus_mo
 
     let mut renamed = many(12);
     renamed.workspaces[11].name = Some("last".to_owned());
-    surface.update(renamed);
+    surface.update(renamed, 0);
     frame(&mut surface, &HashSet::new());
     assert!(line(&surface, 2).starts_with(" ws1 "));
 
@@ -855,7 +1123,7 @@ async fn the_wheel_scrolls_the_workspace_list_and_redraws_keep_it_until_focus_mo
 #[tokio::test]
 async fn a_workspace_closed_above_the_focused_one_keeps_a_list_scrolled_by_hand() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     surface.act(KeybindAction::PreviousWorkspace, false);
     frame(&mut surface, &HashSet::new());
     assert_eq!(workspace(&surface), "w11");
@@ -869,7 +1137,7 @@ async fn a_workspace_closed_above_the_focused_one_keeps_a_list_scrolled_by_hand(
 
     let mut closed = many(12);
     closed.workspaces.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(workspace(&surface), "w11");
@@ -884,7 +1152,7 @@ async fn a_workspace_closed_above_the_focused_one_keeps_a_list_scrolled_by_hand(
 #[tokio::test]
 async fn the_list_scrollbar_jumps_on_a_track_press_and_follows_a_thumb_drag() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(thumb_rows(&surface, 24).first(), Some(&2));
 
@@ -916,7 +1184,10 @@ async fn the_list_scrollbar_jumps_on_a_track_press_and_follows_a_thumb_drag() {
 #[tokio::test]
 async fn a_click_on_a_collapsed_workspace_number_focuses_it() {
     let mut surface = dressed(120, 30, |config| config.ui.sidebar_start_collapsed = true);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
 
     tap(&mut surface, 2, 1);
@@ -931,7 +1202,7 @@ async fn chrome_events_reach_no_pane_and_move_no_focus() {
     let mut layout = spaces(&[(None, &[None, None])]);
     layout.workspaces[0].tabs[0].root =
         serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
-    surface.update(layout);
+    surface.update(layout, 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let focused = surface.focused_id();
@@ -964,7 +1235,7 @@ async fn chrome_events_reach_no_pane_and_move_no_focus() {
 async fn a_left_press_on_the_chrome_clears_the_selection_and_the_wheel_does_not() {
     let mut surface = plain(120, 30);
     surface.select = super::super::Select::new(false);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     attach_with_input(&mut surface, b"hello world");
     frame(&mut surface, &HashSet::new());
     let inner = pane_inner(&surface, "t1");
@@ -987,7 +1258,7 @@ async fn a_left_press_on_the_chrome_clears_the_selection_and_the_wheel_does_not(
 #[tokio::test]
 async fn a_pane_selection_dragged_over_the_chrome_keeps_selecting_and_copies_on_release() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None])]));
+    surface.update(spaces(&[(None, &[None, None])]), 0);
     attach_with_input(&mut surface, b"hello world");
     frame(&mut surface, &HashSet::new());
     let inner = pane_inner(&surface, "t1");
@@ -1004,7 +1275,10 @@ async fn a_pane_selection_dragged_over_the_chrome_keeps_selecting_and_copies_on_
 #[tokio::test]
 async fn a_press_on_the_chrome_keeps_copy_mode_and_its_keyboard_selection() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"hello");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -1035,7 +1309,7 @@ async fn tabs_under_the_copy_mode_bar_take_no_clicks_or_wheel() {
     let mut surface = dressed(120, 30, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None, None])]));
+    surface.update(spaces(&[(None, &[None, None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"hello");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -1085,9 +1359,9 @@ fn remembered(path: &std::path::Path, configure: impl FnOnce(&mut Config)) -> Su
     let mut surface = around(
         120,
         30,
-        Chrome::new(&config).remembering(path.to_path_buf()),
+        Chrome::new(&config, unheard()).remembering(path.to_path_buf()),
     );
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     surface
 }
@@ -1108,7 +1382,7 @@ fn drag_divider(surface: &mut Surface, from: u16, to: u16) {
 async fn dragging_the_sidebar_divider_resizes_the_sidebar_within_its_bounds_and_lays_out_the_panes()
 {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(cell(&surface, 25, 5).symbol, "│");
 
@@ -1140,7 +1414,7 @@ async fn a_divider_drag_over_a_pane_and_below_the_screen_keeps_resizing_and_reac
     let mut layout = spaces(&[(None, &[None])]);
     layout.workspaces[0].tabs[0].root =
         serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
-    surface.update(layout);
+    surface.update(layout, 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let focused = surface.focused_id();
@@ -1184,7 +1458,7 @@ async fn a_divider_drag_over_a_pane_and_below_the_screen_keeps_resizing_and_reac
 #[tokio::test]
 async fn the_divider_does_not_resize_a_collapsed_sidebar_or_one_hidden_at_the_mobile_width() {
     let mut surface = dressed(120, 30, |config| config.ui.sidebar_start_collapsed = true);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     drag_divider(&mut surface, 3, 30);
     assert_eq!(surface.areas.sidebar.width, 4);
@@ -1193,7 +1467,7 @@ async fn the_divider_does_not_resize_a_collapsed_sidebar_or_one_hidden_at_the_mo
     assert_eq!(surface.areas.sidebar.width, 26);
 
     let mut surface = dressed(64, 20, |config| config.ui.mobile_width_threshold = 64);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     drag_divider(&mut surface, 25, 30);
     surface.resize(host(120, 20));
@@ -1221,7 +1495,7 @@ fn click_divider(surface: &mut Surface, column: u16, now: std::time::Instant) {
 #[tokio::test]
 async fn a_double_click_on_the_divider_restores_the_configured_width() {
     let mut surface = dressed(120, 30, |config| config.ui.sidebar_width = 24);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     drag_divider(&mut surface, 23, 30);
     assert_eq!(surface.areas.sidebar.width, 31);
@@ -1241,7 +1515,7 @@ async fn a_double_click_on_the_divider_restores_the_configured_width() {
 #[tokio::test]
 async fn a_second_divider_press_after_350_ms_starts_a_drag_instead_of_resetting() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
     drag_divider(&mut surface, 25, 30);
     let start = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -1472,7 +1746,7 @@ fn first_row(surface: &mut Surface) -> String {
 #[tokio::test]
 async fn an_unnamed_workspace_reads_as_the_folder_of_its_first_pane_and_follows_it() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     surface.heard(Report::Snapshot(
@@ -1489,7 +1763,7 @@ async fn an_unnamed_workspace_reads_as_the_folder_of_its_first_pane_and_follows_
 #[tokio::test]
 async fn a_fresh_snapshot_forgets_the_folders_it_no_longer_lists() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     moved(&mut surface, "t1", "/srv/app");
     assert!(first_row(&mut surface).starts_with(" app "));
 
@@ -1502,7 +1776,7 @@ async fn a_fresh_snapshot_forgets_the_folders_it_no_longer_lists() {
 #[tokio::test]
 async fn a_named_workspace_keeps_its_name_wherever_its_first_pane_goes() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     moved(&mut surface, "t1", "/srv/app");
@@ -1516,7 +1790,7 @@ async fn a_named_workspace_keeps_its_name_wherever_its_first_pane_goes() {
 async fn the_home_folder_reads_as_a_tilde() {
     std::env::set_var("HOME", "/home/lawn-test");
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
 
     moved(&mut surface, "t1", "/home/lawn-test");
 
@@ -1536,6 +1810,7 @@ async fn only_the_first_pane_of_the_first_tab_names_the_workspace() {
             {"id": "tab2", "root": {"kind": "pane", "terminal": "t3"}},
         ]}]}))
         .expect("layout"),
+        0,
     );
     frame(&mut surface, &HashSet::new());
 
@@ -1552,7 +1827,7 @@ async fn only_the_first_pane_of_the_first_tab_names_the_workspace() {
 #[tokio::test]
 async fn a_terminal_that_names_no_workspace_draws_no_frame() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     moved(&mut surface, "t9", "/srv/app");
@@ -1565,7 +1840,7 @@ async fn a_terminal_that_names_no_workspace_draws_no_frame() {
 #[tokio::test]
 async fn a_move_to_another_folder_of_the_same_name_draws_no_frame() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     moved(&mut surface, "t1", "/srv/app");
     frame(&mut surface, &HashSet::new());
 
@@ -1610,7 +1885,7 @@ fn tab_bar(surface: &mut Surface) -> String {
 #[tokio::test]
 async fn a_tab_shows_its_most_pressing_agent_with_blocked_over_working_over_idle_over_done() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t1", "idle");
     said(&mut surface, "t2", "working");
@@ -1627,7 +1902,7 @@ async fn a_tab_shows_its_most_pressing_agent_with_blocked_over_working_over_idle
 #[tokio::test]
 async fn a_tab_counts_its_blocked_agents_when_more_than_one_is_blocked() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t1", "blocked");
     assert!(tab_bar(&mut surface).contains("× 1"));
@@ -1641,7 +1916,7 @@ async fn a_tab_without_agents_or_with_only_a_parked_agent_has_no_mark() {
     let mut surface = symbols(120, 30);
     let mut layout = paired();
     layout.parked.insert("t2".to_owned());
-    surface.update(layout);
+    surface.update(layout, 0);
 
     said(&mut surface, "t2", "blocked");
     let bar = tab_bar(&mut surface);
@@ -1652,7 +1927,7 @@ async fn a_tab_without_agents_or_with_only_a_parked_agent_has_no_mark() {
 #[tokio::test]
 async fn a_finish_in_the_focused_tab_is_seen_at_once_while_the_host_has_focus() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
     frame(&mut surface, &HashSet::new());
 
     said(&mut surface, "t2", "working");
@@ -1666,7 +1941,7 @@ async fn a_status_mark_that_makes_the_tabs_overflow_keeps_the_focused_tab_in_vie
     let mut tabs = [None; 10];
     tabs[0] = Some("alpha");
     let mut surface = symbols(119, 10);
-    surface.update(spaces(&[(None, &tabs)]));
+    surface.update(spaces(&[(None, &tabs)]), 0);
     surface.act(KeybindAction::SwitchTab(9), false);
     let bar = tab_bar(&mut surface);
     assert!(!bar.starts_with(" < ") && bar.contains(" 10 "), "{bar:?}");
@@ -1681,7 +1956,7 @@ async fn a_status_mark_that_makes_the_tabs_overflow_keeps_the_focused_tab_in_vie
 async fn a_status_mark_that_keeps_the_tab_widths_leaves_scrolled_tabs_where_they_are() {
     let tabs = [None; 20];
     let mut surface = symbols(90, 10);
-    surface.update(spaces(&[(None, &tabs)]));
+    surface.update(spaces(&[(None, &tabs)]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     tap(&mut surface, right, 0);
@@ -1701,7 +1976,7 @@ async fn a_status_mark_that_keeps_the_tab_widths_leaves_scrolled_tabs_where_they
 async fn a_zoom_that_keeps_the_tab_widths_still_brings_the_focused_tab_into_view() {
     let tabs = [None; 20];
     let mut surface = symbols(90, 10);
-    surface.update(spaces(&[(None, &tabs)]));
+    surface.update(spaces(&[(None, &tabs)]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     tap(&mut surface, right, 0);
@@ -1716,7 +1991,7 @@ async fn a_zoom_that_keeps_the_tab_widths_still_brings_the_focused_tab_into_view
 #[tokio::test]
 async fn a_finish_in_another_tab_reads_done_until_that_tab_is_focused() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t3", "working");
     said(&mut surface, "t3", "done");
@@ -1730,7 +2005,7 @@ async fn a_finish_in_another_tab_reads_done_until_that_tab_is_focused() {
 #[tokio::test]
 async fn a_finish_in_a_pane_hidden_by_zoom_reads_done_until_the_zoom_ends() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
     surface.act(KeybindAction::Zoom, false);
     frame(&mut surface, &HashSet::new());
 
@@ -1746,7 +2021,7 @@ async fn a_finish_in_a_pane_hidden_by_zoom_reads_done_until_the_zoom_ends() {
 #[tokio::test]
 async fn a_finish_in_a_tab_entered_and_left_before_a_frame_still_reads_done() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t3", "working");
     said(&mut surface, "t3", "done");
@@ -1760,7 +2035,7 @@ async fn a_finish_in_a_tab_entered_and_left_before_a_frame_still_reads_done() {
 #[tokio::test]
 async fn a_finish_in_a_tab_left_before_its_panes_attach_still_reads_done() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t3", "working");
     said(&mut surface, "t3", "done");
@@ -1783,7 +2058,7 @@ async fn a_finish_in_a_tab_left_before_its_panes_attach_still_reads_done() {
 #[tokio::test]
 async fn a_finish_while_the_host_lacks_focus_reads_done_until_focus_returns() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
     surface.host_focus(false);
 
     said(&mut surface, "t1", "working");
@@ -1798,7 +2073,7 @@ async fn a_finish_while_the_host_lacks_focus_reads_done_until_focus_returns() {
 #[tokio::test]
 async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
     let mut surface = symbols(120, 30);
-    surface.update(paired());
+    surface.update(paired(), 0);
     frame(&mut surface, &HashSet::new());
 
     said(&mut surface, "t9", "working");

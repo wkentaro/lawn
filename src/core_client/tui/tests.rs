@@ -41,7 +41,7 @@ fn operations_wait_on_one_blocking_task_until_the_split_before_them_finishes() {
         Operation::Close(_) => {
             report.send(("closed", tokio::task::try_id())).ok();
         }
-        Operation::Arrange(_) => {}
+        Operation::Arrange(_) | Operation::Overlay(_) => {}
     });
     let split = Destination::Split {
         beside: "t1".to_owned(),
@@ -84,7 +84,7 @@ fn beside(terminal: &str) -> Destination {
 fn answers_to(
     core: std::io::Result<std::sync::Arc<crate::hc::Core>>,
     operation: Operation,
-) -> Vec<(u64, Option<String>)> {
+) -> Vec<(u64, Option<(String, u64)>)> {
     let (started, mut answers) = tokio::sync::mpsc::unbounded_channel();
     super::unix::perform(
         core,
@@ -135,4 +135,32 @@ fn a_start_with_the_core_unreachable_answers_its_request_once_without_a_terminal
     );
 
     assert_eq!(answers, [(7, None)]);
+}
+
+#[tokio::test]
+async fn a_shell_command_runs_detached_in_the_pane_directory_with_the_command_env() {
+    let dir = std::env::temp_dir().join(format!("lawn-shell-command-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    let env = vec![
+        ("HOME".to_owned(), dir.display().to_string()),
+        ("LAWN_PROBE".to_owned(), "probe".to_owned()),
+    ];
+
+    let status = super::unix::detached(
+        "printf '%s:%s' \"$LAWN_PROBE\" \"$(pwd -P)\" > out".to_owned(),
+        env,
+        Some(dir.clone()),
+    )
+    .await
+    .expect("the command started")
+    .wait()
+    .await
+    .expect("the command ended");
+
+    let written = std::fs::read_to_string(dir.join("out"));
+    let expected = format!("probe:{}", dir.canonicalize().expect("scratch").display());
+    std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
+    assert!(status.success());
+    assert_eq!(written.expect("the command wrote its output"), expected);
 }

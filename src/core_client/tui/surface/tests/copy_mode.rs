@@ -451,7 +451,7 @@ async fn a_yank_before_the_next_frame_copies_the_selection_a_parked_pane_kept() 
 #[tokio::test]
 async fn a_word_motion_stops_at_the_last_column_a_narrow_pane_shows() {
     let mut surface = surface_with_scrollbars(6, 10, false);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     for (_, id, geometry) in requests(&mut surface) {
         let view = View::test(geometry.cols.max(crate::pane::MIN_PANE_COLS), geometry.rows);
         view.test_feed(b"a bc\r");
@@ -979,7 +979,7 @@ async fn n_after_new_output_searches_from_the_cursor_and_not_the_old_match() {
 #[tokio::test]
 async fn a_new_pane_width_drops_the_matches_while_the_terminal_keeps_its_size() {
     let mut surface = surface_with_scrollbars(8, 10, false);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     for (_, id, geometry) in requests(&mut surface) {
         let view = View::test(geometry.cols.max(crate::pane::MIN_PANE_COLS), geometry.rows);
         view.test_feed(b"ab ab\r");
@@ -1003,7 +1003,7 @@ async fn a_new_pane_width_drops_the_matches_while_the_terminal_keeps_its_size() 
 #[tokio::test]
 async fn n_moves_on_from_a_match_that_starts_past_the_columns_a_narrow_pane_shows() {
     let mut surface = surface_with_scrollbars(6, 10, false);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     for (_, id, geometry) in requests(&mut surface) {
         let view = View::test(geometry.cols.max(crate::pane::MIN_PANE_COLS), geometry.rows);
         view.test_feed(b"xxa\r\nxxa\r");

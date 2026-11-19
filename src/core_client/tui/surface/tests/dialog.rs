@@ -14,7 +14,7 @@ const ROWS: u16 = 24;
 
 fn one_pane() -> Surface {
     let mut surface = surface(COLS, ROWS);
-    surface.update(row_of(&terminals(1)));
+    surface.update(row_of(&terminals(1)), 0);
     frame_attaching(&mut surface, &HashSet::new());
     surface
 }
@@ -534,7 +534,7 @@ async fn a_dialog_is_redrawn_only_when_its_state_or_the_host_size_changes() {
     press(&mut surface, KeyCode::Home);
     at(&mut surface, MouseEventKind::Moved, 3, 3);
     assert!(!surface.needs_frame());
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     frame_attaching(&mut surface, &HashSet::new());
     assert_eq!(image(&surface), drawn);
 
