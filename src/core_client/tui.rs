@@ -5,6 +5,7 @@ mod copy_mode;
 mod dialog;
 mod follow;
 mod keys;
+mod notices;
 mod select;
 mod session;
 mod surface;
@@ -74,11 +75,12 @@ mod unix {
 
     use super::chrome::Chrome;
     use super::keys::{Keys, Mode, Routed};
+    use super::notices::{Effect, Notifying};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
     use super::surface::{Pointed, Surface};
     use crate::client::terminal_setup::TerminalGuard;
-    use crate::config::{Config, LiveKeybindConfig};
+    use crate::config::{Config, LiveKeybindConfig, SoundConfig};
     use crate::core_client::commands::creation_lifecycle;
     use crate::core_client::host::{
         clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
@@ -109,6 +111,30 @@ mod unix {
                 prefix: config.prefix_keys(),
                 keybinds: config.keybinds(),
             })
+    }
+
+    fn notify(effects: Vec<Effect>, sound: &SoundConfig) {
+        for effect in effects {
+            match effect {
+                Effect::Sound(played) => crate::sound::play(played, sound),
+                Effect::Terminal { title, body } => {
+                    if let Err(error) =
+                        crate::terminal_notify::show_notification(&title, Some(&body))
+                    {
+                        warn!(%error, "the notification did not reach the host terminal");
+                    }
+                }
+                Effect::System { title, body } => {
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) =
+                            crate::platform::show_desktop_notification(&title, Some(&body))
+                        {
+                            warn!(%error, "the system notification did not show");
+                        }
+                    });
+                }
+            }
+        }
     }
 
     fn perform(
@@ -186,7 +212,8 @@ mod unix {
                     .then_some(config.ui.toast.clipboard.position),
             },
             keybinds.clone(),
-        );
+        )
+        .notifying(Notifying::from_config(&config));
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
             guard.take_buffered_host_input(),
@@ -264,7 +291,7 @@ mod unix {
                     due = None;
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
-                    surface.tick(std::time::Instant::now());
+                    notify(surface.tick(std::time::Instant::now()), &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -284,7 +311,7 @@ mod unix {
                     }
                 }
                 Some(report) = reports.recv() => {
-                    surface.heard(report);
+                    notify(surface.heard(report, std::time::Instant::now()), &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -411,6 +438,12 @@ mod unix {
                                 }
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::CopyMode)) => {
                                     surface.enter_copy_mode();
+                                    continue;
+                                }
+                                Routed::Binding(KeybindMatch::Action(
+                                    KeybindAction::OpenNotificationTarget,
+                                )) => {
+                                    surface.open_notice(std::time::Instant::now());
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::Detach)) => {

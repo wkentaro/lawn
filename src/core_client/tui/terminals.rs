@@ -32,11 +32,20 @@ impl Status {
     }
 }
 
+pub(super) struct Moved {
+    pub(super) terminal: String,
+    pub(super) agent: Option<Agent>,
+    pub(super) from: AgentState,
+    pub(super) to: AgentState,
+}
+
 #[derive(Default)]
 pub(super) struct Terminals {
     folder_names: HashMap<String, String>,
     statuses: HashMap<String, Status>,
     changes: u64,
+    followed: bool,
+    moves: Vec<Moved>,
 }
 
 impl Terminals {
@@ -46,6 +55,10 @@ impl Terminals {
 
     pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
         self.statuses.get(terminal)
+    }
+
+    pub(super) fn moves(&mut self) -> Vec<Moved> {
+        std::mem::take(&mut self.moves)
     }
 
     pub(super) fn see<'a>(&mut self, terminals: impl IntoIterator<Item = &'a str>) -> bool {
@@ -90,11 +103,15 @@ impl Terminals {
                     drawn |= !stays && shows(terminal);
                     stays
                 });
-                statuses
+                let drawn = statuses
                     .into_iter()
                     .fold(drawn, |drawn, (terminal, status)| {
                         self.report(terminal, status, &shows) | drawn
-                    })
+                    });
+                if !std::mem::replace(&mut self.followed, true) {
+                    self.moves.clear();
+                }
+                drawn
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows),
         }
@@ -125,6 +142,14 @@ impl Terminals {
                 Some(status) if status.state == reported.state => status.changed,
                 _ => {
                     self.changes += 1;
+                    if reported.state != AgentState::Idle || !seen {
+                        self.moves.push(Moved {
+                            terminal: terminal.clone(),
+                            agent: reported.agent.or(before.and_then(|status| status.agent)),
+                            from: previous,
+                            to: reported.state,
+                        });
+                    }
                     self.changes
                 }
             };

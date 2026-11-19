@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 
-use super::terminals::{Report, Status, Terminals};
+use super::terminals::{Moved, Report, Status, Terminals};
 use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
@@ -97,6 +97,45 @@ impl Session {
             },
             |terminal| layout.shows(terminal),
         )
+    }
+
+    pub(super) fn moves(&mut self) -> Vec<Moved> {
+        self.terminals.moves()
+    }
+
+    pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
+        self.terminals
+            .status(terminal)
+            .filter(|_| self.layout.shows(terminal))
+    }
+
+    pub(super) fn in_focused_tab(&self, terminal: &str) -> bool {
+        self.focus
+            .as_ref()
+            .and_then(|focus| tab(&self.layout, focus))
+            .is_some_and(|tab| tab.root.contains(terminal))
+    }
+
+    pub(super) fn context(&self, terminal: &str) -> Option<String> {
+        if !self.layout.shows(terminal) {
+            return None;
+        }
+        self.layout
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(index, workspace)| {
+                let (tab_index, tab) = workspace
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, tab)| tab.root.contains(terminal))?;
+                let place = format!("{} · {}", self.label(workspace), index + 1);
+                Some(match workspace.tabs.len() > 1 {
+                    true => format!("{place} · {}", super::chrome::tab_label(tab_index, tab)),
+                    false => place,
+                })
+            })
     }
 
     pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {

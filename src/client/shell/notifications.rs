@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
 
-pub(super) fn render_mobile_notice_banner(
+pub(crate) fn render_mobile_notice_banner(
     buffer: &mut Buffer,
     area: Rect,
     title: &str,
@@ -104,7 +104,7 @@ pub(super) fn render_mobile_notification_banner(
     )
 }
 
-pub(super) fn render_notification_card(
+pub(crate) fn render_notification_card(
     buffer: &mut Buffer,
     area: Rect,
     title: &str,

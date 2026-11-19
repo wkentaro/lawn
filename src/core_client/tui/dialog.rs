@@ -77,6 +77,10 @@ impl Modal {
         self.image.as_ref().is_none_or(|(area, _)| *area != host)
     }
 
+    pub(super) fn redraw(&mut self) {
+        self.image = None;
+    }
+
     pub(super) fn image(&self) -> Option<&(Rect, Vec<CellData>)> {
         self.image.as_ref()
     }
