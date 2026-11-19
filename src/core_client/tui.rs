@@ -31,6 +31,7 @@ fn run() -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other("lawn needs a terminal"));
     }
+    crate::logging::init_file_logging_in(super::log_dir(), super::LOG_FILE);
     let core = super::core()?;
     let session = crate::session::active_name()
         .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
