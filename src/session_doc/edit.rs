@@ -1,7 +1,12 @@
+use ratatui::layout::Rect;
+
 use super::{Direction, Layout, Node, Tab, Workspace};
+use crate::layout::NavDirection;
 
 const MIN_RATIO: f32 = 0.1;
 const MAX_RATIO: f32 = 0.9;
+#[cfg(any(unix, test))]
+const RESIZE_STEP: f32 = 0.05;
 pub(super) const EVEN_RATIO: f32 = 0.5;
 
 /// Where an unparked terminal goes.
@@ -18,8 +23,34 @@ pub(crate) enum Placement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Arrangement {
-    NameWorkspace { workspace: String, name: String },
-    NameTab { tab: String, name: String },
+    NameWorkspace {
+        workspace: String,
+        name: String,
+    },
+    NameTab {
+        tab: String,
+        name: String,
+    },
+    MoveTab {
+        tab: String,
+        to: Place,
+    },
+    Swap {
+        terminal: String,
+        toward: NavDirection,
+        area: Rect,
+    },
+    Resize {
+        terminal: String,
+        toward: NavDirection,
+        area: Rect,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Place {
+    Next,
+    Previous,
 }
 
 impl Layout {
@@ -39,7 +70,60 @@ impl Layout {
                 .find(|t| t.id == *tab)
                 .map(|t| t.name = Some(name.clone()))
                 .is_some(),
+            Arrangement::MoveTab { tab, to } => self.workspaces.iter_mut().any(|workspace| {
+                let Some(source) = workspace.tabs.iter().position(|t| t.id == *tab) else {
+                    return false;
+                };
+                let len = workspace.tabs.len();
+                let insert = match to {
+                    Place::Next if source + 1 >= len => 0,
+                    Place::Next => source + 2,
+                    Place::Previous if source == 0 => len,
+                    Place::Previous => source - 1,
+                };
+                crate::session_model::move_item(&mut workspace.tabs, source, insert).is_some()
+            }),
+            Arrangement::Swap {
+                terminal,
+                toward,
+                area,
+            } => {
+                let Some(with) = self.neighbour(terminal, *toward, *area).map(str::to_owned) else {
+                    return false;
+                };
+                self.tab_mut(terminal)
+                    .map(|tab| tab.root.swap(terminal, &with))
+                    .is_some()
+            }
+            Arrangement::Resize {
+                terminal,
+                toward,
+                area,
+            } => {
+                let Some((first, second)) = self
+                    .resized_split(terminal, *toward, *area)
+                    .map(|(first, second)| (first.to_owned(), second.to_owned()))
+                else {
+                    return false;
+                };
+                let by = match toward {
+                    NavDirection::Right | NavDirection::Down => RESIZE_STEP,
+                    NavDirection::Left | NavDirection::Up => -RESIZE_STEP,
+                };
+                self.tab_mut(terminal)
+                    .and_then(|tab| tab.root.ratio_between(&first, &second))
+                    .map(|ratio| *ratio = (*ratio + by).clamp(MIN_RATIO, MAX_RATIO))
+                    .is_some()
+            }
         }
+    }
+
+    #[cfg(any(unix, test))]
+    fn tab_mut(&mut self, terminal: &str) -> Option<&mut Tab> {
+        self.workspaces
+            .iter_mut()
+            .flat_map(|workspace| workspace.tabs.iter_mut())
+            .find(|tab| tab.root.contains(terminal))
     }
 
     /// Adds a workspace whose one tab shows `terminal`; returns the workspace
@@ -234,6 +318,37 @@ impl Node {
             Node::Split { first, second, .. } => first
                 .pane_mut(terminal)
                 .or_else(|| second.pane_mut(terminal)),
+        }
+    }
+
+    #[cfg(any(unix, test))]
+    fn swap(&mut self, one: &str, other: &str) {
+        match self {
+            Node::Pane { terminal } if terminal == one => *terminal = other.to_owned(),
+            Node::Pane { terminal } if terminal == other => *terminal = one.to_owned(),
+            Node::Pane { .. } => {}
+            Node::Split { first, second, .. } => {
+                first.swap(one, other);
+                second.swap(one, other);
+            }
+        }
+    }
+
+    #[cfg(any(unix, test))]
+    fn ratio_between(&mut self, before: &str, after: &str) -> Option<&mut f32> {
+        let Node::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        match (first.contains(before), second.contains(after)) {
+            (true, true) => Some(ratio),
+            (true, false) => first.ratio_between(before, after),
+            (false, _) => second.ratio_between(before, after),
         }
     }
 

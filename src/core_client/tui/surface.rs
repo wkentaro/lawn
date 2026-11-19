@@ -3,9 +3,10 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
@@ -70,6 +71,7 @@ struct Overlays {
     toast: Rect,
     cover: Rect,
     dialog: Rect,
+    resize: Rect,
 }
 
 impl Overlays {
@@ -84,6 +86,7 @@ impl Overlays {
                 &self.toast,
                 &self.cover,
                 &self.dialog,
+                &self.resize,
             ])
     }
 
@@ -186,6 +189,7 @@ pub(super) struct Surface {
     select: Select,
     copy: Option<CopyMode>,
     dialog: Option<Modal>,
+    resizing: bool,
     keybinds: LiveKeybindConfig,
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
@@ -227,6 +231,7 @@ impl Surface {
             select: Select::new(copying.on_select),
             copy: None,
             dialog: None,
+            resizing: false,
             keybinds,
             toast_at: copying.toast,
             toast: None,
@@ -236,6 +241,10 @@ impl Surface {
             canvas: Vec::new(),
             canvas_cols: 0,
         }
+    }
+
+    pub(super) fn holds(&self, layout: &Layout) -> bool {
+        self.session.holds(layout)
     }
 
     pub(super) fn update(&mut self, layout: Layout) {
@@ -254,6 +263,10 @@ impl Surface {
             self.open(Dialog::Help(Default::default()));
             return None;
         }
+        if action == KeybindAction::EnterResizeMode {
+            self.resizing = true;
+            return None;
+        }
         if matches!(
             action,
             KeybindAction::RenameWorkspace | KeybindAction::RenameTab
@@ -267,6 +280,9 @@ impl Surface {
         if self.session.navigate(action, area, self.chrome) {
             self.relayout = true;
             self.sync_focus();
+        }
+        if let Some(arrangement) = self.session.arrangement(action, area) {
+            return Some(Operation::Arrange(arrangement));
         }
         match self.session.operation(action, confirm_close)? {
             Request::Run(operation) => Some(operation),
@@ -301,6 +317,29 @@ impl Surface {
     pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Operation> {
         let outcome = self.dialog.as_mut()?.key(key);
         self.settle(outcome)
+    }
+
+    pub(super) fn resizing(&self) -> bool {
+        self.resizing
+    }
+
+    pub(super) fn resize_key(&mut self, key: &TerminalKey) -> Option<Operation> {
+        let done = &self.keybinds.keybinds.resize_mode;
+        if matches!(key.code, KeyCode::Esc | KeyCode::Enter)
+            || done.matches_prefix_key(key)
+            || done.matches_direct_key(key)
+        {
+            self.resizing = false;
+            return None;
+        }
+        let action = match key.code {
+            KeyCode::Char('h') | KeyCode::Left => KeybindAction::ResizePaneLeft,
+            KeyCode::Char('j') | KeyCode::Down => KeybindAction::ResizePaneDown,
+            KeyCode::Char('k') | KeyCode::Up => KeybindAction::ResizePaneUp,
+            KeyCode::Char('l') | KeyCode::Right => KeybindAction::ResizePaneRight,
+            _ => return None,
+        };
+        self.act(action, false)
     }
 
     fn settle(&mut self, outcome: Outcome) -> Option<Operation> {
@@ -644,19 +683,27 @@ impl Surface {
             }
         }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
-        if self.outer.claim(event, self.painted.copy.bar) {
+        let hidden = match self.painted.resize.is_empty() {
+            true => self.painted.copy.bar,
+            false => self.painted.resize,
+        };
+        if self.outer.claim(event, hidden) {
             if press {
                 self.select.press(None, event, now);
             }
-            let pointed = self
-                .outer
-                .mouse(event, &self.session, now, self.copy_mode());
+            let pointed = self.outer.mouse(
+                event,
+                &self.session,
+                now,
+                self.copy_mode() && !self.resizing,
+            );
             if let Some(terminal) = self.outer.revealed() {
                 if self.session.reveal(&terminal) {
                     self.relayout = true;
                     self.sync_focus();
                 }
             }
+            self.resizing &= !self.outer.switching();
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed.map(Pointed::Act);
         }
@@ -927,10 +974,14 @@ impl Surface {
             .as_ref()
             .and_then(|copy| {
                 let (view, inner) = visible(&self.views, copy.pane())?;
-                let active = Some(copy.pane()) == self.session.focused_id();
+                let active = !self.resizing && Some(copy.pane()) == self.session.focused_id();
                 Some(copy.marks(inner, area, view.frame(), &self.select, active))
             })
             .unwrap_or_default();
+        let resize = match self.resizing && !area.is_empty() {
+            true => Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            false => Rect::default(),
+        };
         Overlays {
             selection,
             copy,
@@ -946,6 +997,7 @@ impl Surface {
                 .dialog
                 .as_ref()
                 .map_or_else(Rect::default, |_| self.host_area()),
+            resize,
         }
     }
 
@@ -977,6 +1029,9 @@ impl Surface {
         let copy = &overlays.copy;
         let bar = (!copy.bar.is_empty() && ys.contains(&copy.bar.y))
             .then(|| super::copy_mode::bar(copy, &self.palette));
+        let resize = &overlays.resize;
+        let resize_bar = (!resize.is_empty() && ys.contains(&resize.y))
+            .then(|| resize_bar(resize.width, &self.palette));
         let mark = super::copy_mode::cursor_cell(&self.palette);
         let found = super::copy_mode::match_cell(&self.palette);
         for y in ys {
@@ -999,16 +1054,23 @@ impl Surface {
             }
             tint(&mut cells, &copy.current, y, &mark);
             tint(&mut cells, std::slice::from_ref(&copy.cursor), y, &mark);
+            if let Some(toast) = &self.toast {
+                place(&mut cells, &toast.image, y);
+            }
             if let (Some(to), Some(bar)) = (
                 cells.get_mut(usize::from(copy.bar.x)..usize::from(copy.bar.right())),
                 bar.as_deref().filter(|_| covers(&copy.bar, y)),
             ) {
                 to.clone_from_slice(bar);
             }
-            let images = self.toast.as_ref().map(|toast| &toast.image);
-            let switcher = self.outer.cover().filter(|_| self.dialog.is_none());
-            for image in images.into_iter().chain(switcher) {
-                place(&mut cells, image, y);
+            if let (Some(to), Some(bar)) = (
+                cells.get_mut(usize::from(resize.x)..usize::from(resize.right())),
+                resize_bar.as_deref().filter(|_| covers(resize, y)),
+            ) {
+                to.clone_from_slice(bar);
+            }
+            if let Some(switcher) = self.outer.cover().filter(|_| self.dialog.is_none()) {
+                place(&mut cells, switcher, y);
             }
             rows.push(PaneSurfacePatchRow { x: 0, y, cells });
         }
@@ -1208,7 +1270,7 @@ impl Surface {
             .filter(|cursor| cursor.x < inner.width && cursor.y < inner.height)?;
         cursor.x += inner.x;
         cursor.y += inner.y;
-        Some(cursor)
+        (!covers(&self.painted.resize, cursor.y)).then_some(cursor)
     }
 }
 
@@ -1271,6 +1333,44 @@ fn toast_image(
         .map(|position| CellData::from_ratatui_cell(&buffer[position]))
         .collect();
     (rect, cells)
+}
+
+fn resize_bar(width: u16, palette: &Palette) -> Vec<CellData> {
+    let area = Rect::new(0, 0, width, 1);
+    let mut buffer = Buffer::empty(area);
+    let base = Style::default().fg(palette.overlay0).bg(palette.panel_bg);
+    buffer.set_style(area, base);
+    let key = Style::default()
+        .fg(palette.accent)
+        .bg(palette.panel_bg)
+        .add_modifier(Modifier::BOLD);
+    let mode = Style::default()
+        .fg(crate::ui::chrome::panel_contrast_fg(palette))
+        .bg(palette.mauve)
+        .add_modifier(Modifier::BOLD);
+    let mut x = 0;
+    for (text, style) in [
+        (" RESIZE ", mode),
+        ("  ", base),
+        ("h/l", key),
+        (" width  ", base),
+        ("j/k", key),
+        (" height  ", base),
+        ("esc", key),
+        (" done", base),
+    ] {
+        if x >= width {
+            break;
+        }
+        x = buffer
+            .set_stringn(x, 0, text, usize::from(width - x), style)
+            .0;
+    }
+    buffer
+        .content
+        .iter()
+        .map(CellData::from_ratatui_cell)
+        .collect()
 }
 
 fn drawn_scroll(view: &View) -> Option<ScrollMetrics> {

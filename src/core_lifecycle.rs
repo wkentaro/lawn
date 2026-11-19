@@ -204,15 +204,14 @@ impl Lifecycle {
     pub(crate) fn arrange(
         &self,
         arrangement: &crate::session_doc::Arrangement,
-    ) -> Result<(), String> {
-        let (arranged, _) = self.store.edit(|layout| layout.arrange(arrangement))?;
-        if !arranged {
-            return Err(format!(
-                "session {} has nothing for {arrangement:?}",
-                self.session
-            ));
-        }
-        Ok(())
+    ) -> Result<Option<u64>, String> {
+        self.store
+            .edit(|layout| {
+                let before = layout.clone();
+                layout.arrange(arrangement);
+                *layout != before
+            })
+            .map(|(wrote, loaded)| wrote.then_some(loaded.version))
     }
 
     pub(crate) fn unpark(

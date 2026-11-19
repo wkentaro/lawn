@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use super::follow;
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::test_support::TestCore;
-use crate::session_doc::Layout;
+use crate::session_doc::{Layout, Loaded};
 
 const SESSION: &str = "followed";
 
@@ -18,15 +18,15 @@ fn shared() -> Option<TestCore> {
 }
 
 async fn until(
-    layouts: &mut mpsc::UnboundedReceiver<Layout>,
+    layouts: &mut mpsc::UnboundedReceiver<Loaded>,
     what: &str,
     wanted: impl Fn(&Layout) -> bool,
 ) -> Layout {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let layout = layouts.recv().await.expect("the follower stopped");
-            if wanted(&layout) {
-                return layout;
+            let loaded = layouts.recv().await.expect("the follower stopped");
+            if wanted(&loaded.layout) {
+                return loaded.layout;
             }
         }
     })

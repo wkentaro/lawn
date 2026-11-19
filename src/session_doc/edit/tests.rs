@@ -414,3 +414,123 @@ fn arrange_names_a_workspace_or_tab_and_reports_a_missing_one() {
     }));
     assert_eq!(layout, before);
 }
+
+fn tab_ids(layout: &Layout) -> Vec<&str> {
+    layout.workspaces[0]
+        .tabs
+        .iter()
+        .map(|tab| tab.id.as_str())
+        .collect()
+}
+
+#[test]
+fn arrange_steps_a_tab_forward_or_back_wrapping_at_either_end_and_reports_a_missing_tab() {
+    let mut layout = one_workspace(pane("a"));
+    layout.add_tab("ws0", None, "b".to_owned());
+    layout.add_tab("ws0", None, "c".to_owned());
+    let tabs = |layout: &Layout| tab_ids(layout).join(" ");
+    let moving = |tab: &str, to| Arrangement::MoveTab {
+        tab: tab.to_owned(),
+        to,
+    };
+    assert_eq!(tabs(&layout), "tab1 tab2 tab3");
+    assert!(layout.arrange(&moving("tab1", Place::Next)));
+    assert_eq!(tabs(&layout), "tab2 tab1 tab3");
+    assert!(layout.arrange(&moving("tab3", Place::Next)));
+    assert_eq!(tabs(&layout), "tab3 tab2 tab1");
+    assert!(layout.arrange(&moving("tab3", Place::Previous)));
+    assert_eq!(tabs(&layout), "tab2 tab1 tab3");
+    assert!(layout.arrange(&moving("tab1", Place::Previous)));
+    assert_eq!(tabs(&layout), "tab1 tab2 tab3");
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&moving("tab9", Place::Next)));
+    assert_eq!(layout, before);
+}
+
+#[test]
+fn arrange_leaves_a_lone_tab_where_it_is_and_reports_no_change() {
+    let mut layout = one_workspace(pane("a"));
+    let before = layout.clone();
+    for to in [Place::Next, Place::Previous] {
+        assert!(!layout.arrange(&Arrangement::MoveTab {
+            tab: "tab1".to_owned(),
+            to,
+        }));
+    }
+    assert_eq!(layout, before);
+}
+
+const AREA: Rect = Rect::new(0, 0, 40, 10);
+
+#[test]
+fn arrange_swaps_a_pane_with_its_shown_neighbour_toward_the_key_and_nothing_else() {
+    let mut layout = one_workspace(split(Direction::Right, pane("a"), pane("b")));
+    layout.add_tab("ws0", None, "c".to_owned());
+    let swapping = |terminal: &str, toward| Arrangement::Swap {
+        terminal: terminal.to_owned(),
+        toward,
+        area: AREA,
+    };
+    assert!(layout.arrange(&swapping("a", NavDirection::Right)));
+    assert_eq!(
+        layout.workspaces[0].tabs[0].root,
+        split(Direction::Right, pane("b"), pane("a"))
+    );
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&swapping("a", NavDirection::Right)));
+    assert!(!layout.arrange(&swapping("a", NavDirection::Down)));
+    assert!(!layout.arrange(&swapping("c", NavDirection::Left)));
+    assert!(!layout.arrange(&swapping("z", NavDirection::Left)));
+    layout.parked.insert("b".to_owned());
+    assert!(!layout.arrange(&swapping("a", NavDirection::Left)));
+    assert!(!layout.arrange(&swapping("b", NavDirection::Right)));
+    layout.parked.clear();
+    assert_eq!(layout, before);
+}
+
+fn ratios(node: &Node) -> Vec<f32> {
+    match node {
+        Node::Pane { .. } => Vec::new(),
+        Node::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } => [*ratio]
+            .into_iter()
+            .chain(ratios(first))
+            .chain(ratios(second))
+            .collect(),
+    }
+}
+
+#[test]
+fn arrange_steps_the_split_beside_a_pane_along_its_key_within_its_bounds() {
+    let mut layout = one_workspace(split(
+        Direction::Right,
+        split(Direction::Down, pane("a"), pane("b")),
+        pane("c"),
+    ));
+    let resizing = |terminal: &str, toward| Arrangement::Resize {
+        terminal: terminal.to_owned(),
+        toward,
+        area: AREA,
+    };
+    let root = |layout: &Layout| ratios(&layout.workspaces[0].tabs[0].root);
+    assert!(layout.arrange(&resizing("a", NavDirection::Down)));
+    assert_eq!(root(&layout), [0.5, 0.55]);
+    assert!(layout.arrange(&resizing("c", NavDirection::Right)));
+    assert_eq!(root(&layout), [0.55, 0.55]);
+    for _ in 0..20 {
+        layout.arrange(&resizing("b", NavDirection::Left));
+        layout.arrange(&resizing("b", NavDirection::Down));
+    }
+    assert_eq!(root(&layout), [MIN_RATIO, MAX_RATIO]);
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&resizing("c", NavDirection::Down)));
+    assert!(!layout.arrange(&resizing("z", NavDirection::Left)));
+    assert_eq!(layout, before);
+}
