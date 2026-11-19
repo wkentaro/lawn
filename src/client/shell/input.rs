@@ -24,20 +24,6 @@ fn is_ctrl_bracket_key(key: &crate::input::TerminalKey) -> bool {
     key.code == KeyCode::Char('[') && key.modifiers == KeyModifiers::CONTROL
 }
 
-pub(super) fn is_modal_paste_shortcut_for_platform(
-    key: &crate::input::TerminalKey,
-    macos: bool,
-) -> bool {
-    key.generated_text.as_deref().is_none_or(str::is_empty)
-        && matches!(key.code, KeyCode::Char('v' | 'V'))
-        && (key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
-            || macos && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::SUPER)
-}
-
-pub(crate) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
-    is_modal_paste_shortcut_for_platform(key, cfg!(target_os = "macos"))
-}
-
 fn host_theme_update(event: &RawInputEvent) -> Option<crate::protocol::ClientHostThemeUpdate> {
     use crate::protocol::{
         ClientHostAppearance, ClientHostDefaultColorKind, ClientHostThemeUpdate,
@@ -611,7 +597,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         read_clipboard_text: impl FnOnce() -> Option<String>,
     ) -> bool {
-        if !is_modal_paste_shortcut(key) || !self.modal_paste_target_active() {
+        if !text_editor::is_modal_paste_shortcut(key) || !self.modal_paste_target_active() {
             return false;
         }
         if let Some(text) = read_clipboard_text() {

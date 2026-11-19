@@ -1,7 +1,6 @@
 // Modified for Lawn.
 use super::*;
-
-mod settings_overlay;
+use crate::ui::dialog::{self, button, panel};
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
@@ -50,12 +49,7 @@ pub(crate) fn render_client_overlay(
             | ClientShellOverlay::ContextMenu(_)
             | ClientShellOverlay::GlobalMenu(_)
     ) {
-        for y in b.area.y..b.area.bottom() {
-            for x in b.area.x..b.area.right() {
-                let c = &mut b[(x, y)];
-                c.set_style(c.style().add_modifier(Modifier::DIM));
-            }
-        }
+        dialog::dim_backdrop(b);
     }
     match o {
         ClientShellOverlay::Onboarding => render_onboarding_overlay(b, k, p),
@@ -63,15 +57,17 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ReleaseNotes(v) => {
             render_release_notes_overlay(b, v, &s.update_install_command, p)
         }
-        ClientShellOverlay::Rename(v) => render_rename_overlay(b, v, p),
-        ClientShellOverlay::ConfirmClose(v) => render_confirm_close_overlay(b, v, p),
+        ClientShellOverlay::Rename(v) => {
+            dialog::render_rename(b, v.title, &v.input, p).map(dialog_render)
+        }
+        ClientShellOverlay::ConfirmClose(v) => {
+            dialog::render_confirm(b, &v.title, &v.detail, p).map(dialog_render)
+        }
         ClientShellOverlay::Help(v) => render_help_overlay(b, v, k, p),
         ClientShellOverlay::Navigator(v) => {
             render_navigator_overlay(b, v, endpoints, active_endpoint_id, preview, p)
         }
-        ClientShellOverlay::Settings(v) => {
-            settings_overlay::render_settings_overlay(b, v, s.integration_updates_available, p)
-        }
+        ClientShellOverlay::Settings(v) => render_settings_overlay(b, v, s, p),
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
 }
@@ -83,74 +79,20 @@ pub(crate) fn render_global_menu(
     snapshot: &ClientShellSnapshot,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = super::super::global_menu::global_menu_items(snapshot, false);
-    let screen = buffer.area;
-    let width = items
-        .iter()
+    let items = super::super::global_menu::global_menu_items(snapshot, false)
+        .into_iter()
         .map(|(label, action)| {
-            display_width(label)
-                + u16::from(super::super::global_menu::global_menu_item_has_badge(
-                    snapshot, *action,
-                )) * 2
+            (
+                label,
+                super::super::global_menu::global_menu_item_has_badge(snapshot, action),
+            )
         })
-        .max()
-        .unwrap_or(8)
-        .saturating_add(4)
-        .min(screen.width.max(1));
-    let height = (items.len() as u16)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = launcher
-        .right()
-        .saturating_sub(width)
-        .min(screen.right().saturating_sub(width));
-    let y = launcher.y.saturating_sub(height).max(screen.y);
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, (label, action)) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        let has_badge = super::super::global_menu::global_menu_item_has_badge(snapshot, *action);
-        if has_badge {
-            let badge_style = if highlighted {
-                style
-            } else {
-                Style::default()
-                    .fg(palette.accent)
-                    .bg(palette.panel_bg)
-                    .add_modifier(Modifier::BOLD)
-            };
-            put_text(buffer, row.x, row.y, row.width.min(2), " ●", badge_style);
-            put_text(
-                buffer,
-                row.x.saturating_add(2),
-                row.y,
-                row.width.saturating_sub(2),
-                &format!(" {label}"),
-                style,
-            );
-        } else {
-            put_text(buffer, row.x, row.y, row.width, &format!(" {label}"), style);
-        }
-        rows.push((row, index));
-    }
+        .collect::<Vec<_>>();
+    let rendered =
+        dialog::render_launcher_menu(buffer, launcher, &items, menu.highlighted, palette)?;
     Some(OverlayRender {
-        area: rect,
-        menu_rows: rows,
+        area: rendered.area,
+        menu_rows: rendered.rows,
         ..OverlayRender::default()
     })
 }
@@ -160,151 +102,69 @@ pub(crate) fn render_context_menu(
     menu: &ClientContextMenuOverlay,
     palette: &Palette,
 ) -> Option<OverlayRender> {
-    let items = menu.items();
-    let screen = buffer.area;
-    let max_item_width = items
+    let labels = menu
+        .items()
         .iter()
-        .map(|item| display_width(item.label))
-        .max()
-        .unwrap_or(0);
-    let width = max_item_width
-        .saturating_add(4)
-        .max(14)
-        .min(screen.width.max(1));
-    let height = (items.len() as u16)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = menu
-        .x
-        .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
-    let y = menu.y.min(
-        screen
-            .y
-            .saturating_add(screen.height.saturating_sub(height)),
-    );
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, item.label, style);
-        rows.push((row, index));
-    }
+        .map(|item| item.label)
+        .collect::<Vec<_>>();
+    let rendered =
+        dialog::render_context_menu(buffer, menu.x, menu.y, &labels, menu.highlighted, palette)?;
     Some(OverlayRender {
-        area: rect,
-        menu_rows: rows,
+        area: rendered.area,
+        menu_rows: rendered.rows,
         ..OverlayRender::default()
     })
 }
 
-fn panel(
-    b: &mut Buffer,
-    a: Rect,
-    c: ratatui::style::Color,
-    bg: ratatui::style::Color,
-) -> Option<Rect> {
-    if a.width < 2 || a.height < 2 {
-        return None;
+fn dialog_render(rendered: dialog::Dialog) -> OverlayRender {
+    OverlayRender {
+        area: rendered.area,
+        primary: rendered.primary,
+        clear: rendered.clear,
+        cancel: rendered.cancel,
+        cursor: rendered.cursor,
+        ..OverlayRender::default()
     }
-    let background = Style::default().bg(bg).remove_modifier(Modifier::DIM);
-    let border = Style::default().fg(c).bg(bg).remove_modifier(Modifier::DIM);
-    for y in a.y..a.bottom() {
-        for x in a.x..a.right() {
-            b[(x, y)].set_symbol(" ").set_style(background);
-        }
-    }
-    for x in a.x..a.right() {
-        b[(x, a.y)]
-            .set_symbol(if x == a.x {
-                "┌"
-            } else if x + 1 == a.right() {
-                "┐"
-            } else {
-                "─"
-            })
-            .set_style(border);
-        let y = a.bottom() - 1;
-        b[(x, y)]
-            .set_symbol(if x == a.x {
-                "└"
-            } else if x + 1 == a.right() {
-                "┘"
-            } else {
-                "─"
-            })
-            .set_style(border);
-    }
-    for y in a.y + 1..a.bottom() - 1 {
-        b[(a.x, y)].set_symbol("│").set_style(border);
-        b[(a.right() - 1, y)].set_symbol("│").set_style(border);
-    }
-    Some(Rect::new(a.x + 1, a.y + 1, a.width - 2, a.height - 2))
-}
-fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
-    popup_with_width_cap(a, w, h, 4)
 }
 
-fn popup_with_width_cap(a: Rect, w: u16, h: u16, width_cap: u16) -> Option<Rect> {
-    let w = w.min(a.width.saturating_sub(width_cap));
-    let h = h.min(a.height.saturating_sub(2));
-    if w < 4 || h < 4 {
-        return None;
-    }
-    Some(Rect::new(
-        a.x + (a.width - w) / 2,
-        a.y + (a.height - h) / 2,
-        w,
-        h,
-    ))
+fn render_settings_overlay(
+    buffer: &mut Buffer,
+    settings: &ClientSettingsOverlay,
+    snapshot: &ClientShellSnapshot,
+    palette: &Palette,
+) -> Option<OverlayRender> {
+    let rendered = dialog::render_settings(
+        buffer,
+        &dialog::Settings {
+            section: settings.section,
+            selected: settings.selected,
+            original_theme_name: &settings.original_theme_name,
+            integrations: &settings.integrations,
+            integration_messages: &settings.integration_messages,
+            loading_integrations: settings.loading_integrations,
+            installing_integrations: settings.installing_integrations,
+            integration_updates_available: snapshot.integration_updates_available,
+        },
+        palette,
+    )?;
+    Some(OverlayRender {
+        area: rendered.area,
+        primary: rendered.primary,
+        cancel: rendered.close,
+        settings_popup: rendered.area,
+        settings_tabs: rendered.tabs,
+        settings_choices: rendered.choices,
+        ..OverlayRender::default()
+    })
 }
-fn button(b: &mut Buffer, r: Rect, t: &str, s: Style) {
-    b.set_style(r, s);
-    let w = display_width(t).min(r.width);
-    put_text(b, r.x + (r.width - w) / 2, r.y, w, t, s)
-}
-fn row(i: Rect, ws: &[u16], gap: u16, off: u16) -> Vec<Rect> {
-    let total = ws.iter().sum::<u16>() + gap * (ws.len().saturating_sub(1) as u16);
-    let mut x = i.x + i.width.saturating_sub(total) / 2;
-    ws.iter()
-        .map(|w| {
-            let r = Rect::new(
-                x,
-                i.y + off.min(i.height.saturating_sub(1)),
-                (*w).min(i.width.saturating_sub(x - i.x)),
-                1,
-            );
-            x += *w + gap;
-            r
-        })
-        .collect()
-}
-fn contrast(p: &Palette) -> ratatui::style::Color {
-    match p.panel_bg {
-        ratatui::style::Color::Reset => p.surface_dim,
-        c => c,
-    }
-}
+
 fn render_release_notes_overlay(
     b: &mut Buffer,
     notes: &crate::app::state::ReleaseNotesState,
     install_command: &str,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let outer = popup(
+    let outer = crate::ui::centered_popup_rect(
         b.area,
         crate::ui::RELEASE_NOTES_MODAL_SIZE.0,
         crate::ui::RELEASE_NOTES_MODAL_SIZE.1,
@@ -364,7 +224,7 @@ fn render_release_notes_overlay(
         close,
         " esc close ",
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD)
             .remove_modifier(Modifier::DIM),
@@ -419,7 +279,7 @@ fn render_product_announcement_overlay(
     announcement: &crate::app::state::ProductAnnouncementState,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let outer = popup(
+    let outer = crate::ui::centered_popup_rect(
         b.area,
         crate::ui::PRODUCT_ANNOUNCEMENT_MODAL_SIZE.0,
         crate::ui::PRODUCT_ANNOUNCEMENT_MODAL_SIZE.1,
@@ -480,7 +340,7 @@ fn render_product_announcement_overlay(
         close,
         " esc close ",
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD)
             .remove_modifier(Modifier::DIM),
@@ -541,7 +401,8 @@ fn render_onboarding_overlay(
         + display_width(crate::ui::ONBOARDING_PREFIX_SUFFIX)
         + display_width(crate::ui::ONBOARDING_HELP_LABEL)
         + display_width(crate::ui::ONBOARDING_HELP_SUFFIX);
-    let outer = popup_with_width_cap(b.area, (hint_width + 5).max(64), 16, 3)?;
+    let outer =
+        crate::ui::centered_popup_rect_with_width_margin(b.area, (hint_width + 5).max(64), 16, 3)?;
     let inner = panel(b, outer, p.accent, p.panel_bg)?;
     if inner.height < 11 {
         return Some(OverlayRender {
@@ -622,7 +483,7 @@ fn render_onboarding_overlay(
         primary,
         " ↵ continue ",
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD)
             .remove_modifier(Modifier::DIM),
@@ -630,64 +491,6 @@ fn render_onboarding_overlay(
     Some(OverlayRender {
         area: outer,
         primary,
-        ..OverlayRender::default()
-    })
-}
-
-fn render_rename_overlay(
-    b: &mut Buffer,
-    v: &ClientRenameOverlay,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    let q = popup(b.area, 56, 7)?;
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        v.title,
-        Style::default()
-            .fg(p.text)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let input = Rect::new(i.x, i.y + 2, i.width, 1);
-    b.set_style(input, Style::default().fg(p.text).bg(p.surface0));
-    let cursor = text_editor::render(
-        b,
-        Rect::new(input.x + 1, input.y, input.width.saturating_sub(1), 1),
-        &v.input,
-        Style::default().fg(p.text).bg(p.surface0),
-    );
-    let rs = row(i, &[8, 10, 12], 2, 3);
-    let [save, clear, cancel] = rs.as_slice() else {
-        return None;
-    };
-    button(
-        b,
-        *save,
-        " ↵ save ",
-        Style::default()
-            .fg(contrast(p))
-            .bg(p.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let n = Style::default()
-        .fg(p.text)
-        .bg(p.surface0)
-        .add_modifier(Modifier::BOLD);
-    button(b, *clear, " ^c clear ", n);
-    button(b, *cancel, " esc cancel ", n);
-    Some(OverlayRender {
-        area: q,
-        primary: *save,
-        clear: *clear,
-        cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        cursor,
         ..OverlayRender::default()
     })
 }
@@ -700,537 +503,80 @@ pub(crate) fn render_navigator_overlay(
     preview: &navigator_preview::NavigatorPreview,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let a = b.area;
-    let width = a.width.saturating_sub(4).min(116);
-    let minimum_height = 6;
     let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
-    let height = a.height.saturating_sub(2).min(42);
-    if width < 4 || height < 3 {
-        return None;
-    }
-    let q = Rect::new(
-        a.x + (a.width - width) / 2,
-        a.y + (a.height - height) / 2,
-        width,
-        height,
-    )
-    .intersection(a);
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    let title = match &n.moving {
-        Some(moving) => format!(" move {} ", moving.label),
-        None if n.parked => " parked ".into(),
-        None => " active ".into(),
+    let endpoint = |endpoint_id: &ClientEndpointId| {
+        endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
     };
-    put_text(
-        b,
-        q.x + 2,
-        q.y,
-        q.width.saturating_sub(4),
-        &title,
-        Style::default().fg(p.accent).bg(p.panel_bg),
-    );
-    if height < minimum_height {
-        if i.height > 1 {
-            put_text(
-                b,
-                i.x,
-                i.y,
-                i.width,
-                " Enlarge terminal",
-                Style::default().fg(p.overlay0).bg(p.panel_bg),
-            );
-        }
-        let close = Rect::new(i.x, i.bottom() - 1, i.width, 1);
-        button(
-            b,
-            close,
-            "Close",
-            Style::default().fg(p.accent).bg(p.panel_bg),
-        );
-        return Some(OverlayRender {
-            area: q,
-            navigator_popup: q,
-            navigator_close: close,
-            ..OverlayRender::default()
-        });
-    }
-    let terminal_count = rows
+    let views = rows
         .iter()
-        .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-        .count();
-    let count = format!(
-        "{terminal_count} {}",
-        if terminal_count == 1 {
-            "terminal"
-        } else {
-            "terminals"
-        }
-    );
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width.saturating_sub(display_width(&count) + 1),
-        " / ",
-        Style::default().fg(p.text).bg(p.panel_bg),
-    );
-    let cursor = text_editor::render(
-        b,
-        Rect::new(
-            i.x + 3,
-            i.y,
-            i.width.saturating_sub(4 + display_width(&count)),
-            1,
-        ),
-        &n.query,
-        Style::default().fg(p.text).bg(p.panel_bg),
-    );
-    put_right_text(
-        b,
-        i,
-        i.y,
-        &count,
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    // In short windows, give results priority over the divider and context footer.
-    let search_height = if i.height < 7 { 1 } else { 2 };
-    let header_height = search_height;
-    let footer_height = if i.height < 7 { 1 } else { 3 };
-    if search_height == 2 {
-        put_text(
-            b,
-            i.x,
-            i.y + 1,
-            i.width,
-            &"─".repeat(i.width as usize),
-            Style::default().fg(p.surface1).bg(p.panel_bg),
-        );
-    }
-    let mut row_hits = Vec::new();
-    let body_y = i.y + header_height;
-    let content = Rect::new(
-        i.x,
-        body_y,
-        i.width,
-        i.bottom().saturating_sub(body_y + footer_height),
-    );
-    let (body, preview_panel) = if content.width >= 90 && content.height >= 3 {
-        let list_width = content.width * 45 / 100;
-        for y in content.y..content.bottom() {
-            put_text(
-                b,
-                content.x + list_width,
-                y,
-                1,
-                "│",
-                Style::default().fg(p.surface1).bg(p.panel_bg),
-            );
-        }
-        (
-            Rect::new(content.x, content.y, list_width, content.height),
-            Rect::new(
-                content.x + list_width + 1,
-                content.y,
-                content.width - list_width - 1,
-                content.height,
-            ),
-        )
-    } else if content.height >= 6 {
-        let list_height = content.height / 2;
-        put_text(
-            b,
-            content.x,
-            content.y + list_height,
-            content.width,
-            &"─".repeat(usize::from(content.width)),
-            Style::default().fg(p.surface1).bg(p.panel_bg),
-        );
-        (
-            Rect::new(content.x, content.y, content.width, list_height),
-            Rect::new(
-                content.x,
-                content.y + list_height + 1,
-                content.width,
-                content.height - list_height - 1,
-            ),
-        )
-    } else {
-        (content, Rect::default())
-    };
-    let preview_content = if preview_panel.is_empty() {
-        Rect::default()
-    } else {
-        put_text(
-            b,
-            preview_panel.x + 1,
-            preview_panel.y,
-            preview_panel.width.saturating_sub(2),
-            "Preview · read-only",
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-        Rect::new(
-            preview_panel.x + 1,
-            preview_panel.y + 1,
-            preview_panel.width.saturating_sub(2),
-            preview_panel.height.saturating_sub(1),
-        )
-    };
-    let selected_index = super::aggregate_navigation::navigator_selected_index(&rows, n);
-    let max = rows.len().saturating_sub(body.height as usize);
-    let scroll = n.scroll.unwrap_or_default();
-    let scroll = selected_index
-        .map(|selected| {
-            scroll
-                .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
-                .min(selected)
-        })
-        .unwrap_or(scroll)
-        .min(max);
-    let metrics = crate::pane::ScrollMetrics {
-        offset_from_bottom: max.saturating_sub(scroll),
-        max_offset_from_bottom: max,
-        viewport_rows: usize::from(body.height),
-    };
-    let scrollbar =
-        (max > 0 && body.width > 1).then_some(Rect::new(body.right() - 1, body.y, 1, body.height));
-    let row_width = body.width.saturating_sub(u16::from(scrollbar.is_some()));
-    if rows.is_empty() {
-        put_text(
-            b,
-            body.x,
-            body.y,
-            body.width,
-            " No matching agents or terminals",
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-    }
-    for (ix, r) in rows
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(body.height as usize)
-    {
-        let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, row_width, 1);
-        row_hits.push((rect, r.target.clone()));
-        let st = if r.stale {
-            Style::default()
-                .fg(p.overlay0)
-                .bg(if selected_index == Some(ix) {
-                    p.surface0
-                } else {
-                    p.panel_bg
-                })
-                .add_modifier(Modifier::DIM)
-        } else if selected_index == Some(ix) {
-            Style::default()
-                .fg(p.text)
-                .bg(p.panel_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(
-                    if matches!(r.target, ClientNavigatorTarget::Machine { .. }) {
-                        p.subtext0
-                    } else {
-                        p.text
-                    },
-                )
-                .bg(p.panel_bg)
-        };
-        let is_pane = matches!(r.target, ClientNavigatorTarget::Pane { .. });
-        let connector = if !is_pane {
-            ""
-        } else if rows
-            .get(ix + 1)
-            .is_some_and(|next| matches!(next.target, ClientNavigatorTarget::Pane { .. }))
-        {
-            "├─ "
-        } else {
-            "└─ "
-        };
-        let padding = u16::from(r.depth.saturating_sub(u8::from(is_pane))) * 2 + 1;
-        let connector_x = rect.x + padding;
-        let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
-        let current = if r.current { "◆ " } else { "" };
-        let status = if n.parked && r.stale {
-            ""
-        } else {
-            r.status.map(status_dot).unwrap_or_default()
-        };
-        let status_separator = if status.is_empty() { "" } else { " " };
-        let label = if n.parked && is_pane && r.stale && rect.width < 45 {
-            format!("{indent}cached · {}", r.label)
-        } else {
-            format!("{indent}{current}{status}{status_separator}{}", r.label)
-        };
-        let st = if !is_pane {
-            st.add_modifier(Modifier::BOLD)
-        } else {
-            st
-        };
-        b.set_style(rect, st);
-        let wide = rect.width >= 64;
-        let tag = if n.parked && r.stale {
-            Some("cached")
-        } else if n.moves(&r.target) {
-            Some("moving")
-        } else if r.parked {
-            Some("parked")
-        } else {
-            None
-        };
-        let agent_text = match tag {
-            Some(tag) if !wide => tag,
-            _ => r.agent.as_deref().unwrap_or("terminal"),
-        };
-        let columns = if !is_pane {
-            0
-        } else if wide {
-            24
-        } else if rect.width >= 36 {
-            display_width(agent_text).min(11) + 1
-        } else {
-            0
-        };
-        let marker = if columns > 0 {
-            if let ClientNavigatorTarget::Pane {
-                endpoint_id,
-                pane_id,
-            } = &r.target
-            {
-                endpoints
-                    .iter()
-                    .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-                    .map(|endpoint| preview.background_count(endpoint, pane_id))
-                    .filter(|count| *count > 0)
-                    .map(|count| format!("bg {count}"))
-                    .filter(|marker| {
-                        display_width(&label)
-                            .saturating_add(display_width(marker))
-                            .saturating_add(2)
-                            <= rect.width.saturating_sub(columns)
-                    })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let marker_width = marker
-            .as_ref()
-            .map_or(0, |marker| display_width(marker) + 1);
-        put_text(
-            b,
-            rect.x,
-            rect.y,
-            rect.width.saturating_sub(columns + marker_width),
-            &label,
-            if selected_index == Some(ix) {
-                st.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                st
-            },
-        );
-        if is_pane {
-            put_text(
-                b,
-                connector_x,
-                rect.y,
-                rect.right().saturating_sub(connector_x).min(2),
-                connector,
-                if r.stale || selected_index == Some(ix) {
-                    st
-                } else {
-                    st.fg(p.overlay0)
+        .map(|row| dialog::NavigatorRow {
+            kind: match &row.target {
+                ClientNavigatorTarget::Machine { endpoint_id } => {
+                    dialog::NavigatorRowKind::Machine {
+                        signal: endpoint(endpoint_id)
+                            .filter(|endpoint| {
+                                !endpoint_id.is_local()
+                                    && endpoint.status != ClientEndpointStatus::Online
+                            })
+                            .map(|endpoint| endpoint_status_presentation(endpoint.status, p)),
+                    }
                 }
-                .remove_modifier(Modifier::UNDERLINED),
-            );
-        }
-        if !n.parked || !r.stale {
-            if let Some(status) = r.status {
-                let prefix = format!("{indent}{current}");
-                let status_style = if r.stale {
-                    st
-                } else {
-                    st.fg(status_color(status, p))
-                };
-                put_text(
-                    b,
-                    rect.x.saturating_add(display_width(&prefix)),
-                    rect.y,
-                    display_width(status_dot(status)),
-                    status_dot(status),
-                    status_style.remove_modifier(Modifier::UNDERLINED),
-                );
-            }
-        }
-        if let Some(marker) = marker {
-            put_text(
-                b,
-                rect.right() - columns - display_width(&marker),
-                rect.y,
-                display_width(&marker),
-                &marker,
-                st.fg(p.yellow).remove_modifier(Modifier::UNDERLINED),
-            );
-        }
-        if is_pane {
-            let meta_style = if r.stale || selected_index == Some(ix) {
-                st
-            } else {
-                st.fg(p.overlay0)
-            };
-            if columns > 0 {
-                put_text(
-                    b,
-                    rect.right() - columns + 1,
-                    rect.y,
-                    if wide { 11 } else { columns - 1 },
-                    agent_text,
-                    meta_style,
-                );
-            }
-            if wide {
-                put_text(
-                    b,
-                    rect.right() - 11,
-                    rect.y,
-                    11,
-                    tag.unwrap_or(if r.agent.is_some() {
-                        r.status.map(status_text).unwrap_or("unknown")
-                    } else {
-                        "shell"
-                    }),
-                    meta_style,
-                );
-            }
-        }
-        let machine_status = match &r.target {
-            ClientNavigatorTarget::Machine { endpoint_id } if !endpoint_id.is_local() => endpoints
-                .iter()
-                .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-                .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
-                .map(|endpoint| endpoint.status),
-            _ => None,
-        };
-        if let Some(status) = machine_status {
-            let (glyph, state, color) = endpoint_status_presentation(status, p);
-            let signal = format!("{glyph} {state}");
-            let signal_style = if selected_index == Some(ix) {
-                st
-            } else {
-                Style::default()
-                    .fg(color)
-                    .bg(p.panel_bg)
-                    .add_modifier(if r.stale {
-                        Modifier::DIM
-                    } else {
-                        Modifier::empty()
-                    })
-            };
-            put_right_text(b, rect, rect.y, &signal, signal_style);
-        }
-    }
-    if let Some(track) = scrollbar {
-        crate::ui::render_scrollbar_buffer(b, metrics, track, p.overlay0, p.overlay1, "▐");
-    }
-    let selected_row = selected_index.and_then(|index| rows.get(index));
-    if let Some(r) = selected_row.filter(|_| footer_height == 3) {
-        put_text(
-            b,
-            i.x,
-            i.bottom() - 3,
-            i.width,
-            &format!(" {}", r.detail),
-            Style::default().fg(p.subtext0).bg(p.panel_bg),
-        );
-        put_text(
-            b,
-            i.x,
-            i.bottom() - 2,
-            i.width,
-            &format!(" {}", r.meta),
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-    }
-    let action_label = if let Some(moving) = &n.moving {
-        match selected_row.map(|row| &row.target) {
-            Some(target) if n.moves(target) => " Move Enter",
-            Some(ClientNavigatorTarget::Workspace { .. })
-                if matches!(moving.source, ClientMoveSource::Tab { .. }) =>
-            {
-                " Move here Enter"
-            }
-            Some(ClientNavigatorTarget::Workspace { .. }) => " New tab Enter",
-            Some(ClientNavigatorTarget::NewWorkspace) => " New workspace Enter",
-            _ => " Split right Enter",
-        }
-    } else {
-        " Open Enter"
-    };
-    let close_label = "Esc close";
-    let close_width = display_width(close_label).min(i.width);
-    let action_area = Rect::new(
-        i.x,
-        i.bottom() - 1,
-        display_width(action_label).min(i.width.saturating_sub(close_width + 1)),
-        1,
-    );
-    let preview = if selected_row.is_some_and(|row| !row.stale && !n.moves(&row.target)) {
-        action_area
-    } else {
-        Rect::default()
-    };
-    let close = Rect::new(i.right() - close_width, i.bottom() - 1, close_width, 1);
-    put_text(
+                ClientNavigatorTarget::Workspace { .. } => dialog::NavigatorRowKind::Workspace,
+                ClientNavigatorTarget::Pane { .. } => dialog::NavigatorRowKind::Pane,
+                ClientNavigatorTarget::NewWorkspace => dialog::NavigatorRowKind::NewWorkspace,
+            },
+            depth: row.depth,
+            label: &row.label,
+            meta: &row.meta,
+            detail: &row.detail,
+            agent: row.agent.as_deref(),
+            status: row.status,
+            stale: row.stale,
+            current: row.current,
+            parked: row.parked,
+            moving: n.moves(&row.target),
+        })
+        .collect::<Vec<_>>();
+    let rendered = dialog::render_navigator(
         b,
-        action_area.x,
-        action_area.y,
-        action_area.width,
-        action_label,
-        Style::default()
-            .fg(if preview.is_empty() {
-                p.overlay0
-            } else {
-                p.accent
-            })
-            .bg(p.panel_bg),
-    );
-    let hint = Rect::new(
-        action_area.right() + 1,
-        close.y,
-        close.x.saturating_sub(action_area.right() + 1),
-        1,
-    );
-    put_text(
-        b,
-        hint.x,
-        hint.y,
-        hint.width,
-        "↑↓ select · type to search",
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    put_right_text(
-        b,
-        close,
-        close.y,
-        close_label,
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
+        &dialog::Navigator {
+            query: &n.query,
+            parked: n.parked,
+            moving: n.moving.as_ref().map(|moving| dialog::NavigatorMove {
+                label: &moving.label,
+                tab: matches!(moving.source, ClientMoveSource::Tab { .. }),
+            }),
+            scroll: n.scroll,
+            selected: super::aggregate_navigation::navigator_selected_index(&rows, n),
+            rows: &views,
+            background: &|index| match rows.get(index).map(|row| &row.target) {
+                Some(ClientNavigatorTarget::Pane {
+                    endpoint_id,
+                    pane_id,
+                }) => endpoint(endpoint_id)
+                    .map_or(0, |endpoint| preview.background_count(endpoint, pane_id)),
+                _ => 0,
+            },
+        },
+        p,
+    )?;
     Some(OverlayRender {
-        area: q,
-        primary: Rect::default(),
-        clear: Rect::default(),
-        cancel: Rect::default(),
-        navigator_popup: q,
-        navigator_search: Rect::new(i.x, i.y, i.width, 1),
-        navigator_rows: row_hits,
-        navigator_preview: preview,
-        navigator_content_preview: preview_content,
-        navigator_close: close,
-        navigator_scrollbar: scrollbar.unwrap_or_default(),
-        navigator_scroll_metrics: Some(metrics),
-        cursor,
+        area: rendered.area,
+        navigator_popup: rendered.area,
+        navigator_search: rendered.search,
+        navigator_rows: rendered
+            .rows
+            .into_iter()
+            .filter_map(|(rect, index)| rows.get(index).map(|row| (rect, row.target.clone())))
+            .collect(),
+        navigator_preview: rendered.preview,
+        navigator_content_preview: rendered.content_preview,
+        navigator_close: rendered.close,
+        navigator_scrollbar: rendered.scrollbar,
+        navigator_scroll_metrics: rendered.scroll_metrics,
+        cursor: rendered.cursor,
         ..OverlayRender::default()
     })
 }
@@ -1548,266 +894,21 @@ fn render_background_section(
     }
 }
 
-fn help_lines(
-    keybinds: &LiveKeybindConfig,
-    query: &str,
-    palette: &Palette,
-) -> Vec<(usize, ratatui::text::Line<'static>)> {
-    use ratatui::text::{Line, Span};
-
-    let groups = crate::input::filter_keybind_help_groups(
-        crate::input::keybind_help_groups(&keybinds.keybinds, &keybinds.prefix),
-        query,
-    );
-    let key_width = groups
-        .iter()
-        .flat_map(|(_, entries)| entries.iter().map(|(key, _)| key.chars().count()))
-        .max()
-        .unwrap_or(8);
-    if groups.is_empty() {
-        let message = " no matching keybinds";
-        return vec![(
-            message.chars().count(),
-            Line::from(Span::styled(
-                message,
-                Style::default().fg(palette.overlay1).bg(palette.panel_bg),
-            )),
-        )];
-    }
-
-    let mut lines = Vec::new();
-    for (group, entries) in groups {
-        lines.push((
-            group.len() + 1,
-            Line::from(Span::styled(
-                format!(" {group}"),
-                Style::default()
-                    .fg(palette.accent)
-                    .bg(palette.panel_bg)
-                    .add_modifier(Modifier::BOLD),
-            )),
-        ));
-        for (key, label) in entries {
-            let padded_key = format!(" {key:<key_width$} ");
-            let width = padded_key.chars().count() + label.chars().count();
-            lines.push((
-                width,
-                Line::from(vec![
-                    Span::styled(
-                        padded_key,
-                        Style::default()
-                            .fg(palette.mauve)
-                            .bg(palette.panel_bg)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        label.into_owned(),
-                        Style::default().fg(palette.text).bg(palette.panel_bg),
-                    ),
-                ]),
-            ));
-        }
-        lines.push((0, Line::raw("")));
-    }
-    lines
-}
-
 fn render_help_overlay(
     b: &mut Buffer,
     h: &ClientHelpOverlay,
     k: &LiveKeybindConfig,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    use ratatui::widgets::{Paragraph, Widget, Wrap};
-
-    let q = popup(b.area, 76, 22)?;
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    if i.width < 20 || i.height < 6 {
-        return None;
-    }
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        "keybinds",
-        Style::default()
-            .fg(p.text)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let close = Rect::new(i.right() - 13, i.y, 13, 1);
-    button(
-        b,
-        close,
-        if h.search_focused {
-            " esc back "
-        } else {
-            " esc close "
-        },
-        Style::default()
-            .fg(contrast(p))
-            .bg(p.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let sy = i.y + 1;
-    put_text(
-        b,
-        i.x,
-        sy,
-        i.width,
-        &if h.search_focused {
-            " / ".to_owned()
-        } else {
-            " / press / to filter by command or shortcut".to_owned()
-        },
-        Style::default()
-            .fg(if h.search_focused { p.text } else { p.overlay0 })
-            .bg(p.panel_bg),
-    );
-    let cursor = if h.search_focused {
-        text_editor::render(
-            b,
-            Rect::new(i.x + 3, sy, i.width.saturating_sub(3), 1),
-            &h.query,
-            Style::default().fg(p.text).bg(p.panel_bg),
-        )
-    } else {
-        None
-    };
-
-    let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
-    let lines = help_lines(k, &h.query, p);
-    let viewport_rows = usize::from(body.height.max(1));
-    let wrapped_rows = |width: u16| {
-        let width = usize::from(width.max(1));
-        lines
-            .iter()
-            .map(|(line_width, _)| line_width.max(&1).div_ceil(width))
-            .sum::<usize>()
-    };
-    let needs_scrollbar = wrapped_rows(body.width) > viewport_rows;
-    let text_area = if needs_scrollbar {
-        Rect::new(body.x, body.y, body.width.saturating_sub(1), body.height)
-    } else {
-        body
-    };
-    let total_rows = wrapped_rows(text_area.width);
-    let max_scroll = total_rows.saturating_sub(viewport_rows);
-    let scroll = h.scroll.min(max_scroll);
-    let metrics = crate::pane::ScrollMetrics {
-        offset_from_bottom: max_scroll.saturating_sub(scroll),
-        max_offset_from_bottom: max_scroll,
-        viewport_rows,
-    };
-    let scrollbar = needs_scrollbar.then_some(Rect::new(
-        body.right().saturating_sub(1),
-        body.y,
-        1,
-        body.height,
-    ));
-    Widget::render(
-        Paragraph::new(lines.into_iter().map(|(_, line)| line).collect::<Vec<_>>())
-            .wrap(Wrap { trim: false })
-            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
-        text_area,
-        b,
-    );
-    if let Some(track) = scrollbar {
-        if let Some(thumb) = crate::ui::scrollbar_thumb(metrics, track) {
-            for y in track.y..track.bottom() {
-                b[(track.x, y)]
-                    .set_symbol("▐")
-                    .set_style(Style::default().fg(p.overlay0).bg(p.panel_bg));
-            }
-            for y in thumb.top..thumb.top.saturating_add(thumb.len) {
-                b[(track.x, y)]
-                    .set_symbol("▐")
-                    .set_style(Style::default().fg(p.overlay1).bg(p.panel_bg));
-            }
-        }
-    }
-
-    put_text(
-        b,
-        i.x,
-        i.bottom() - 1,
-        i.width,
-        if h.search_focused {
-            " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc"
-        } else {
-            " search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter"
-        },
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
+    let rendered = dialog::render_help(b, &h.query, h.search_focused, h.scroll, k, p)?;
     Some(OverlayRender {
-        area: q,
-        cancel: close,
-        help_popup: q,
-        help_scrollbar: scrollbar.unwrap_or_default(),
-        help_scroll_metrics: Some(metrics),
-        help_max_scroll: max_scroll,
-        cursor,
-        ..OverlayRender::default()
-    })
-}
-fn render_confirm_close_overlay(
-    b: &mut Buffer,
-    c: &ClientConfirmCloseOverlay,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    let q = popup(b.area, 64, 6)?;
-    let i = panel(b, q, p.red, p.panel_bg)?;
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        &format!(" {}", c.title),
-        Style::default()
-            .fg(p.red)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    put_text(
-        b,
-        i.x,
-        i.y + 1,
-        i.width,
-        &format!(" {}", c.detail),
-        Style::default().fg(p.text).bg(p.panel_bg),
-    );
-    let rs = row(i, &[13, 12], 2, 3);
-    let [ok, cancel] = rs.as_slice() else {
-        return None;
-    };
-    button(
-        b,
-        *ok,
-        " ↵ confirm ",
-        Style::default()
-            .fg(contrast(p))
-            .bg(p.red)
-            .add_modifier(Modifier::BOLD),
-    );
-    button(
-        b,
-        *cancel,
-        " esc cancel ",
-        Style::default()
-            .fg(p.text)
-            .bg(p.surface0)
-            .add_modifier(Modifier::BOLD),
-    );
-    Some(OverlayRender {
-        area: q,
-        primary: *ok,
-        clear: Rect::default(),
-        cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        cursor: None,
+        area: rendered.area,
+        cancel: rendered.close,
+        help_popup: rendered.area,
+        help_scrollbar: rendered.scrollbar,
+        help_scroll_metrics: Some(rendered.scroll_metrics),
+        help_max_scroll: rendered.max_scroll,
+        cursor: rendered.cursor,
         ..OverlayRender::default()
     })
 }

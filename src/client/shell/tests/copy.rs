@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::chrome::status_dot;
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {

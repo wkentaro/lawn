@@ -24,6 +24,10 @@ pub(crate) fn status_icon(
     }
 }
 
+pub(crate) fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
+    status_icon(status, crate::config::StatusIndicatorStyle::Dots)
+}
+
 pub(crate) fn status_color(
     status: crate::api::schema::AgentStatus,
     palette: &Palette,
@@ -35,6 +39,17 @@ pub(crate) fn status_color(
         AgentStatus::Done => palette.teal,
         AgentStatus::Idle => palette.green,
         AgentStatus::Unknown => palette.overlay0,
+    }
+}
+
+pub(crate) fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
+    use crate::api::schema::AgentStatus;
+    match status {
+        AgentStatus::Working => "working",
+        AgentStatus::Blocked => "blocked",
+        AgentStatus::Done => "done",
+        AgentStatus::Idle => "idle",
+        AgentStatus::Unknown => "unknown",
     }
 }
 
@@ -61,6 +76,18 @@ pub(crate) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
         return;
     }
     buffer.set_stringn(x, y, text, width as usize, style);
+}
+
+pub(crate) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
+    let width = display_width(text).min(area.width);
+    put_text(
+        buffer,
+        area.right().saturating_sub(width),
+        y,
+        width,
+        text,
+        style,
+    );
 }
 
 pub(crate) fn display_width(text: &str) -> u16 {

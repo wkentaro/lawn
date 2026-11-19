@@ -37,10 +37,8 @@ pub(crate) mod scroll;
 mod settings;
 mod state;
 mod surface_patch;
-pub(crate) mod text_editor;
-pub(crate) use input::is_modal_paste_shortcut;
 mod word_selection;
-use text_editor::TextEditor;
+use crate::ui::text_editor::{self, TextEditor};
 use word_selection::ClientWordSelection;
 
 pub(in crate::client::shell) use render::sidebar;
@@ -179,11 +177,7 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     hash
 }
 
-use crate::ui::chrome::{panel_contrast_fg, status_color, status_icon};
-
-fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
-    status_icon(status, crate::config::StatusIndicatorStyle::Dots)
-}
+use crate::ui::chrome::{panel_contrast_fg, status_color, status_icon, status_text};
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
@@ -193,17 +187,6 @@ fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
         AgentStatus::Working => 2,
         AgentStatus::Idle => 1,
         AgentStatus::Unknown => 0,
-    }
-}
-
-fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
-        AgentStatus::Idle => "idle",
-        AgentStatus::Unknown => "unknown",
     }
 }
 

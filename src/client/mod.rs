@@ -33,7 +33,7 @@ mod input;
 mod loop_config;
 mod notifications;
 mod shell;
-pub(crate) use shell::{is_modal_paste_shortcut, preferences, scroll, text_editor};
+pub(crate) use shell::{preferences, scroll};
 mod shell_runtime;
 mod startup;
 mod state;
