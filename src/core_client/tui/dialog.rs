@@ -236,14 +236,25 @@ impl Modal {
 }
 
 impl Rename {
-    pub(super) fn of(action: KeybindAction, session: &Session) -> Option<Self> {
+    pub(super) fn of(
+        action: KeybindAction,
+        session: &Session,
+        selected: Option<&str>,
+    ) -> Option<Self> {
         let workspace = session.focused_workspace()?;
         match action {
-            KeybindAction::RenameWorkspace => Some(Self {
-                title: "rename workspace",
-                input: TextEditor::new(session.label(workspace), false),
-                naming: Naming::Workspace(workspace.id.clone()),
-            }),
+            KeybindAction::RenameWorkspace => {
+                let workspace = session
+                    .workspaces()
+                    .iter()
+                    .find(|workspace| Some(workspace.id.as_str()) == selected)
+                    .unwrap_or(workspace);
+                Some(Self {
+                    title: "rename workspace",
+                    input: TextEditor::new(session.label(workspace), false),
+                    naming: Naming::Workspace(workspace.id.clone()),
+                })
+            }
             KeybindAction::RenameTab => {
                 let focused = session.focused_tab()?;
                 let (index, tab) = workspace

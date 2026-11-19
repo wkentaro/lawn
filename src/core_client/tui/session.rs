@@ -230,13 +230,27 @@ impl Session {
         next.is_some_and(|next| self.move_focus(next))
     }
 
-    pub(super) fn operation(&self, action: KeybindAction, confirm_close: bool) -> Option<Request> {
+    pub(super) fn operation(
+        &self,
+        action: KeybindAction,
+        confirm_close: bool,
+        selected: Option<&str>,
+    ) -> Option<Request> {
         if action == KeybindAction::NewWorkspace {
             return Some(Request::Run(Operation::Start(Destination::Workspace {
                 name: None,
             })));
         }
-        self.operation_at(self.focus.as_ref()?, action, confirm_close)
+        let focus = match selected.filter(|_| action == KeybindAction::CloseWorkspace) {
+            Some(id) => self.entered(
+                self.layout
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == id)?,
+            )?,
+            None => self.focus.clone()?,
+        };
+        self.operation_at(&focus, action, confirm_close)
     }
 
     pub(super) fn confirmed(&self, closing: &Closing) -> Option<Operation> {

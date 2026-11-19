@@ -360,13 +360,7 @@ pub(super) fn draw_switcher(
     let max = total.saturating_sub(height);
     switcher.scroll = switcher.scroll.min(max);
     if std::mem::take(&mut switcher.reveal) {
-        reveal(
-            &items,
-            drawn.focused_workspace,
-            height,
-            max,
-            &mut switcher.scroll,
-        );
+        reveal(&items, drawn.selected, height, max, &mut switcher.scroll);
     }
     hits.switcher_max = max;
     if max > 0 {
@@ -403,11 +397,11 @@ pub(super) fn draw_switcher(
     }
 }
 
-fn reveal(items: &[Item], focused: Option<usize>, height: usize, max: usize, scroll: &mut usize) {
+fn reveal(items: &[Item], selected: Option<usize>, height: usize, max: usize, scroll: &mut usize) {
     let mut start = 0;
     for item in items {
         let end = start + item.lines.len();
-        if focused.is_some_and(|focused| item.target == Some(Target::Workspace(focused))) {
+        if selected.is_some_and(|selected| item.target == Some(Target::Workspace(selected))) {
             if start < *scroll {
                 *scroll = start;
             } else if end > *scroll + height {
@@ -518,8 +512,12 @@ fn items(
         palette.surface0
     };
     for (index, (workspace, tabs)) in drawn.workspaces.iter().zip(&drawn.tab_statuses).enumerate() {
-        let background = if drawn.focused_workspace == Some(index) {
+        let background = if drawn.selected == Some(index) {
             highlight
+        } else if drawn.focused_workspace == Some(index)
+            && (drawn.selected.is_none() || palette.surface0 != Color::Reset)
+        {
+            palette.surface_dim
         } else {
             palette.panel_bg
         };

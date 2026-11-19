@@ -37,6 +37,7 @@ pub(crate) mod scroll;
 mod settings;
 mod state;
 mod surface_patch;
+pub(crate) use input::is_ctrl_bracket_key;
 mod word_selection;
 use crate::ui::text_editor::{self, TextEditor};
 use word_selection::ClientWordSelection;

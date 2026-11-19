@@ -642,7 +642,7 @@ pub(super) fn cursor_cell(palette: &Palette) -> CellData {
     CellData::from_ratatui_cell(&cell)
 }
 
-fn accent(palette: &Palette) -> Style {
+pub(super) fn accent(palette: &Palette) -> Style {
     Style::default()
         .fg(crate::ui::chrome::panel_contrast_fg(palette))
         .bg(palette.accent)
