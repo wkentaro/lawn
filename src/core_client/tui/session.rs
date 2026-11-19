@@ -77,6 +77,16 @@ pub(super) struct Overlay {
     pub(super) argv: Vec<String>,
     pub(super) env: Vec<(String, String)>,
     pub(super) size: Option<Size>,
+    pub(super) scrollback: Option<ScrollbackText>,
+}
+
+#[derive(PartialEq)]
+pub(super) struct ScrollbackText(pub(super) String);
+
+impl std::fmt::Debug for ScrollbackText {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "ScrollbackText({} bytes)", self.0.len())
+    }
 }
 
 #[derive(Default)]
@@ -100,7 +110,7 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub(super) fn update(&mut self, layout: Layout, version: u64) -> bool {
+    pub(super) fn update(&mut self, layout: Layout, version: u64) -> Option<Vec<String>> {
         let unchanged = layout == self.layout;
         self.loaded = true;
         if !unchanged {
@@ -125,16 +135,16 @@ impl Session {
             version,
         );
         if unchanged && settled.is_empty() {
-            return false;
+            return None;
         }
-        let back = self.returned(settled.gone);
+        let (closed, back) = self.returned(settled.gone);
         let focus = self.reconciled_focus();
         self.set_focus(focus);
         if let Some(back) = back {
             self.zoomed = back.zoomed && self.focused() == Some(back.terminal.as_str());
         }
         self.reveal_started(settled.shown);
-        true
+        Some(closed)
     }
 
     pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {
@@ -294,15 +304,19 @@ impl Session {
         self.terminals.folder(terminal)
     }
 
-    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) -> bool {
+    pub(super) fn started(
+        &mut self,
+        request: u64,
+        placed: Option<(String, u64)>,
+    ) -> (bool, Vec<String>) {
         let settled = self.starts.started(
             request,
             placed,
             |terminal| self.layout.owns(terminal),
             |terminal| locate(&self.layout, terminal),
         );
-        self.returned(settled.gone);
-        self.reveal_started(settled.shown)
+        let (closed, _) = self.returned(settled.gone);
+        (self.reveal_started(settled.shown), closed)
     }
 
     fn reveal_started(&mut self, shown: Option<(Focus, bool)>) -> bool {
@@ -316,8 +330,9 @@ impl Session {
         moved || zooms
     }
 
-    fn returned(&mut self, gone: Vec<(String, Opener)>) -> Option<Opener> {
+    fn returned(&mut self, gone: Vec<(String, Opener)>) -> (Vec<String>, Option<Opener>) {
         let focus = self.focus.clone();
+        let mut closed = Vec::new();
         let mut back = None;
         for (terminal, opener) in gone {
             for remembered in self.pane_of_tab.values_mut() {
@@ -333,8 +348,9 @@ impl Session {
             if returns {
                 back = Some(opener);
             }
+            closed.push(terminal);
         }
-        back
+        (closed, back)
     }
 
     pub(super) fn overlay(
@@ -358,6 +374,7 @@ impl Session {
             argv,
             env,
             size,
+            scrollback: None,
         })
     }
 

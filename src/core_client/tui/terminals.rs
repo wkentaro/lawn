@@ -23,6 +23,7 @@ pub(super) enum Report {
     Names(HashMap<String, String>),
     Name(String, Option<String>),
     Removed(String),
+    Ended(String),
 }
 
 const NAME_LABEL: &str = "lawn-name";
@@ -158,6 +159,7 @@ impl Terminals {
                 };
                 shows(&terminal) && old.as_ref() != self.names.get(&terminal)
             }
+            Report::Ended(_) => false,
         }
     }
 
@@ -286,6 +288,7 @@ pub(super) fn reported(message: &Value) -> Option<Report> {
             params["terminal"].as_str()?.to_owned(),
             core_status(&params["data"]["status"]),
         )),
+        ("event", Some("finished")) => Some(Report::Ended(params["terminal"].as_str()?.to_owned())),
         ("missed", _) => Some(snapshot(params)),
         _ => None,
     }

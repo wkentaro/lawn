@@ -65,6 +65,15 @@ fn a_foreground_event_reports_the_folder_the_program_moved_to() {
 }
 
 #[test]
+fn a_finished_terminal_reports_its_end() {
+    let message = json!({"method": "event", "params": {
+        "type": "finished", "terminal": "t1", "data": {},
+    }});
+
+    assert_eq!(reported(&message), Some(Report::Ended("t1".to_owned())));
+}
+
+#[test]
 fn a_foreground_event_without_a_folder_reports_nothing() {
     let message = json!({"method": "event", "params": {
         "type": "foreground", "terminal": "t1", "data": {"cwd": null},

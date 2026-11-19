@@ -18,7 +18,9 @@ use super::gate::Gate;
 use super::keys::Navigation;
 use super::notices::{Effect, Notices, Notifying};
 use super::select::{Copying, Select};
-use super::session::{Operation, PaneChrome, Request, Session, Tile, Tiles};
+use super::session::{
+    Operation, Overlay, PaneChrome, Request, ScrollbackText, Session, Tile, Tiles,
+};
 use super::terminals::Report;
 use crate::config::{Config, LiveKeybindConfig, ToastClipboardPosition};
 use crate::core_client::view::{Geometry, Placing, Scrollback, View};
@@ -402,6 +404,7 @@ pub(super) struct Surface {
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
     notices: Notices,
+    closed: Vec<String>,
     notice: Option<(Rect, Vec<CellData>)>,
     placed: (u64, Rect, bool, Rect),
     scrollback: Scrollback,
@@ -461,6 +464,7 @@ impl Surface {
             toast_at: copying.toast,
             toast: None,
             notices: Notices::default(),
+            closed: Vec::new(),
             notice: None,
             placed: Default::default(),
             scrollback,
@@ -569,14 +573,12 @@ impl Surface {
         self
     }
 
-    pub(super) fn update(&mut self, layout: Layout, version: u64) -> bool {
-        let changed = self.session.update(layout, version);
-        if changed {
-            self.owned = self.session.owned();
-            self.reflow();
-            self.session_changed(Change::Layout);
-        }
-        changed
+    pub(super) fn update(&mut self, layout: Layout, version: u64) -> Option<Vec<String>> {
+        let closed = self.session.update(layout, version)?;
+        self.owned = self.session.owned();
+        self.reflow();
+        self.session_changed(Change::Layout);
+        Some(closed)
     }
 
     fn session_changed(&mut self, change: Change) {
@@ -879,7 +881,7 @@ impl Surface {
 
     fn hear(&mut self, report: Report) {
         let change = match report {
-            Report::Status(..) | Report::Removed(_) => None,
+            Report::Status(..) | Report::Removed(_) | Report::Ended(_) => None,
             Report::Names(_) | Report::Name(..) => Some(Change::Names),
             Report::Snapshot { .. } | Report::Folder(..) => Some(Change::Folders),
         };
@@ -966,6 +968,24 @@ impl Surface {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
+        self.beside_focused(argv).map(Operation::Overlay)
+    }
+
+    pub(super) fn edit_scrollback(&mut self, editor: Option<String>) -> Option<Operation> {
+        let text = self.focused()?.scrollback_text();
+        let mut overlay = self.beside_focused(Vec::new())?;
+        overlay.env.extend(
+            editor
+                .filter(|editor| !editor.is_empty())
+                .map(|editor| ("EDITOR".to_owned(), editor)),
+        );
+        Some(Operation::Overlay(Overlay {
+            scrollback: Some(ScrollbackText(text)),
+            ..overlay
+        }))
+    }
+
+    fn beside_focused(&mut self, argv: Vec<String>) -> Option<Overlay> {
         let env = self.command_env().0;
         let area = self.lay_out_chrome().pane_surface;
         let size = self
@@ -977,9 +997,7 @@ impl Surface {
                 cols: inner.width,
                 rows: inner.height,
             });
-        self.session
-            .overlay(argv, env, size)
-            .map(Operation::Overlay)
+        self.session.overlay(argv, env, size)
     }
 
     fn pane_ready(&self) -> bool {
@@ -995,11 +1013,13 @@ impl Surface {
         command_env(&self.session, &self.views)
     }
 
-    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) {
-        if self.session.started(request, placed) {
+    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) -> Vec<String> {
+        let (moved, closed) = self.session.started(request, placed);
+        if moved {
             self.reflow();
             self.session_changed(Change::Layout);
         }
+        closed
     }
 
     pub(super) fn host_focus(&mut self, focused: bool) {
@@ -1275,11 +1295,21 @@ impl Surface {
     pub(super) fn received(&mut self, arrival: Arrival, gate: &mut Gate) {
         match arrival {
             Arrival::Layout(loaded) => {
-                let redraws = self.update(loaded.layout, loaded.version);
-                gate.arrived(loaded.version, redraws);
+                let closed = self.update(loaded.layout, loaded.version);
+                gate.arrived(loaded.version, closed.is_some());
+                self.closed.extend(closed.into_iter().flatten());
             }
-            Arrival::Report(report) => self.hear(report),
+            Arrival::Report(report) => {
+                if let Report::Ended(terminal) | Report::Removed(terminal) = &report {
+                    self.closed.push(terminal.clone());
+                }
+                self.hear(report);
+            }
         }
+    }
+
+    pub(super) fn closed(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.closed)
     }
 
     pub(super) fn caught_up(
