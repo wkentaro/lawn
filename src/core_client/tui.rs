@@ -162,6 +162,11 @@ mod unix {
                     warn!(%error, terminal, "the pane did not park");
                 }
             }
+            Operation::Arrange(arrangement) => {
+                if let Err(error) = lifecycle().arrange(&arrangement) {
+                    warn!(%error, "the session was not rearranged");
+                }
+            }
         }
     }
 

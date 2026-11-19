@@ -1050,7 +1050,7 @@ pub(super) fn preferences_path(session: &str) -> PathBuf {
     preferences::path_for_local_endpoint(&crate::session::client_socket_path_for(name))
 }
 
-fn tab_label(index: usize, tab: &crate::session_doc::Tab) -> String {
+pub(super) fn tab_label(index: usize, tab: &crate::session_doc::Tab) -> String {
     tab.name.clone().unwrap_or_else(|| (index + 1).to_string())
 }
 

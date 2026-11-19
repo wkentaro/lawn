@@ -16,7 +16,32 @@ pub(crate) enum Placement {
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Arrangement {
+    NameWorkspace { workspace: String, name: String },
+    NameTab { tab: String, name: String },
+}
+
 impl Layout {
+    #[cfg(any(unix, test))]
+    pub(crate) fn arrange(&mut self, arrangement: &Arrangement) -> bool {
+        match arrangement {
+            Arrangement::NameWorkspace { workspace, name } => self
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == *workspace)
+                .map(|w| w.name = Some(name.clone()))
+                .is_some(),
+            Arrangement::NameTab { tab, name } => self
+                .workspaces
+                .iter_mut()
+                .flat_map(|workspace| workspace.tabs.iter_mut())
+                .find(|t| t.id == *tab)
+                .map(|t| t.name = Some(name.clone()))
+                .is_some(),
+        }
+    }
+
     /// Adds a workspace whose one tab shows `terminal`; returns the workspace
     /// and tab ids.
     pub(crate) fn add_workspace(

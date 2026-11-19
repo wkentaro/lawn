@@ -2,11 +2,12 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 
-use super::session::Closing;
+use super::session::{Closing, Operation, Session};
 use crate::config::LiveKeybindConfig;
-use crate::input::TerminalKey;
+use crate::input::{KeybindAction, TerminalKey};
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState};
+use crate::session_doc::Arrangement;
 use crate::ui::text_editor::TextEditor;
 use crate::ui::theme::Palette;
 
@@ -18,6 +19,20 @@ const PAGE_ROWS: isize = 8;
 pub(super) enum Dialog {
     Confirm(Closing),
     Help(Help),
+    Rename(Rename),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Rename {
+    title: &'static str,
+    input: TextEditor,
+    naming: Naming,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Naming {
+    Workspace(String),
+    Tab { id: String, auto: Option<String> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,6 +53,7 @@ pub(super) enum Outcome {
 struct Hits {
     area: Rect,
     primary: Rect,
+    clear: Rect,
     cancel: Rect,
     scrollbar: Rect,
     metrics: Option<ScrollMetrics>,
@@ -62,15 +78,20 @@ impl Modal {
         }
     }
 
-    pub(super) fn closing(&self) -> Option<&Closing> {
+    pub(super) fn accepted(&self, session: &Session) -> Option<Operation> {
         match &self.dialog {
-            Dialog::Confirm(closing) => Some(closing),
+            Dialog::Confirm(closing) => session.confirmed(closing),
+            Dialog::Rename(rename) => rename.saved(),
             Dialog::Help(_) => None,
         }
     }
 
     pub(super) fn edits(&self) -> bool {
-        matches!(&self.dialog, Dialog::Help(help) if help.searching)
+        match &self.dialog {
+            Dialog::Help(help) => help.searching,
+            Dialog::Rename(_) => true,
+            Dialog::Confirm(_) => false,
+        }
     }
 
     pub(super) fn stale(&self, host: Rect) -> bool {
@@ -87,10 +108,16 @@ impl Modal {
 
     pub(super) fn text(&mut self, text: &str) {
         self.changing(|dialog, _, _| {
-            if let Dialog::Help(help) = dialog {
-                if help.searching && help.query.insert(text) {
-                    help.scroll = 0;
+            match dialog {
+                Dialog::Help(help) => {
+                    if help.searching && help.query.insert(text) {
+                        help.scroll = 0;
+                    }
                 }
+                Dialog::Rename(rename) => {
+                    rename.input.insert(text);
+                }
+                Dialog::Confirm(_) => {}
             }
             Outcome::Stay
         });
@@ -104,6 +131,7 @@ impl Modal {
                 _ => Outcome::Stay,
             },
             Dialog::Help(help) => help.key(key, hits.max_scroll),
+            Dialog::Rename(rename) => rename.key(key),
         })
     }
 
@@ -118,6 +146,17 @@ impl Modal {
                 _ => Outcome::Stay,
             },
             Dialog::Help(help) => help.mouse(event, point, hits, grab),
+            Dialog::Rename(rename) => match event.kind {
+                MouseEventKind::Down(MouseButton::Left) if hits.primary.contains(point) => {
+                    Outcome::Accept
+                }
+                MouseEventKind::Down(MouseButton::Left) if hits.clear.contains(point) => {
+                    rename.input.clear();
+                    Outcome::Stay
+                }
+                MouseEventKind::Down(MouseButton::Left) => Outcome::Close,
+                _ => Outcome::Stay,
+            },
         })
     }
 
@@ -162,6 +201,17 @@ impl Modal {
                     ..Hits::default()
                 }
             }),
+            Dialog::Rename(rename) => {
+                crate::ui::dialog::render_rename(&mut buffer, rename.title, &rename.input, palette)
+                    .map(|drawn| Hits {
+                        area: drawn.area,
+                        primary: drawn.primary,
+                        clear: drawn.clear,
+                        cancel: drawn.cancel,
+                        cursor: drawn.cursor,
+                        ..Hits::default()
+                    })
+            }
         }
         .unwrap_or_default();
         let cells = buffer
@@ -182,6 +232,78 @@ impl Modal {
             self.image = None;
         }
         outcome
+    }
+}
+
+impl Rename {
+    pub(super) fn of(action: KeybindAction, session: &Session) -> Option<Self> {
+        let workspace = session.focused_workspace()?;
+        match action {
+            KeybindAction::RenameWorkspace => Some(Self {
+                title: "rename workspace",
+                input: TextEditor::new(session.label(workspace), false),
+                naming: Naming::Workspace(workspace.id.clone()),
+            }),
+            KeybindAction::RenameTab => {
+                let focused = session.focused_tab()?;
+                let (index, tab) = workspace
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .find(|(_, tab)| tab.id == focused)?;
+                let label = super::chrome::tab_label(index, tab);
+                Some(Self {
+                    title: "rename tab",
+                    input: TextEditor::new(&label, false),
+                    naming: Naming::Tab {
+                        id: tab.id.clone(),
+                        auto: tab.name.is_none().then_some(label),
+                    },
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn key(&mut self, key: &TerminalKey) -> Outcome {
+        match key.code {
+            KeyCode::Enter => return Outcome::Accept,
+            KeyCode::Esc => return Outcome::Close,
+            _ => {}
+        }
+        if key
+            .generated_text
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+        {
+            self.input.handle_key(key);
+        } else if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL
+            || key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::SUPER)
+        {
+            self.input.clear();
+        } else {
+            self.input.handle_key(key);
+        }
+        Outcome::Stay
+    }
+
+    fn saved(&self) -> Option<Operation> {
+        let name = self.input.trim();
+        if name.is_empty() {
+            return None;
+        }
+        let arrangement = match &self.naming {
+            Naming::Workspace(workspace) => Arrangement::NameWorkspace {
+                workspace: workspace.clone(),
+                name: name.to_owned(),
+            },
+            Naming::Tab { auto, .. } if auto.as_deref() == Some(name) => return None,
+            Naming::Tab { id, .. } => Arrangement::NameTab {
+                tab: id.clone(),
+                name: name.to_owned(),
+            },
+        };
+        Some(Operation::Arrange(arrangement))
     }
 }
 

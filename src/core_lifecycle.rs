@@ -200,6 +200,21 @@ impl Lifecycle {
         self.settle_keep(terminal)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn arrange(
+        &self,
+        arrangement: &crate::session_doc::Arrangement,
+    ) -> Result<(), String> {
+        let (arranged, _) = self.store.edit(|layout| layout.arrange(arrangement))?;
+        if !arranged {
+            return Err(format!(
+                "session {} has nothing for {arrangement:?}",
+                self.session
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn unpark(
         &self,
         terminal: &str,

@@ -388,3 +388,29 @@ fn only_the_workspace_a_pane_leaves_is_dropped() {
     assert_eq!(layout.workspaces.len(), 1);
     assert_eq!(layout.workspaces[0].name.as_deref(), Some("saved"));
 }
+
+#[test]
+fn arrange_names_a_workspace_or_tab_and_reports_a_missing_one() {
+    let mut layout = one_workspace(pane("a"));
+    assert!(layout.arrange(&Arrangement::NameWorkspace {
+        workspace: "ws0".to_owned(),
+        name: "main".to_owned(),
+    }));
+    assert!(layout.arrange(&Arrangement::NameTab {
+        tab: "tab1".to_owned(),
+        name: "logs".to_owned(),
+    }));
+    assert_eq!(layout.workspaces[0].name.as_deref(), Some("main"));
+    assert_eq!(layout.workspaces[0].tabs[0].name.as_deref(), Some("logs"));
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&Arrangement::NameWorkspace {
+        workspace: "ws9".to_owned(),
+        name: "x".to_owned(),
+    }));
+    assert!(!layout.arrange(&Arrangement::NameTab {
+        tab: "tab9".to_owned(),
+        name: "x".to_owned(),
+    }));
+    assert_eq!(layout, before);
+}

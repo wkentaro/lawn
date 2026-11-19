@@ -10,7 +10,7 @@ mod edit;
 mod legacy;
 mod start;
 
-pub(crate) use edit::Placement;
+pub(crate) use edit::{Arrangement, Placement};
 pub(crate) use start::{Created, Destination, PendingStart};
 
 const SCHEMA: u64 = 3;

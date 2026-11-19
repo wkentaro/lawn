@@ -574,3 +574,110 @@ async fn a_dialog_opened_in_copy_mode_dims_the_copy_bar_under_it_and_copy_mode_r
     screen.show(&mut surface, &HashSet::new());
     assert!(screen.cells == before);
 }
+
+fn naming(arrangement: crate::session_doc::Arrangement) -> Option<Operation> {
+    Some(Operation::Arrange(arrangement))
+}
+
+fn workspace_named(name: &str) -> Option<Operation> {
+    naming(crate::session_doc::Arrangement::NameWorkspace {
+        workspace: "w0".to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+fn tab_named(name: &str) -> Option<Operation> {
+    naming(crate::session_doc::Arrangement::NameTab {
+        tab: "t0".to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+fn clear_field(surface: &mut Surface) {
+    let clear = TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(surface.dialog_key(&clear), None);
+}
+
+#[tokio::test]
+async fn renaming_a_workspace_starts_from_its_label_and_enter_saves_the_trimmed_name() {
+    let mut surface = one_pane();
+    let mut screen = Screen::of(&mut surface);
+
+    assert_eq!(surface.act(KeybindAction::RenameWorkspace, false), None);
+    screen.show(&mut surface, &HashSet::new());
+    let title = row_with(&screen, "rename workspace");
+    assert!(screen.line(title + 2).contains(" workspace "));
+    assert!(screen.line(title + 3).contains(" ↵ save "));
+
+    typed(&mut surface, " 2 ");
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        workspace_named("workspace 2")
+    );
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_blank_name_or_an_unnamed_tabs_own_label_saves_nothing() {
+    let mut surface = one_pane();
+
+    surface.act(KeybindAction::RenameTab, false);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(!surface.dialog_open());
+
+    surface.act(KeybindAction::RenameTab, false);
+    clear_field(&mut surface);
+    typed(&mut surface, " ");
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+
+    surface.act(KeybindAction::RenameWorkspace, false);
+    clear_field(&mut surface);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+
+    surface.act(KeybindAction::RenameTab, false);
+    typed(&mut surface, "2");
+    assert_eq!(press(&mut surface, KeyCode::Enter), tab_named("12"));
+}
+
+#[tokio::test]
+async fn the_clear_button_empties_the_field_save_saves_and_a_click_anywhere_else_cancels() {
+    let mut surface = one_pane();
+    let mut screen = Screen::of(&mut surface);
+    surface.act(KeybindAction::RenameTab, false);
+    screen.show(&mut surface, &HashSet::new());
+    let title = row_with(&screen, "rename tab");
+    let buttons = title + 3;
+    let clear = column_of(&screen, buttons, "^c clear");
+    let save = column_of(&screen, buttons, "↵ save");
+
+    assert_eq!(left(&mut surface, clear, buttons), None);
+    assert!(surface.dialog_open());
+    screen.show(&mut surface, &HashSet::new());
+    assert!(!screen.line(title + 2).contains('1'));
+    typed(&mut surface, "logs");
+    assert_eq!(
+        left(&mut surface, save, buttons),
+        tab_named("logs").map(Pointed::Run)
+    );
+    assert!(!surface.dialog_open());
+
+    surface.act(KeybindAction::RenameTab, false);
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(left(&mut surface, save, title), None);
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn text_and_pastes_go_into_the_rename_field() {
+    let mut surface = one_pane();
+    let paste = TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    surface.act(KeybindAction::RenameWorkspace, false);
+
+    assert!(surface.paste_shortcut(&paste, || Some(" main".to_owned())));
+    assert!(surface.dialog_input(&RawInputEvent::Paste("\nsite".to_owned())));
+    assert!(surface.dialog_input(&RawInputEvent::Text(TextCommit::new("!"))));
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        workspace_named("workspace main site!")
+    );
+}
