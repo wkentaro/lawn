@@ -541,7 +541,7 @@ impl ClientNavigatorOverlay {
 
     pub(super) fn moves(&self, target: &ClientNavigatorTarget) -> bool {
         matches!(target, ClientNavigatorTarget::Pane { pane_id, .. }
-            if self.moving.as_ref().is_some_and(|moving| moving.source == ClientMoveSource::Pane(pane_id.clone())))
+            if self.moving.as_ref().is_some_and(|moving| matches!(&moving.source, ClientMoveSource::Pane(source) if source == pane_id)))
     }
 }
 

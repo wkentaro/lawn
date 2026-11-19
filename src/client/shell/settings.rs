@@ -1,9 +1,6 @@
 use super::*;
+use crate::ui::dialog::{integration_needs_install, normalized_theme_name};
 use crossterm::event::{KeyCode, KeyModifiers};
-
-pub(super) fn normalized_theme_name(name: &str) -> String {
-    name.to_lowercase().replace([' ', '_'], "-")
-}
 
 fn theme_index(name: &str) -> usize {
     let normalized = normalized_theme_name(name);
@@ -24,11 +21,6 @@ fn toast_index(delivery: crate::config::ToastDelivery) -> usize {
         crate::config::ToastDelivery::Terminal => 2,
         crate::config::ToastDelivery::System => 3,
     }
-}
-
-pub(super) fn integration_needs_install(info: &crate::api::schema::IntegrationInfo) -> bool {
-    info.state == crate::api::schema::IntegrationState::Outdated
-        || info.available && info.state == crate::api::schema::IntegrationState::NotInstalled
 }
 
 impl ClientShellState {

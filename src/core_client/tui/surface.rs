@@ -336,7 +336,7 @@ impl Surface {
         key: &TerminalKey,
         clipboard: impl FnOnce() -> Option<String>,
     ) -> bool {
-        if !self.prompting() || !crate::client::is_modal_paste_shortcut(key) {
+        if !self.prompting() || !crate::ui::text_editor::is_modal_paste_shortcut(key) {
             return false;
         }
         if let Some(text) = clipboard() {

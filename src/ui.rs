@@ -2,6 +2,7 @@
 use ratatui::layout::Rect;
 
 pub(crate) mod chrome;
+pub(crate) mod dialog;
 mod onboarding;
 #[cfg(test)]
 mod pane_drawing_characterization;
@@ -12,6 +13,7 @@ mod sidebar;
 mod status;
 mod tab_surface;
 mod text;
+pub(crate) mod text_editor;
 pub(crate) mod theme;
 mod widgets;
 
@@ -52,7 +54,9 @@ pub(crate) use self::tab_surface::{
     TabSurfaceTarget, TabSurfaceView,
 };
 pub(crate) use self::text::truncate_end;
-pub(crate) use self::widgets::{centered_popup_rect, modal_stack_areas};
+pub(crate) use self::widgets::{
+    centered_popup_rect, centered_popup_rect_with_width_margin, modal_stack_areas,
+};
 
 use crate::app::AppState;
 use crate::terminal::TerminalRuntimeRegistry;

@@ -13,7 +13,16 @@ pub(super) fn panel_contrast_fg(palette: &Palette) -> Color {
 }
 
 pub(crate) fn centered_popup_rect(area: Rect, popup_width: u16, popup_height: u16) -> Option<Rect> {
-    let popup_width = popup_width.min(area.width.saturating_sub(4));
+    centered_popup_rect_with_width_margin(area, popup_width, popup_height, 4)
+}
+
+pub(crate) fn centered_popup_rect_with_width_margin(
+    area: Rect,
+    popup_width: u16,
+    popup_height: u16,
+    width_margin: u16,
+) -> Option<Rect> {
+    let popup_width = popup_width.min(area.width.saturating_sub(width_margin));
     let popup_height = popup_height.min(area.height.saturating_sub(2));
     if popup_width < 4 || popup_height < 4 {
         return None;

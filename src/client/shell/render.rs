@@ -357,18 +357,6 @@ pub(super) fn render_shell(
     hits
 }
 
-pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
-    let width = display_width(text).min(area.width);
-    put_text(
-        buffer,
-        area.right().saturating_sub(width),
-        y,
-        width,
-        text,
-        style,
-    );
-}
-
 pub(super) fn put_segment(
     buffer: &mut Buffer,
     x: u16,
@@ -382,4 +370,4 @@ pub(super) fn put_segment(
     x.saturating_add(width)
 }
 
-pub(super) use crate::ui::chrome::{display_width, put_text};
+pub(super) use crate::ui::chrome::{display_width, put_right_text, put_text};

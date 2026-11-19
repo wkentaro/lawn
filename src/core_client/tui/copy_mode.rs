@@ -4,7 +4,6 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use super::select::{Screen, Select};
-use crate::client::text_editor::{self, TextEditor};
 use crate::copy_mode::{
     copy_mode_command_char, copy_mode_page_lines, first_non_blank_col, last_character_col,
 };
@@ -17,6 +16,7 @@ use crate::pane::{
 };
 use crate::protocol::CellData;
 use crate::selection::Selection;
+use crate::ui::text_editor::{self, TextEditor};
 use crate::ui::theme::Palette;
 
 #[derive(Clone, Copy)]

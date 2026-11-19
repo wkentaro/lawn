@@ -394,34 +394,7 @@ pub(super) struct ClientGlobalMenuOverlay {
     pub(super) highlighted: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ClientSettingsSection {
-    Theme,
-    Indicators,
-    Sound,
-    Toast,
-    Integrations,
-}
-
-impl ClientSettingsSection {
-    pub(super) const ALL: &[Self] = &[
-        Self::Theme,
-        Self::Indicators,
-        Self::Sound,
-        Self::Toast,
-        Self::Integrations,
-    ];
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Theme => "theme",
-            Self::Indicators => "indicators",
-            Self::Sound => "sound",
-            Self::Toast => "toasts",
-            Self::Integrations => "integrations",
-        }
-    }
-}
+pub(super) use crate::ui::dialog::SettingsSection as ClientSettingsSection;
 
 #[derive(Debug)]
 pub(super) struct ClientSettingsOverlay {

@@ -1,9 +1,77 @@
-use super::*;
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Modifier, Style},
+};
+
+use super::{button, button_row, panel};
+use crate::api::schema::{IntegrationInfo, IntegrationState};
+use crate::ui::chrome::{display_width, panel_contrast_fg, put_text};
+use crate::ui::theme::Palette;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingsSection {
+    Theme,
+    Indicators,
+    Sound,
+    Toast,
+    Integrations,
+}
+
+impl SettingsSection {
+    pub(crate) const ALL: &[Self] = &[
+        Self::Theme,
+        Self::Indicators,
+        Self::Sound,
+        Self::Toast,
+        Self::Integrations,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Theme => "theme",
+            Self::Indicators => "indicators",
+            Self::Sound => "sound",
+            Self::Toast => "toasts",
+            Self::Integrations => "integrations",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Settings<'a> {
+    pub(crate) section: SettingsSection,
+    pub(crate) selected: usize,
+    pub(crate) original_theme_name: &'a str,
+    pub(crate) integrations: &'a [IntegrationInfo],
+    pub(crate) integration_messages: &'a [String],
+    pub(crate) loading_integrations: bool,
+    pub(crate) installing_integrations: bool,
+    pub(crate) integration_updates_available: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct SettingsDialog {
+    pub(crate) area: Rect,
+    pub(crate) primary: Rect,
+    pub(crate) close: Rect,
+    pub(crate) tabs: Vec<(Rect, SettingsSection)>,
+    pub(crate) choices: Vec<(Rect, usize)>,
+}
+
+pub(crate) fn normalized_theme_name(name: &str) -> String {
+    name.to_lowercase().replace([' ', '_'], "-")
+}
+
+pub(crate) fn integration_needs_install(info: &IntegrationInfo) -> bool {
+    info.state == IntegrationState::Outdated
+        || info.available && info.state == IntegrationState::NotInstalled
+}
 
 fn choice_style(selected: bool, palette: &Palette) -> Style {
     if selected {
         Style::default()
-            .fg(contrast(palette))
+            .fg(panel_contrast_fg(palette))
             .bg(palette.accent)
             .add_modifier(Modifier::BOLD)
     } else {
@@ -33,21 +101,20 @@ fn draw_choice(
     );
 }
 
-pub(super) fn render_settings_overlay(
+pub(crate) fn render_settings(
     buffer: &mut Buffer,
-    settings: &ClientSettingsOverlay,
-    integration_updates_available: bool,
+    settings: &Settings<'_>,
     palette: &Palette,
-) -> Option<OverlayRender> {
+) -> Option<SettingsDialog> {
     let integration_height = 14u16
         .saturating_add(settings.integrations.len().max(1) as u16)
         .saturating_add(settings.integration_messages.len().min(6) as u16);
-    let height = if settings.section == ClientSettingsSection::Integrations {
+    let height = if settings.section == SettingsSection::Integrations {
         integration_height.max(22)
     } else {
         22
     };
-    let popup = popup(buffer.area, 76, height)?;
+    let popup = crate::ui::centered_popup_rect(buffer.area, 76, height)?;
     let inner = panel(buffer, popup, palette.accent, palette.panel_bg)?;
     if inner.width < 20 || inner.height < 8 {
         return None;
@@ -65,15 +132,15 @@ pub(super) fn render_settings_overlay(
             .add_modifier(Modifier::BOLD),
     );
 
-    let integration_badge = integration_updates_available
+    let integration_badge = settings.integration_updates_available
         || settings
             .integrations
             .iter()
-            .any(|integration| integration.state == crate::api::schema::IntegrationState::Outdated);
+            .any(|integration| integration.state == IntegrationState::Outdated);
     let mut tab_x = inner.x;
     let mut tab_hits = Vec::new();
-    for section in ClientSettingsSection::ALL {
-        let badge = *section == ClientSettingsSection::Integrations && integration_badge;
+    for section in SettingsSection::ALL {
+        let badge = *section == SettingsSection::Integrations && integration_badge;
         let label = if badge {
             format!(" ● {} ", section.label())
         } else {
@@ -84,7 +151,7 @@ pub(super) fn render_settings_overlay(
         let active = *section == settings.section;
         let style = if active {
             Style::default()
-                .fg(contrast(palette))
+                .fg(panel_contrast_fg(palette))
                 .bg(palette.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -128,7 +195,7 @@ pub(super) fn render_settings_overlay(
     );
     let mut choice_hits = Vec::new();
     match settings.section {
-        ClientSettingsSection::Theme => {
+        SettingsSection::Theme => {
             let visible = usize::from(content.height);
             let scroll = settings.selected.saturating_sub(visible.saturating_sub(1));
             for (visible_index, (index, name)) in crate::config::THEME_NAMES
@@ -149,16 +216,14 @@ pub(super) fn render_settings_overlay(
                     rect,
                     name,
                     index == settings.selected,
-                    super::super::settings::normalized_theme_name(name)
-                        == super::super::settings::normalized_theme_name(
-                            &settings.original_theme_name,
-                        ),
+                    normalized_theme_name(name)
+                        == normalized_theme_name(settings.original_theme_name),
                     palette,
                 );
                 choice_hits.push((rect, index));
             }
         }
-        ClientSettingsSection::Indicators => {
+        SettingsSection::Indicators => {
             render_choice_section(
                 buffer,
                 content,
@@ -170,7 +235,7 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
-        ClientSettingsSection::Sound => {
+        SettingsSection::Sound => {
             render_choice_section(
                 buffer,
                 content,
@@ -182,7 +247,7 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
-        ClientSettingsSection::Toast => {
+        SettingsSection::Toast => {
             render_choice_section(
                 buffer,
                 content,
@@ -194,30 +259,27 @@ pub(super) fn render_settings_overlay(
                 &mut choice_hits,
             );
         }
-        ClientSettingsSection::Integrations => {
+        SettingsSection::Integrations => {
             render_integrations(buffer, content, settings, palette);
         }
     }
 
-    let installable = settings
-        .integrations
-        .iter()
-        .any(super::super::settings::integration_needs_install);
-    let show_primary = settings.section != ClientSettingsSection::Integrations || installable;
+    let installable = settings.integrations.iter().any(integration_needs_install);
+    let show_primary = settings.section != SettingsSection::Integrations || installable;
     let labels = if show_primary { vec![10, 12] } else { vec![12] };
-    let buttons = row(inner, &labels, 2, inner.height.saturating_sub(1));
+    let buttons = button_row(inner, &labels, 2, inner.height.saturating_sub(1));
     let (primary, close) = if show_primary {
         let primary = buttons[0];
         button(
             buffer,
             primary,
-            if settings.section == ClientSettingsSection::Integrations {
+            if settings.section == SettingsSection::Integrations {
                 " ↵ install "
             } else {
                 " ↵ apply "
             },
             Style::default()
-                .fg(contrast(palette))
+                .fg(panel_contrast_fg(palette))
                 .bg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         );
@@ -243,14 +305,12 @@ pub(super) fn render_settings_overlay(
         Style::default().fg(palette.overlay1).bg(palette.panel_bg),
     );
 
-    Some(OverlayRender {
+    Some(SettingsDialog {
         area: popup,
         primary,
-        cancel: close,
-        settings_popup: popup,
-        settings_tabs: tab_hits,
-        settings_choices: choice_hits,
-        ..OverlayRender::default()
+        close,
+        tabs: tab_hits,
+        choices: choice_hits,
     })
 }
 
@@ -298,7 +358,7 @@ fn render_choice_section(
 fn render_integrations(
     buffer: &mut Buffer,
     area: Rect,
-    settings: &ClientSettingsOverlay,
+    settings: &Settings<'_>,
     palette: &Palette,
 ) {
     put_text(
@@ -348,16 +408,12 @@ fn render_integrations(
             break;
         }
         let (marker, color, status) = match integration.state {
-            crate::api::schema::IntegrationState::Current => ("✓", palette.green, "installed"),
-            crate::api::schema::IntegrationState::Outdated => {
-                ("↻", palette.yellow, "update available")
-            }
-            crate::api::schema::IntegrationState::NotInstalled if integration.available => {
+            IntegrationState::Current => ("✓", palette.green, "installed"),
+            IntegrationState::Outdated => ("↻", palette.yellow, "update available"),
+            IntegrationState::NotInstalled if integration.available => {
                 ("+", palette.accent, "available")
             }
-            crate::api::schema::IntegrationState::NotInstalled => {
-                ("–", palette.overlay0, "not found")
-            }
+            IntegrationState::NotInstalled => ("–", palette.overlay0, "not found"),
         };
         put_text(
             buffer,

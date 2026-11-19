@@ -256,6 +256,17 @@ impl TextEditor {
     }
 }
 
+fn is_modal_paste_shortcut_for_platform(key: &crate::input::TerminalKey, macos: bool) -> bool {
+    key.generated_text.as_deref().is_none_or(str::is_empty)
+        && matches!(key.code, KeyCode::Char('v' | 'V'))
+        && (key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
+            || macos && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::SUPER)
+}
+
+pub(crate) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
+    is_modal_paste_shortcut_for_platform(key, cfg!(target_os = "macos"))
+}
+
 pub(crate) fn render(
     buffer: &mut ratatui::buffer::Buffer,
     area: ratatui::layout::Rect,
@@ -501,5 +512,47 @@ mod tests {
         assert_eq!(editor.viewport(4), ("abcd", 2));
         editor.cursor = 0;
         assert_eq!(editor.viewport(4), ("abcd", 0));
+    }
+
+    #[test]
+    fn modal_paste_shortcut_modifiers_are_platform_specific() {
+        let key = |code, modifiers| crate::input::TerminalKey::new(code, modifiers);
+        for macos in [false, true] {
+            assert!(!is_modal_paste_shortcut_for_platform(
+                &key(
+                    KeyCode::Char('v'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT
+                ),
+                macos
+            ));
+        }
+
+        assert!(is_modal_paste_shortcut_for_platform(
+            &key(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            false
+        ));
+        assert!(is_modal_paste_shortcut_for_platform(
+            &key(
+                KeyCode::Char('V'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            ),
+            false
+        ));
+        assert!(!is_modal_paste_shortcut_for_platform(
+            &key(KeyCode::Char('v'), KeyModifiers::SUPER),
+            false
+        ));
+        assert!(is_modal_paste_shortcut_for_platform(
+            &key(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            true
+        ));
+        assert!(is_modal_paste_shortcut_for_platform(
+            &key(KeyCode::Char('v'), KeyModifiers::SUPER),
+            true
+        ));
+        assert!(!is_modal_paste_shortcut_for_platform(
+            &key(KeyCode::Char('v'), KeyModifiers::ALT),
+            true
+        ));
     }
 }
