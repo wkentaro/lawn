@@ -22,6 +22,8 @@ pub(crate) struct ReportedProgram {
     pub(crate) pid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) started_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) boot: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +37,10 @@ pub(crate) struct Report {
     pub(crate) argv: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) program: Option<ReportedProgram>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recorded: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) job: Option<u32>,
 }
 
 impl Report {
@@ -79,6 +85,15 @@ impl Report {
         Ok(())
     }
 
+    fn payload(&self) -> Self {
+        Self {
+            program: None,
+            recorded: None,
+            job: None,
+            ..self.clone()
+        }
+    }
+
     fn same_reporter(&self, other: &Self) -> bool {
         self.source == other.source
             && self.agent == other.agent
@@ -107,7 +122,7 @@ impl Document {
         if value.is_null() {
             return Ok(Self {
                 schema: SCHEMA,
-                record_only: true,
+                record_only: false,
                 terminal: terminal.clone(),
                 reports: Vec::new(),
             });
@@ -115,43 +130,53 @@ impl Document {
         if value["schema"].as_u64() != Some(u64::from(SCHEMA)) {
             return Err("unsupported resume-record schema; update Lawn before writing it".into());
         }
-        let document: Self = serde_json::from_value(value)
+        let mut document: Self = serde_json::from_value(value)
             .map_err(|error| format!("cannot read resume records: {error}"))?;
-        if !document.record_only || document.terminal != *terminal {
-            return Err("resume records have a different purpose or terminal identity".into());
+        if document.terminal != *terminal {
+            return Err("resume records have a different terminal identity".into());
         }
         let mut reporters = HashSet::new();
-        for report in &document.reports {
+        for report in &mut document.reports {
             report.validate()?;
-            if !reporters.insert((&report.source, &report.agent, &report.reporter_id)) {
+            if !reporters.insert((
+                report.source.clone(),
+                report.agent.clone(),
+                report.reporter_id.clone(),
+            )) {
                 return Err("resume records contain a duplicate reporter identity".into());
             }
+            if document.record_only {
+                report.program = None;
+                report.job = None;
+            }
         }
+        document.record_only = false;
         Ok(document)
     }
 
     fn apply(&mut self, report: &Report) -> Result<(RecordStatus, u64), String> {
-        if let Some(stored) = self
+        if report.program.is_none() {
+            return Ok((RecordStatus::Ignored, report.seq));
+        }
+        let stored = self
             .reports
             .iter_mut()
-            .find(|stored| stored.same_reporter(report))
-        {
+            .find(|stored| stored.same_reporter(report));
+        if let Some(stored) = &stored {
             if report.seq < stored.seq {
                 return Ok((RecordStatus::Stale, stored.seq));
             }
             if report.seq == stored.seq {
-                return if report == stored {
+                return if report.payload() == stored.payload() {
                     Ok((RecordStatus::Unchanged, stored.seq))
                 } else {
                     Err("the same reporter sequence contains a different resume report".into())
                 };
             }
-            if report.program != stored.program {
-                return Err("reporter_id was reused with different program context".into());
-            }
-            *stored = report.clone();
-        } else {
-            self.reports.push(report.clone());
+        }
+        match stored {
+            Some(stored) => *stored = report.clone(),
+            None => self.reports.push(report.clone()),
         }
         Ok((RecordStatus::Recorded, report.seq))
     }
@@ -175,6 +200,7 @@ pub(crate) enum RecordStatus {
     Recorded,
     Unchanged,
     Stale,
+    Ignored,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -193,6 +219,11 @@ trait Backend {
     fn terminal(&self, target: &str) -> Result<Value, String>;
     fn load(&self, name: &str) -> Result<Doc, String>;
     fn save(&self, name: &str, value: &Value, version: u64) -> Result<u64, WriteFailure>;
+    fn started(&self, pid: u32) -> Option<u64>;
+    fn runs_inside(&self, root: u32) -> bool;
+    fn foreground(&self, root: u32) -> Option<u32>;
+    fn reporter_in_job(&self, root: u32, job: u32) -> bool;
+    fn boot(&self) -> Option<String>;
 }
 
 impl Backend for Core {
@@ -214,6 +245,50 @@ impl Backend for Core {
             }
         })
     }
+
+    fn started(&self, pid: u32) -> Option<u64> {
+        crate::platform::process_start_token(pid)
+    }
+
+    fn runs_inside(&self, root: u32) -> bool {
+        runs_inside(root)
+    }
+
+    fn foreground(&self, root: u32) -> Option<u32> {
+        crate::platform::foreground_process_group_id(root)
+    }
+
+    fn reporter_in_job(&self, root: u32, job: u32) -> bool {
+        reporter_in_job(root, job)
+    }
+
+    fn boot(&self) -> Option<String> {
+        crate::platform::boot_id()
+    }
+}
+
+#[cfg(unix)]
+fn runs_inside(root: u32) -> bool {
+    let reporter = std::process::id();
+    crate::platform::process_start_token(reporter)
+        .and_then(|token| crate::platform::live_pane_process_group(root, reporter, token))
+        .is_some()
+        || crate::platform::process_has_ancestor(reporter, root)
+}
+
+#[cfg(not(unix))]
+fn runs_inside(_root: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn reporter_in_job(root: u32, job: u32) -> bool {
+    crate::platform::process_in_job(std::process::id(), root, job)
+}
+
+#[cfg(not(unix))]
+fn reporter_in_job(_root: u32, _job: u32) -> bool {
+    false
 }
 
 pub(crate) fn read_report(input: impl Read) -> Result<Report, String> {
@@ -227,6 +302,7 @@ pub(crate) fn read_report(input: impl Read) -> Result<Report, String> {
     }
     let report: Report = serde_json::from_slice(&bytes)
         .map_err(|error| format!("cannot parse resume report: {error}"))?;
+    let report = report.payload();
     report.validate()?;
     Ok(report)
 }
@@ -238,54 +314,119 @@ pub(crate) fn validate_local_target(target: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn record(core: &Core, target: &str, report: &Report) -> Result<Outcome, String> {
-    record_with(core, target, report)
+fn document_name(address: &str) -> String {
+    format!("{}-resume-{address}", crate::config::app_dir_name())
 }
 
-fn record_with(backend: &impl Backend, target: &str, report: &Report) -> Result<Outcome, String> {
-    report.validate()?;
-    validate_local_target(target)?;
-    let record = backend.terminal(target)?;
-    let terminal = TerminalIdentity {
-        address: record["address"]
-            .as_str()
-            .ok_or("the core returned no terminal address")?
-            .into(),
-        created_ms: record["created_ms"]
-            .as_u64()
-            .ok_or("the core returned no terminal creation time")?,
-    };
-    if terminal.address.trim().is_empty()
-        || terminal.address.contains('/')
-        || terminal.address.chars().any(char::is_control)
-    {
-        return Err("the core returned no canonical local terminal address".into());
-    }
-    let name = format!(
-        "{}-resume-{}",
-        crate::config::app_dir_name(),
-        terminal.address
-    );
-    for _ in 0..EDIT_ATTEMPTS {
-        let loaded = backend.load(&name)?;
-        let mut document = Document::decode(loaded.value, &terminal)?;
-        let (status, seq) = document.apply(report)?;
-        let outcome = Outcome {
-            terminal: terminal.address.clone(),
-            status,
-            seq,
+struct Terminal {
+    record: Value,
+    identity: TerminalIdentity,
+    document: String,
+}
+
+impl Terminal {
+    fn get(backend: &impl Backend, target: &str) -> Result<Self, String> {
+        validate_local_target(target)?;
+        let record = backend.terminal(target)?;
+        let identity = TerminalIdentity {
+            address: record["address"]
+                .as_str()
+                .ok_or("the core returned no terminal address")?
+                .into(),
+            created_ms: record["created_ms"]
+                .as_u64()
+                .ok_or("the core returned no terminal creation time")?,
         };
-        if status != RecordStatus::Recorded {
+        if identity.address.trim().is_empty()
+            || identity.address.contains('/')
+            || identity.address.chars().any(char::is_control)
+        {
+            return Err("the core returned no canonical local terminal address".into());
+        }
+        let document = document_name(&identity.address);
+        Ok(Self {
+            record,
+            identity,
+            document,
+        })
+    }
+
+    fn pid(&self) -> Option<u32> {
+        self.record["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid != 0)
+    }
+
+    fn live_root(&self) -> Option<u32> {
+        self.pid().filter(|_| self.record["state"] == "live")
+    }
+}
+
+fn edit<T>(
+    backend: &impl Backend,
+    target: &str,
+    mut change: impl FnMut(&Terminal, &mut Document, u64) -> Result<(T, bool), String>,
+) -> Result<T, String> {
+    let resolved = Terminal::get(backend, target)?;
+    for _ in 0..EDIT_ATTEMPTS {
+        let loaded = backend.load(&resolved.document)?;
+        let terminal = Terminal::get(backend, &resolved.identity.address)?;
+        if terminal.document != resolved.document {
+            return Err(format!("{target} changed its address; try again"));
+        }
+        let mut document = Document::decode(loaded.value, &terminal.identity)?;
+        let (outcome, changed) = change(&terminal, &mut document, loaded.version)?;
+        if !changed {
             return Ok(outcome);
         }
-        let value = document.encode()?;
-        match backend.save(&name, &value, loaded.version) {
+        match backend.save(&resolved.document, &document.encode()?, loaded.version) {
             Ok(_) => return Ok(outcome),
             Err(WriteFailure::Conflict) => continue,
             Err(WriteFailure::Other(error)) => return Err(error),
         }
     }
-    Err(format!("{name} kept changing; try the same report again"))
+    Err(format!("{} kept changing; try again", resolved.document))
+}
+
+pub(crate) fn record(core: &Core, target: &str, report: &Report) -> Result<Outcome, String> {
+    record_with(core, target, report)
+}
+
+fn record_with(backend: &impl Backend, target: &str, report: &Report) -> Result<Outcome, String> {
+    let report = report.payload();
+    report.validate()?;
+    crate::agent_resume::validate_resume_argv(&report.argv)?;
+    edit(backend, target, |terminal, document, version| {
+        let root = terminal
+            .live_root()
+            .filter(|root| backend.runs_inside(*root));
+        let program = root.and_then(|pid| {
+            backend.started(pid).map(|started| ReportedProgram {
+                pid,
+                started_ms: Some(started),
+                boot: backend.boot(),
+            })
+        });
+        let job = program.as_ref().and_then(|program| {
+            backend
+                .foreground(program.pid)
+                .filter(|job| *job != program.pid && backend.reporter_in_job(program.pid, *job))
+        });
+        let report = Report {
+            job,
+            recorded: program.as_ref().map(|_| version + 1),
+            program,
+            ..report.clone()
+        };
+        let (status, seq) = document.apply(&report)?;
+        let outcome = Outcome {
+            terminal: terminal.identity.address.clone(),
+            status,
+            seq,
+        };
+        Ok((outcome, status == RecordStatus::Recorded))
+    })
 }
 
 #[cfg(test)]

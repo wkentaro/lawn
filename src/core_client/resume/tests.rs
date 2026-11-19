@@ -35,6 +35,15 @@ fn help_describes_recording_without_execution() {
 }
 
 #[test]
+fn help_says_reports_are_recorded_only_on_linux_and_macos() {
+    let error = parse(&args(&["lawn", "record-resume", "--help"]))
+        .unwrap()
+        .unwrap_err();
+    let help = error.to_string();
+    assert!(help.contains("only on Linux and macOS"));
+}
+
+#[test]
 fn recording_requires_exactly_one_terminal() {
     for words in [
         &["lawn", "record-resume"][..],
