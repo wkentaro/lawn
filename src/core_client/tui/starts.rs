@@ -1,50 +1,175 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
+
+use crate::session_doc::Layout;
+
+#[derive(Clone)]
+pub(super) struct Opener {
+    pub(super) terminal: String,
+    pub(super) zoomed: bool,
+}
+
+pub(super) struct Settled<T> {
+    pub(super) shown: Option<(T, bool)>,
+    pub(super) gone: Vec<(String, Opener)>,
+}
+
+struct Start {
+    opener: Option<Opener>,
+    placed: Option<(String, u64)>,
+}
+
+struct Waiting {
+    request: u64,
+    terminal: String,
+    returns: bool,
+}
 
 #[derive(Default)]
 pub(super) struct Starts {
     asked: u64,
-    unanswered: HashSet<u64>,
-    waiting: Option<(u64, String)>,
+    quiet_through: u64,
+    pending: HashMap<u64, Start>,
+    waiting: Option<Waiting>,
+    version: u64,
+}
+
+impl<T> Default for Settled<T> {
+    fn default() -> Self {
+        Self {
+            shown: None,
+            gone: Vec::new(),
+        }
+    }
+}
+
+impl<T> Settled<T> {
+    pub(super) fn is_empty(&self) -> bool {
+        self.shown.is_none() && self.gone.is_empty()
+    }
 }
 
 impl Starts {
-    pub(super) fn ask(&mut self) -> u64 {
+    pub(super) fn ask(&mut self, opener: Option<Opener>) -> u64 {
         self.asked += 1;
-        self.unanswered.insert(self.asked);
+        self.pending.insert(
+            self.asked,
+            Start {
+                opener,
+                placed: None,
+            },
+        );
         self.asked
     }
 
     pub(super) fn started<T>(
         &mut self,
         request: u64,
-        terminal: Option<String>,
+        placed: Option<(String, u64)>,
+        layout: &Layout,
         locate: impl FnOnce(&str) -> Option<T>,
-    ) -> Option<T> {
-        if !self.unanswered.remove(&request) {
-            return None;
+    ) -> Settled<T> {
+        let Some(mut start) = self.pending.remove(&request) else {
+            return Settled::default();
+        };
+        if let Some((terminal, _)) = &placed {
+            self.waiting = (request > self.quiet_through).then(|| Waiting {
+                request,
+                terminal: terminal.clone(),
+                returns: start.opener.is_some(),
+            });
+            if start.opener.is_some() {
+                start.placed = placed;
+                self.pending.insert(request, start);
+            }
         }
-        let terminal = terminal?;
-        let located = locate(&terminal);
-        self.waiting = located.is_none().then_some((request, terminal));
-        located
+        self.settle(layout, locate)
     }
 
-    pub(super) fn laid_out<T>(&mut self, locate: impl FnOnce(&str) -> Option<T>) -> Option<T> {
-        let located = locate(&self.waiting.as_ref()?.1)?;
+    pub(super) fn laid_out<T>(
+        &mut self,
+        layout: &Layout,
+        locate: impl FnOnce(&str) -> Option<T>,
+        version: u64,
+    ) -> Settled<T> {
+        self.version = version;
+        self.settle(layout, locate)
+    }
+
+    pub(super) fn moved(&mut self) {
+        self.quiet_through = self.asked;
         self.waiting = None;
-        Some(located)
+        self.pending.retain(|_, start| start.opener.is_some());
+    }
+
+    fn settle<T>(&mut self, layout: &Layout, locate: impl FnOnce(&str) -> Option<T>) -> Settled<T> {
+        let gone: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(|(_, start)| {
+                start.placed.as_ref().is_some_and(|(terminal, version)| {
+                    self.version >= *version && !layout.owns(terminal)
+                })
+            })
+            .map(|(request, _)| *request)
+            .collect();
+        let mut settled = Settled::default();
+        for request in gone {
+            let Some(Start {
+                opener: Some(opener),
+                placed: Some((terminal, _)),
+            }) = self.pending.remove(&request)
+            else {
+                continue;
+            };
+            if self
+                .waiting
+                .as_ref()
+                .is_some_and(|waiting| waiting.request == request)
+            {
+                self.waiting = None;
+            }
+            let links = self
+                .pending
+                .values_mut()
+                .filter_map(|start| start.opener.as_mut())
+                .chain(settled.gone.iter_mut().map(|(_, opener)| opener));
+            for link in links {
+                if link.terminal == terminal {
+                    link.clone_from(&opener);
+                }
+            }
+            settled.gone.push((terminal, opener));
+        }
+        if let Some(waiting) = &self.waiting {
+            if let Some(focus) = locate(&waiting.terminal) {
+                settled.shown = Some((focus, waiting.returns));
+                self.waiting = None;
+            }
+        }
+        settled
+    }
+
+    #[cfg(test)]
+    pub(super) fn version(&self) -> u64 {
+        self.version
     }
 
     #[cfg(test)]
     pub(super) fn tracked(&self) -> Vec<(u64, Option<&str>)> {
         let mut tracked: Vec<_> = self
-            .unanswered
+            .pending
             .iter()
-            .map(|request| (*request, None))
+            .map(|(request, start)| {
+                (
+                    *request,
+                    start.placed.as_ref().map(|(terminal, _)| terminal.as_str()),
+                )
+            })
             .chain(
                 self.waiting
                     .as_ref()
-                    .map(|(request, terminal)| (*request, Some(terminal.as_str()))),
+                    .filter(|waiting| !waiting.returns)
+                    .map(|waiting| (waiting.request, Some(waiting.terminal.as_str()))),
             )
             .collect();
         tracked.sort_unstable();
