@@ -33,7 +33,7 @@ fn marks(surface: &mut Surface, y: u16, glyph: &str) -> Vec<u16> {
 
 fn tabs() -> Surface {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     surface
 }
@@ -165,7 +165,7 @@ async fn a_tab_drag_redraws_the_chrome_only_when_its_landing_place_changes() {
 
 fn workspaces() -> Surface {
     let mut surface = plain(120, 30);
-    surface.update(many(3));
+    surface.update(many(3), 0);
     frame(&mut surface, &HashSet::new());
     surface
 }
@@ -250,7 +250,7 @@ async fn a_new_press_clears_a_drag_whose_release_was_lost() {
 #[tokio::test]
 async fn a_tab_dropped_on_a_scroll_button_lands_at_that_end_of_every_tab() {
     let mut surface = plain(90, 10);
-    surface.update(spaces(&[(None, &[None; 20])]));
+    surface.update(spaces(&[(None, &[None; 20])]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     tap(&mut surface, right, 0);
@@ -274,7 +274,7 @@ async fn a_tab_dropped_on_a_scroll_button_lands_at_that_end_of_every_tab() {
 #[tokio::test]
 async fn a_tab_held_over_a_one_cell_first_tab_marks_the_slot_before_it() {
     let mut surface = dressed(30, 30, |config| config.ui.mobile_width_threshold = 0);
-    surface.update(spaces(&[(None, &[None, None])]));
+    surface.update(spaces(&[(None, &[None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let first = find(&surface, 0, "1");
 
@@ -317,7 +317,7 @@ async fn a_tab_dragged_under_the_resize_bar_has_nowhere_to_land() {
     let mut surface = dressed(120, 30, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let (first, plus) = (find(&surface, 29, " 1 ") + 1, find(&surface, 29, " + ") + 1);
     press(&mut surface, first, 29);
@@ -334,7 +334,7 @@ async fn a_tab_dragged_under_the_navigate_bar_has_nowhere_to_land() {
     let mut surface = dressed(120, 30, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let (first, plus) = (find(&surface, 29, " 1 ") + 1, find(&surface, 29, " + ") + 1);
     press(&mut surface, first, 29);
@@ -351,7 +351,7 @@ async fn a_tab_drag_has_nowhere_to_land_while_the_navigate_bar_covers_the_tab_st
     let mut surface = dressed(120, 30, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
     });
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let third = find(&surface, 29, " 3 ") + 1;
     press(&mut surface, third, 29);
@@ -397,7 +397,7 @@ async fn a_workspace_drag_ends_when_its_rows_are_reordered_under_it() {
 
     let mut reordered = many(3);
     reordered.workspaces.swap(0, 1);
-    surface.update(reordered);
+    surface.update(reordered, 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(release(&mut surface, 5, 2), None);
@@ -413,7 +413,7 @@ async fn a_tab_drag_ends_when_its_tabs_are_reordered_under_it() {
 
     let mut reordered = spaces(&[(None, &[None, None, None])]);
     reordered.workspaces[0].tabs.swap(0, 1);
-    surface.update(reordered);
+    surface.update(reordered, 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(release(&mut surface, first, 0), None);
@@ -422,7 +422,7 @@ async fn a_tab_drag_ends_when_its_tabs_are_reordered_under_it() {
 #[tokio::test]
 async fn a_tab_drag_ends_when_a_status_mark_widens_the_tabs_under_it() {
     let mut surface = symbols(120, 30);
-    surface.update(spaces(&[(None, &[Some("alphabet"), Some("beta")])]));
+    surface.update(spaces(&[(None, &[Some("alphabet"), Some("beta")])]), 0);
     frame(&mut surface, &HashSet::new());
     let (first, second) = (find(&surface, 0, "alphabet"), find(&surface, 0, "beta"));
     press(&mut surface, second, 0);
@@ -438,11 +438,14 @@ async fn a_tab_drag_ends_when_a_status_mark_widens_the_tabs_under_it() {
 #[tokio::test]
 async fn a_workspace_drag_survives_a_status_mark_that_widens_a_tab_and_still_drops() {
     let mut surface = symbols(120, 30);
-    surface.update(spaces(&[
-        (Some("ws0"), &[Some("alphabet")]),
-        (Some("ws1"), &[None]),
-        (Some("ws2"), &[None]),
-    ]));
+    surface.update(
+        spaces(&[
+            (Some("ws0"), &[Some("alphabet")]),
+            (Some("ws1"), &[None]),
+            (Some("ws2"), &[None]),
+        ]),
+        0,
+    );
     frame(&mut surface, &HashSet::new());
     press(&mut surface, 5, 2);
     drag(&mut surface, 5, 6);
@@ -468,7 +471,7 @@ async fn a_tab_drag_survives_a_workspace_added_to_the_sidebar_and_still_drops() 
     drag(&mut surface, first, 0);
     frame(&mut surface, &HashSet::new());
 
-    surface.update(spaces(&[(None, &[None, None, None]), (None, &[None])]));
+    surface.update(spaces(&[(None, &[None, None, None]), (None, &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(

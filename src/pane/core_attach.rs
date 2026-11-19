@@ -173,7 +173,7 @@ fn terminal_to_park(
         address: address.to_owned(),
         parent: text("parent").map(str::to_owned),
         name: text("name").map(str::to_owned),
-        cwd: foreground_cwd(record).or_else(|| text("cwd").map(Into::into))?,
+        cwd: record_cwd(record)?,
         rows: size("rows", 24),
         cols: size("cols", 80),
     })
@@ -290,6 +290,10 @@ fn snapshot_cwd(snapshot: &serde_json::Value) -> Option<std::path::PathBuf> {
         .as_array()?
         .iter()
         .find_map(foreground_cwd)
+}
+
+fn record_cwd(record: &serde_json::Value) -> Option<std::path::PathBuf> {
+    foreground_cwd(record).or_else(|| record["cwd"].as_str().map(Into::into))
 }
 
 /// Why the core ended a pane's stream.
@@ -618,6 +622,9 @@ impl PaneRuntime {
         // The program isn't our child: no pid, so nothing here signals it.
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
+        if let Some(cwd) = record_cwd(&record) {
+            publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
+        }
         let stream_ended = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
@@ -668,6 +675,18 @@ impl PaneRuntime {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_attached_terminal_is_in_its_start_directory_until_the_core_samples_its_foreground() {
+        let unsampled = json!({"address": "t7", "cwd": "/start"});
+        let sampled = json!({"address": "t7", "cwd": "/start", "foreground": {"cwd": "/now"}});
+        let snapshot = |record: &serde_json::Value| json!({"terminals": [record]});
+
+        assert_eq!(record_cwd(&unsampled), Some("/start".into()));
+        assert_eq!(record_cwd(&sampled), Some("/now".into()));
+        assert_eq!(snapshot_cwd(&snapshot(&unsampled)), None);
+        assert_eq!(snapshot_cwd(&snapshot(&sampled)), Some("/now".into()));
+    }
 
     #[test]
     fn only_a_reported_exit_counts_as_exited() {

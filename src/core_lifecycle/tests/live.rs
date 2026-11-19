@@ -507,3 +507,54 @@ fn an_arrangement_that_writes_returns_the_version_it_wrote() {
 
     assert_eq!(written, Ok(Some(lifecycle.store.load().unwrap().version)));
 }
+
+#[test]
+fn a_start_with_env_runs_its_program_with_that_env() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let created = lifecycle
+        .start_with_env(
+            workspace(),
+            Path::new("/tmp"),
+            &["sh", "-c", "exit $LAWN_PROBE"].map(str::to_owned),
+            &[("LAWN_PROBE".to_owned(), "7".to_owned())],
+            None,
+        )
+        .unwrap();
+
+    let ended = test
+        .core
+        .call("terminal.wait", json!({"terminal": created.terminal}))
+        .unwrap();
+
+    assert_eq!(ended["exit_code"], 7);
+}
+
+#[test]
+fn a_start_placed_first_by_another_clients_recovery_still_succeeds() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let reference = lifecycle.store.reserve_start(&workspace()).unwrap();
+    let terminal = run_unacknowledged(&test, &reference);
+    Lifecycle::new(test.core.clone(), "work").recover().unwrap();
+    let loaded = lifecycle.store.load().unwrap();
+
+    let created = lifecycle.finish_start(&reference, &terminal).unwrap();
+
+    let workspace = &loaded.layout.workspaces[0];
+    assert_eq!(
+        created,
+        Some(Created {
+            terminal: terminal.clone(),
+            workspace: Some(workspace.id.clone()),
+            tab: Some(workspace.tabs[0].id.clone()),
+            version: loaded.version,
+        })
+    );
+    let other = Lifecycle::new(test.core.clone(), "other");
+    assert_eq!(other.finish_start(&reference, &terminal).unwrap(), None);
+}

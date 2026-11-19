@@ -26,7 +26,7 @@ fn grid() -> Surface {
 }
 
 fn laid_out(mut surface: Surface) -> Surface {
-    surface.update(grid_layout());
+    surface.update(grid_layout(), 0);
     frame_attaching(&mut surface, &HashSet::new());
     surface
 }
@@ -217,7 +217,7 @@ async fn swapping_picks_the_neighbour_by_the_panes_before_gaps_shrink_them() {
         }}]}]}),
     )
     .expect("layout");
-    surface.update(tall.clone());
+    surface.update(tall.clone(), 0);
     frame_attaching(&mut surface, &HashSet::new());
 
     landed(&mut tall, surface.act(KeybindAction::SwapPaneRight, false));
@@ -315,7 +315,7 @@ fn landing(
 ) -> Option<Operation> {
     if let Some(Operation::Arrange(arrangement)) = &operation {
         layout.arrange(arrangement);
-        surface.update(layout.clone());
+        surface.update(layout.clone(), 0);
         frame_attaching(surface, &HashSet::new());
     }
     operation
@@ -471,13 +471,13 @@ fn across(split: &crate::layout::SplitBorder, x: u16) -> f32 {
 #[tokio::test]
 async fn a_child_split_drag_follows_its_bounds_when_another_client_moves_the_parent() {
     let mut surface = surface(100, ROWS);
-    surface.update(nested(0.5));
+    surface.update(nested(0.5), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let now = std::time::Instant::now();
     let pressed = split(&surface, &[false]);
     pointed(&mut surface, PRESS, pressed.pos, 5, now);
 
-    surface.update(nested(0.8));
+    surface.update(nested(0.8), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let moved = split(&surface, &[false]);
     assert!(moved.area.width > pressed.area.width);
@@ -502,7 +502,7 @@ async fn a_split_drag_survives_another_client_setting_that_splits_ratio() {
         direction: Direction::Right,
         ratio: 0.7,
     });
-    surface.update(moved);
+    surface.update(moved, 0);
     frame_attaching(&mut surface, &HashSet::new());
 
     assert_eq!(
@@ -601,7 +601,7 @@ fn down(surface: &mut Surface, button: MouseButton, column: u16, row: u16) {
 async fn a_press_on_the_resize_or_copy_bar_reaches_no_pane_until_a_frame_takes_the_bar_away() {
     for copying in [false, true] {
         let mut surface = surface_with_scrollbars(20, 10, false);
-        surface.update(row_of(&terminals(1)));
+        surface.update(row_of(&terminals(1)), 0);
         let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
         match copying {
             true => surface.enter_copy_mode(),
@@ -668,7 +668,7 @@ async fn a_split_drag_ends_when_the_panes_around_it_change() {
 
     let mut parked = grid_layout();
     parked.parked.insert("b".to_owned());
-    surface.update(parked);
+    surface.update(parked, 0);
 
     assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
 }
@@ -690,7 +690,7 @@ async fn a_split_drag_ends_when_the_split_between_its_panes_turns_to_the_other_a
         }}]}]}),
     )
     .expect("layout");
-    surface.update(turned);
+    surface.update(turned, 0);
 
     assert_eq!(pointed(&mut surface, DRAG, 45, 9, now), None);
     assert!(surface.splitting.is_none());
@@ -701,7 +701,7 @@ async fn a_split_drag_ends_when_the_focused_tab_changes() {
     let mut surface = grid();
     let mut tabs = grid_layout();
     tabs.add_tab("w0", None, "d".to_owned());
-    surface.update(tabs);
+    surface.update(tabs, 0);
     frame_attaching(&mut surface, &HashSet::new());
     let now = std::time::Instant::now();
     let outer = split(&surface, &[]);
@@ -723,7 +723,7 @@ async fn a_press_on_a_border_laid_out_before_a_tab_switch_starts_no_drag() {
         "second": {"kind": "pane", "terminal": "e"},
     }))
     .expect("root");
-    surface.update(tabs);
+    surface.update(tabs, 0);
     frame_attaching(&mut surface, &HashSet::new());
     let now = std::time::Instant::now();
     let outer = split(&surface, &[]);
@@ -766,7 +766,7 @@ async fn a_release_sends_its_ratio_when_another_client_set_that_split_since_the_
         direction: Direction::Right,
         ratio: 0.7,
     });
-    surface.update(moved);
+    surface.update(moved, 0);
     frame_attaching(&mut surface, &HashSet::new());
 
     assert_eq!(
@@ -795,7 +795,7 @@ async fn a_split_whose_area_is_empty_across_its_axis_gets_no_ratio_as_when_the_m
 ) {
     let mut surface = laid_out(Surface::new(
         host(COLS, ROWS),
-        Chrome::new(&Config::default()),
+        Chrome::new(&Config::default(), unheard()),
         Settings {
             chrome: PaneChrome {
                 borders: PaneBordersConfig::Auto,

@@ -7,7 +7,7 @@ fn two_workspaces() -> Layout {
 
 fn opened(layout: Layout) -> (Surface, Screen) {
     let mut surface = plain(64, 20);
-    surface.update(layout);
+    surface.update(layout, 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(tap(&mut surface, 58, 1), None);
     assert!(surface.navigating());
@@ -22,7 +22,7 @@ fn bold() -> u16 {
 #[tokio::test]
 async fn opening_the_switcher_ends_resize_mode() {
     let mut surface = plain(64, 20);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     frame(&mut surface, &HashSet::new());
     surface.act(KeybindAction::EnterResizeMode, false);
 
@@ -36,7 +36,7 @@ async fn opening_the_switcher_ends_resize_mode() {
 async fn at_the_mobile_width_threshold_a_header_sits_above_the_panes_and_one_column_more_brings_back_the_sidebar(
 ) {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None, None])]));
+    surface.update(spaces(&[(None, &[None, None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(surface.areas.mobile_header, Rect::new(0, 0, 64, 2));
@@ -55,7 +55,7 @@ async fn the_header_names_the_focused_workspace_in_bold_with_its_tab_on_the_righ
 ) {
     let palette = Palette::catppuccin();
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(
@@ -81,7 +81,7 @@ async fn the_header_names_the_focused_workspace_in_bold_with_its_tab_on_the_righ
 #[tokio::test]
 async fn with_several_tabs_the_header_counts_the_focused_tab_and_names_a_named_one() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(Some("main"), &[None, None, Some("logs")])]));
+    surface.update(spaces(&[(Some("main"), &[None, None, Some("logs")])]), 0);
     surface.act(KeybindAction::NextTab, false);
     frame(&mut surface, &HashSet::new());
     assert_eq!(span(&surface, 0, 42..55), "tab 2 · 2/3 │");
@@ -94,7 +94,7 @@ async fn with_several_tabs_the_header_counts_the_focused_tab_and_names_a_named_o
 #[tokio::test]
 async fn without_a_workspace_the_header_says_so_and_keeps_its_switch_button() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[]));
+    surface.update(spaces(&[]), 0);
     frame(&mut surface, &HashSet::new());
 
     assert_eq!(span(&surface, 0, 0..15), " no workspace  ");
@@ -105,7 +105,7 @@ async fn without_a_workspace_the_header_says_so_and_keeps_its_switch_button() {
 async fn a_press_anywhere_on_the_switch_button_opens_the_switcher_and_beside_it_does_not() {
     for (column, row, opens) in [(54, 0, true), (63, 1, true), (53, 1, false), (20, 0, false)] {
         let mut surface = plain(64, 20);
-        surface.update(two_workspaces());
+        surface.update(two_workspaces(), 0);
         frame(&mut surface, &HashSet::new());
 
         assert_eq!(tap(&mut surface, column, row), None);
@@ -166,7 +166,7 @@ async fn the_switcher_highlights_the_focused_workspace_and_the_focused_tab() {
 #[tokio::test]
 async fn the_close_button_or_escape_closes_the_switcher_and_shows_the_panes_again() {
     let mut surface = plain(64, 20);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     let mut screen = Screen::of(&mut surface);
     let panes = screen.lines(0..20);
 
@@ -290,7 +290,7 @@ async fn the_switcher_shows_a_scrollbar_on_its_left_only_when_the_list_overflows
 #[tokio::test]
 async fn opening_the_switcher_starts_at_the_top_of_the_list() {
     let mut surface = plain(64, 20);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     surface.act(KeybindAction::PreviousWorkspace, false);
     frame(&mut surface, &HashSet::new());
     assert_eq!(workspace(&surface), "w11");
@@ -350,7 +350,7 @@ async fn while_the_switcher_is_open_no_mouse_event_reaches_a_pane_and_nothing_is
     let mut layout = spaces(&[(None, &[None])]);
     layout.workspaces[0].tabs[0].root =
         serde_json::from_value(balanced(&["t1".to_owned(), "t9".to_owned()])).expect("root");
-    surface.update(layout);
+    surface.update(layout, 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1003h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let focused = surface.focused_id();
@@ -388,7 +388,7 @@ async fn while_the_switcher_is_open_no_mouse_event_reaches_a_pane_and_nothing_is
 #[tokio::test]
 async fn the_cursor_is_hidden_while_the_switcher_is_open_and_returns_once_it_closes() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"\x1b[1;3H\x1b[?25h");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -408,7 +408,7 @@ async fn the_cursor_is_hidden_while_the_switcher_is_open_and_returns_once_it_clo
 #[tokio::test]
 async fn pane_output_while_the_switcher_is_open_stays_under_it_and_shows_once_it_closes() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut screen = Screen::of(&mut surface);
     let inner = pane_inner(&surface, "t1");
     tap(&mut surface, 58, 1);
@@ -433,13 +433,13 @@ async fn the_switcher_is_not_redrawn_when_nothing_it_shows_changed() {
     assert!(!surface.needs_frame());
 
     let built = surface.outer.cover().map(|cover| cover.1.as_ptr());
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(surface.outer.cover().map(|cover| cover.1.as_ptr()), built);
 
     let mut renamed = two_workspaces();
     renamed.workspaces[1].name = Some("renamed".to_owned());
-    surface.update(renamed);
+    surface.update(renamed, 0);
     frame(&mut surface, &HashSet::new());
     assert_ne!(surface.outer.cover().map(|cover| cover.1.as_ptr()), built);
 }
@@ -447,7 +447,7 @@ async fn the_switcher_is_not_redrawn_when_nothing_it_shows_changed() {
 #[tokio::test]
 async fn in_copy_mode_a_press_on_the_switch_button_does_not_open_the_switcher() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"hello");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -469,7 +469,7 @@ async fn in_copy_mode_a_press_on_the_switch_button_does_not_open_the_switcher() 
 async fn in_resize_mode_over_copy_mode_the_switch_button_opens_the_switcher_and_copy_mode_resumes_after_it(
 ) {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"hello");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -524,14 +524,14 @@ async fn widening_past_the_threshold_keeps_navigate_mode_in_the_sidebar_and_narr
 #[tokio::test]
 async fn on_one_row_the_header_is_one_row_and_on_two_rows_the_switcher_draws_only_its_rule() {
     let mut surface = plain(64, 1);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     let screen = Screen::of(&mut surface);
     assert_eq!(surface.areas.mobile_header, Rect::new(0, 0, 64, 1));
     assert_eq!(screen.span(0, 54..64), "│ switch  ");
     assert!(screen.line(0).starts_with(" · main "));
 
     let mut surface = plain(64, 2);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     frame(&mut surface, &HashSet::new());
     tap(&mut surface, 58, 1);
     let screen = Screen::of(&mut surface);
@@ -547,7 +547,7 @@ async fn on_one_row_the_header_is_one_row_and_on_two_rows_the_switcher_draws_onl
 #[tokio::test]
 async fn the_header_and_the_switcher_name_an_unnamed_workspace_after_its_folder() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     moved(&mut surface, "t1", "/srv/app");
     frame(&mut surface, &HashSet::new());
     assert!(line(&surface, 0).starts_with(" · app "));
@@ -574,7 +574,7 @@ fn switcher(surface: &mut Surface) -> Screen {
 async fn the_header_marks_the_workspace_with_blocked_over_an_unseen_finish_over_working_over_idle()
 {
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     let mark = |surface: &mut Surface| header(surface).span(0, 0..3);
 
     said(&mut surface, "t1", "idle");
@@ -591,7 +591,7 @@ async fn the_header_marks_the_workspace_with_blocked_over_an_unseen_finish_over_
 #[tokio::test]
 async fn the_second_header_row_counts_every_agent_by_state_most_pressing_first() {
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     for (terminal, state) in [("t1", "working"), ("t2", "blocked"), ("t3", "working")] {
         said(&mut surface, terminal, state);
@@ -609,7 +609,7 @@ async fn the_second_header_row_counts_every_agent_by_state_most_pressing_first()
 #[tokio::test]
 async fn with_dots_the_summary_marks_only_blocked_and_done() {
     let mut surface = plain(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     for (terminal, state) in [("t1", "working"), ("t2", "blocked"), ("t3", "working")] {
         said(&mut surface, terminal, state);
@@ -626,7 +626,7 @@ async fn with_dots_the_summary_marks_only_blocked_and_done() {
 #[tokio::test]
 async fn the_second_header_row_says_when_there_are_no_agents_or_all_are_idle() {
     let mut surface = plain(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     assert_eq!(header(&mut surface).span(1, 0..54).trim_end(), " no agents");
 
     said(&mut surface, "t5", "idle");
@@ -636,7 +636,7 @@ async fn the_second_header_row_says_when_there_are_no_agents_or_all_are_idle() {
 #[tokio::test]
 async fn a_summary_too_wide_for_the_header_stops_at_an_ellipsis() {
     let mut surface = symbols(30, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t1", "blocked");
     said(&mut surface, "t2", "working");
@@ -648,7 +648,7 @@ async fn a_summary_too_wide_for_the_header_stops_at_an_ellipsis() {
 async fn the_switch_button_carries_a_red_mark_while_any_agent_anywhere_is_blocked() {
     let palette = Palette::catppuccin();
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t5", "blocked");
     let screen = header(&mut surface);
@@ -665,7 +665,7 @@ async fn the_switch_button_carries_a_red_mark_while_any_agent_anywhere_is_blocke
 #[tokio::test]
 async fn the_blocked_mark_stays_on_a_switch_button_too_narrow_for_its_label() {
     let mut surface = symbols(7, 1);
-    surface.update(paired());
+    surface.update(paired(), 0);
 
     said(&mut surface, "t5", "blocked");
     assert_eq!(header(&mut surface).span(0, 0..7), "│switc×");
@@ -674,7 +674,7 @@ async fn the_blocked_mark_stays_on_a_switch_button_too_narrow_for_its_label() {
 #[tokio::test]
 async fn the_switcher_lists_every_agent_first_with_its_workspace_tab_state_and_name() {
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     said(&mut surface, "t2", "working");
     surface.heard(
         Report::Status(
@@ -702,7 +702,7 @@ async fn the_switcher_lists_every_agent_first_with_its_workspace_tab_state_and_n
 #[tokio::test]
 async fn the_switcher_marks_each_workspace_with_its_most_pressing_agent() {
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     said(&mut surface, "t1", "idle");
     said(&mut surface, "t5", "blocked");
 
@@ -724,7 +724,7 @@ async fn the_switcher_marks_each_workspace_with_its_most_pressing_agent() {
 async fn the_focused_agent_takes_the_dim_background_in_the_switcher() {
     let palette = Palette::catppuccin();
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     said(&mut surface, "t1", "working");
     said(&mut surface, "t5", "working");
 
@@ -739,7 +739,7 @@ async fn the_focused_agent_takes_the_dim_background_in_the_switcher() {
 #[tokio::test]
 async fn a_press_on_an_agent_focuses_its_pane_and_closes_the_switcher() {
     let mut surface = symbols(64, 20);
-    surface.update(paired());
+    surface.update(paired(), 0);
     said(&mut surface, "t1", "working");
     said(&mut surface, "t4", "working");
     switcher(&mut surface);
@@ -757,7 +757,7 @@ async fn with_priority_sort_the_most_pressing_and_then_the_latest_agent_comes_fi
         config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
         config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     });
-    surface.update(paired());
+    surface.update(paired(), 0);
     for (terminal, state) in [
         ("t1", "idle"),
         ("t2", "working"),
@@ -793,7 +793,7 @@ async fn with_priority_sort_the_most_pressing_and_then_the_latest_agent_comes_fi
 #[tokio::test]
 async fn a_dialog_opened_from_the_switcher_ends_navigate_mode_and_closing_it_shows_the_panes() {
     let mut surface = plain(64, 20);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     let mut screen = Screen::of(&mut surface);
     let panes = screen.lines(0..20);
     tap(&mut surface, 58, 1);
@@ -842,7 +842,7 @@ async fn a_clamped_move_brings_a_selection_scrolled_out_of_the_switcher_back_int
 #[tokio::test]
 async fn with_a_prefix_pending_a_press_on_the_switch_button_does_not_open_the_switcher() {
     let mut surface = plain(64, 20);
-    surface.update(two_workspaces());
+    surface.update(two_workspaces(), 0);
     frame(&mut surface, &HashSet::new());
 
     surface.hold_prefix(true);
@@ -857,7 +857,7 @@ async fn with_a_prefix_pending_a_press_on_the_switch_button_does_not_open_the_sw
 #[tokio::test]
 async fn narrowing_before_the_first_navigate_frame_opens_the_switcher_on_the_selection() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     surface.act(KeybindAction::WorkspacePicker, false);
     surface.navigate(Navigation::Move(-1));
@@ -884,7 +884,7 @@ async fn with_the_selection_vanished_a_press_in_the_switcher_does_not_close_it()
     surface.navigate(Navigation::Move(1));
     let mut closed = layout;
     closed.workspaces.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
     assert!(surface.selection_vanished());
 
@@ -896,7 +896,7 @@ async fn with_the_selection_vanished_a_press_in_the_switcher_does_not_close_it()
 async fn a_move_after_narrowing_to_mobile_and_before_the_next_frame_clamps_at_the_first_workspace()
 {
     let mut surface = plain(120, 12);
-    surface.update(many(3));
+    surface.update(many(3), 0);
     frame(&mut surface, &HashSet::new());
     surface.act(KeybindAction::WorkspacePicker, false);
     frame(&mut surface, &HashSet::new());
@@ -910,7 +910,7 @@ async fn a_move_after_narrowing_to_mobile_and_before_the_next_frame_clamps_at_th
 #[tokio::test]
 async fn a_move_after_widening_to_desktop_and_before_the_next_frame_wraps_to_the_last_workspace() {
     let mut surface = plain(64, 12);
-    surface.update(many(3));
+    surface.update(many(3), 0);
     frame(&mut surface, &HashSet::new());
     surface.act(KeybindAction::WorkspacePicker, false);
     frame(&mut surface, &HashSet::new());
@@ -924,7 +924,7 @@ async fn a_move_after_widening_to_desktop_and_before_the_next_frame_wraps_to_the
 #[tokio::test]
 async fn a_click_on_a_switcher_closed_by_key_but_still_drawn_does_not_reach_the_pane_under_it() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let pane = pane_inner(&surface, "t1");
@@ -956,7 +956,7 @@ async fn a_click_on_a_switcher_closed_by_key_but_still_drawn_does_not_reach_the_
 #[tokio::test]
 async fn a_drag_held_in_a_pane_when_the_workspace_picker_key_opens_the_switcher_ends_at_the_key() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let pane = pane_inner(&surface, "t1");
@@ -991,7 +991,7 @@ async fn a_drag_held_in_a_pane_when_the_workspace_picker_key_opens_the_switcher_
 #[tokio::test]
 async fn a_click_on_a_switcher_row_after_enter_and_before_the_next_frame_does_not_reach_the_pane() {
     let mut surface = plain(64, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let pane = pane_inner(&surface, "t1");
@@ -1020,7 +1020,7 @@ async fn a_click_on_a_switcher_row_after_enter_and_before_the_next_frame_does_no
 #[tokio::test]
 async fn a_drag_held_in_a_pane_into_navigate_mode_ends_when_narrowing_draws_the_switcher() {
     let mut surface = plain(120, 20);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     let pane = pane_inner(&surface, "t1");
@@ -1107,7 +1107,7 @@ async fn a_divider_press_held_when_the_picker_key_opens_the_switcher_ends_at_the
 
 fn ended_on_mobile(end: impl FnOnce(&mut Surface)) {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     for _ in 0..12 {
         wheel(&mut surface, true, 5, 3);
@@ -1156,7 +1156,7 @@ async fn a_dialog_opened_from_the_switcher_leaves_the_sidebar_scrolled_where_it_
 #[tokio::test]
 async fn accepting_another_workspace_in_the_switcher_shows_it_in_the_sidebar_once_widened() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     let shown = |surface: &Surface| (0..12).any(|y| line(surface, y).starts_with(" ws11 "));
     assert!(!shown(&surface));

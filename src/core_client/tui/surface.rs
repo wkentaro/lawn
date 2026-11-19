@@ -22,6 +22,7 @@ use super::session::{Operation, PaneChrome, Request, Session, Tile, Tiles};
 use super::terminals::Report;
 use crate::config::{Config, LiveKeybindConfig, ToastClipboardPosition};
 use crate::core_client::view::{Geometry, Placing, Scrollback, View};
+use crate::core_lifecycle::Size;
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::{PaneId, SplitBorder};
 use crate::pane::{ScrollMetrics, MIN_PANE_COLS, MIN_PANE_ROWS};
@@ -568,15 +569,14 @@ impl Surface {
         self
     }
 
-    pub(super) fn holds(&self, layout: &Layout) -> bool {
-        self.session.holds(layout)
-    }
-
-    pub(super) fn update(&mut self, layout: Layout) {
-        self.session.update(layout);
-        self.owned = self.session.owned();
-        self.reflow();
-        self.session_changed(Change::Layout);
+    pub(super) fn update(&mut self, layout: Layout, version: u64) -> bool {
+        let changed = self.session.update(layout, version);
+        if changed {
+            self.owned = self.session.owned();
+            self.reflow();
+            self.session_changed(Change::Layout);
+        }
+        changed
     }
 
     fn session_changed(&mut self, change: Change) {
@@ -960,8 +960,43 @@ impl Surface {
             })
     }
 
-    pub(super) fn started(&mut self, request: u64, terminal: Option<String>) {
-        if self.session.started(request, terminal) {
+    pub(super) fn overlay(&mut self, command: &str) -> Option<Operation> {
+        let argv = crate::platform::pane_custom_command_pty_builder(command)
+            .get_argv()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let env = self.command_env().0;
+        let area = self.lay_out_chrome().pane_surface;
+        let size = self
+            .session
+            .zoomed_inner(area, self.chrome)
+            .map(|inner| crate::ui::scrollbar_gutter_for(inner, self.scrollbars).0)
+            .filter(|inner| !inner.is_empty())
+            .map(|inner| Size {
+                cols: inner.width,
+                rows: inner.height,
+            });
+        self.session
+            .overlay(argv, env, size)
+            .map(Operation::Overlay)
+    }
+
+    fn pane_ready(&self) -> bool {
+        self.session.loaded()
+            && (self.session.focused().is_none()
+                || self
+                    .session
+                    .focused_id()
+                    .is_some_and(|id| self.views.contains_key(&id)))
+    }
+
+    pub(super) fn command_env(&self) -> (Vec<(String, String)>, Option<PathBuf>) {
+        command_env(&self.session, &self.views)
+    }
+
+    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) {
+        if self.session.started(request, placed) {
             self.reflow();
             self.session_changed(Change::Layout);
         }
@@ -1232,7 +1267,7 @@ impl Surface {
             .into_iter()
             .chain(self.toast.as_ref().map(|toast| toast.until))
             .chain(self.notices.deadline())
-            .chain(self.outer.deadline())
+            .chain(self.outer.deadline(self.pane_ready()))
             .chain(self.splitting.as_ref().and_then(Splitting::due))
             .min()
     }
@@ -1240,11 +1275,8 @@ impl Surface {
     pub(super) fn received(&mut self, arrival: Arrival, gate: &mut Gate) {
         match arrival {
             Arrival::Layout(loaded) => {
-                let redraws = !self.holds(&loaded.layout);
+                let redraws = self.update(loaded.layout, loaded.version);
                 gate.arrived(loaded.version, redraws);
-                if redraws {
-                    self.update(loaded.layout);
-                }
             }
             Arrival::Report(report) => self.hear(report),
         }
@@ -1267,7 +1299,10 @@ impl Surface {
         if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
             self.toast = None;
         }
-        self.outer.tick(now);
+        let ready = self.pane_ready();
+        self.outer.tick(now, || {
+            ready.then(|| command_env(&self.session, &self.views))
+        });
         let view = self
             .select
             .pane()
@@ -1283,6 +1318,15 @@ impl Surface {
         }
         let split = self.split(&splitting)?;
         self.flushed(splitting, &split, now)
+    }
+
+    pub(super) fn finished(
+        &mut self,
+        generation: u64,
+        entry: usize,
+        result: Result<Option<String>, String>,
+    ) {
+        self.outer.finished(generation, entry, result);
     }
 
     pub(super) fn needs_frame(&self) -> bool {
@@ -1382,7 +1426,7 @@ impl Surface {
         };
         self.session
             .id_of(terminal)
-            .and_then(|id| self.view(id)?.cwd())
+            .and_then(|id| self.views.get(&id)?.view.cwd())
             .or_else(|| self.session.folder(terminal).cloned())
     }
 
@@ -2364,6 +2408,53 @@ fn fitted(rect: Rect, gutter: bool, host: Geometry) -> (Rect, Option<Rect>, Geom
         ..host
     };
     (inner, track, geometry)
+}
+
+fn focused_cwd(session: &Session, views: &HashMap<PaneId, Shown>) -> Option<PathBuf> {
+    views.get(&session.focused_id()?)?.view.cwd()
+}
+
+fn command_env(
+    session: &Session,
+    views: &HashMap<PaneId, Shown>,
+) -> (Vec<(String, String)>, Option<PathBuf>) {
+    let cwd = focused_cwd(session, views);
+    let env = [
+        (crate::api::SOCKET_PATH_ENV_VAR, Some(String::new())),
+        (
+            crate::session::SESSION_ENV_VAR,
+            Some(
+                crate::session::active_name()
+                    .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned()),
+            ),
+        ),
+        (crate::core_client::REWRITE_ENV, Some("1".to_owned())),
+        (
+            "HERDR_BIN_PATH",
+            std::env::current_exe()
+                .ok()
+                .map(|exe| exe.display().to_string()),
+        ),
+        (
+            "HERDR_ACTIVE_WORKSPACE_ID",
+            session
+                .focused_workspace()
+                .map(|workspace| workspace.id.clone()),
+        ),
+        (
+            "HERDR_ACTIVE_TAB_ID",
+            session.focused_tab().map(str::to_owned),
+        ),
+        ("HERDR_ACTIVE_PANE_ID", session.focused().map(str::to_owned)),
+        (
+            "HERDR_ACTIVE_PANE_CWD",
+            cwd.as_ref().map(|cwd| cwd.display().to_string()),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| Some((name.to_owned(), value?)))
+    .collect();
+    (env, cwd)
 }
 
 fn visible(views: &HashMap<PaneId, Shown>, id: PaneId) -> Option<(&View, Rect)> {

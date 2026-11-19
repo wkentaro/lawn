@@ -61,7 +61,7 @@ fn hidden(surface: &Surface, id: PaneId) -> bool {
 #[tokio::test]
 async fn every_pane_attaches_once_and_only_the_shown_tab_attaches_as_on_screen() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
 
     let placed = placings(&mut surface);
 
@@ -102,7 +102,7 @@ async fn every_pane_attaches_once_and_only_the_shown_tab_attaches_as_on_screen()
 #[tokio::test]
 async fn a_pane_not_on_screen_that_attaches_needs_no_frame() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let requested = requests(&mut surface);
     let (shown, offstage) = requested.split_at(2);
     for (_, id, geometry) in shown {
@@ -121,7 +121,7 @@ async fn a_pane_not_on_screen_that_attaches_needs_no_frame() {
 #[tokio::test]
 async fn switching_to_another_tab_and_back_keeps_the_view_and_attaches_nothing() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     frame(&mut surface, &HashSet::new());
     feed(&surface, "a", b"kept-history");
 
@@ -135,7 +135,7 @@ async fn switching_to_another_tab_and_back_keeps_the_view_and_attaches_nothing()
 #[tokio::test]
 async fn a_pane_leaving_the_layout_drops_its_view_and_one_moving_between_tabs_keeps_it() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     frame(&mut surface, &HashSet::new());
     let (c, d) = (id(&mut surface, "c"), id(&mut surface, "d"));
     surface.views[&d].view.test_feed(b"moved");
@@ -150,6 +150,7 @@ async fn a_pane_leaving_the_layout_drops_its_view_and_one_moving_between_tabs_ke
             {"id": "t1", "root": pane("d")},
         ]}]}))
         .expect("layout"),
+        0,
     );
     let mut left = Vec::new();
     surface.frame(&HashSet::new(), never_attach, |id, _| left.push(id));
@@ -164,7 +165,7 @@ async fn a_pane_leaving_the_layout_drops_its_view_and_one_moving_between_tabs_ke
 #[tokio::test]
 async fn a_program_ending_in_a_tab_not_shown_closes_its_pane() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     frame(&mut surface, &HashSet::new());
     let d = id(&mut surface, "d");
 
@@ -192,7 +193,7 @@ async fn an_attach_refused_as_finished_in_a_tab_not_shown_closes_its_pane() {
         .call("terminal.wait", json!({"terminal": finished}))
         .expect("wait for the exit");
     let mut surface = surface(60, 12);
-    surface.update(two_tabs(&shown, &finished));
+    surface.update(two_tabs(&shown, &finished), 0);
     let (wake, mut events) = (Wake::default(), Events::default());
 
     for (terminal, id, placing) in placings(&mut surface) {
@@ -257,7 +258,7 @@ async fn a_view_not_on_screen_takes_no_size_in_the_core_until_it_is_shown() {
     };
     let _other_client = attach(&behind, PaneId::from_raw(999), elsewhere).expect("attach");
     let mut surface = surface(60, 12);
-    surface.update(two_tabs(&shown, &behind));
+    surface.update(two_tabs(&shown, &behind), 0);
 
     for (terminal, id, placing) in placings(&mut surface) {
         let view = attach(&terminal, id, placing);
@@ -319,7 +320,7 @@ async fn a_view_attached_off_screen_that_arrives_on_screen_takes_the_size() {
     };
     let _other_client = attach(&behind, PaneId::from_raw(999), elsewhere).expect("attach");
     let mut surface = surface(60, 12);
-    surface.update(two_tabs(&shown, &behind));
+    surface.update(two_tabs(&shown, &behind), 0);
     let placed = placings(&mut surface);
 
     surface.act(KeybindAction::NextTab, true);
@@ -377,7 +378,7 @@ async fn a_view_attached_on_screen_paints_at_its_own_width_while_another_client_
     .await
     .expect("the other client shows the line");
     let mut surface = surface(140, 12);
-    surface.update(row_of(std::slice::from_ref(&terminal)));
+    surface.update(row_of(std::slice::from_ref(&terminal)), 0);
 
     for (_, id, placing) in placings(&mut surface) {
         assert!(placing.shown && placing.geometry.cols >= 100);
@@ -406,7 +407,7 @@ async fn a_view_attached_on_screen_paints_at_its_own_width_while_another_client_
 async fn a_host_resize_a_sidebar_toggle_and_a_screen_switch_leave_a_hidden_view_alone_until_shown()
 {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     frame(&mut surface, &HashSet::new());
     let c = id(&mut surface, "c");
     let (before, size) = (surface.views[&c].geometry, surface.views[&c].view.size());
@@ -431,7 +432,7 @@ async fn a_host_resize_a_sidebar_toggle_and_a_screen_switch_leave_a_hidden_view_
 #[tokio::test]
 async fn a_pane_hidden_by_zoom_keeps_its_size_through_a_host_resize_until_the_zoom_ends() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     frame(&mut surface, &HashSet::new());
     let right = id_of(&surface, "t1");
     surface.act(KeybindAction::Zoom, true);
@@ -452,7 +453,7 @@ async fn a_pane_hidden_by_zoom_keeps_its_size_through_a_host_resize_until_the_zo
 #[tokio::test]
 async fn zoom_attaches_the_panes_it_hides_once_each_as_not_on_screen() {
     let mut surface = surface(60, 12);
-    surface.update(row_of(&terminals(3)));
+    surface.update(row_of(&terminals(3)), 0);
     surface.act(KeybindAction::Zoom, true);
 
     let placed: Vec<(String, bool)> = placings(&mut surface)
@@ -473,7 +474,7 @@ async fn zoom_attaches_the_panes_it_hides_once_each_as_not_on_screen() {
 #[tokio::test]
 async fn hiding_a_tab_releases_the_keys_its_panes_hold_once_and_keeps_their_views() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     frame(&mut surface, &HashSet::new());
     let (a, b) = (id(&mut surface, "a"), id(&mut surface, "b"));
 
@@ -494,7 +495,7 @@ async fn hiding_a_tab_releases_the_keys_its_panes_hold_once_and_keeps_their_view
 async fn an_empty_pane_area_hides_the_views_and_widening_again_attaches_nothing() {
     for rows in [2, 0] {
         let mut surface = surface(40, 10);
-        surface.update(row_of(&terminals(2)));
+        surface.update(row_of(&terminals(2)), 0);
         frame(&mut surface, &HashSet::new());
         let panes = [id_of(&surface, "t0"), id_of(&surface, "t1")];
 
@@ -513,7 +514,7 @@ async fn an_empty_pane_area_hides_the_views_and_widening_again_attaches_nothing(
 #[tokio::test]
 async fn a_pane_with_no_room_takes_no_input_and_is_not_presented() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, b"");
     let focused = surface.focused_id().expect("focused pane");
 
@@ -532,7 +533,7 @@ async fn a_pane_with_no_room_takes_no_input_and_is_not_presented() {
 #[tokio::test]
 async fn a_pane_hidden_for_lack_of_room_is_told_it_lost_focus_and_told_again_when_shown() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
     assert_eq!(reports(&mut inputs[0]), b"\x1b[I");
 
@@ -548,7 +549,7 @@ async fn a_pane_hidden_for_lack_of_room_is_told_it_lost_focus_and_told_again_whe
 #[tokio::test]
 async fn a_pane_told_it_lacks_focus_that_asks_again_while_hidden_is_told_when_shown() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
     let right = id_of(&surface, "t1");
     assert_eq!(reports(&mut inputs[1]), b"\x1b[O");
@@ -568,7 +569,7 @@ async fn a_pane_told_it_lacks_focus_that_asks_again_while_hidden_is_told_when_sh
 #[tokio::test]
 async fn a_pane_focused_out_of_zoom_hears_focus_before_the_input_that_follows() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS);
     surface.act(KeybindAction::Zoom, true);
     settle(&mut surface);
@@ -627,7 +628,7 @@ fn frame_releasing(surface: &mut Surface, keys: &mut Keys) -> Vec<PaneId> {
 async fn a_pane_that_took_a_key_in_a_tab_left_before_any_frame_takes_no_repeat_and_hears_focus_out_and_the_release(
 ) {
     let mut surface = surface(40, 10);
-    surface.update(one_pane_tabs(2));
+    surface.update(one_pane_tabs(2), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS_AND_RELEASES);
     let behind = id(&mut surface, "p1");
     assert!(hidden(&surface, behind));
@@ -657,7 +658,7 @@ async fn a_pane_that_took_a_key_in_a_tab_left_before_any_frame_takes_no_repeat_a
 async fn a_pane_that_took_a_key_and_was_zoomed_away_before_any_frame_takes_no_repeat_and_hears_focus_out_and_the_release(
 ) {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS_AND_RELEASES);
     let right = id_of(&surface, "t1");
     surface.act(KeybindAction::Zoom, true);
@@ -686,7 +687,7 @@ async fn a_pane_that_took_a_key_and_was_zoomed_away_before_any_frame_takes_no_re
 async fn a_pane_holding_a_button_in_a_tab_left_before_any_frame_is_released_at_once_and_takes_no_drag(
 ) {
     let mut surface = surface(40, 10);
-    surface.update(one_pane_tabs(2));
+    surface.update(one_pane_tabs(2), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1002h\x1b[?1006h");
     let pane = surface.tiles.tiles[0].info.inner_rect;
     reports(&mut inputs[0]);
@@ -716,6 +717,7 @@ async fn a_pane_in_a_tab_not_shown_whose_tile_has_no_room_attaches_and_closes_wh
             }},
         ]}]}))
         .expect("layout"),
+        0,
     );
 
     let requested = requests(&mut surface);
@@ -737,7 +739,7 @@ async fn a_pane_in_a_tab_not_shown_whose_tile_has_no_room_attaches_and_closes_wh
 #[tokio::test]
 async fn a_relayout_that_needs_no_attach_lays_out_only_the_tab_on_screen() {
     let mut surface = surface(60, 12);
-    surface.update(one_pane_tabs(15));
+    surface.update(one_pane_tabs(15), 0);
     attach_with_input(&mut surface, b"");
     assert_eq!(surface.views.len(), 15);
     let before = surface.session.placements;
@@ -754,7 +756,7 @@ async fn a_relayout_that_needs_no_attach_lays_out_only_the_tab_on_screen() {
 #[tokio::test]
 async fn an_attach_that_fails_off_screen_schedules_no_frame_and_waits_for_the_next_layout() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let requested = requests(&mut surface);
     let attempt = |terminal: &str| {
         requested
@@ -782,7 +784,7 @@ async fn an_attach_that_fails_off_screen_schedules_no_frame_and_waits_for_the_ne
 #[tokio::test]
 async fn an_attach_that_fails_on_screen_lays_out_again() {
     let mut surface = surface(60, 12);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let requested = requests(&mut surface);
     let (_, a, geometry) = requested
         .iter()
@@ -798,7 +800,7 @@ async fn an_attach_that_fails_on_screen_lays_out_again() {
 #[tokio::test]
 async fn output_in_fifteen_panes_not_on_screen_schedules_no_frame() {
     let mut surface = surface(60, 12);
-    surface.update(one_pane_tabs(16));
+    surface.update(one_pane_tabs(16), 0);
     let (_, attached) = frame_attaching(&mut surface, &HashSet::new());
     assert_eq!(attached.len(), 16);
     let wake = Wake::default();
@@ -831,7 +833,7 @@ async fn a_parked_pane_keeps_a_view_the_size_of_a_pane_alone_in_its_tab() {
     let mut surface = surface(40, 10);
     let mut layout = row_of(&terminals(2));
     layout.parked.insert("t1".to_owned());
-    surface.update(layout);
+    surface.update(layout, 0);
     frame(&mut surface, &HashSet::new());
     let (shown, parked) = (id(&mut surface, "t0"), id(&mut surface, "t1"));
 
@@ -858,6 +860,7 @@ fn roomless_second_tab() -> Surface {
             }},
         ]}]}))
         .expect("layout"),
+        0,
     );
     surface
 }
@@ -875,6 +878,7 @@ async fn a_retry_in_a_partly_attached_tab_not_shown_requests_only_the_pane_that_
             }},
         ]}]}))
         .expect("layout"),
+        0,
     );
     for (terminal, id, geometry) in requests(&mut surface) {
         let view = match terminal.as_str() {
@@ -926,7 +930,7 @@ async fn a_pane_shown_without_room_takes_no_input_before_the_frame_that_shows_it
 #[tokio::test]
 async fn a_press_after_a_tab_switch_before_any_frame_misses_the_tab_left() {
     let mut surface = surface(40, 10);
-    surface.update(one_pane_tabs(2));
+    surface.update(one_pane_tabs(2), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
     let old = surface.tiles.tiles[0].info.inner_rect;
     reports(&mut inputs[0]);
@@ -943,7 +947,7 @@ async fn a_press_after_a_tab_switch_before_any_frame_misses_the_tab_left() {
 async fn a_press_after_zoom_or_park_before_any_frame_misses_the_pane_hidden() {
     for park in [false, true] {
         let mut surface = surface(40, 10);
-        surface.update(row_of(&terminals(2)));
+        surface.update(row_of(&terminals(2)), 0);
         let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
         let old = surface.tiles.tiles[0].info.inner_rect;
         reports(&mut inputs[0]);
@@ -951,7 +955,7 @@ async fn a_press_after_zoom_or_park_before_any_frame_misses_the_pane_hidden() {
         if park {
             let mut layout = row_of(&terminals(2));
             layout.parked.insert("t0".to_owned());
-            surface.update(layout);
+            surface.update(layout, 0);
         } else {
             surface.act(KeybindAction::FocusPaneRight, true);
             surface.act(KeybindAction::Zoom, true);
@@ -966,7 +970,7 @@ async fn a_press_after_zoom_or_park_before_any_frame_misses_the_pane_hidden() {
 #[tokio::test]
 async fn an_arrival_does_not_recompute_which_panes_take_input() {
     let mut surface = surface(300, 10);
-    surface.update(row_of(&terminals(15)));
+    surface.update(row_of(&terminals(15)), 0);
     let requested = requests(&mut surface);
     assert_eq!(requested.len(), 15);
     let before = surface.retargets;
@@ -987,7 +991,7 @@ async fn a_press_on_a_pane_moved_by_zoom_or_resize_reaches_its_program_only_afte
 ) {
     for zoom in [true, false] {
         let mut surface = surface(40, 10);
-        surface.update(row_of(&terminals(2)));
+        surface.update(row_of(&terminals(2)), 0);
         let mut inputs = attach_with_input(&mut surface, REPORT_MOUSE);
         reports(&mut inputs[1]);
 
@@ -1016,7 +1020,7 @@ async fn a_press_on_a_pane_moved_by_zoom_or_resize_reaches_its_program_only_afte
 #[tokio::test]
 async fn a_button_held_on_a_pane_a_resize_moves_is_released_at_once_and_takes_no_drag() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1002h\x1b[?1006h");
     let right = surface.tiles.tiles[1].info.inner_rect;
     reports(&mut inputs[1]);
@@ -1033,7 +1037,7 @@ async fn a_button_held_on_a_pane_a_resize_moves_is_released_at_once_and_takes_no
 #[tokio::test]
 async fn a_program_turning_on_focus_reports_before_its_first_frame_hears_its_focus() {
     let mut surface = surface(40, 10);
-    surface.update(row_of(&terminals(1)));
+    surface.update(row_of(&terminals(1)), 0);
     let (_, id, geometry) = requests(&mut surface).remove(0);
     let (view, mut input) = View::test_with_input(geometry.cols, geometry.rows);
     surface.attached(id, geometry, Ok(view));
@@ -1076,7 +1080,7 @@ async fn a_key_pressed_in_a_pane_without_room_leaves_no_lease_when_the_pane_gain
 #[tokio::test]
 async fn a_thumb_drag_ends_when_its_track_goes_though_the_terminal_keeps_its_width() {
     let mut surface = surface(5, 10);
-    surface.update(row_of(&terminals(1)));
+    surface.update(row_of(&terminals(1)), 0);
     attach_with_input(&mut surface, b"");
     let id = id(&mut surface, "t0");
     surface.views[&id].view.test_feed(&lines(40));
@@ -1102,7 +1106,7 @@ async fn a_thumb_drag_ends_when_its_track_goes_though_the_terminal_keeps_its_wid
 #[tokio::test]
 async fn a_pane_first_shown_on_the_alternate_screen_keeps_its_view_and_primary_history() {
     let mut surface = surface(40, 10);
-    surface.update(one_pane_tabs(2));
+    surface.update(one_pane_tabs(2), 0);
     frame(&mut surface, &HashSet::new());
     let behind = id(&mut surface, "p1");
     let before = surface.views[&behind].geometry;
@@ -1122,7 +1126,7 @@ async fn a_pane_first_shown_on_the_alternate_screen_keeps_its_view_and_primary_h
 #[tokio::test]
 async fn a_key_pressed_in_a_pane_resized_before_its_first_frame_gets_its_release() {
     let mut surface = surface(40, 10);
-    surface.update(one_pane_tabs(2));
+    surface.update(one_pane_tabs(2), 0);
     let mut inputs = attach_with_input(&mut surface, REPORT_FOCUS_AND_RELEASES);
     let behind = id(&mut surface, "p1");
     surface.resize(host(60, 10));

@@ -25,7 +25,7 @@ fn notifying_on(cols: u16, rows: u16, configure: impl FnOnce(&mut Notifying)) ->
     config.ui.sidebar_start_collapsed = true;
     let mut surface = Surface::new(
         host(cols, rows),
-        Chrome::new(&config),
+        Chrome::new(&config, unheard()),
         Settings {
             chrome: PaneChrome {
                 borders: PaneBordersConfig::Auto,
@@ -46,7 +46,7 @@ fn notifying_on(cols: u16, rows: u16, configure: impl FnOnce(&mut Notifying)) ->
         },
     )
     .notifying(notifying);
-    surface.update(paired());
+    surface.update(paired(), 0);
     frame(&mut surface, &HashSet::new());
     surface
 }
@@ -249,7 +249,7 @@ async fn a_status_without_a_known_agent_or_for_a_parked_pane_notifies_nothing() 
     let mut surface = herdr();
     let mut layout = paired();
     layout.parked.insert("t4".to_owned());
-    surface.update(layout);
+    surface.update(layout, 0);
     let now = Instant::now();
 
     let unknown = surface.heard(
@@ -370,7 +370,7 @@ async fn at_most_eight_toasts_wait_and_the_oldest_waiting_one_drops() {
     let terminals: Vec<String> = (10..20).map(|index| format!("t{index}")).collect();
     layout.workspaces[1].tabs[0].root =
         serde_json::from_value(super::balanced(&terminals)).expect("node");
-    surface.update(layout);
+    surface.update(layout, 0);
     let now = Instant::now();
     for terminal in &terminals {
         says(&mut surface, terminal, &["blocked"], now);
@@ -947,7 +947,7 @@ async fn a_press_on_the_toast_over_a_pane_border_opens_it_without_starting_a_dra
         "second": {"kind": "pane", "terminal": "t2"},
     }))
     .expect("node");
-    surface.update(layout);
+    surface.update(layout, 0);
     screen(&mut surface);
     says(&mut surface, "t3", &["blocked"], Instant::now());
     screen(&mut surface);
