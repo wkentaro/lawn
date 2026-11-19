@@ -1,10 +1,14 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::{follow, reported, snapshot, status_reported, statuses, Report, Status, Terminals};
+use super::{
+    follow, forget_reported, reported, resume_reported, roots, snapshot, status_reported, statuses,
+    Report, Status, Terminals,
+};
 use crate::api::schema::AgentStatus;
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::test_support::TestCore;
@@ -84,6 +88,110 @@ fn a_missed_message_reports_a_fresh_snapshot() {
     ]}});
 
     assert_eq!(reported(&message), Some(folders(&[("t2", "/srv/app")])));
+}
+
+#[test]
+fn a_restarted_terminal_asks_to_resume_its_agent() {
+    let message = json!({"method": "event", "params": {
+        "type": "restarted", "terminal": "t4", "data": {"address": "t4", "pid": 77},
+    }});
+
+    assert_eq!(
+        resume_reported(&message),
+        Some(Report::Resume(Some("t4".to_owned())))
+    );
+}
+
+#[test]
+fn a_missed_message_asks_to_resume_every_agent() {
+    let message = json!({"method": "missed", "params": {"terminals": []}});
+
+    assert_eq!(resume_reported(&message), Some(Report::Resume(None)));
+}
+
+#[test]
+fn other_events_ask_for_no_resume() {
+    for kind in ["lost", "created", "foreground", "status"] {
+        let message = json!({"method": "event", "params": {"type": kind, "terminal": "t4"}});
+        assert_eq!(resume_reported(&message), None, "{kind}");
+    }
+}
+
+#[test]
+fn hearing_a_resume_or_forget_request_draws_nothing() {
+    let mut terminals = Terminals::default();
+
+    assert!(!terminals.hear(Report::Resume(None), |_| true, |_| true));
+    assert!(!terminals.hear(Report::Forget(None), |_| true, |_| true));
+}
+
+fn foreground(terminal: &str, pid: u64) -> Value {
+    json!({"method": "event", "params": {
+        "type": "foreground", "terminal": terminal, "data": {"cwd": "/srv", "pid": pid},
+    }})
+}
+
+#[test]
+fn the_shell_taking_the_foreground_back_asks_to_forget_its_quit_agent() {
+    let mut roots = roots(&json!({"terminals": [{"address": "t1", "pid": 7}]}));
+
+    assert_eq!(
+        forget_reported(&foreground("t1", 7), &mut roots),
+        Some(Report::Forget(Some("t1".to_owned())))
+    );
+}
+
+#[test]
+fn a_job_taking_the_foreground_forgets_nothing() {
+    let mut roots = roots(&json!({"terminals": [{"address": "t1", "pid": 7}]}));
+
+    assert_eq!(forget_reported(&foreground("t1", 8), &mut roots), None);
+    assert_eq!(forget_reported(&foreground("t2", 7), &mut roots), None);
+}
+
+#[test]
+fn created_and_restarted_terminals_name_the_root_the_foreground_returns_to() {
+    let mut roots = roots(&json!({"terminals": [{"address": "t1", "pid": 7}]}));
+    for kind in ["created", "restarted"] {
+        let pid = if kind == "created" { 70 } else { 71 };
+        let message = json!({"method": "event", "params": {
+            "type": kind, "terminal": "t1", "data": {"address": "t1", "pid": pid},
+        }});
+        assert_eq!(forget_reported(&message, &mut roots), None);
+        assert_eq!(forget_reported(&foreground("t1", 7), &mut roots), None);
+        assert_eq!(
+            forget_reported(&foreground("t1", pid), &mut roots),
+            Some(Report::Forget(Some("t1".to_owned())))
+        );
+    }
+}
+
+#[test]
+fn a_removed_terminal_leaves_the_roots() {
+    let mut roots = roots(&json!({"terminals": [
+        {"address": "t1", "pid": 7}, {"address": "t2", "pid": 8},
+    ]}));
+    let message = json!({"method": "event", "params": {
+        "type": "removed", "terminal": "t1", "data": {},
+    }});
+
+    assert_eq!(forget_reported(&message, &mut roots), None);
+    assert_eq!(roots, HashMap::from([("t2".to_owned(), 8)]));
+}
+
+#[test]
+fn a_missed_message_asks_to_forget_every_quit_agent_and_relearns_roots() {
+    let mut roots = roots(&json!({"terminals": [{"address": "t1", "pid": 7}]}));
+    let message = json!({"method": "missed", "params": {"terminals": [
+        {"address": "t1", "pid": 9},
+    ]}});
+
+    assert_eq!(
+        forget_reported(&message, &mut roots),
+        Some(Report::Forget(None))
+    );
+    assert_eq!(forget_reported(&foreground("t1", 7), &mut roots), None);
+    assert!(forget_reported(&foreground("t1", 9), &mut roots).is_some());
 }
 
 fn said(state: &str) -> CoreStatus {
@@ -259,7 +367,11 @@ async fn until_seen(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: &st
             let folder = match reports.recv().await.expect("the follower stopped") {
                 Report::Snapshot(folders) => folders.get(terminal).cloned(),
                 Report::Folder(reported, folder) if reported == terminal => Some(folder),
-                Report::Folder(..) | Report::Statuses(_) | Report::Status(..) => None,
+                Report::Folder(..)
+                | Report::Statuses(_)
+                | Report::Status(..)
+                | Report::Resume(_)
+                | Report::Forget(_) => None,
             };
             if let Some(folder) = folder {
                 return folder.display().to_string();
@@ -345,4 +457,21 @@ async fn the_follower_reports_the_status_a_program_sends_and_a_later_follower_fi
 
     let mut later = follow().expect("follow");
     until_working(&mut later, &terminal).await;
+}
+
+#[tokio::test]
+async fn a_fresh_subscription_asks_to_resume_and_forget_every_agent() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    test.share();
+    let mut reports = follow().expect("follow");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while reports.recv().await.expect("the follower stopped") != Report::Resume(None) {}
+        assert_eq!(reports.recv().await, Some(Report::Forget(None)));
+    })
+    .await
+    .expect("a resume and a forget request");
 }

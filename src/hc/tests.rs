@@ -387,6 +387,13 @@ fn transport_core() -> (Core, mpsc::Receiver<Outgoing>) {
 }
 
 #[test]
+fn a_core_reports_the_methods_its_hello_advertised() {
+    let (core, _sent) = transport_core();
+    assert!(core.has_method("terminal.get"));
+    assert!(!core.has_method("terminal.send"));
+}
+
+#[test]
 fn a_closed_connection_refuses_before_submitting() {
     let (core, sent) = transport_core();
     lock(&core.routes).closed = true;

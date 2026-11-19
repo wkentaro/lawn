@@ -27,9 +27,14 @@ Lawn records which program the report belongs to: the terminal's root
 program, when this command runs inside it. A report from outside a running
 root program is not stored and prints the status "ignored". A program sent
 in the report is ignored. Recording never executes the reported command.
-Existing agent hooks are not connected to this recorder yet. Remote terminals
-are not supported. Reports are recorded only on Linux and macOS; elsewhere
-this command prints "ignored"."#;
+When that program is gone and the core has put a new shell in the terminal,
+the Lawn TUI types the last stored such report into the shell once, unless
+[session] resume_agents_on_restore is off. A report sent by a job of the root
+shell is forgotten when the root shell is back in the foreground, because
+that agent has quit. Existing agent hooks are not connected to this recorder
+yet. Remote terminals are not supported.
+Reports are recorded only on Linux and macOS; elsewhere this command prints
+"ignored"."#;
 
 fn parse(args: &[String]) -> Option<Result<String, clap::Error>> {
     if args.get(1).map(String::as_str) != Some("record-resume") {
