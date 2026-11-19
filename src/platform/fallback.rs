@@ -230,6 +230,14 @@ pub fn session_processes(_child_pid: u32) -> Vec<u32> {
 /// Unsupported platform stub.
 pub fn signal_processes(_pids: &[u32], _signal: Signal) {}
 
+pub fn process_group_id(_pid: u32) -> Option<u32> {
+    None
+}
+
+pub fn boot_id() -> Option<String> {
+    None
+}
+
 /// Unsupported platform stub.
 pub fn process_start_token(_pid: u32) -> Option<u64> {
     None
