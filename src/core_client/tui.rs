@@ -13,7 +13,10 @@ mod terminals;
 mod tests;
 
 pub(crate) fn maybe_run(args: &[String]) -> Option<io::Result<()>> {
-    (args.len() == 1).then(run)
+    (args.len() == 1).then(|| {
+        crate::exit_if_nested_disabled(&crate::config::Config::load().config);
+        run()
+    })
 }
 
 #[cfg(not(unix))]

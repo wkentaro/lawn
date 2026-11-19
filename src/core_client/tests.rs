@@ -179,3 +179,59 @@ fn ls_text_lists_a_parked_terminal_only_under_parked() {
 
 #[cfg(unix)]
 mod live;
+
+#[cfg(unix)]
+fn run_inside_a_pane(words: &str) -> std::process::Output {
+    const WORDS: &str = "LAWN_TEST_NESTED_WORDS";
+    let config = std::env::temp_dir().join(format!("lawn-nested-test-{}", std::process::id()));
+    std::fs::create_dir_all(&config).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "core_client::tests::a_child_runs_the_words_it_was_given",
+            "--nocapture",
+        ])
+        .env(WORDS, words)
+        .env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE)
+        .env("XDG_CONFIG_HOME", &config)
+        .env_remove(crate::config::CONFIG_PATH_ENV_VAR)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(&config).unwrap();
+    output
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_runs_the_words_it_was_given() {
+    let Some(words) = std::env::var_os("LAWN_TEST_NESTED_WORDS") else {
+        return;
+    };
+    let words: Vec<String> = words
+        .to_str()
+        .unwrap()
+        .split(' ')
+        .map(str::to_owned)
+        .collect();
+    let _ = super::maybe_run(&words);
+    println!("the command ran");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tui_refuses_to_open_inside_a_herdr_pane() {
+    let output = run_inside_a_pane("lawn");
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nested lawn is disabled"));
+}
+
+#[cfg(unix)]
+#[test]
+fn commands_still_run_inside_a_herdr_pane() {
+    let output = run_inside_a_pane("lawn record-resume");
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("nested lawn is disabled"));
+}

@@ -1491,7 +1491,7 @@ fn codex_v2_integration_status_is_outdated() {
 
     assert_eq!(codex.path, hook_path);
     assert_eq!(codex.installed_version, Some(2));
-    assert_eq!(codex.expected_version, 10);
+    assert_eq!(codex.expected_version, 11);
     assert_eq!(codex.state, IntegrationStatusKind::Outdated);
 
     std::env::remove_var("HOME");
@@ -5392,4 +5392,169 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     std::env::remove_var(GROK_HOME_ENV_VAR);
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
+}
+
+#[cfg(unix)]
+fn run_core_pane_hook(asset: &str, action: &str, input: &str) -> Option<String> {
+    run_core_pane_hook_with(asset, action, input, &[]).0
+}
+
+#[cfg(unix)]
+fn run_core_pane_hook_with(
+    asset: &str,
+    action: &str,
+    input: &str,
+    env: &[(&str, Option<&str>)],
+) -> (Option<String>, Option<String>) {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Command, Stdio};
+
+    static NEXT_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let base = Path::new("/tmp").join(format!(
+        "lawn-hook-{}-{}",
+        std::process::id(),
+        NEXT_BASE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&base).unwrap();
+    let hook = base.join("hook.sh");
+    fs::write(&hook, asset).unwrap();
+    let capture = base.join("args.txt");
+    let fake_lawn = base.join("lawn");
+    fs::write(
+        &fake_lawn,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\n",
+            capture.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_lawn, fs::Permissions::from_mode(0o755)).unwrap();
+    let socket = base.join("herdr.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let mut command = Command::new("sh");
+    command
+        .arg(&hook)
+        .arg(action)
+        .env_remove("HERDR_SOCKET_PATH")
+        .env_remove("HERDR_PANE_ID")
+        .env_remove("CODEX_THREAD_ID")
+        .env_remove("CURSOR_VERSION")
+        .env("HERDR_ENV", "1")
+        .env("LAWN_REWRITE", "1")
+        .env("HC_TERMINAL_ID", "t4")
+        .env("HERDR_BIN_PATH", &fake_lawn)
+        .env("TMPDIR", &base);
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value.replace("{socket}", socket.to_str().unwrap())),
+            None => command.env_remove(name),
+        };
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let args = fs::read_to_string(capture).ok();
+    let request = listener.accept().ok().map(|(mut stream, _)| {
+        stream.set_nonblocking(false).unwrap();
+        let mut request = String::new();
+        stream.read_to_string(&mut request).unwrap();
+        request
+    });
+    let _ = fs::remove_dir_all(base);
+    (args, request)
+}
+
+#[cfg(unix)]
+#[test]
+fn the_claude_hook_in_a_core_pane_reports_its_session_through_the_binary() {
+    let args = run_core_pane_hook(
+        CLAUDE_HOOK_ASSET,
+        "session",
+        r#"{"hook_event_name":"SessionStart","session_id":"s-1","transcript_path":"/tmp/s-1.jsonl","source":"startup"}"#,
+    )
+    .unwrap();
+    assert!(args
+        .starts_with("pane report-agent-session t4 --source herdr:claude --agent claude --seq "));
+    assert!(args.contains(
+        "--agent-session-id s-1 --agent-session-path /tmp/s-1.jsonl --session-start-source startup"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_claude_hook_in_a_core_pane_skips_reports_only_the_socket_takes() {
+    let args = run_core_pane_hook(
+        CLAUDE_HOOK_ASSET,
+        "subagent-start",
+        r#"{"hook_event_name":"SubagentStart","session_id":"s-1","agent_id":"a-1"}"#,
+    );
+    assert_eq!(args, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_codex_hook_in_a_core_pane_reports_its_session_through_the_binary() {
+    let args = run_core_pane_hook(
+        CODEX_HOOK_ASSET,
+        "session",
+        r#"{"hook_event_name":"SessionStart","session_id":"c-1","transcript_path":"/tmp/c-1.jsonl","source":"resume"}"#,
+    )
+    .unwrap();
+    assert!(
+        args.starts_with("pane report-agent-session t4 --source herdr:codex --agent codex --seq ")
+    );
+    assert!(args.contains("--agent-session-id c-1 --session-start-source resume"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_core_pane_hook_without_lawn_reports_over_the_socket() {
+    let session = r#"{"hook_event_name":"SessionStart","session_id":"c-1","transcript_path":"/tmp/c-1.jsonl","source":"resume"}"#;
+    for (asset, unset, value) in [
+        (CLAUDE_HOOK_ASSET, "HC_TERMINAL_ID", None),
+        (CLAUDE_HOOK_ASSET, "HERDR_BIN_PATH", None),
+        (CLAUDE_HOOK_ASSET, "HERDR_BIN_PATH", Some("/tmp")),
+        (CODEX_HOOK_ASSET, "HC_TERMINAL_ID", None),
+        (CODEX_HOOK_ASSET, "HERDR_BIN_PATH", None),
+        (CODEX_HOOK_ASSET, "HERDR_BIN_PATH", Some("/tmp")),
+    ] {
+        let (args, request) = run_core_pane_hook_with(
+            asset,
+            "session",
+            session,
+            &[
+                (unset, value),
+                ("HERDR_SOCKET_PATH", Some("{socket}")),
+                ("HERDR_PANE_ID", Some("p-1")),
+            ],
+        );
+        assert_eq!(args, None, "{unset}");
+        let request = request.unwrap_or_else(|| panic!("{unset}: no socket report"));
+        let request: serde_json::Value = serde_json::from_str(request.trim()).unwrap();
+        assert_eq!(request["method"], "pane.report_agent_session", "{unset}");
+        assert_eq!(request["params"]["pane_id"], "p-1", "{unset}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_core_pane_hook_ignores_input_that_is_not_an_object() {
+    for asset in [CLAUDE_HOOK_ASSET, CODEX_HOOK_ASSET] {
+        assert_eq!(run_core_pane_hook(asset, "session", "[]"), None);
+    }
 }
