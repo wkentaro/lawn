@@ -16,7 +16,7 @@ use crate::core_client::tui::session::PaneChrome;
 use crate::core_client::view::{Geometry, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
-use crate::protocol::PaneSurfacePatchRow;
+use crate::protocol::{CellData, PaneSurfacePatchRow};
 use crate::session_doc::Layout;
 use crate::ui::theme::Palette;
 
@@ -57,7 +57,16 @@ fn surface_with_scrollbars(cols: u16, rows: u16, scrollbars: bool) -> Surface {
             on_select: true,
             toast: Some(ToastClipboardPosition::BottomCenter),
         },
+        keybinds(),
     )
+}
+
+fn keybinds() -> crate::config::LiveKeybindConfig {
+    let config = Config::default();
+    crate::config::LiveKeybindConfig {
+        prefix: config.prefix_keys(),
+        keybinds: config.keybinds(),
+    }
 }
 
 fn row_of(terminals: &[String]) -> Layout {
@@ -135,6 +144,46 @@ fn frame_attaching(
     )
 }
 
+struct Screen {
+    cols: u16,
+    cells: Vec<CellData>,
+}
+
+impl Screen {
+    fn of(surface: &mut Surface) -> Self {
+        surface.resize(surface.host);
+        let blank = CellData::from_ratatui_cell(&ratatui::buffer::Cell::default());
+        let size = usize::from(surface.host.cols) * usize::from(surface.host.rows);
+        let mut screen = Self {
+            cols: surface.host.cols,
+            cells: vec![blank; size],
+        };
+        screen.show(surface, &HashSet::new());
+        screen
+    }
+
+    fn show(&mut self, surface: &mut Surface, dirty: &HashSet<PaneId>) {
+        let rows = frame(surface, dirty);
+        crate::protocol::surface_delta::apply_rows(&mut self.cells, self.cols, &rows);
+    }
+
+    fn cell(&self, x: u16, y: u16) -> &CellData {
+        &self.cells[usize::from(y) * usize::from(self.cols) + usize::from(x)]
+    }
+
+    fn span(&self, y: u16, xs: std::ops::Range<u16>) -> String {
+        xs.map(|x| self.cell(x, y).symbol.as_str()).collect()
+    }
+
+    fn line(&self, y: u16) -> String {
+        self.span(y, 0..self.cols)
+    }
+
+    fn lines(&self, ys: std::ops::Range<u16>) -> Vec<String> {
+        ys.map(|y| self.line(y).trim_end().to_owned()).collect()
+    }
+}
+
 fn never_attach(_: &str, _: PaneId, _: Geometry) {
     unreachable!("no pane to attach");
 }
@@ -171,7 +220,7 @@ fn mouse(surface: &mut Surface, event: MouseEvent) -> Option<String> {
 fn copied_text(pointed: Option<super::Pointed>) -> Option<String> {
     match pointed? {
         super::Pointed::Copied(text) => Some(text),
-        super::Pointed::Act(action) => unreachable!("{action:?}"),
+        pointed => unreachable!("{pointed:?}"),
     }
 }
 
@@ -500,6 +549,7 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
             on_select: true,
             toast: None,
         },
+        keybinds(),
     );
     surface.update(
         serde_json::from_value(
@@ -1857,3 +1907,4 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
 
 mod chrome;
 mod copy_mode;
+mod dialog;

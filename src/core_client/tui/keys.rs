@@ -14,6 +14,7 @@ pub(super) enum Routed {
     Binding(KeybindMatch),
     Copy,
     CopyMode(TerminalKey),
+    Dialog(TerminalKey),
     Dismiss,
 }
 
@@ -23,6 +24,7 @@ pub(super) enum Mode {
     Copy,
     Prompt,
     Switcher,
+    Dialog,
 }
 
 pub(super) struct Keys {
@@ -197,6 +199,11 @@ impl Keys {
         if mode == Mode::Prompt {
             self.prefix = false;
             return to_focus(routed);
+        }
+        if mode == Mode::Dialog {
+            self.prefix = false;
+            routed.push(Routed::Dialog(key.clone()));
+            return None;
         }
         if mode == Mode::Switcher {
             self.prefix = false;

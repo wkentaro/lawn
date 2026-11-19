@@ -2,6 +2,7 @@ use std::io;
 
 mod chrome;
 mod copy_mode;
+mod dialog;
 mod follow;
 mod keys;
 mod select;
@@ -100,18 +101,14 @@ mod unix {
         Ok(core)
     }
 
-    fn bindings(config: &Config, keys: HostKeys) -> Keys {
-        Keys::new(
-            config
-                .live_keybinds_with_diagnostics()
-                .map(|(keybinds, _diagnostics)| keybinds)
-                .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
-                    prefix: config.prefix_keys(),
-                    keybinds: config.keybinds(),
-                }),
-            keys.erase_is_ctrl_h,
-            keys.kitty,
-        )
+    fn live_keybinds(config: &Config) -> LiveKeybindConfig {
+        config
+            .live_keybinds_with_diagnostics()
+            .map(|(keybinds, _diagnostics)| keybinds)
+            .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
+                prefix: config.prefix_keys(),
+                keybinds: config.keybinds(),
+            })
     }
 
     fn perform(
@@ -168,6 +165,7 @@ mod unix {
         mut stop: Stop,
     ) -> io::Result<()> {
         let config = Config::load().config;
+        let keybinds = live_keybinds(&config);
         let mut surface = Surface::new(
             host,
             PaneChrome {
@@ -187,6 +185,7 @@ mod unix {
                     .enabled
                     .then_some(config.ui.toast.clipboard.position),
             },
+            keybinds.clone(),
         );
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
@@ -203,15 +202,12 @@ mod unix {
         let (created_tx, mut created) = mpsc::unbounded_channel();
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
-        let mut bindings = bindings(&config, keys);
+        let mut bindings = Keys::new(keybinds, keys.erase_is_ctrl_h, keys.kitty);
         let scrollback = Scrollback::from(&config);
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
-        let act = |surface: &mut Surface, action: KeybindAction| {
-            let Some(operation) = surface.act(action, config.ui.confirm_close) else {
-                return;
-            };
+        let run = |surface: &Surface, operation: Operation| {
             let cwd = surface
                 .focused()
                 .and_then(View::cwd)
@@ -223,6 +219,11 @@ mod unix {
                 cwd,
                 created_tx.clone(),
             );
+        };
+        let act = |surface: &mut Surface, action: KeybindAction| {
+            if let Some(operation) = surface.act(action, config.ui.confirm_close) {
+                run(surface, operation);
+            }
         };
         loop {
             tokio::select! {
@@ -311,6 +312,7 @@ mod unix {
                                         copy.send(text.into_bytes()).ok();
                                     }
                                     Some(Pointed::Act(action)) => act(&mut surface, action),
+                                    Some(Pointed::Run(operation)) => run(&surface, operation),
                                     None => {}
                                 }
                                 continue;
@@ -324,7 +326,10 @@ mod unix {
                                 continue;
                             }
                             event => {
-                                if surface.switching() || surface.copy_mode_input(&event) {
+                                if surface.dialog_input(&event)
+                                    || surface.switching()
+                                    || surface.copy_mode_input(&event)
+                                {
                                     continue;
                                 }
                                 if matches!(event, RawInputEvent::Text(_) | RawInputEvent::Paste(_)) {
@@ -338,16 +343,23 @@ mod unix {
                         };
                         let focused = surface.focused_id();
                         let deselects = key.kind != KeyEventKind::Release
-                            && !matches!(key.code, KeyCode::Modifier(_));
+                            && !matches!(key.code, KeyCode::Modifier(_))
+                            && !surface.dialog_open();
                         let routes = bindings.route_host(
                             key,
                             focused,
                             surface.copyable(),
-                            match (surface.switching(), surface.copy_mode(), surface.prompting()) {
-                                (true, ..) => Mode::Switcher,
-                                (false, false, _) => Mode::Panes,
-                                (false, true, false) => Mode::Copy,
-                                (false, true, true) => Mode::Prompt,
+                            match (
+                                surface.dialog_open(),
+                                surface.switching(),
+                                surface.copy_mode(),
+                                surface.prompting(),
+                            ) {
+                                (true, ..) => Mode::Dialog,
+                                (false, true, ..) => Mode::Switcher,
+                                (false, false, false, _) => Mode::Panes,
+                                (false, false, true, false) => Mode::Copy,
+                                (false, false, true, true) => Mode::Prompt,
                             },
                             |key| keys.committed_text(key),
                         );
@@ -379,6 +391,17 @@ mod unix {
                                     }
                                     if let Some(text) = surface.copy_mode_key(&key) {
                                         copy.send(text.into_bytes()).ok();
+                                    }
+                                    continue;
+                                }
+                                Routed::Dialog(key) => {
+                                    if surface
+                                        .paste_shortcut(&key, crate::platform::read_clipboard_text)
+                                    {
+                                        continue;
+                                    }
+                                    if let Some(operation) = surface.dialog_key(&key) {
+                                        run(&surface, operation);
                                     }
                                     continue;
                                 }

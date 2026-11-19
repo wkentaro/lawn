@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 use serde_json::json;
 
-use super::{Operation, PaneChrome, Session};
+use super::{Operation, PaneChrome, Request, Session};
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
 use crate::session_doc::{Destination, Direction, Layout};
@@ -356,7 +356,10 @@ fn a_created_terminal_takes_focus_when_its_layout_arrived_first() {
 }
 
 fn operation(session: &Session, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
-    session.operation(action, confirm_close)
+    match session.operation(action, confirm_close)? {
+        Request::Run(operation) => Some(operation),
+        Request::Confirm(_) => None,
+    }
 }
 
 fn close(terminals: &[&str]) -> Option<Operation> {
@@ -481,4 +484,98 @@ fn a_tab_with_only_parked_panes_does_not_count_against_asking_to_close() {
         operation(&session, KeybindAction::CloseTab, false),
         close(&["a"])
     );
+}
+
+fn asked(session: &Session, action: KeybindAction) -> super::Closing {
+    match session.operation(action, true) {
+        Some(Request::Confirm(closing)) => closing,
+        other => panic!("{action:?} did not ask: {other:?}"),
+    }
+}
+
+#[test]
+fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    assert_eq!(
+        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        "workspace — 3 panes"
+    );
+
+    let mut named = two_tabs(&["b"]);
+    named.workspaces[0].name = Some("main".to_owned());
+    session.update(named);
+    assert_eq!(
+        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        "main — 3 panes, 1 parked"
+    );
+
+    navigate(&mut session, KeybindAction::NextWorkspace);
+    assert_eq!(
+        asked(&session, KeybindAction::ClosePane).detail(),
+        "workspace — 1 pane"
+    );
+
+    session.update(layout(json!({
+        "workspaces": [{"id": "w0", "tabs": [
+            {"id": "t0", "root": split(pane("a"), pane("b"))},
+        ]}],
+        "parked": ["b"],
+    })));
+    assert_eq!(
+        asked(&session, KeybindAction::CloseTab).detail(),
+        "workspace — 2 panes, 1 parked"
+    );
+    session.update(layout(json!({
+        "workspaces": [
+            {"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]},
+            {"id": "w1", "tabs": [{"id": "t1", "root": pane("b")}]},
+        ],
+        "parked": ["b"],
+    })));
+    navigate(&mut session, KeybindAction::NextWorkspace);
+    assert_eq!(
+        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        "workspace — 1 parked pane"
+    );
+}
+
+#[test]
+fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_it_is_gone() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    let workspace = asked(&session, KeybindAction::CloseWorkspace);
+    navigate(&mut session, KeybindAction::NextWorkspace);
+    let last_pane = asked(&session, KeybindAction::ClosePane);
+    let lone_tab = asked(&session, KeybindAction::CloseTab);
+
+    let mut grown = two_tabs(&[]);
+    grown.workspaces[0].tabs[1].root =
+        serde_json::from_value(split(pane("c"), pane("e"))).expect("root");
+    grown.workspaces[1].tabs[0].root =
+        serde_json::from_value(split(pane("d"), pane("f"))).expect("root");
+    session.update(grown);
+    assert_eq!(session.confirmed(&workspace), close(&["a", "b", "c", "e"]));
+    assert_eq!(session.confirmed(&last_pane), close(&["d"]));
+    assert_eq!(session.confirmed(&lone_tab), close(&["d", "f"]));
+
+    let mut moved = two_tabs(&[]);
+    moved.workspaces[1].tabs[0].root = serde_json::from_value(pane("f")).expect("root");
+    session.update(moved);
+    assert_eq!(session.confirmed(&last_pane), None);
+    assert_eq!(session.confirmed(&lone_tab), close(&["f"]));
+
+    session.update(two_tabs(&["d"]));
+    assert_eq!(session.confirmed(&last_pane), None);
+
+    session.update(layout(
+        json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": pane("a")}]}]}),
+    ));
+    assert_eq!(session.confirmed(&workspace), close(&["a"]));
+    assert_eq!(session.confirmed(&lone_tab), None);
+
+    session.update(layout(
+        json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t1", "root": pane("c")}]}]}),
+    ));
+    assert_eq!(session.confirmed(&workspace), close(&["c"]));
 }

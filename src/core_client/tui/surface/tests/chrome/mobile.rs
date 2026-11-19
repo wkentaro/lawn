@@ -1,45 +1,5 @@
 use super::*;
 
-struct Screen {
-    cols: u16,
-    cells: Vec<CellData>,
-}
-
-impl Screen {
-    fn of(surface: &mut Surface) -> Self {
-        surface.resize(surface.host);
-        let blank = CellData::from_ratatui_cell(&ratatui::buffer::Cell::default());
-        let size = usize::from(surface.host.cols) * usize::from(surface.host.rows);
-        let mut screen = Self {
-            cols: surface.host.cols,
-            cells: vec![blank; size],
-        };
-        screen.show(surface, &HashSet::new());
-        screen
-    }
-
-    fn show(&mut self, surface: &mut Surface, dirty: &HashSet<PaneId>) {
-        let rows = frame(surface, dirty);
-        crate::protocol::surface_delta::apply_rows(&mut self.cells, self.cols, &rows);
-    }
-
-    fn cell(&self, x: u16, y: u16) -> &CellData {
-        &self.cells[usize::from(y) * usize::from(self.cols) + usize::from(x)]
-    }
-
-    fn span(&self, y: u16, xs: std::ops::Range<u16>) -> String {
-        xs.map(|x| self.cell(x, y).symbol.as_str()).collect()
-    }
-
-    fn line(&self, y: u16) -> String {
-        self.span(y, 0..self.cols)
-    }
-
-    fn lines(&self, ys: std::ops::Range<u16>) -> Vec<String> {
-        ys.map(|y| self.line(y).trim_end().to_owned()).collect()
-    }
-}
-
 fn two_workspaces() -> Layout {
     spaces(&[(Some("main"), &[None, None]), (Some("other"), &[None])])
 }
@@ -525,4 +485,27 @@ async fn the_header_and_the_switcher_name_an_unnamed_workspace_after_its_folder(
     let screen = Screen::of(&mut surface);
 
     assert_eq!(screen.line(5).trim_end(), "   app");
+}
+
+#[tokio::test]
+async fn a_dialog_over_the_switcher_hides_it_and_the_switcher_returns_once_the_dialog_closes() {
+    let (mut surface, mut screen) = opened(two_workspaces());
+    let switcher = screen.lines(0..20);
+
+    surface.act(KeybindAction::CloseWorkspace, true);
+    assert!(surface.dialog_open());
+    screen.show(&mut surface, &HashSet::new());
+    assert!(switcher[0].starts_with(" switch"));
+    assert!(screen.line(0).starts_with(" main"), "{:?}", screen.line(0));
+    assert!(screen.line(7).contains("┌"), "{:?}", screen.line(7));
+    assert!(
+        screen.line(8).contains(" Close workspace?"),
+        "{:?}",
+        screen.line(8)
+    );
+
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(surface.switching());
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(screen.lines(0..20), switcher);
 }
