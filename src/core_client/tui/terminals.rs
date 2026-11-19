@@ -16,6 +16,7 @@ pub(super) enum Report {
     Folder(String, PathBuf),
     Statuses(HashMap<String, CoreStatus>),
     Status(String, CoreStatus),
+    Ended(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,6 +98,7 @@ impl Terminals {
                     })
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows),
+            Report::Ended(_) => false,
         }
     }
 
@@ -200,6 +202,9 @@ fn reported(message: &Value) -> Option<Report> {
             params["terminal"].as_str()?.to_owned(),
             params["data"]["cwd"].as_str()?.into(),
         )),
+        ("event", Some("finished" | "removed")) => {
+            Some(Report::Ended(params["terminal"].as_str()?.to_owned()))
+        }
         ("missed", _) => Some(snapshot(params)),
         _ => None,
     }

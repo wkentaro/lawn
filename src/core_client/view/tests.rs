@@ -749,3 +749,18 @@ async fn a_core_view_scrolls_back_through_output_printed_after_the_attach() {
         "1",
     );
 }
+
+#[tokio::test]
+async fn the_scrollback_text_is_the_whole_history_unstyled_with_wrapped_lines_joined() {
+    let (view, _input) = View::test_with_input(10, 3);
+    feed(&view, b"first\r\n\x1b[31mred\x1b[0m\r\n");
+    feed(&view, b"abcdefghijklmno\r\n");
+    for line in 0..20 {
+        feed(&view, format!("line {line}\r\n").as_bytes());
+    }
+    feed(&view, b"last");
+
+    let lines: Vec<String> = (0..20).map(|line| format!("line {line}")).collect();
+    let expected = format!("first\nred\nabcdefghijklmno\n{}\nlast", lines.join("\n"));
+    assert_eq!(view.scrollback_text(), expected);
+}

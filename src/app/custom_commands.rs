@@ -531,7 +531,7 @@ impl App {
     }
 }
 
-fn write_scrollback_temp_file(content: &str) -> io::Result<std::path::PathBuf> {
+pub(crate) fn write_scrollback_temp_file(content: &str) -> io::Result<std::path::PathBuf> {
     let mut last_collision = None;
     for attempt in 0..16 {
         let path = unique_scrollback_path(attempt);

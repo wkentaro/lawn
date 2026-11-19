@@ -12,7 +12,7 @@ use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
 use super::dialog::{Dialog, Modal, Outcome, Rename};
 use super::select::{Copying, Select};
-use super::session::{Operation, PaneChrome, Request, Session, Tiles};
+use super::session::{Operation, Overlay, PaneChrome, Request, ScrollbackText, Session, Tiles};
 use super::terminals::Report;
 use crate::config::{LiveKeybindConfig, ToastClipboardPosition};
 use crate::core_client::view::{Geometry, View};
@@ -239,11 +239,13 @@ impl Surface {
         }
     }
 
-    pub(super) fn update(&mut self, layout: Layout, version: u64) {
-        if self.session.update(layout, version) {
-            self.relayout = true;
-            self.sync_focus();
-        }
+    pub(super) fn update(&mut self, layout: Layout, version: u64) -> Vec<String> {
+        let Some(closed) = self.session.update(layout, version) else {
+            return Vec::new();
+        };
+        self.relayout = true;
+        self.sync_focus();
+        closed
     }
 
     pub(super) fn act(&mut self, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
@@ -338,8 +340,26 @@ impl Surface {
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
+        self.beside_focused(argv).map(Operation::Overlay)
+    }
+
+    pub(super) fn scrollback(&mut self, editor: Option<String>) -> Option<Operation> {
+        let text = self.focused()?.scrollback_text();
+        let mut overlay = self.beside_focused(Vec::new())?;
+        overlay.env.extend(
+            editor
+                .filter(|editor| !editor.is_empty())
+                .map(|editor| ("EDITOR".to_owned(), editor)),
+        );
+        Some(Operation::Overlay(Overlay {
+            scrollback: Some(ScrollbackText(text)),
+            ..overlay
+        }))
+    }
+
+    fn beside_focused(&mut self, argv: Vec<String>) -> Option<Overlay> {
         let env = self.command_env().0;
-        self.session.overlay(argv, env).map(Operation::Overlay)
+        self.session.overlay(argv, env)
     }
 
     fn pane_ready(&self) -> bool {
@@ -355,11 +375,13 @@ impl Surface {
         command_env(&self.session, &self.views)
     }
 
-    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) {
-        if self.session.started(request, placed) {
+    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) -> Vec<String> {
+        let (moved, closed) = self.session.started(request, placed);
+        if moved {
             self.relayout = true;
             self.sync_focus();
         }
+        closed
     }
 
     pub(super) fn host_focus(&mut self, focused: bool) {

@@ -55,6 +55,17 @@ fn a_foreground_event_reports_the_folder_the_program_moved_to() {
 }
 
 #[test]
+fn a_finished_or_removed_terminal_reports_its_end() {
+    for kind in ["finished", "removed"] {
+        let message = json!({"method": "event", "params": {
+            "type": kind, "terminal": "t1", "data": {},
+        }});
+
+        assert_eq!(reported(&message), Some(Report::Ended("t1".to_owned())));
+    }
+}
+
+#[test]
 fn a_foreground_event_without_a_folder_reports_nothing() {
     let message = json!({"method": "event", "params": {
         "type": "foreground", "terminal": "t1", "data": {"cwd": null},
@@ -259,7 +270,10 @@ async fn until_seen(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: &st
             let folder = match reports.recv().await.expect("the follower stopped") {
                 Report::Snapshot(folders) => folders.get(terminal).cloned(),
                 Report::Folder(reported, folder) if reported == terminal => Some(folder),
-                Report::Folder(..) | Report::Statuses(_) | Report::Status(..) => None,
+                Report::Folder(..)
+                | Report::Statuses(_)
+                | Report::Status(..)
+                | Report::Ended(_) => None,
             };
             if let Some(folder) = folder {
                 return folder.display().to_string();
