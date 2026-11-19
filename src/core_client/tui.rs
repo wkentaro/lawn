@@ -3,6 +3,7 @@ use std::io;
 mod chrome;
 mod copy_mode;
 mod dialog;
+mod endings;
 mod follow;
 mod keys;
 mod select;
@@ -241,6 +242,9 @@ mod unix {
             }
         };
         loop {
+            if let Some(operation) = surface.closing() {
+                operations.send((operation, launched_in.clone())).ok();
+            }
             tokio::select! {
                 () = wake.wait() => {
                     due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
@@ -458,6 +462,9 @@ mod unix {
                         let Some(terminal) = surface.terminal(id).map(str::to_owned) else {
                             continue;
                         };
+                        if !surface.ask(&terminal) {
+                            continue;
+                        }
                         operations
                             .send((Operation::Close(vec![terminal]), launched_in.clone()))
                             .ok();

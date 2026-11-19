@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use super::endings::{Ending, Endings};
 use crate::api::schema::AgentStatus;
 use crate::detect::{Agent, AgentState};
 use crate::pane::{core_status, CoreStatus};
@@ -16,6 +17,7 @@ pub(super) enum Report {
     Folder(String, PathBuf),
     Statuses(HashMap<String, CoreStatus>),
     Status(String, CoreStatus),
+    Ending(Ending),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,6 +39,7 @@ pub(super) struct Terminals {
     folder_names: HashMap<String, String>,
     statuses: HashMap<String, Status>,
     changes: u64,
+    endings: Endings,
 }
 
 impl Terminals {
@@ -97,7 +100,15 @@ impl Terminals {
                     })
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows),
+            Report::Ending(ending) => {
+                self.endings.hear(ending);
+                false
+            }
         }
+    }
+
+    pub(super) fn endings(&mut self) -> &mut Endings {
+        &mut self.endings
     }
 
     fn report(
@@ -170,6 +181,7 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
     };
     if reports.send(snapshot(&subscription.snapshot)).is_err()
         || reports.send(statuses(&subscription.snapshot)).is_err()
+        || reports.send(finished(&subscription.snapshot)).is_err()
     {
         return false;
     }
@@ -182,6 +194,9 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
                 reports.send(report).ok();
             }
             if let Some(report) = status_reported(message) {
+                reports.send(report).ok();
+            }
+            if let Some(report) = ended_reported(message) {
                 reports.send(report).ok();
             }
         },
@@ -242,6 +257,36 @@ fn statuses(snapshot: &Value) -> Report {
             })
             .collect(),
     )
+}
+
+fn ended_reported(message: &Value) -> Option<Report> {
+    let params = &message["params"];
+    let ending = match (message["method"].as_str()?, params["type"].as_str()) {
+        ("missed", _) => return Some(finished(params)),
+        ("event", Some("finished")) => Ending::Finished,
+        ("event", Some("created" | "restarted")) => Ending::Live,
+        ("event", Some("removed")) => Ending::Removed,
+        _ => return None,
+    };
+    Some(Report::Ending(ending(
+        params["terminal"].as_str()?.to_owned(),
+    )))
+}
+
+fn finished(snapshot: &Value) -> Report {
+    let addresses = |state: &str| {
+        snapshot["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|record| record["state"] == state)
+            .filter_map(|record| Some(record["address"].as_str()?.to_owned()))
+            .collect()
+    };
+    Report::Ending(Ending::Snapshot {
+        finished: addresses("finished"),
+        live: addresses("live"),
+    })
 }
 
 fn record(record: &Value) -> Option<(String, PathBuf)> {

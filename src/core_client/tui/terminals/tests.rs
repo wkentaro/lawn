@@ -4,12 +4,17 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{follow, reported, snapshot, status_reported, statuses, Report, Status, Terminals};
+use super::{
+    ended_reported, finished, follow, reported, snapshot, status_reported, statuses, Report,
+    Status, Terminals,
+};
 use crate::api::schema::AgentStatus;
+use crate::core_client::tui::endings::Ending;
+use crate::core_client::tui::session::{Operation, Session};
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::test_support::TestCore;
 use crate::pane::{core_status, CoreStatus};
-use crate::session_doc::Destination;
+use crate::session_doc::{Destination, Store};
 
 fn folders(pairs: &[(&str, &str)]) -> Report {
     Report::Snapshot(
@@ -84,6 +89,76 @@ fn a_missed_message_reports_a_fresh_snapshot() {
     ]}});
 
     assert_eq!(reported(&message), Some(folders(&[("t2", "/srv/app")])));
+}
+
+fn ending(ending: Ending) -> Option<Report> {
+    Some(Report::Ending(ending))
+}
+
+fn snapshot_of(finished: &[&str], live: &[&str]) -> Report {
+    let set = |terminals: &[&str]| terminals.iter().map(|t| (*t).to_owned()).collect();
+    Report::Ending(Ending::Snapshot {
+        finished: set(finished),
+        live: set(live),
+    })
+}
+
+fn event(kind: &str, terminal: &str) -> serde_json::Value {
+    json!({"method": "event", "params": {
+        "type": kind, "terminal": terminal, "data": {"reason": "exited", "exit_code": 0},
+    }})
+}
+
+#[test]
+fn a_finished_event_reports_that_the_program_ended() {
+    assert_eq!(
+        ended_reported(&event("finished", "t1")),
+        ending(Ending::Finished("t1".to_owned()))
+    );
+}
+
+#[test]
+fn a_lost_terminal_is_not_reported_as_ended() {
+    assert_eq!(ended_reported(&event("lost", "t1")), None);
+}
+
+#[test]
+fn a_removed_terminal_is_reported_as_removed() {
+    assert_eq!(
+        ended_reported(&event("removed", "t1")),
+        ending(Ending::Removed("t1".to_owned()))
+    );
+}
+
+#[test]
+fn a_created_or_restarted_terminal_is_reported_as_live() {
+    for kind in ["created", "restarted"] {
+        assert_eq!(
+            ended_reported(&event(kind, "t1")),
+            ending(Ending::Live("t1".to_owned())),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_reports_the_finished_terminals_and_the_live_ones() {
+    let message = json!({"terminals": [
+        {"address": "t1", "state": "finished", "reason": "exited"},
+        {"address": "t2", "state": "live"},
+        {"address": "t3", "state": "live", "reason": "holder_lost"},
+    ]});
+
+    assert_eq!(finished(&message), snapshot_of(&["t1"], &["t2", "t3"]));
+}
+
+#[test]
+fn a_missed_message_reports_the_terminals_finished_by_then() {
+    let message = json!({"method": "missed", "params": {"terminals": [
+        {"address": "t2", "state": "finished", "reason": "killed"},
+    ]}});
+
+    assert_eq!(ended_reported(&message), Some(snapshot_of(&["t2"], &[])));
 }
 
 fn said(state: &str) -> CoreStatus {
@@ -259,7 +334,10 @@ async fn until_seen(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: &st
             let folder = match reports.recv().await.expect("the follower stopped") {
                 Report::Snapshot(folders) => folders.get(terminal).cloned(),
                 Report::Folder(reported, folder) if reported == terminal => Some(folder),
-                Report::Folder(..) | Report::Statuses(_) | Report::Status(..) => None,
+                Report::Folder(..)
+                | Report::Statuses(_)
+                | Report::Status(..)
+                | Report::Ending(_) => None,
             };
             if let Some(folder) = folder {
                 return folder.display().to_string();
@@ -345,4 +423,39 @@ async fn the_follower_reports_the_status_a_program_sends_and_a_later_follower_fi
 
     let mut later = follow().expect("follow");
     until_working(&mut later, &terminal).await;
+}
+
+#[tokio::test]
+async fn a_program_that_exits_is_closed_once_the_session_hears_it() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    test.share();
+    let argv = ["true".to_owned()];
+    let mut reports = follow().expect("follow");
+    let terminal = Lifecycle::new(test.core.clone(), "followed")
+        .start_first(Path::new("/"), &argv)
+        .expect("start")
+        .expect("a first shell")
+        .terminal;
+    let mut session = Session::default();
+    session.update(
+        Store::new(test.core.clone(), "followed", None)
+            .load()
+            .expect("load")
+            .layout,
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            session.heard(reports.recv().await.expect("the follower stopped"));
+            if let Some(operation) = session.closing(|_| false) {
+                return operation;
+            }
+        }
+    })
+    .await
+    .map(|operation| assert_eq!(operation, Operation::Close(vec![terminal])))
+    .expect("the close");
 }

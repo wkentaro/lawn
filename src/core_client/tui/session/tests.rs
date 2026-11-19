@@ -1,8 +1,9 @@
 use ratatui::layout::Rect;
 use serde_json::json;
 
-use super::{Operation, PaneChrome, Request, Session};
+use super::{Operation, PaneChrome, Report, Request, Session};
 use crate::config::PaneBordersConfig;
+use crate::core_client::tui::endings::Ending;
 use crate::input::KeybindAction;
 use crate::session_doc::{Destination, Direction, Layout};
 
@@ -578,4 +579,137 @@ fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_
         json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t1", "root": pane("c")}]}]}),
     ));
     assert_eq!(session.confirmed(&workspace), close(&["c"]));
+}
+
+fn ended(session: &mut Session, terminal: &str) {
+    session.heard(Report::Ending(Ending::Finished(terminal.to_owned())));
+}
+
+#[test]
+fn a_program_that_ends_in_a_tab_not_shown_closes_its_pane() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    session.closing(|_| false);
+
+    ended(&mut session, "c");
+    ended(&mut session, "d");
+
+    assert_eq!(session.closing(|_| false), close(&["c", "d"]));
+}
+
+#[test]
+fn an_end_heard_before_the_layout_that_places_it_closes_the_pane_once_the_layout_arrives() {
+    let mut session = Session::default();
+    ended(&mut session, "c");
+    assert_eq!(session.closing(|_| false), None);
+
+    session.update(two_tabs(&[]));
+
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+}
+
+#[test]
+fn a_layout_arriving_again_does_not_ask_to_close_twice() {
+    let mut session = Session::default();
+    ended(&mut session, "c");
+    session.update(two_tabs(&[]));
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+
+    session.update(two_tabs(&[]));
+    ended(&mut session, "c");
+
+    assert_eq!(session.closing(|_| false), None);
+}
+
+#[test]
+fn a_parked_program_that_ends_closes_its_pane() {
+    let mut session = Session::default();
+    ended(&mut session, "b");
+    session.update(two_tabs(&["b"]));
+
+    assert_eq!(session.closing(|_| false), close(&["b"]));
+}
+
+#[test]
+fn a_program_the_session_does_not_own_ending_closes_nothing() {
+    let mut session = Session::default();
+    ended(&mut session, "z");
+    session.update(two_tabs(&[]));
+
+    assert_eq!(session.closing(|_| false), None);
+}
+
+#[test]
+fn an_end_followed_by_a_removal_still_closes_the_pane_once_nothing_views_it() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    let viewed = session.id("c");
+    ended(&mut session, "c");
+    assert_eq!(session.closing(|id| id == viewed), None);
+
+    session.heard(Report::Ending(Ending::Removed("c".to_owned())));
+
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+}
+
+#[test]
+fn a_removed_terminal_the_session_does_not_own_is_no_longer_remembered_as_ended() {
+    let mut session = Session::default();
+    ended(&mut session, "c");
+    session.heard(Report::Ending(Ending::Removed("c".to_owned())));
+
+    session.update(two_tabs(&[]));
+
+    assert_eq!(session.closing(|_| false), None);
+}
+
+#[test]
+fn a_restarted_terminal_is_no_longer_remembered_as_ended() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    ended(&mut session, "c");
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+
+    session.heard(Report::Ending(Ending::Live("c".to_owned())));
+    session.update(two_tabs(&[]));
+    assert_eq!(session.closing(|_| false), None);
+
+    ended(&mut session, "c");
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+}
+
+#[test]
+fn a_fresh_snapshot_replaces_the_ends_heard_before_it() {
+    let mut session = Session::default();
+    ended(&mut session, "c");
+    session.heard(Report::Ending(Ending::Snapshot {
+        finished: ["d".to_owned()].into_iter().collect(),
+        live: Default::default(),
+    }));
+
+    session.update(two_tabs(&[]));
+
+    assert_eq!(session.closing(|_| false), close(&["d"]));
+}
+
+#[test]
+fn a_close_the_view_asked_for_is_not_asked_again() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    assert!(session.ask("c"));
+
+    ended(&mut session, "c");
+
+    assert_eq!(session.closing(|_| false), None);
+    assert!(!session.ask("c"));
+}
+
+#[test]
+fn a_close_the_follower_asked_for_is_not_asked_again_by_the_view() {
+    let mut session = Session::default();
+    session.update(two_tabs(&[]));
+    ended(&mut session, "c");
+    assert_eq!(session.closing(|_| false), close(&["c"]));
+
+    assert!(!session.ask("c"));
 }
