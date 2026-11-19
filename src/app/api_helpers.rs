@@ -1,4 +1,4 @@
-pub(super) fn tab_attention_priority(state: crate::detect::AgentState, seen: bool) -> u8 {
+pub(crate) fn tab_attention_priority(state: crate::detect::AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (crate::detect::AgentState::Blocked, _) => 4,
         (crate::detect::AgentState::Idle, false) => 3,
@@ -93,7 +93,7 @@ pub(super) fn detect_state_from_api(
     }
 }
 
-pub(super) fn pane_agent_status(
+pub(crate) fn pane_agent_status(
     state: crate::detect::AgentState,
     seen: bool,
 ) -> crate::api::schema::AgentStatus {

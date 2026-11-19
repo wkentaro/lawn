@@ -520,7 +520,15 @@ async fn a_dialog_is_redrawn_only_when_its_state_or_the_host_size_changes() {
             .and_then(|dialog| dialog.image())
             .map(|(area, cells)| (*area, cells.as_ptr()))
     };
+    let cells = |surface: &Surface| {
+        surface
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.image())
+            .map(|(_, cells)| cells.clone())
+    };
     let drawn = image(&surface);
+    let unscrolled = cells(&surface);
 
     assert!(frame(&mut surface, &HashSet::new()).is_empty());
     press(&mut surface, KeyCode::Home);
@@ -533,7 +541,7 @@ async fn a_dialog_is_redrawn_only_when_its_state_or_the_host_size_changes() {
     press(&mut surface, KeyCode::Char('j'));
     assert!(surface.needs_frame());
     frame(&mut surface, &HashSet::new());
-    assert_ne!(image(&surface), drawn);
+    assert_ne!(cells(&surface), unscrolled);
 
     surface.resize(host(100, 30));
     let screen = Screen::of(&mut surface);

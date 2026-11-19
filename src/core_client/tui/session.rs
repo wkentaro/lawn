@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 
-use super::terminals::{Report, Terminals};
+use super::terminals::{Report, Status, Terminals};
+use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
 use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
@@ -85,12 +86,85 @@ impl Session {
     }
 
     pub(super) fn heard(&mut self, report: Report) -> bool {
-        let workspaces = &self.layout.workspaces;
-        self.terminals.hear(report, |terminal| {
-            workspaces
+        let layout = &self.layout;
+        let workspaces = &layout.workspaces;
+        self.terminals.hear(
+            report,
+            |terminal| {
+                workspaces.iter().any(|workspace| {
+                    workspace.name.is_none() && naming(workspace) == Some(terminal)
+                })
+            },
+            |terminal| layout.shows(terminal),
+        )
+    }
+
+    pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {
+        self.terminals.see(
+            self.ids
                 .iter()
-                .any(|workspace| workspace.name.is_none() && naming(workspace) == Some(terminal))
+                .filter(|(_, id)| presented(**id))
+                .map(|(terminal, _)| terminal.as_str()),
+        )
+    }
+
+    pub(super) fn workspace_status(&self, workspace: &Workspace) -> AgentStatus {
+        workspace
+            .tabs
+            .iter()
+            .flat_map(|tab| self.statuses(tab))
+            .max_by_key(|(_, status)| crate::app::tab_attention_priority(status.state, status.seen))
+            .map_or(AgentStatus::Unknown, |(_, status)| status.shown())
+    }
+
+    pub(super) fn tab_status(&self, tab: &Tab) -> Option<(AgentStatus, usize)> {
+        let rank = |status| match status {
+            AgentStatus::Blocked => 4,
+            AgentStatus::Working => 3,
+            AgentStatus::Idle => 2,
+            AgentStatus::Done => 1,
+            AgentStatus::Unknown => 0,
+        };
+        self.statuses(tab)
+            .map(|(_, status)| status.shown())
+            .fold(None, |rolled, status| {
+                let (top, blocked) = rolled.unwrap_or((status, 0));
+                Some((
+                    if rank(status) > rank(top) {
+                        status
+                    } else {
+                        top
+                    },
+                    blocked + usize::from(status == AgentStatus::Blocked),
+                ))
+            })
+    }
+
+    pub(super) fn agents(&self) -> impl Iterator<Item = (usize, usize, &str, &Status)> {
+        self.layout
+            .workspaces
+            .iter()
+            .enumerate()
+            .flat_map(move |(workspace, entry)| {
+                entry.tabs.iter().enumerate().flat_map(move |(tab, entry)| {
+                    self.statuses(entry)
+                        .map(move |(terminal, status)| (workspace, tab, terminal, status))
+                })
+            })
+    }
+
+    fn statuses<'a>(&'a self, tab: &'a Tab) -> impl Iterator<Item = (&'a str, &'a Status)> {
+        tab.root.terminals().into_iter().filter_map(|terminal| {
+            if self.layout.parked.contains(terminal) {
+                return None;
+            }
+            Some((terminal, self.terminals.status(terminal)?))
         })
+    }
+
+    pub(super) fn reveal(&mut self, terminal: &str) -> bool {
+        self.locate(terminal)
+            .is_some_and(|focus| self.move_focus(focus))
     }
 
     pub(super) fn label<'a>(&'a self, workspace: &'a Workspace) -> &'a str {

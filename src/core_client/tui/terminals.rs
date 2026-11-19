@@ -5,17 +5,38 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use crate::api::schema::AgentStatus;
+use crate::detect::{Agent, AgentState};
+use crate::pane::{core_status, CoreStatus};
 use crate::workspace::derive_label_from_cwd;
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Report {
     Snapshot(HashMap<String, PathBuf>),
     Folder(String, PathBuf),
+    Statuses(HashMap<String, CoreStatus>),
+    Status(String, CoreStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Status {
+    pub(super) agent: Option<Agent>,
+    pub(super) state: AgentState,
+    pub(super) seen: bool,
+    pub(super) changed: u64,
+}
+
+impl Status {
+    pub(super) fn shown(&self) -> AgentStatus {
+        crate::app::pane_agent_status(self.state, self.seen)
+    }
 }
 
 #[derive(Default)]
 pub(super) struct Terminals {
     folder_names: HashMap<String, String>,
+    statuses: HashMap<String, Status>,
+    changes: u64,
 }
 
 impl Terminals {
@@ -23,7 +44,28 @@ impl Terminals {
         self.folder_names.get(terminal).map(String::as_str)
     }
 
-    pub(super) fn hear(&mut self, report: Report, names: impl Fn(&str) -> bool) -> bool {
+    pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
+        self.statuses.get(terminal)
+    }
+
+    pub(super) fn see<'a>(&mut self, terminals: impl IntoIterator<Item = &'a str>) -> bool {
+        terminals.into_iter().fold(false, |seen, terminal| {
+            match self.statuses.get_mut(terminal) {
+                Some(status) if !status.seen => {
+                    status.seen = true;
+                    true
+                }
+                _ => seen,
+            }
+        })
+    }
+
+    pub(super) fn hear(
+        &mut self,
+        report: Report,
+        names: impl Fn(&str) -> bool,
+        shows: impl Fn(&str) -> bool,
+    ) -> bool {
         match report {
             Report::Snapshot(folders) => {
                 let known = folders
@@ -41,7 +83,63 @@ impl Terminals {
                 self.folder_names.insert(terminal, name);
                 renamed
             }
+            Report::Statuses(statuses) => {
+                let mut drawn = false;
+                self.statuses.retain(|terminal, _| {
+                    let stays = statuses.contains_key(terminal);
+                    drawn |= !stays && shows(terminal);
+                    stays
+                });
+                statuses
+                    .into_iter()
+                    .fold(drawn, |drawn, (terminal, status)| {
+                        self.report(terminal, status, &shows) | drawn
+                    })
+            }
+            Report::Status(terminal, status) => self.report(terminal, status, &shows),
         }
+    }
+
+    fn report(
+        &mut self,
+        terminal: String,
+        reported: CoreStatus,
+        shows: impl Fn(&str) -> bool,
+    ) -> bool {
+        let before = self.statuses.get(&terminal).copied();
+        let previous = before.map_or(AgentState::Unknown, |status| status.state);
+        if reported.state == AgentState::Unknown {
+            self.statuses.remove(&terminal);
+        } else {
+            let seen = match reported.state {
+                AgentState::Idle
+                    if reported.finished
+                        && matches!(previous, AgentState::Working | AgentState::Blocked) =>
+                {
+                    false
+                }
+                AgentState::Idle => before.is_none_or(|status| status.seen),
+                _ => true,
+            };
+            let changed = match before {
+                Some(status) if status.state == reported.state => status.changed,
+                _ => {
+                    self.changes += 1;
+                    self.changes
+                }
+            };
+            self.statuses.insert(
+                terminal.clone(),
+                Status {
+                    agent: reported.agent,
+                    state: reported.state,
+                    seen,
+                    changed,
+                },
+            );
+        }
+        let drawn = |status: Option<&Status>| status.map(|status| (status.agent, status.shown()));
+        shows(&terminal) && drawn(before.as_ref()) != drawn(self.statuses.get(&terminal))
     }
 }
 
@@ -70,7 +168,9 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
             return !reports.is_closed();
         }
     };
-    if reports.send(snapshot(&subscription.snapshot)).is_err() {
+    if reports.send(snapshot(&subscription.snapshot)).is_err()
+        || reports.send(statuses(&subscription.snapshot)).is_err()
+    {
         return false;
     }
     crate::pane::read_events(
@@ -79,6 +179,9 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
         subscription.stream,
         |message| {
             if let Some(report) = reported(message) {
+                reports.send(report).ok();
+            }
+            if let Some(report) = status_reported(message) {
                 reports.send(report).ok();
             }
         },
@@ -109,6 +212,34 @@ fn snapshot(snapshot: &Value) -> Report {
             .into_iter()
             .flatten()
             .filter_map(record)
+            .collect(),
+    )
+}
+
+fn status_reported(message: &Value) -> Option<Report> {
+    let params = &message["params"];
+    match (message["method"].as_str()?, params["type"].as_str()) {
+        ("event", Some("status")) => Some(Report::Status(
+            params["terminal"].as_str()?.to_owned(),
+            core_status(&params["data"]["status"]),
+        )),
+        ("missed", _) => Some(statuses(params)),
+        _ => None,
+    }
+}
+
+fn statuses(snapshot: &Value) -> Report {
+    Report::Statuses(
+        snapshot["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|record| {
+                Some((
+                    record["address"].as_str()?.to_owned(),
+                    core_status(&record["status"]),
+                ))
+            })
             .collect(),
     )
 }

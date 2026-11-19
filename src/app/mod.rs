@@ -15,7 +15,7 @@ mod api;
 #[cfg(test)]
 pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
-pub(crate) use api_helpers::limit_snapshot_lines;
+pub(crate) use api_helpers::{limit_snapshot_lines, pane_agent_status, tab_attention_priority};
 mod creation;
 mod custom_commands;
 mod ids;

@@ -1561,4 +1561,238 @@ async fn a_move_to_another_folder_of_the_same_name_draws_no_frame() {
     assert!(!surface.needs_frame());
 }
 
+fn said(surface: &mut Surface, terminal: &str, state: &str) {
+    surface.heard(Report::Status(
+        terminal.to_owned(),
+        crate::pane::core_status(&json!({"state": state, "app": "claude"})),
+    ));
+}
+
+fn symbols(cols: u16, rows: u16) -> Surface {
+    dressed(cols, rows, |config| {
+        config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+    })
+}
+
+fn paired() -> Layout {
+    let pair = |id: &str, first: &str, second: &str| {
+        json!({"id": id, "root": {
+            "kind": "split", "direction": "right", "ratio": 0.5,
+            "first": {"kind": "pane", "terminal": first},
+            "second": {"kind": "pane", "terminal": second},
+        }})
+    };
+    serde_json::from_value(json!({"workspaces": [
+        {"id": "w0", "name": "main", "tabs": [pair("tab1", "t1", "t2"), pair("tab2", "t3", "t4")]},
+        {"id": "w1", "name": "other", "tabs": [{"id": "tab3", "root": {"kind": "pane", "terminal": "t5"}}]},
+    ]}))
+    .expect("layout")
+}
+
+fn tab_bar(surface: &mut Surface) -> String {
+    frame(surface, &HashSet::new());
+    span(surface, 0, 26..surface.canvas_cols)
+}
+
+#[tokio::test]
+async fn a_tab_shows_its_most_pressing_agent_with_blocked_over_working_over_idle_over_done() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+
+    said(&mut surface, "t1", "idle");
+    said(&mut surface, "t2", "working");
+    said(&mut surface, "t3", "working");
+    said(&mut surface, "t3", "done");
+    said(&mut surface, "t4", "idle");
+    let bar = tab_bar(&mut surface);
+    assert!(bar.contains("◐ 1") && bar.contains("○ 2"), "{bar}");
+
+    said(&mut surface, "t1", "blocked");
+    assert!(tab_bar(&mut surface).contains("× 1"));
+}
+
+#[tokio::test]
+async fn a_tab_counts_its_blocked_agents_when_more_than_one_is_blocked() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+
+    said(&mut surface, "t1", "blocked");
+    assert!(tab_bar(&mut surface).contains("× 1"));
+
+    said(&mut surface, "t2", "blocked");
+    assert!(tab_bar(&mut surface).contains("×2 1"));
+}
+
+#[tokio::test]
+async fn a_tab_without_agents_or_with_only_a_parked_agent_has_no_mark() {
+    let mut surface = symbols(120, 30);
+    let mut layout = paired();
+    layout.parked.insert("t2".to_owned());
+    surface.update(layout);
+
+    said(&mut surface, "t2", "blocked");
+    let bar = tab_bar(&mut surface);
+    let labels: Vec<&str> = bar.split_whitespace().collect();
+    assert_eq!(&labels[..3], ["1", "2", "+"]);
+}
+
+#[tokio::test]
+async fn a_finish_in_the_focused_tab_is_seen_at_once_while_the_host_has_focus() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+    frame(&mut surface, &HashSet::new());
+
+    said(&mut surface, "t2", "working");
+    said(&mut surface, "t2", "done");
+
+    assert!(tab_bar(&mut surface).contains("○ 1"));
+}
+
+#[tokio::test]
+async fn a_status_mark_that_makes_the_tabs_overflow_keeps_the_focused_tab_in_view() {
+    let mut tabs = [None; 10];
+    tabs[0] = Some("alpha");
+    let mut surface = symbols(119, 10);
+    surface.update(spaces(&[(None, &tabs)]));
+    surface.act(KeybindAction::SwitchTab(9), false);
+    let bar = tab_bar(&mut surface);
+    assert!(!bar.starts_with(" < ") && bar.contains(" 10 "), "{bar:?}");
+
+    said(&mut surface, "t1", "working");
+
+    let bar = tab_bar(&mut surface);
+    assert!(bar.starts_with(" < ") && bar.contains(" 10 "), "{bar:?}");
+}
+
+#[tokio::test]
+async fn a_status_mark_that_keeps_the_tab_widths_leaves_scrolled_tabs_where_they_are() {
+    let tabs = [None; 20];
+    let mut surface = symbols(90, 10);
+    surface.update(spaces(&[(None, &tabs)]));
+    frame(&mut surface, &HashSet::new());
+    let right = find(&surface, 0, " > ") + 1;
+    tap(&mut surface, right, 0);
+    assert!(!tab_bar(&mut surface).contains(" 1 "));
+
+    said(&mut surface, "t2", "working");
+    let bar = tab_bar(&mut surface);
+    assert!(bar.contains("◐ 2") && !bar.contains(" 1 "), "{bar:?}");
+
+    said(&mut surface, "t2", "blocked");
+    said(&mut surface, "t3", "blocked");
+    let bar = tab_bar(&mut surface);
+    assert!(bar.contains("× 2") && !bar.contains(" 1 "), "{bar:?}");
+}
+
+#[tokio::test]
+async fn a_zoom_that_keeps_the_tab_widths_still_brings_the_focused_tab_into_view() {
+    let tabs = [None; 20];
+    let mut surface = symbols(90, 10);
+    surface.update(spaces(&[(None, &tabs)]));
+    frame(&mut surface, &HashSet::new());
+    let right = find(&surface, 0, " > ") + 1;
+    tap(&mut surface, right, 0);
+    assert!(!tab_bar(&mut surface).contains(" 1 "));
+
+    surface.act(KeybindAction::Zoom, false);
+
+    let bar = tab_bar(&mut surface);
+    assert!(bar.contains(" 1 Z "), "{bar:?}");
+}
+
+#[tokio::test]
+async fn a_finish_in_another_tab_reads_done_until_that_tab_is_focused() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+
+    said(&mut surface, "t3", "working");
+    said(&mut surface, "t3", "done");
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+
+    surface.act(KeybindAction::NextTab, false);
+    assert!(surface.needs_frame());
+    assert!(tab_bar(&mut surface).contains("○ 2"));
+}
+
+#[tokio::test]
+async fn a_finish_in_a_pane_hidden_by_zoom_reads_done_until_the_zoom_ends() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+    surface.act(KeybindAction::Zoom, false);
+    frame(&mut surface, &HashSet::new());
+
+    said(&mut surface, "t2", "working");
+    said(&mut surface, "t2", "done");
+    assert!(tab_bar(&mut surface).contains("✓ 1"));
+
+    surface.act(KeybindAction::Zoom, false);
+    assert!(surface.needs_frame());
+    assert!(tab_bar(&mut surface).contains("○ 1"));
+}
+
+#[tokio::test]
+async fn a_finish_in_a_tab_entered_and_left_before_a_frame_still_reads_done() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+
+    said(&mut surface, "t3", "working");
+    said(&mut surface, "t3", "done");
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+
+    surface.act(KeybindAction::NextTab, false);
+    surface.act(KeybindAction::PreviousTab, false);
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+}
+
+#[tokio::test]
+async fn a_finish_in_a_tab_left_before_its_panes_attach_still_reads_done() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+
+    said(&mut surface, "t3", "working");
+    said(&mut surface, "t3", "done");
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+
+    surface.act(KeybindAction::NextTab, false);
+    let attaching = requests(&mut surface);
+    assert!(!attaching.is_empty());
+    surface.act(KeybindAction::PreviousTab, false);
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+
+    surface.act(KeybindAction::NextTab, false);
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
+    for (_, id, geometry) in attaching {
+        surface.attached(id, geometry, Ok(View::test(geometry.cols, geometry.rows)));
+    }
+    assert!(tab_bar(&mut surface).contains("○ 2"));
+}
+
+#[tokio::test]
+async fn a_finish_while_the_host_lacks_focus_reads_done_until_focus_returns() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+    surface.host_focus(false);
+
+    said(&mut surface, "t1", "working");
+    said(&mut surface, "t1", "done");
+    assert!(tab_bar(&mut surface).contains("✓ 1"));
+
+    surface.host_focus(true);
+    assert!(surface.needs_frame());
+    assert!(tab_bar(&mut surface).contains("○ 1"));
+}
+
+#[tokio::test]
+async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
+    let mut surface = symbols(120, 30);
+    surface.update(paired());
+    frame(&mut surface, &HashSet::new());
+
+    said(&mut surface, "t9", "working");
+    assert!(!surface.needs_frame());
+
+    said(&mut surface, "t1", "working");
+    assert!(surface.needs_frame());
+}
+
 mod mobile;

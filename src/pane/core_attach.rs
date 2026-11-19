@@ -29,7 +29,7 @@ pub struct CoreStatus {
 
 /// The status in a terminal record or a `status` event. No status, or a
 /// state Lawn does not know, is no agent.
-fn core_status(status: &serde_json::Value) -> CoreStatus {
+pub(crate) fn core_status(status: &serde_json::Value) -> CoreStatus {
     let (state, finished) = match status["state"].as_str() {
         Some("working") => (AgentState::Working, false),
         Some("blocked") => (AgentState::Blocked, false),

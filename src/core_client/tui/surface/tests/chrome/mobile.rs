@@ -46,10 +46,13 @@ async fn the_header_names_the_focused_workspace_in_bold_with_its_tab_on_the_righ
 
     assert_eq!(
         line(&surface, 0),
-        format!(" main{}tab 1 │{}", " ".repeat(43), " ".repeat(9))
+        format!(" · main{}tab 1 │{}", " ".repeat(41), " ".repeat(9))
     );
-    assert_eq!(line(&surface, 1), format!("{}│ switch  ", " ".repeat(54)));
-    assert_eq!(cell(&surface, 1, 0).modifier, bold());
+    assert_eq!(
+        line(&surface, 1),
+        format!(" no agents{}│ switch  ", " ".repeat(44))
+    );
+    assert_eq!(cell(&surface, 3, 0).modifier, bold());
     assert_ne!(cell(&surface, 48, 0).modifier, bold());
     assert_eq!(cell(&surface, 56, 1).modifier, bold());
     assert_eq!(cell(&surface, 10, 1).bg, background(palette.panel_bg));
@@ -111,9 +114,9 @@ async fn the_switcher_covers_the_screen_with_its_title_close_button_and_both_sec
         [
             "  spaces",
             "   + new workspace",
-            "   main",
+            "   · main",
             "   tab 1 · 1/2",
-            "   other",
+            "   · other",
             "   tab 1",
             "  tabs",
             "   + new tab",
@@ -122,7 +125,7 @@ async fn the_switcher_covers_the_screen_with_its_title_close_button_and_both_sec
             "",
         ]
     );
-    assert!(line(&surface, 0).starts_with(" main "));
+    assert!(line(&surface, 0).starts_with(" · main "));
 }
 
 #[tokio::test]
@@ -138,7 +141,7 @@ async fn the_switcher_highlights_the_focused_workspace_and_the_focused_tab() {
     assert_eq!(at(&screen, 1, 7), background(palette.panel_bg));
     assert_eq!(at(&screen, 1, 11), background(palette.surface_dim));
     assert_eq!(at(&screen, 1, 12), background(palette.panel_bg));
-    assert_eq!(screen.cell(3, 5).modifier, bold());
+    assert_eq!(screen.cell(5, 5).modifier, bold());
 
     surface.act(KeybindAction::NextTab, false);
     screen.show(&mut surface, &HashSet::new());
@@ -219,20 +222,20 @@ async fn the_wheel_scrolls_the_switcher_two_rows_a_step_and_stops_at_either_end(
     wheel(&mut surface, true, 30, 10);
     assert!(surface.needs_frame());
     screen.show(&mut surface, &HashSet::new());
-    assert_eq!(top(&screen), "  ws0");
+    assert_eq!(top(&screen), "  · ws0");
 
     for _ in 0..5 {
         wheel(&mut surface, true, 30, 10);
     }
     screen.show(&mut surface, &HashSet::new());
-    assert_eq!(top(&screen), "  ws5");
+    assert_eq!(top(&screen), "  · ws5");
     assert_eq!(screen.span(19, 1..64).trim_end(), "  tab 1");
     wheel(&mut surface, true, 30, 10);
     assert!(!surface.needs_frame());
 
     wheel(&mut surface, false, 0, 0);
     screen.show(&mut surface, &HashSet::new());
-    assert_eq!(top(&screen), "  ws4");
+    assert_eq!(top(&screen), "  · ws4");
     for _ in 0..5 {
         wheel(&mut surface, false, 30, 10);
     }
@@ -289,12 +292,12 @@ async fn a_workspace_focused_while_the_switcher_is_open_scrolls_into_view() {
 
     assert_eq!(workspace(&surface), "w11");
     assert!(surface.switching());
-    assert_eq!(screen.span(18, 1..64).trim_end(), "  ws11");
+    assert_eq!(screen.span(18, 1..64).trim_end(), "  · ws11");
     assert_eq!(screen.span(19, 1..64).trim_end(), "  tab 1");
 
     surface.act(KeybindAction::NextWorkspace, false);
     screen.show(&mut surface, &HashSet::new());
-    assert_eq!(screen.span(3, 1..64).trim_end(), "  ws0");
+    assert_eq!(screen.span(3, 1..64).trim_end(), "  · ws0");
 }
 
 #[tokio::test]
@@ -447,7 +450,7 @@ async fn widening_past_the_threshold_closes_the_switcher_and_narrowing_again_doe
     surface.resize(host(64, 20));
     let screen = Screen::of(&mut surface);
     assert!(!surface.switching());
-    assert!(screen.line(0).starts_with(" main "));
+    assert!(screen.line(0).starts_with(" · main "));
 }
 
 #[tokio::test]
@@ -457,7 +460,7 @@ async fn on_one_row_the_header_is_one_row_and_on_two_rows_the_switcher_draws_onl
     let screen = Screen::of(&mut surface);
     assert_eq!(surface.areas.mobile_header, Rect::new(0, 0, 64, 1));
     assert_eq!(screen.span(0, 54..64), "│ switch  ");
-    assert!(screen.line(0).starts_with(" main "));
+    assert!(screen.line(0).starts_with(" · main "));
 
     let mut surface = plain(64, 2);
     surface.update(two_workspaces());
@@ -479,12 +482,241 @@ async fn the_header_and_the_switcher_name_an_unnamed_workspace_after_its_folder(
     surface.update(spaces(&[(None, &[None])]));
     moved(&mut surface, "t1", "/srv/app");
     frame(&mut surface, &HashSet::new());
-    assert!(line(&surface, 0).starts_with(" app "));
+    assert!(line(&surface, 0).starts_with(" · app "));
 
     tap(&mut surface, 58, 1);
     let screen = Screen::of(&mut surface);
 
-    assert_eq!(screen.line(5).trim_end(), "   app");
+    assert_eq!(screen.line(5).trim_end(), "   · app");
+}
+
+fn header(surface: &mut Surface) -> Screen {
+    frame(surface, &HashSet::new());
+    Screen::of(surface)
+}
+
+fn switcher(surface: &mut Surface) -> Screen {
+    frame(surface, &HashSet::new());
+    tap(surface, 58, 1);
+    assert!(surface.switching());
+    Screen::of(surface)
+}
+
+#[tokio::test]
+async fn the_header_marks_the_workspace_with_blocked_over_an_unseen_finish_over_working_over_idle()
+{
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+    let mark = |surface: &mut Surface| header(surface).span(0, 0..3);
+
+    said(&mut surface, "t1", "idle");
+    assert_eq!(mark(&mut surface), " ○ ");
+    said(&mut surface, "t2", "working");
+    assert_eq!(mark(&mut surface), " ◐ ");
+    said(&mut surface, "t3", "working");
+    said(&mut surface, "t3", "done");
+    assert_eq!(mark(&mut surface), " ✓ ");
+    said(&mut surface, "t4", "blocked");
+    assert_eq!(mark(&mut surface), " × ");
+}
+
+#[tokio::test]
+async fn the_second_header_row_counts_every_agent_by_state_most_pressing_first() {
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+
+    for (terminal, state) in [("t1", "working"), ("t2", "blocked"), ("t3", "working")] {
+        said(&mut surface, terminal, state);
+    }
+    said(&mut surface, "t3", "done");
+    said(&mut surface, "t4", "idle");
+    said(&mut surface, "t5", "idle");
+
+    assert_eq!(
+        header(&mut surface).span(1, 0..54).trim_end(),
+        " × 1 blocked · ✓ 1 done · ◐ 1 working · ○ 2 idle"
+    );
+}
+
+#[tokio::test]
+async fn with_dots_the_summary_marks_only_blocked_and_done() {
+    let mut surface = plain(64, 20);
+    surface.update(paired());
+
+    for (terminal, state) in [("t1", "working"), ("t2", "blocked"), ("t3", "working")] {
+        said(&mut surface, terminal, state);
+    }
+    said(&mut surface, "t3", "done");
+    said(&mut surface, "t4", "idle");
+
+    assert_eq!(
+        header(&mut surface).span(1, 0..54).trim_end(),
+        " ◉ 1 blocked · ● 1 done · 1 working · 1 idle"
+    );
+}
+
+#[tokio::test]
+async fn the_second_header_row_says_when_there_are_no_agents_or_all_are_idle() {
+    let mut surface = plain(64, 20);
+    surface.update(paired());
+    assert_eq!(header(&mut surface).span(1, 0..54).trim_end(), " no agents");
+
+    said(&mut surface, "t5", "idle");
+    assert_eq!(header(&mut surface).span(1, 0..54).trim_end(), " all idle");
+}
+
+#[tokio::test]
+async fn a_summary_too_wide_for_the_header_stops_at_an_ellipsis() {
+    let mut surface = symbols(30, 20);
+    surface.update(paired());
+
+    said(&mut surface, "t1", "blocked");
+    said(&mut surface, "t2", "working");
+
+    assert_eq!(header(&mut surface).span(1, 0..19), " × 1 blocked …     ");
+}
+
+#[tokio::test]
+async fn the_switch_button_carries_a_red_mark_while_any_agent_anywhere_is_blocked() {
+    let palette = Palette::catppuccin();
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+
+    said(&mut surface, "t5", "blocked");
+    let screen = header(&mut surface);
+    assert_eq!(screen.cell(63, 0).symbol, "×");
+    assert_eq!(
+        screen.cell(63, 0).fg,
+        styled(Style::default().fg(palette.red)).fg
+    );
+
+    said(&mut surface, "t5", "working");
+    assert_eq!(header(&mut surface).cell(63, 0).symbol, " ");
+}
+
+#[tokio::test]
+async fn the_blocked_mark_stays_on_a_switch_button_too_narrow_for_its_label() {
+    let mut surface = symbols(7, 1);
+    surface.update(paired());
+
+    said(&mut surface, "t5", "blocked");
+    assert_eq!(header(&mut surface).span(0, 0..7), "│switc×");
+}
+
+#[tokio::test]
+async fn the_switcher_lists_every_agent_first_with_its_workspace_tab_state_and_name() {
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+    said(&mut surface, "t2", "working");
+    surface.heard(Report::Status(
+        "t5".to_owned(),
+        crate::pane::core_status(&json!({"state": "blocked", "app": "mytool"})),
+    ));
+
+    let screen = switcher(&mut surface);
+
+    assert_eq!(
+        screen.lines(3..9),
+        [
+            "  agents",
+            "   ◐ main",
+            "   1 · working · claude",
+            "   × other",
+            "   blocked · agent",
+            "  spaces",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_switcher_marks_each_workspace_with_its_most_pressing_agent() {
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+    said(&mut surface, "t1", "idle");
+    said(&mut surface, "t5", "blocked");
+
+    let screen = switcher(&mut surface);
+
+    assert_eq!(
+        screen.lines(8..13),
+        [
+            "  spaces",
+            "   + new workspace",
+            "   ○ main",
+            "   tab 1 · 1/2",
+            "   × other"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_focused_agent_takes_the_dim_background_in_the_switcher() {
+    let palette = Palette::catppuccin();
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+    said(&mut surface, "t1", "working");
+    said(&mut surface, "t5", "working");
+
+    let screen = switcher(&mut surface);
+
+    for y in [4, 5] {
+        assert_eq!(screen.cell(1, y).bg, background(palette.surface_dim));
+    }
+    assert_eq!(screen.cell(1, 6).bg, background(palette.panel_bg));
+}
+
+#[tokio::test]
+async fn a_press_on_an_agent_focuses_its_pane_and_closes_the_switcher() {
+    let mut surface = symbols(64, 20);
+    surface.update(paired());
+    said(&mut surface, "t1", "working");
+    said(&mut surface, "t4", "working");
+    switcher(&mut surface);
+
+    tap(&mut surface, 10, 7);
+
+    assert!(!surface.switching());
+    assert_eq!(tab(&surface), "tab2");
+    assert_eq!(surface.session.focused(), Some("t4"));
+}
+
+#[tokio::test]
+async fn with_priority_sort_the_most_pressing_and_then_the_latest_agent_comes_first() {
+    let mut surface = dressed(64, 30, |config| {
+        config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+        config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    });
+    surface.update(paired());
+    for (terminal, state) in [
+        ("t1", "idle"),
+        ("t2", "working"),
+        ("t5", "blocked"),
+        ("t4", "working"),
+        ("t2", "working"),
+    ] {
+        said(&mut surface, terminal, state);
+    }
+
+    let screen = switcher(&mut surface);
+    let names: Vec<String> = (4..12)
+        .step_by(2)
+        .map(|y| screen.line(y).trim_end().to_owned())
+        .collect();
+    let details: Vec<String> = (5..13)
+        .step_by(2)
+        .map(|y| screen.line(y).trim_end().to_owned())
+        .collect();
+
+    assert_eq!(names, ["   × other", "   ◐ main", "   ◐ main", "   ○ main"]);
+    assert_eq!(
+        details,
+        [
+            "   blocked · claude",
+            "   2 · working · claude",
+            "   1 · working · claude",
+            "   1 · idle · claude",
+        ]
+    );
 }
 
 #[tokio::test]
@@ -496,7 +728,11 @@ async fn a_dialog_over_the_switcher_hides_it_and_the_switcher_returns_once_the_d
     assert!(surface.dialog_open());
     screen.show(&mut surface, &HashSet::new());
     assert!(switcher[0].starts_with(" switch"));
-    assert!(screen.line(0).starts_with(" main"), "{:?}", screen.line(0));
+    assert!(
+        screen.line(0).starts_with(" · main "),
+        "{:?}",
+        screen.line(0)
+    );
     assert!(screen.line(7).contains("┌"), "{:?}", screen.line(7));
     assert!(
         screen.line(8).contains(" Close workspace?"),
