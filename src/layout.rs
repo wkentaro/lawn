@@ -65,7 +65,7 @@ pub struct SplitBorder {
 }
 
 /// Cardinal direction for pane navigation.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavDirection {
     Left,
     Right,
@@ -448,7 +448,7 @@ fn split_area_overlaps_focused_pane(split: &SplitBorder, focused: Rect, nav: Nav
     }
 }
 
-fn nearest_resize_split(
+pub(crate) fn nearest_resize_split(
     splits: &[SplitBorder],
     target_dir: Direction,
     focused: Rect,
@@ -462,7 +462,7 @@ fn nearest_resize_split(
         .min_by_key(|s| split_edge_distance(s, focused, nav))
 }
 
-fn opposite_direction(nav: NavDirection) -> NavDirection {
+pub(crate) fn opposite_direction(nav: NavDirection) -> NavDirection {
     match nav {
         NavDirection::Left => NavDirection::Right,
         NavDirection::Right => NavDirection::Left,

@@ -405,3 +405,105 @@ fn a_known_claim_is_never_killed_by_start_recovery() {
         .pending_starts
         .contains_key(&reference));
 }
+
+#[test]
+fn an_arrangement_that_finds_nothing_to_change_succeeds_without_a_write() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let (_, before) = lifecycle
+        .store
+        .edit(|layout| {
+            layout.add_workspace(None, "t1".to_owned());
+        })
+        .unwrap();
+    let edge = crate::session_doc::Arrangement::Swap {
+        terminal: "t1".to_owned(),
+        toward: crate::layout::NavDirection::Right,
+        area: ratatui::layout::Rect::new(0, 0, 80, 24),
+    };
+
+    assert_eq!(lifecycle.arrange(&edge), Ok(None));
+    assert_eq!(lifecycle.store.load().unwrap().version, before.version);
+}
+
+#[test]
+fn an_arrangement_whose_tab_or_pane_is_gone_fails_without_a_write() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let (_, before) = lifecycle
+        .store
+        .edit(|layout| {
+            layout.add_workspace(None, "t1".to_owned());
+        })
+        .unwrap();
+    let rename = crate::session_doc::Arrangement::NameTab {
+        tab: "closed".to_owned(),
+        name: "renamed".to_owned(),
+    };
+    let swap = crate::session_doc::Arrangement::Swap {
+        terminal: "closed".to_owned(),
+        toward: crate::layout::NavDirection::Right,
+        area: ratatui::layout::Rect::new(0, 0, 80, 24),
+    };
+
+    assert!(lifecycle.arrange(&rename).is_err());
+    assert!(lifecycle.arrange(&swap).is_err());
+    assert_eq!(lifecycle.store.load().unwrap().version, before.version);
+}
+
+#[test]
+fn a_resize_held_at_the_ratio_limit_reports_no_write() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let at_limit: crate::session_doc::Layout = serde_json::from_value(serde_json::json!({
+        "workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": {
+            "kind": "split", "direction": "right", "ratio": 0.9,
+            "first": {"kind": "pane", "terminal": "a"},
+            "second": {"kind": "pane", "terminal": "b"},
+        }}]}]
+    }))
+    .unwrap();
+    let (_, before) = lifecycle
+        .store
+        .edit(|layout| *layout = at_limit.clone())
+        .unwrap();
+    let wider = crate::session_doc::Arrangement::Resize {
+        terminal: "a".to_owned(),
+        toward: crate::layout::NavDirection::Right,
+        area: ratatui::layout::Rect::new(0, 0, 80, 24),
+    };
+
+    assert_eq!(lifecycle.arrange(&wider), Ok(None));
+    assert_eq!(lifecycle.store.load().unwrap().version, before.version);
+}
+
+#[test]
+fn an_arrangement_that_writes_returns_the_version_it_wrote() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    lifecycle
+        .store
+        .edit(|layout| {
+            layout.add_workspace(None, "t1".to_owned());
+        })
+        .unwrap();
+    let tab = lifecycle.store.load().unwrap().layout.workspaces[0].tabs[0]
+        .id
+        .clone();
+    let rename = crate::session_doc::Arrangement::NameTab {
+        tab,
+        name: "renamed".to_owned(),
+    };
+
+    let written = lifecycle.arrange(&rename);
+
+    assert_eq!(written, Ok(Some(lifecycle.store.load().unwrap().version)));
+}
