@@ -3,7 +3,7 @@
 # managed by herdr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # HERDR_INTEGRATION_ID=codex
-# HERDR_INTEGRATION_VERSION=10
+# HERDR_INTEGRATION_VERSION=11
 
 set -eu
 
@@ -18,11 +18,17 @@ case "$action" in
 esac
 
 [ "${HERDR_ENV:-}" = "1" ] || exit 0
-[ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
-[ -n "${HERDR_PANE_ID:-}" ] || exit 0
+lawn_rewrite=0
+if [ -z "${HERDR_SOCKET_PATH:-}" ] || [ -z "${HERDR_PANE_ID:-}" ]; then
+  if [ "${LAWN_REWRITE:-}" = "1" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -f "${HERDR_BIN_PATH:-}" ] && [ -x "${HERDR_BIN_PATH:-}" ]; then
+    lawn_rewrite=1
+  else
+    exit 0
+  fi
+fi
 command -v python3 >/dev/null 2>&1 || exit 0
 
-HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+LAWN_HOOK_REWRITE="$lawn_rewrite" HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
 import json
 import os
 import random
@@ -31,11 +37,12 @@ import time
 
 source = "herdr:codex"
 action = os.environ.get("HERDR_ACTION", "")
-pane_id = os.environ.get("HERDR_PANE_ID")
+rewrite = os.environ.get("LAWN_HOOK_REWRITE") == "1"
+pane_id = os.environ.get("HC_TERMINAL_ID" if rewrite else "HERDR_PANE_ID")
 socket_path = os.environ.get("HERDR_SOCKET_PATH")
 hook_input_file = os.environ.get("HERDR_HOOK_INPUT_FILE")
 
-if not pane_id or not socket_path:
+if not pane_id or not (socket_path or rewrite):
     raise SystemExit(0)
 
 hook_input = {}
@@ -47,6 +54,8 @@ if hook_input_file:
             hook_input = json.loads(content)
     except Exception:
         hook_input = {}
+if not isinstance(hook_input, dict):
+    raise SystemExit(0)
 
 hook_event_name = str(hook_input.get("hook_event_name") or "")
 if hook_event_name and hook_event_name != "SessionStart":
@@ -81,6 +90,29 @@ if agent_session_id:
         "params": params,
     }
 else:
+    raise SystemExit(0)
+
+if rewrite:
+    args = [
+        os.environ.get("HERDR_BIN_PATH", ""), "pane", "report-agent-session", pane_id,
+        "--source", source, "--agent", "codex",
+        "--seq", str(report_seq), "--agent-session-id", agent_session_id,
+    ]
+    if session_start_source:
+        args.extend(["--session-start-source", session_start_source])
+    try:
+        import subprocess
+
+        subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        pass
     raise SystemExit(0)
 
 try:

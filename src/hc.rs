@@ -432,6 +432,12 @@ impl Core {
         )
     }
 
+    pub(crate) fn connect_at(socket: &std::ffi::OsStr) -> HcResult<Arc<Core>> {
+        let mut command = crate::noninteractive_process::command(hc_bin());
+        command.env("HC_SOCKET", socket);
+        Self::connect_with(command, CALL_TIMEOUT)
+    }
+
     fn connect_with(mut command: Command, hello_timeout: Duration) -> HcResult<Arc<Core>> {
         let unavailable =
             |what: &str, error: io::Error| HcError::Unavailable(format!("{what}: {error}"));

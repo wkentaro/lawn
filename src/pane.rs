@@ -149,7 +149,7 @@ const HOST_HANDLE_ENV: [&str; 12] = [
 ];
 
 /// A new pane is not a child agent of the process that started the server.
-const CHILD_AGENT_ENV: [&str; 6] = [
+pub(crate) const CHILD_AGENT_ENV: [&str; 6] = [
     "CODEX_THREAD_ID",
     "OMPCODE",
     "CLAUDECODE",

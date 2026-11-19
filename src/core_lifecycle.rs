@@ -94,6 +94,21 @@ impl Lifecycle {
         if !argv.is_empty() {
             params["argv"] = json!(argv);
         }
+        params["env"] = json!({
+            crate::HERDR_ENV_VAR: crate::HERDR_ENV_VALUE,
+            crate::core_client::REWRITE_ENV: "1",
+            crate::api::SOCKET_PATH_ENV_VAR: "",
+            crate::integration::HERDR_PANE_ID_ENV_VAR: "",
+        });
+        for name in crate::pane::CHILD_AGENT_ENV {
+            params["env"][name] = json!("");
+        }
+        if let Some(executable) = crate::platform::launch_executable()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+        {
+            params["env"]["HERDR_BIN_PATH"] = json!(executable);
+        }
         let terminal = match self.core.run(params) {
             Ok(terminal) => terminal,
             Err(err @ HcError::Rpc { .. }) => {
