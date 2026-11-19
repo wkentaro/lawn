@@ -331,11 +331,19 @@ fn with_new_tab() -> Layout {
     }))
 }
 
+fn start(session: &mut Session) -> u64 {
+    match operation(session, KeybindAction::NewTab, true) {
+        Some(Operation::Start(request, _)) => request,
+        other => panic!("not a start: {other:?}"),
+    }
+}
+
 #[test]
 fn a_created_terminal_takes_focus_when_its_layout_arrives_after_the_start() {
     let mut session = Session::default();
     session.update(two_tabs(&[]));
-    assert!(!session.created("e".to_owned()));
+    let request = start(&mut session);
+    assert!(!session.started(request, Some("e".to_owned())));
     assert_eq!(session.focused(), Some("a"));
     session.update(with_new_tab());
     assert_eq!(session.focused(), Some("e"));
@@ -349,13 +357,164 @@ fn a_created_terminal_takes_focus_when_its_layout_arrives_after_the_start() {
 fn a_created_terminal_takes_focus_when_its_layout_arrived_first() {
     let mut session = Session::default();
     session.update(two_tabs(&[]));
+    let request = start(&mut session);
     session.update(with_new_tab());
     assert_eq!(session.focused(), Some("a"));
-    assert!(session.created("e".to_owned()));
+    assert!(session.started(request, Some("e".to_owned())));
     assert_eq!(session.focused(), Some("e"));
 }
 
-fn operation(session: &Session, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
+fn orders<T: Copy>(arrivals: &[T]) -> Vec<Vec<T>> {
+    if arrivals.is_empty() {
+        return vec![Vec::new()];
+    }
+    (0..arrivals.len())
+        .flat_map(|first| {
+            let mut rest = arrivals.to_vec();
+            let arrival = rest.remove(first);
+            orders(&rest).into_iter().map(move |mut order| {
+                order.insert(0, arrival);
+                order
+            })
+        })
+        .collect()
+}
+
+fn beside_a(panes: &[&str]) -> Layout {
+    let root = panes
+        .iter()
+        .fold(pane("a"), |root, terminal| split(root, pane(terminal)));
+    layout(json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": root}]}]}))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Arrival {
+    Started(u64, Option<&'static str>),
+    Shown(&'static [&'static str]),
+}
+
+struct Base {
+    focus: &'static str,
+    shown: &'static [&'static str],
+    unanswered: Vec<u64>,
+    waiting: Option<(u64, &'static str)>,
+}
+
+impl Base {
+    fn arrive(&mut self, arrival: Arrival) {
+        match arrival {
+            Arrival::Started(request, result) => {
+                self.unanswered.retain(|unanswered| *unanswered != request);
+                if let Some(terminal) = result {
+                    self.waiting = Some((request, terminal));
+                }
+            }
+            Arrival::Shown(panes) => {
+                self.shown = panes;
+                if !panes.contains(&self.focus) {
+                    self.focus = "a";
+                }
+            }
+        }
+        if let Some((_, terminal)) = self
+            .waiting
+            .filter(|(_, terminal)| self.shown.contains(terminal))
+        {
+            self.focus = terminal;
+            self.waiting = None;
+        }
+    }
+
+    fn tracked(&self) -> Vec<(u64, Option<&str>)> {
+        let mut tracked: Vec<_> = self
+            .unanswered
+            .iter()
+            .map(|request| (*request, None))
+            .chain(
+                self.waiting
+                    .map(|(request, terminal)| (request, Some(terminal))),
+            )
+            .collect();
+        tracked.sort_unstable();
+        tracked
+    }
+}
+
+#[test]
+fn the_latest_successful_start_result_takes_focus_once_its_pane_appears_in_every_arrival_order() {
+    let mut covered = 0;
+    for second in [Some("p2"), None] {
+        for order in orders(&[
+            Arrival::Started(1, Some("p1")),
+            Arrival::Started(2, second),
+            Arrival::Shown(&["p1"]),
+            Arrival::Shown(&["p2"]),
+            Arrival::Shown(&["p1", "p2"]),
+        ]) {
+            let mut session = Session::default();
+            session.update(beside_a(&[]));
+            assert_eq!([start(&mut session), start(&mut session)], [1, 2]);
+            let mut base = Base {
+                focus: "a",
+                shown: &[],
+                unanswered: vec![1, 2],
+                waiting: None,
+            };
+            for (step, arrival) in order.iter().enumerate() {
+                match *arrival {
+                    Arrival::Started(request, terminal) => {
+                        session.started(request, terminal.map(str::to_owned));
+                    }
+                    Arrival::Shown(panes) => session.update(beside_a(panes)),
+                }
+                base.arrive(*arrival);
+                assert_eq!(session.focused(), Some(base.focus), "{order:?} at {step}");
+                assert_eq!(
+                    session.starts.tracked(),
+                    base.tracked(),
+                    "{order:?} at {step}"
+                );
+            }
+            covered += 1;
+        }
+    }
+    assert_eq!(covered, 240);
+}
+
+#[test]
+fn a_start_result_waits_for_its_pane_to_come_back_after_it_left() {
+    let mut session = Session::default();
+    session.update(beside_a(&[]));
+    navigate(&mut session, KeybindAction::Zoom);
+    let request = start(&mut session);
+    session.update(beside_a(&["p"]));
+    session.update(beside_a(&[]));
+
+    assert!(!session.started(request, Some("p".to_owned())));
+    session.update(beside_a(&["p"]));
+
+    assert_eq!(session.focused(), Some("p"));
+    assert!(session.starts.tracked().is_empty());
+}
+
+#[test]
+fn a_failed_start_is_forgotten() {
+    let mut session = Session::default();
+    session.update(beside_a(&[]));
+    let request = start(&mut session);
+    session.update(beside_a(&["p1"]));
+
+    assert!(!session.started(request, None));
+    assert!(session.starts.tracked().is_empty());
+    session.update(beside_a(&["p1"]));
+    assert_eq!(session.focused(), Some("a"));
+}
+
+fn operation(
+    session: &mut Session,
+    action: KeybindAction,
+    confirm_close: bool,
+) -> Option<Operation> {
     match session.operation(action, confirm_close)? {
         Request::Run(operation) => Some(operation),
         Request::Confirm(_) => None,
@@ -377,41 +536,50 @@ fn starts_split_beside_the_focused_pane_or_open_a_tab_or_workspace() {
     session.update(two_tabs(&[]));
     session.focus("b");
     assert_eq!(
-        operation(&session, KeybindAction::SplitVertical, true),
-        Some(Operation::Start(Destination::Split {
-            beside: "b".to_owned(),
-            direction: Direction::Right,
-            ratio: 0.5,
-        }))
+        operation(&mut session, KeybindAction::SplitVertical, true),
+        Some(Operation::Start(
+            1,
+            Destination::Split {
+                beside: "b".to_owned(),
+                direction: Direction::Right,
+                ratio: 0.5,
+            }
+        ))
     );
     assert_eq!(
-        operation(&session, KeybindAction::SplitHorizontal, true),
-        Some(Operation::Start(Destination::Split {
-            beside: "b".to_owned(),
-            direction: Direction::Down,
-            ratio: 0.5,
-        }))
+        operation(&mut session, KeybindAction::SplitHorizontal, true),
+        Some(Operation::Start(
+            2,
+            Destination::Split {
+                beside: "b".to_owned(),
+                direction: Direction::Down,
+                ratio: 0.5,
+            }
+        ))
     );
     assert_eq!(
-        operation(&session, KeybindAction::NewTab, true),
-        Some(Operation::Start(Destination::Tab {
-            workspace: Some("w0".to_owned()),
-            name: None,
-        }))
+        operation(&mut session, KeybindAction::NewTab, true),
+        Some(Operation::Start(
+            3,
+            Destination::Tab {
+                workspace: Some("w0".to_owned()),
+                name: None,
+            }
+        ))
     );
     assert_eq!(
-        operation(&session, KeybindAction::ParkPane, true),
+        operation(&mut session, KeybindAction::ParkPane, true),
         Some(Operation::Park("b".to_owned()))
     );
-    assert_eq!(operation(&session, KeybindAction::Zoom, true), None);
+    assert_eq!(operation(&mut session, KeybindAction::Zoom, true), None);
 
     session.update(Layout::default());
     assert_eq!(
-        operation(&session, KeybindAction::NewWorkspace, true),
-        Some(Operation::Start(Destination::Workspace { name: None }))
+        operation(&mut session, KeybindAction::NewWorkspace, true),
+        Some(Operation::Start(4, Destination::Workspace { name: None }))
     );
     assert_eq!(
-        operation(&session, KeybindAction::SplitVertical, true),
+        operation(&mut session, KeybindAction::SplitVertical, true),
         None
     );
 }
@@ -421,20 +589,23 @@ fn closing_a_pane_asks_only_for_the_last_shown_pane_of_a_lone_tab() {
     let mut session = Session::default();
     session.update(two_tabs(&[]));
     assert_eq!(
-        operation(&session, KeybindAction::ClosePane, true),
+        operation(&mut session, KeybindAction::ClosePane, true),
         close(&["a"])
     );
     navigate(&mut session, KeybindAction::NextWorkspace);
-    assert_eq!(operation(&session, KeybindAction::ClosePane, true), None);
     assert_eq!(
-        operation(&session, KeybindAction::ClosePane, false),
+        operation(&mut session, KeybindAction::ClosePane, true),
+        None
+    );
+    assert_eq!(
+        operation(&mut session, KeybindAction::ClosePane, false),
         close(&["d"])
     );
 
     session.update(two_tabs(&["b"]));
     navigate(&mut session, KeybindAction::PreviousWorkspace);
     assert_eq!(
-        operation(&session, KeybindAction::ClosePane, true),
+        operation(&mut session, KeybindAction::ClosePane, true),
         close(&["a"])
     );
 }
@@ -444,20 +615,20 @@ fn closing_a_tab_closes_its_shown_panes_and_asks_for_a_lone_tab() {
     let mut session = Session::default();
     session.update(two_tabs(&["b"]));
     assert_eq!(
-        operation(&session, KeybindAction::CloseTab, true),
+        operation(&mut session, KeybindAction::CloseTab, true),
         close(&["a"])
     );
     navigate(&mut session, KeybindAction::NextWorkspace);
-    assert_eq!(operation(&session, KeybindAction::CloseTab, true), None);
+    assert_eq!(operation(&mut session, KeybindAction::CloseTab, true), None);
     assert_eq!(
-        operation(&session, KeybindAction::CloseTab, false),
+        operation(&mut session, KeybindAction::CloseTab, false),
         close(&["d"])
     );
 
     session.update(two_tabs(&["c"]));
     navigate(&mut session, KeybindAction::PreviousWorkspace);
     navigate(&mut session, KeybindAction::SwitchTab(1));
-    assert_eq!(operation(&session, KeybindAction::CloseTab, true), None);
+    assert_eq!(operation(&mut session, KeybindAction::CloseTab, true), None);
 }
 
 #[test]
@@ -465,11 +636,11 @@ fn closing_a_workspace_closes_every_pane_and_always_asks_when_confirming() {
     let mut session = Session::default();
     session.update(two_tabs(&["b"]));
     assert_eq!(
-        operation(&session, KeybindAction::CloseWorkspace, true),
+        operation(&mut session, KeybindAction::CloseWorkspace, true),
         None
     );
     assert_eq!(
-        operation(&session, KeybindAction::CloseWorkspace, false),
+        operation(&mut session, KeybindAction::CloseWorkspace, false),
         close(&["a", "b", "c"])
     );
 }
@@ -478,15 +649,18 @@ fn closing_a_workspace_closes_every_pane_and_always_asks_when_confirming() {
 fn a_tab_with_only_parked_panes_does_not_count_against_asking_to_close() {
     let mut session = Session::default();
     session.update(two_tabs(&["b", "c"]));
-    assert_eq!(operation(&session, KeybindAction::ClosePane, true), None);
-    assert_eq!(operation(&session, KeybindAction::CloseTab, true), None);
     assert_eq!(
-        operation(&session, KeybindAction::CloseTab, false),
+        operation(&mut session, KeybindAction::ClosePane, true),
+        None
+    );
+    assert_eq!(operation(&mut session, KeybindAction::CloseTab, true), None);
+    assert_eq!(
+        operation(&mut session, KeybindAction::CloseTab, false),
         close(&["a"])
     );
 }
 
-fn asked(session: &Session, action: KeybindAction) -> super::Closing {
+fn asked(session: &mut Session, action: KeybindAction) -> super::Closing {
     match session.operation(action, true) {
         Some(Request::Confirm(closing)) => closing,
         other => panic!("{action:?} did not ask: {other:?}"),
@@ -498,7 +672,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
     let mut session = Session::default();
     session.update(two_tabs(&[]));
     assert_eq!(
-        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        asked(&mut session, KeybindAction::CloseWorkspace).detail(),
         "workspace — 3 panes"
     );
 
@@ -506,13 +680,13 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
     named.workspaces[0].name = Some("main".to_owned());
     session.update(named);
     assert_eq!(
-        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        asked(&mut session, KeybindAction::CloseWorkspace).detail(),
         "main — 3 panes, 1 parked"
     );
 
     navigate(&mut session, KeybindAction::NextWorkspace);
     assert_eq!(
-        asked(&session, KeybindAction::ClosePane).detail(),
+        asked(&mut session, KeybindAction::ClosePane).detail(),
         "workspace — 1 pane"
     );
 
@@ -523,7 +697,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
         "parked": ["b"],
     })));
     assert_eq!(
-        asked(&session, KeybindAction::CloseTab).detail(),
+        asked(&mut session, KeybindAction::CloseTab).detail(),
         "workspace — 2 panes, 1 parked"
     );
     session.update(layout(json!({
@@ -535,7 +709,7 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
     })));
     navigate(&mut session, KeybindAction::NextWorkspace);
     assert_eq!(
-        asked(&session, KeybindAction::CloseWorkspace).detail(),
+        asked(&mut session, KeybindAction::CloseWorkspace).detail(),
         "workspace — 1 parked pane"
     );
 }
@@ -544,10 +718,10 @@ fn asking_to_close_names_the_workspace_and_counts_its_panes_and_the_parked_ones(
 fn a_confirmed_close_takes_what_its_target_holds_when_accepted_and_nothing_once_it_is_gone() {
     let mut session = Session::default();
     session.update(two_tabs(&[]));
-    let workspace = asked(&session, KeybindAction::CloseWorkspace);
+    let workspace = asked(&mut session, KeybindAction::CloseWorkspace);
     navigate(&mut session, KeybindAction::NextWorkspace);
-    let last_pane = asked(&session, KeybindAction::ClosePane);
-    let lone_tab = asked(&session, KeybindAction::CloseTab);
+    let last_pane = asked(&mut session, KeybindAction::ClosePane);
+    let lone_tab = asked(&mut session, KeybindAction::CloseTab);
 
     let mut grown = two_tabs(&[]);
     grown.workspaces[0].tabs[1].root =
