@@ -4,6 +4,7 @@ use super::*;
 use crate::config::{SidebarCollapsedModeConfig, TabBarPositionConfig, TabBarRightEntryConfig};
 use crate::core_client::tui::session::Operation;
 use crate::core_client::tui::surface::Pointed;
+use crate::core_client::tui::terminals::Report;
 use crate::protocol::CellData;
 
 fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface {
@@ -1442,6 +1443,120 @@ async fn a_still_press_on_the_divider_of_an_oversized_configured_width_leaves_it
     drag_divider(&mut surface, 35, 35);
 
     assert_eq!(saved(&path), Some((None, None)));
+}
+
+fn moved(surface: &mut Surface, terminal: &str, folder: &str) {
+    surface.heard(Report::Folder(terminal.to_owned(), folder.into()));
+}
+
+fn first_row(surface: &mut Surface) -> String {
+    frame(surface, &HashSet::new());
+    line(surface, 2)
+}
+
+#[tokio::test]
+async fn an_unnamed_workspace_reads_as_the_folder_of_its_first_pane_and_follows_it() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    surface.heard(Report::Snapshot(
+        [("t1".to_owned(), "/srv/app".into())].into_iter().collect(),
+    ));
+    assert!(surface.needs_frame());
+    assert!(first_row(&mut surface).starts_with(" app "));
+
+    moved(&mut surface, "t1", "/srv/app/src");
+    assert!(surface.needs_frame());
+    assert!(first_row(&mut surface).starts_with(" src "));
+}
+
+#[tokio::test]
+async fn a_fresh_snapshot_forgets_the_folders_it_no_longer_lists() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    moved(&mut surface, "t1", "/srv/app");
+    assert!(first_row(&mut surface).starts_with(" app "));
+
+    surface.heard(Report::Snapshot(Default::default()));
+
+    assert!(surface.needs_frame());
+    assert!(first_row(&mut surface).starts_with(" workspace "));
+}
+
+#[tokio::test]
+async fn a_named_workspace_keeps_its_name_wherever_its_first_pane_goes() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(Some("main"), &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    moved(&mut surface, "t1", "/srv/app");
+
+    assert!(!surface.needs_frame());
+    surface.resize(surface.host);
+    assert!(first_row(&mut surface).starts_with(" main "));
+}
+
+#[tokio::test]
+async fn the_home_folder_reads_as_a_tilde() {
+    std::env::set_var("HOME", "/home/lawn-test");
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+
+    moved(&mut surface, "t1", "/home/lawn-test");
+
+    assert!(first_row(&mut surface).starts_with(" ~ "));
+}
+
+#[tokio::test]
+async fn only_the_first_pane_of_the_first_tab_names_the_workspace() {
+    let mut surface = plain(120, 30);
+    surface.update(
+        serde_json::from_value(json!({"workspaces": [{"id": "w0", "tabs": [
+            {"id": "tab1", "root": {
+                "kind": "split", "direction": "right", "ratio": 0.5,
+                "first": {"kind": "pane", "terminal": "t1"},
+                "second": {"kind": "pane", "terminal": "t2"},
+            }},
+            {"id": "tab2", "root": {"kind": "pane", "terminal": "t3"}},
+        ]}]}))
+        .expect("layout"),
+    );
+    frame(&mut surface, &HashSet::new());
+
+    moved(&mut surface, "t2", "/srv/split");
+    moved(&mut surface, "t3", "/srv/second");
+    assert!(!surface.needs_frame());
+    surface.resize(surface.host);
+    assert!(first_row(&mut surface).starts_with(" workspace "));
+
+    moved(&mut surface, "t1", "/srv/first");
+    assert!(first_row(&mut surface).starts_with(" first "));
+}
+
+#[tokio::test]
+async fn a_terminal_that_names_no_workspace_draws_no_frame() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+
+    moved(&mut surface, "t9", "/srv/app");
+
+    assert!(!surface.needs_frame());
+    surface.resize(surface.host);
+    assert!(first_row(&mut surface).starts_with(" workspace "));
+}
+
+#[tokio::test]
+async fn a_move_to_another_folder_of_the_same_name_draws_no_frame() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    moved(&mut surface, "t1", "/srv/app");
+    frame(&mut surface, &HashSet::new());
+
+    moved(&mut surface, "t1", "/opt/app");
+
+    assert!(!surface.needs_frame());
 }
 
 mod mobile;

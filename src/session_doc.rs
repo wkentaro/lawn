@@ -114,6 +114,13 @@ impl Node {
         terminals
     }
 
+    pub(crate) fn first_terminal(&self) -> &str {
+        match self {
+            Node::Pane { terminal } => terminal,
+            Node::Split { first, .. } => first.first_terminal(),
+        }
+    }
+
     pub(crate) fn last_terminal(&self) -> &str {
         match self {
             Node::Pane { terminal } => terminal,

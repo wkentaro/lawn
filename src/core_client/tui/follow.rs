@@ -9,7 +9,7 @@ use crate::core_lifecycle::Lifecycle;
 use crate::hc::{Core, Stream};
 use crate::session_doc::{Layout, Store};
 
-const RECONNECT: Duration = Duration::from_millis(500);
+pub(super) const RECONNECT: Duration = Duration::from_millis(500);
 
 pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Layout>> {
     let (layouts, received) = mpsc::unbounded_channel();

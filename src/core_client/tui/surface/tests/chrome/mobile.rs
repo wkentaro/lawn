@@ -512,3 +512,17 @@ async fn on_one_row_the_header_is_one_row_and_on_two_rows_the_switcher_draws_onl
     assert!(surface.switching());
     assert_eq!(workspace(&surface), "w0");
 }
+
+#[tokio::test]
+async fn the_header_and_the_switcher_name_an_unnamed_workspace_after_its_folder() {
+    let mut surface = plain(64, 20);
+    surface.update(spaces(&[(None, &[None])]));
+    moved(&mut surface, "t1", "/srv/app");
+    frame(&mut surface, &HashSet::new());
+    assert!(line(&surface, 0).starts_with(" app "));
+
+    tap(&mut surface, 58, 1);
+    let screen = Screen::of(&mut surface);
+
+    assert_eq!(screen.line(5).trim_end(), "   app");
+}
