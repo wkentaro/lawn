@@ -376,6 +376,7 @@ pub(super) struct Surface {
     owned: HashMap<PaneId, String>,
     targets: HashSet<PaneId>,
     ended: Vec<PaneId>,
+    tending: Vec<Report>,
     presented: Option<HashSet<PaneId>>,
     host_focused: bool,
     tiles: Tiles,
@@ -434,6 +435,7 @@ impl Surface {
             owned: HashMap::new(),
             targets: HashSet::new(),
             ended: Vec::new(),
+            tending: Vec::new(),
             presented: None,
             host_focused: true,
             tiles: Tiles::default(),
@@ -572,11 +574,12 @@ impl Surface {
         self.session.holds(layout)
     }
 
-    pub(super) fn update(&mut self, layout: Layout) {
-        self.session.update(layout);
+    pub(super) fn update(&mut self, layout: Layout) -> Vec<String> {
+        let gained = self.session.update(layout);
         self.owned = self.session.owned();
         self.reflow();
         self.session_changed(Change::Layout);
+        gained
     }
 
     fn session_changed(&mut self, change: Change) {
@@ -879,7 +882,7 @@ impl Surface {
 
     fn hear(&mut self, report: Report) {
         let change = match report {
-            Report::Status(..) | Report::Removed(_) => None,
+            Report::Status(..) | Report::Removed(_) | Report::Resume(_) | Report::Forget(_) => None,
             Report::Names(_) | Report::Name(..) => Some(Change::Names),
             Report::Snapshot { .. } | Report::Folder(..) => Some(Change::Folders),
         };
@@ -1243,11 +1246,23 @@ impl Surface {
                 let redraws = !self.holds(&loaded.layout);
                 gate.arrived(loaded.version, redraws);
                 if redraws {
-                    self.update(loaded.layout);
+                    let gained = self.update(loaded.layout);
+                    self.tending.extend(
+                        gained
+                            .into_iter()
+                            .map(|gained| Report::Resume(Some(gained))),
+                    );
                 }
+            }
+            Arrival::Report(report @ (Report::Resume(_) | Report::Forget(_))) => {
+                self.tending.push(report)
             }
             Arrival::Report(report) => self.hear(report),
         }
+    }
+
+    pub(super) fn tending(&mut self) -> Vec<Report> {
+        std::mem::take(&mut self.tending)
     }
 
     pub(super) fn caught_up(

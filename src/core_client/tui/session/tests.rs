@@ -905,3 +905,19 @@ fn the_tiles_are_exactly_the_terminals_the_session_says_are_on_screen() {
         assert_eq!(hidden, beside, "{name}");
     }
 }
+
+#[test]
+fn an_update_names_only_the_terminals_the_session_gained() {
+    let mut session = Session::default();
+    assert_eq!(session.update(two_tabs(&[])), ["a", "b", "c", "d"]);
+    assert!(session.update(two_tabs(&["a"])).is_empty());
+    let moved_in = layout(json!({
+        "workspaces": [
+            {"id": "w0", "tabs": [
+                {"id": "t0", "root": split(pane("a"), pane("e"))},
+                {"id": "t1", "root": pane("c")},
+            ]},
+        ],
+    }));
+    assert_eq!(session.update(moved_in), ["e"]);
+}

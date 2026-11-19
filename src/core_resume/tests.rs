@@ -11,6 +11,7 @@ struct State {
     conflicts: usize,
     replace_on_conflict: Option<Value>,
     terminal_on_conflict: Option<Value>,
+    kernel_on_conflict: Option<u32>,
     error_after_commit: bool,
     save_error: Option<String>,
     programs: HashMap<u32, u64>,
@@ -18,6 +19,10 @@ struct State {
     kernel_foreground: Option<u32>,
     reporter_in_job: bool,
     boot: Option<String>,
+    can_send: bool,
+    root_cwd: Option<String>,
+    sends: Vec<(String, String)>,
+    send_failure: Option<String>,
 }
 
 struct Fake {
@@ -30,13 +35,17 @@ impl Fake {
     fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
-                terminal: json!({"address": "t7", "created_ms": 7, "pid": 9999, "state": "live"}),
+                terminal: json!({
+                    "address": "t7", "created_ms": 7, "pid": 9999, "state": "live",
+                    "cwd": here(), "foreground": {"pid": 9999, "cwd": here()},
+                }),
                 value: Value::Null,
                 version: 0,
                 calls: Vec::new(),
                 conflicts: 0,
                 replace_on_conflict: None,
                 terminal_on_conflict: None,
+                kernel_on_conflict: None,
                 error_after_commit: false,
                 save_error: None,
                 programs: HashMap::from([(9999, 1)]),
@@ -44,6 +53,10 @@ impl Fake {
                 kernel_foreground: None,
                 reporter_in_job: true,
                 boot: None,
+                can_send: true,
+                root_cwd: Some(here()),
+                sends: Vec::new(),
+                send_failure: None,
             })),
             barrier: None,
             read_once: AtomicBool::new(false),
@@ -112,6 +125,9 @@ impl Backend for Fake {
             if let Some(terminal) = state.terminal_on_conflict.take() {
                 state.terminal = terminal;
             }
+            if let Some(group) = state.kernel_on_conflict.take() {
+                state.kernel_foreground = Some(group);
+            }
             return Err(WriteFailure::Conflict);
         }
         if version != state.version {
@@ -147,6 +163,28 @@ impl Backend for Fake {
     fn boot(&self) -> Option<String> {
         self.state.lock().unwrap().boot.clone()
     }
+
+    fn can_send(&self) -> bool {
+        self.state.lock().unwrap().can_send
+    }
+
+    fn cwd(&self, _pid: u32) -> Option<std::path::PathBuf> {
+        self.state.lock().unwrap().root_cwd.clone().map(Into::into)
+    }
+
+    fn send(&self, target: &str, text: &str) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap();
+        state.sends.push((target.into(), text.into()));
+        state.send_failure.take().map_or(Ok(()), Err)
+    }
+}
+
+fn here() -> String {
+    std::env::current_dir()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
 }
 
 fn report(seq: u64) -> Report {
@@ -842,4 +880,623 @@ fn a_command_resume_cannot_type_is_refused_without_a_write() {
     assert!(record_with(&fake, "t7", &unusable).is_err());
     assert_eq!(fake.writes(), 1);
     assert_eq!(fake.payloads(), [working]);
+}
+
+fn agent(seq: u64, reporter: &str, program: Option<ReportedProgram>) -> Report {
+    Report {
+        source: "integration".into(),
+        agent: "worker".into(),
+        reporter_id: reporter.into(),
+        seq,
+        cwd: here(),
+        argv: vec!["worker".into(), "--resume".into(), format!("session-{seq}")],
+        program,
+        recorded: None,
+        job: None,
+    }
+}
+
+fn gone(seq: u64) -> Report {
+    agent(seq, "invocation-1", program(4000, 1))
+}
+
+fn live(seq: u64) -> Report {
+    agent(seq, "invocation-1", program(9999, 1))
+}
+
+fn quit(seq: u64) -> Report {
+    Report {
+        job: Some(12345),
+        ..live(seq)
+    }
+}
+
+impl Fake {
+    fn with(reports: Vec<Report>) -> Self {
+        let fake = Self::new();
+        {
+            let mut state = fake.state.lock().unwrap();
+            state.value = document(reports);
+            state.kernel_foreground = Some(9999);
+        }
+        fake
+    }
+
+    fn sends(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .sends
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect()
+    }
+}
+
+#[test]
+fn a_report_whose_program_is_gone_is_typed_once() {
+    let fake = Fake::with(vec![gone(1)]);
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), ["worker --resume session-1"]);
+    assert_eq!(fake.state.lock().unwrap().sends[0].0, "t7");
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn the_same_pid_with_another_start_token_is_another_program() {
+    let fake = Fake::with(vec![agent(1, "invocation-1", program(9999, 0))]);
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends().len(), 1);
+}
+
+#[test]
+fn a_program_from_another_boot_has_ended() {
+    let was = ReportedProgram {
+        pid: 9999,
+        started_ms: Some(1),
+        boot: Some("b1".into()),
+    };
+    let now = ReportedProgram {
+        boot: Some("b2".into()),
+        ..was.clone()
+    };
+    assert!(was.ended(&now));
+}
+
+#[test]
+fn a_program_without_a_known_boot_compares_by_pid_and_start_token() {
+    let known = ReportedProgram {
+        pid: 9999,
+        started_ms: Some(1),
+        boot: Some("b1".into()),
+    };
+    let unknown = ReportedProgram {
+        boot: None,
+        ..known.clone()
+    };
+    assert!(!known.ended(&unknown));
+    assert!(!unknown.ended(&known));
+    let restarted = ReportedProgram {
+        started_ms: Some(2),
+        ..unknown.clone()
+    };
+    assert!(known.ended(&restarted));
+    assert!(unknown.ended(&ReportedProgram {
+        pid: 4000,
+        ..unknown.clone()
+    }));
+}
+
+#[test]
+fn a_report_whose_program_still_runs_is_untouched() {
+    let fake = Fake::with(vec![live(1)]);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.writes(), 0);
+    assert_eq!(fake.document().reports, [live(1)]);
+}
+
+#[test]
+fn a_report_without_a_program_never_runs() {
+    let fake = Fake::with(vec![agent(1, "invocation-1", None)]);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn a_record_only_document_never_runs() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().value["record_only"] = json!(true);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn a_shell_that_is_not_up_yet_keeps_the_record() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().terminal["pid"] = Value::Null;
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+#[test]
+fn a_finished_terminal_runs_nothing() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().terminal["state"] = json!("finished");
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+#[test]
+fn the_newest_gone_report_runs_and_older_ones_are_dropped() {
+    let fake = Fake::with(vec![
+        agent(5, "a", program(4000, 1)),
+        agent(9, "b", program(4001, 1)),
+        agent(7, "c", program(4002, 1)),
+        agent(3, "d", program(9999, 1)),
+    ]);
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), ["worker --resume session-9"]);
+    assert_eq!(fake.document().reports, [agent(3, "d", program(9999, 1))]);
+}
+
+#[test]
+fn a_foreground_the_core_has_not_updated_since_the_loss_is_no_job() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().terminal["foreground"]["pid"] = json!(4000);
+    assert!(resume_with(&fake, "t7").unwrap());
+}
+
+#[test]
+fn a_foreground_job_the_kernel_names_consumes_the_record_without_typing_even_with_its_leader_gone()
+{
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().kernel_foreground = Some(12345);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn a_shell_the_kernel_cannot_place_is_left_untouched_whatever_the_core_sampled() {
+    let fake = Fake::with(vec![gone(1)]);
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.kernel_foreground = None;
+        state.terminal["foreground"]["pid"] = json!(9999);
+    }
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.writes(), 0);
+    assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+fn typed_with_cd() -> String {
+    format!("cd {} && worker --resume session-1", shell_word(&here()))
+}
+
+const AWKWARD_WORDS: [(&str, &str); 8] = [
+    ("/tmp/project", "/tmp/project"),
+    ("/tmp/back\\slash", "/tmp/back\\\\slash"),
+    ("/tmp/project\\", "/tmp/project\\\\"),
+    ("/tmp/it's", "'/tmp/it'\\''s'"),
+    ("/tmp/it's\\", "'/tmp/it'\\''s'\\\\"),
+    ("two\\\\backslashes", "two\\\\\\\\backslashes"),
+    ("", "''"),
+    ("with space", "'with space'"),
+];
+
+#[test]
+fn a_shell_word_keeps_backslashes_outside_single_quotes_so_fish_reads_it_as_posix_shells_do() {
+    for (value, word) in AWKWARD_WORDS {
+        assert_eq!(shell_word(value), word, "{value}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_shell_word_reads_back_unchanged_in_a_posix_shell() {
+    for (value, _) in AWKWARD_WORDS {
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", &format!("printf %s {}", shell_word(value))])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), value);
+    }
+}
+
+#[test]
+fn a_shell_command_joins_the_words_of_its_arguments_and_needs_a_program() {
+    let argv: Vec<String> = ["worker", "--resume", "/tmp/project\\", "", "it's"]
+        .map(Into::into)
+        .into();
+    assert_eq!(
+        shell_command(&argv).as_deref(),
+        Some("worker --resume /tmp/project\\\\ '' 'it'\\''s'")
+    );
+    assert_eq!(shell_command(&[]), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_shell_command_reads_back_as_the_same_arguments_in_a_posix_shell() {
+    let mut argv = vec!["printf".to_owned(), "[%s]".to_owned()];
+    argv.extend(AWKWARD_WORDS.map(|(value, _)| value.to_owned()));
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", &shell_command(&argv).unwrap()])
+        .output()
+        .unwrap();
+    let expected: String = AWKWARD_WORDS
+        .iter()
+        .map(|(value, _)| format!("[{value}]"))
+        .collect();
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+}
+
+#[test]
+fn a_recovered_shell_is_sent_a_cd_into_a_directory_ending_in_a_backslash_that_fish_can_read() {
+    let base = std::env::temp_dir().join(format!("lawn-resume-backslash-{}", std::process::id()));
+    let directory = base.join("project\\");
+    std::fs::create_dir_all(&directory).unwrap();
+    let directory = directory.to_str().unwrap().to_owned();
+    let mut report = gone(1);
+    report.cwd = directory.clone();
+    let fake = Fake::with(vec![report]);
+    let resumed = resume_with(&fake, "t7");
+    std::fs::remove_dir_all(&base).unwrap();
+    assert!(resumed.unwrap());
+    let sent = fake.sends();
+    assert_eq!(
+        sent,
+        [format!(
+            "cd {} && worker --resume session-1",
+            shell_word(&directory)
+        )]
+    );
+    assert!(sent[0].contains("project\\\\ && "), "{sent:?}");
+}
+
+#[test]
+fn a_recovered_shell_is_sent_an_argument_ending_in_a_backslash_that_fish_can_read() {
+    let mut report = gone(1);
+    report.argv = vec!["worker".into(), "--resume".into(), "/tmp/project\\".into()];
+    let fake = Fake::with(vec![report]);
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), ["worker --resume /tmp/project\\\\"]);
+}
+
+#[test]
+fn the_cd_is_skipped_only_when_the_kernel_reads_the_roots_directory_as_the_reports() {
+    for (root_cwd, typed) in [
+        (Some(here()), "worker --resume session-1".to_owned()),
+        (Some("/elsewhere".to_owned()), typed_with_cd()),
+        (None, typed_with_cd()),
+    ] {
+        let fake = Fake::with(vec![gone(1)]);
+        fake.state.lock().unwrap().root_cwd = root_cwd.clone();
+        assert!(resume_with(&fake, "t7").unwrap(), "{root_cwd:?}");
+        assert_eq!(fake.sends(), [typed], "{root_cwd:?}");
+    }
+}
+
+#[test]
+fn the_kernels_foreground_decides_whether_the_recovered_shell_is_busy() {
+    let busy = Fake::with(vec![gone(1)]);
+    {
+        let mut state = busy.state.lock().unwrap();
+        state.kernel_foreground = Some(12345);
+        state.programs.insert(12345, 3);
+    }
+    assert!(!resume_with(&busy, "t7").unwrap());
+    assert!(busy.sends().is_empty());
+
+    let idle = Fake::with(vec![gone(1)]);
+    {
+        let mut state = idle.state.lock().unwrap();
+        state.terminal["foreground"]["pid"] = json!(12345);
+        state.programs.insert(12345, 3);
+        state.kernel_foreground = Some(9999);
+    }
+    assert!(resume_with(&idle, "t7").unwrap());
+    assert_eq!(idle.sends(), ["worker --resume session-1"]);
+}
+
+#[test]
+fn a_core_that_cannot_type_into_terminals_claims_nothing() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().can_send = false;
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+#[test]
+fn a_command_that_is_not_a_plain_name_consumes_the_record_without_typing() {
+    let mut bad = gone(1);
+    bad.argv[0] = "/bin/worker".into();
+    let fake = Fake::with(vec![bad]);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn a_missing_directory_consumes_the_record_without_typing() {
+    let mut moved = gone(1);
+    moved.cwd = report(1).cwd;
+    let fake = Fake::with(vec![moved]);
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn a_directory_the_core_samples_late_does_not_skip_the_cd() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().root_cwd = Some("/elsewhere".into());
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), [typed_with_cd()]);
+}
+
+#[test]
+fn two_clients_resuming_at_once_type_it_once() {
+    let fake = Fake::with(vec![gone(1)]);
+    let barrier = Arc::new(Barrier::new(2));
+    let clients = (0..2)
+        .map(|_| {
+            let client = Fake {
+                state: fake.state.clone(),
+                barrier: Some(barrier.clone()),
+                read_once: AtomicBool::new(false),
+            };
+            std::thread::spawn(move || resume_with(&client, "t7").unwrap())
+        })
+        .collect::<Vec<_>>();
+    let typed = clients
+        .into_iter()
+        .map(|client| client.join().unwrap())
+        .filter(|typed| *typed)
+        .count();
+    assert_eq!(typed, 1);
+    assert_eq!(fake.sends().len(), 1);
+}
+
+#[test]
+fn a_newer_live_report_that_wins_the_race_sends_nothing() {
+    let fake = Fake::with(vec![gone(1)]);
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.conflicts = 1;
+        state.replace_on_conflict = Some(document(vec![live(2)]));
+    }
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [live(2)]);
+}
+
+#[test]
+fn an_unknown_claim_sends_nothing_now_or_later() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().error_after_commit = true;
+    assert!(resume_with(&fake, "t7").is_err());
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+}
+
+#[test]
+fn a_failed_claim_sends_nothing() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().save_error = Some("doc.set: unavailable".into());
+    assert!(resume_with(&fake, "t7").is_err());
+    assert!(fake.sends().is_empty());
+}
+
+#[test]
+fn a_pending_resume_is_found_without_claiming_or_typing_it() {
+    let fake = Fake::with(vec![gone(1)]);
+    assert!(pending_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+#[test]
+fn nothing_is_pending_without_a_lost_programs_report_or_a_way_to_type() {
+    for reports in [vec![], vec![live(1)]] {
+        assert!(
+            !pending_with(&Fake::with(reports.clone()), "t7").unwrap(),
+            "{reports:?}"
+        );
+    }
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().can_send = false;
+    assert!(!pending_with(&fake, "t7").unwrap());
+}
+
+#[test]
+fn an_error_reply_from_the_send_stays_claimed() {
+    let fake = Fake::with(vec![gone(1)]);
+    fake.state.lock().unwrap().send_failure = Some("blocked".into());
+    resume_with(&fake, "t7").unwrap();
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends().len(), 1);
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn a_send_the_core_refuses_or_never_answers_counts_as_sent_for_the_spacing() {
+    for failure in [
+        "terminal.send: the terminal is blocked",
+        "terminal.send: outcome unknown (no reply before the deadline); the request may have taken effect",
+    ] {
+        let fake = Fake::with(vec![gone(1)]);
+        fake.state.lock().unwrap().send_failure = Some(failure.into());
+        assert_eq!(resume_with(&fake, "t7"), Ok(true), "{failure}");
+        assert_eq!(fake.sends().len(), 1, "{failure}");
+    }
+}
+
+#[test]
+fn the_shell_back_in_the_foreground_forgets_its_quit_agent() {
+    let fake = Fake::with(vec![quit(1)]);
+
+    assert!(forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.document().reports, []);
+}
+
+#[test]
+fn an_agent_still_in_the_foreground_keeps_its_record() {
+    let fake = Fake::with(vec![quit(1)]);
+    fake.state.lock().unwrap().kernel_foreground = Some(12345);
+
+    assert!(!forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn the_forget_sweep_removes_nothing_the_kernel_cannot_place() {
+    let fake = Fake::with(vec![quit(1)]);
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.kernel_foreground = None;
+        state.terminal["foreground"]["pid"] = json!(9999);
+    }
+    assert!(!forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+    assert_eq!(fake.document().reports, [quit(1)]);
+}
+
+#[test]
+fn the_kernels_foreground_decides_whether_the_agent_has_quit() {
+    let running = Fake::with(vec![quit(1)]);
+    running.state.lock().unwrap().kernel_foreground = Some(12345);
+    assert!(!forget_with(&running, "t7").unwrap());
+    assert_eq!(running.writes(), 0);
+
+    let quitted = Fake::with(vec![quit(1)]);
+    {
+        let mut state = quitted.state.lock().unwrap();
+        state.terminal["foreground"]["pid"] = json!(12345);
+        state.kernel_foreground = Some(9999);
+    }
+    assert!(forget_with(&quitted, "t7").unwrap());
+    assert!(quitted.document().reports.is_empty());
+}
+
+#[test]
+fn a_lost_programs_record_is_not_forgotten_and_still_resumes() {
+    let earlier = Report {
+        job: Some(12345),
+        ..agent(2, "invocation-2", program(9999, 2))
+    };
+    let fake = Fake::with(vec![gone(1), earlier.clone()]);
+
+    assert!(!forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), ["worker --resume session-2"]);
+}
+
+#[test]
+fn an_agent_recorded_before_the_core_noticed_it_is_forgotten_when_it_quits() {
+    let fake = Fake::new();
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.terminal["foreground"] = json!({"pid": 9999});
+        state.kernel_foreground = Some(12345);
+    }
+    record_with(&fake, "t7", &report(1)).unwrap();
+    fake.state.lock().unwrap().kernel_foreground = Some(9999);
+    assert!(forget_with(&fake, "t7").unwrap());
+    assert!(fake.document().reports.is_empty());
+}
+
+#[test]
+fn an_agent_that_reports_while_forgetting_keeps_its_record() {
+    let started = Report {
+        job: Some(12345),
+        ..agent(2, "invocation-2", program(9999, 1))
+    };
+    let fake = Fake::with(vec![quit(1)]);
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.conflicts = 1;
+        state.replace_on_conflict = Some(document(vec![quit(1), started.clone()]));
+        state.kernel_on_conflict = Some(12345);
+    }
+
+    assert!(!forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.document().reports, [quit(1), started]);
+}
+
+#[test]
+fn a_terminal_without_a_live_root_forgets_nothing() {
+    for (pid, state) in [(json!(null), "live"), (json!(9999), "lost")] {
+        let fake = Fake::with(vec![quit(1)]);
+        {
+            let mut fake_state = fake.state.lock().unwrap();
+            fake_state.terminal["pid"] = pid.clone();
+            fake_state.terminal["state"] = json!(state);
+            fake_state.terminal["foreground"]["pid"] = pid.clone();
+        }
+        assert!(!forget_with(&fake, "t7").unwrap(), "{state}");
+        assert_eq!(fake.writes(), 0, "{state}");
+    }
+}
+
+#[test]
+fn records_of_another_terminal_identity_are_not_forgotten() {
+    let fake = Fake::with(vec![quit(1)]);
+    fake.state.lock().unwrap().terminal["created_ms"] = json!(8);
+
+    assert!(forget_with(&fake, "t7").is_err());
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn an_agent_started_as_the_pane_program_is_not_forgotten() {
+    let fake = Fake::with(vec![live(1)]);
+
+    assert!(!forget_with(&fake, "t7").unwrap());
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn the_last_stored_gone_report_runs_whatever_its_sequence() {
+    let first = Report {
+        recorded: Some(1),
+        ..agent(5, "invocation-1", program(4000, 1))
+    };
+    let last = Report {
+        recorded: Some(2),
+        ..agent(2, "invocation-2", program(4000, 1))
+    };
+    let fake = Fake::with(vec![first, last]);
+
+    assert!(resume_with(&fake, "t7").unwrap());
+    assert_eq!(fake.sends(), ["worker --resume session-2"]);
+}
+
+#[test]
+fn a_claim_retry_reads_the_terminal_again() {
+    let fake = Fake::with(vec![gone(1)]);
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.conflicts = 1;
+        state.programs.insert(4000, 1);
+        let mut terminal = state.terminal.clone();
+        terminal["pid"] = json!(4000);
+        terminal["foreground"]["pid"] = json!(4000);
+        state.terminal_on_conflict = Some(terminal);
+    }
+
+    assert!(!resume_with(&fake, "t7").unwrap());
+    assert!(fake.sends().is_empty());
+    assert_eq!(fake.document().reports, [gone(1)]);
 }

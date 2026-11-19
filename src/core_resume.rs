@@ -26,6 +26,15 @@ pub(crate) struct ReportedProgram {
     pub(crate) boot: Option<String>,
 }
 
+impl ReportedProgram {
+    #[cfg(any(unix, test))]
+    fn ended(&self, current: &Self) -> bool {
+        self.pid != current.pid
+            || matches!((self.started_ms, current.started_ms), (Some(was), Some(now)) if was != now)
+            || matches!((&self.boot, &current.boot), (Some(was), Some(now)) if was != now)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Report {
@@ -224,6 +233,12 @@ trait Backend {
     fn foreground(&self, root: u32) -> Option<u32>;
     fn reporter_in_job(&self, root: u32, job: u32) -> bool;
     fn boot(&self) -> Option<String>;
+    #[cfg(any(unix, test))]
+    fn can_send(&self) -> bool;
+    #[cfg(any(unix, test))]
+    fn cwd(&self, pid: u32) -> Option<std::path::PathBuf>;
+    #[cfg(any(unix, test))]
+    fn send(&self, target: &str, text: &str) -> Result<(), String>;
 }
 
 impl Backend for Core {
@@ -264,6 +279,23 @@ impl Backend for Core {
 
     fn boot(&self) -> Option<String> {
         crate::platform::boot_id()
+    }
+
+    #[cfg(any(unix, test))]
+    fn can_send(&self) -> bool {
+        self.has_method("terminal.send")
+    }
+
+    #[cfg(any(unix, test))]
+    fn cwd(&self, pid: u32) -> Option<std::path::PathBuf> {
+        crate::platform::process_cwd(pid)
+    }
+
+    #[cfg(any(unix, test))]
+    fn send(&self, target: &str, text: &str) -> Result<(), String> {
+        self.call("terminal.send", json!({"terminal": target, "text": text}))
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -426,6 +458,172 @@ fn record_with(backend: &impl Backend, target: &str, report: &Report) -> Result<
             seq,
         };
         Ok((outcome, status == RecordStatus::Recorded))
+    })
+}
+
+#[cfg(unix)]
+pub(crate) fn pending(core: &Core, target: &str) -> Result<bool, String> {
+    pending_with(core, target)
+}
+
+#[cfg(unix)]
+pub(crate) fn resume(core: &Core, target: &str) -> Result<bool, String> {
+    resume_with(core, target)
+}
+
+#[cfg(any(unix, test))]
+fn claim(
+    backend: &impl Backend,
+    terminal: &Terminal,
+    document: &mut Document,
+) -> Option<(Report, String, u32)> {
+    let root = terminal
+        .live_root()
+        .filter(|root| backend.foreground(*root).is_some())?;
+    let current = ReportedProgram {
+        pid: root,
+        started_ms: backend.started(root),
+        boot: backend.boot(),
+    };
+    let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut document.reports)
+        .into_iter()
+        .partition(|report| {
+            report
+                .program
+                .as_ref()
+                .is_some_and(|program| program.ended(&current))
+        });
+    document.reports = kept;
+    gone.into_iter()
+        .max_by_key(|report| (report.recorded, report.seq))
+        .map(|report| (report, terminal.identity.address.clone(), root))
+}
+
+#[cfg(any(unix, test))]
+fn pending_with(backend: &impl Backend, target: &str) -> Result<bool, String> {
+    if !backend.can_send() {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!("the core cannot type into terminals, so agents are not resumed");
+        });
+        return Ok(false);
+    }
+    edit(backend, target, |terminal, document, _| {
+        Ok((claim(backend, terminal, document).is_some(), false))
+    })
+}
+
+#[cfg(any(unix, test))]
+fn resume_with(backend: &impl Backend, target: &str) -> Result<bool, String> {
+    if !backend.can_send() {
+        return Ok(false);
+    }
+    let claimed = edit(backend, target, |terminal, document, _| {
+        let claimed = claim(backend, terminal, document);
+        let changed = claimed.is_some();
+        Ok((claimed, changed))
+    })?;
+    let Some((report, address, root)) = claimed else {
+        return Ok(false);
+    };
+    let address = address.as_str();
+    if let Err(error) = crate::agent_resume::validate_resume_argv(&report.argv) {
+        tracing::warn!(%error, terminal = address, agent = report.agent, "dropped a resume command");
+        return Ok(false);
+    }
+    if !Path::new(&report.cwd).is_dir() {
+        tracing::warn!(
+            terminal = address,
+            cwd = report.cwd,
+            agent = report.agent,
+            "the resume directory is gone"
+        );
+        return Ok(false);
+    }
+    if backend.foreground(root) != Some(root) {
+        tracing::warn!(
+            terminal = address,
+            agent = report.agent,
+            "the recovered shell is not at its prompt"
+        );
+        return Ok(false);
+    }
+    let Some(command) = shell_command(&report.argv) else {
+        return Ok(false);
+    };
+    let text = if backend
+        .cwd(root)
+        .is_some_and(|cwd| cwd == Path::new(&report.cwd))
+    {
+        command
+    } else {
+        format!("cd {} && {command}", shell_word(&report.cwd))
+    };
+    if let Err(error) = backend.send(address, &text) {
+        tracing::warn!(
+            %error,
+            terminal = address,
+            agent = report.agent,
+            "the resume command may not have been typed"
+        );
+    }
+    Ok(true)
+}
+
+#[cfg(any(unix, test))]
+fn shell_command(argv: &[String]) -> Option<String> {
+    (!argv.is_empty()).then(|| {
+        argv.iter()
+            .map(|word| shell_word(word))
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
+#[cfg(any(unix, test))]
+fn shell_word(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+    value
+        .split('\\')
+        .map(|part| match part {
+            "" => String::new(),
+            part => crate::app::agent_resume::shell_quote(part),
+        })
+        .collect::<Vec<_>>()
+        .join("\\\\")
+}
+
+#[cfg(unix)]
+pub(crate) fn forget(core: &Core, target: &str) -> Result<bool, String> {
+    forget_with(core, target)
+}
+
+#[cfg(any(unix, test))]
+fn forget_with(backend: &impl Backend, target: &str) -> Result<bool, String> {
+    edit(backend, target, |terminal, document, _| {
+        let Some(root) = terminal
+            .live_root()
+            .filter(|root| backend.foreground(*root) == Some(*root))
+        else {
+            return Ok((false, false));
+        };
+        let current = ReportedProgram {
+            pid: root,
+            started_ms: backend.started(root),
+            boot: backend.boot(),
+        };
+        let before = document.reports.len();
+        document.reports.retain(|report| {
+            report.job.is_none()
+                || report
+                    .program
+                    .as_ref()
+                    .is_none_or(|program| program.ended(&current))
+        });
+        let forgot = document.reports.len() != before;
+        Ok((forgot, forgot))
     })
 }
 

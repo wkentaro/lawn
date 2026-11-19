@@ -1075,3 +1075,32 @@ async fn a_reloaded_config_moves_the_shown_toast_and_shows_no_queued_one_once_to
     assert!(!showing(&mut surface, "other · 2"));
     assert!(surface.notice.is_none());
 }
+
+#[tokio::test]
+async fn resume_and_forget_requests_and_the_terminals_a_layout_gains_wait_to_be_tended() {
+    let mut surface = surface(40, 10);
+    let (arriving, mut arrivals) = tokio::sync::mpsc::unbounded_channel();
+    let layout = row_of(&terminals(2));
+    arriving
+        .send(Report::Forget(None).into())
+        .and_then(|()| arriving.send(Report::Resume(Some("t9".to_owned())).into()))
+        .and_then(|()| arriving.send(crate::session_doc::Loaded { layout, version: 1 }.into()))
+        .ok();
+
+    surface.caught_up(
+        &mut Gate::default(),
+        &mut arrivals,
+        std::time::Instant::now(),
+    );
+
+    assert_eq!(
+        surface.tending(),
+        [
+            Report::Forget(None),
+            Report::Resume(Some("t9".to_owned())),
+            Report::Resume(Some("t0".to_owned())),
+            Report::Resume(Some("t1".to_owned())),
+        ]
+    );
+    assert!(surface.tending().is_empty());
+}
