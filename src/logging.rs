@@ -11,8 +11,12 @@ const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 0;
 
 pub(crate) fn init_file_logging(file_name: &str) {
+    init_file_logging_in(crate::session::data_dir(), file_name);
+}
+
+pub(crate) fn init_file_logging_in(dir: PathBuf, file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        crate::session::data_dir(),
+        dir,
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
@@ -32,6 +36,12 @@ pub(crate) fn init_file_logging(file_name: &str) {
 }
 
 pub(crate) fn help_log_paths_summary() -> String {
+    if crate::core_client::enabled() {
+        return crate::core_client::log_dir()
+            .join(crate::core_client::LOG_FILE)
+            .display()
+            .to_string();
+    }
     let dir = crate::session::data_dir();
     format!(
         "{} (plus herdr-client.log, herdr-server.log)",
