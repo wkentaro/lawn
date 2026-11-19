@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, ModifierKeyCode};
 
-use super::{Keys, Mode, Routed};
+use super::{Keys, Mode, Navigation, Routed};
 use crate::config::{ActionKeybinds, Config, Keybinds, LiveKeybindConfig};
 use crate::input::{KeybindAction, KeybindMatch, TerminalKey};
 use crate::layout::PaneId;
@@ -15,6 +15,7 @@ enum Outcome {
     CopyMode,
     Dialog,
     Dismiss,
+    Navigate(Navigation),
 }
 
 fn left() -> PaneId {
@@ -58,6 +59,7 @@ fn outcomes(routed: Vec<Routed>) -> Vec<Outcome> {
             Routed::CopyMode(_) => Outcome::CopyMode,
             Routed::Dialog(_) => Outcome::Dialog,
             Routed::Dismiss => Outcome::Dismiss,
+            Routed::Navigate(step) => Outcome::Navigate(step),
         })
         .collect()
 }
@@ -506,44 +508,215 @@ fn in_the_search_prompt_the_prefix_typed_text_and_bindings_are_prompt_keys() {
     }
 }
 
-fn in_the_switcher(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
-    outcomes(
-        keys.route_host(key.clone(), Some(left()), false, Mode::Switcher, |_| {
-            Some("j")
-        }),
-    )
+fn navigating_in(keys: &mut Keys, session: u64, key: &TerminalKey) -> Vec<Outcome> {
+    outcomes(keys.route_host(
+        key.clone(),
+        Some(left()),
+        false,
+        Mode::Navigate(session),
+        |_| Some("j"),
+    ))
+}
+
+fn navigating(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
+    navigating_in(keys, 1, key)
+}
+
+fn plain(code: KeyCode) -> TerminalKey {
+    TerminalKey::new(code, KeyModifiers::NONE)
 }
 
 #[test]
-fn in_the_switcher_no_key_reaches_a_pane_or_runs_a_binding_and_escape_or_the_prefix_dismisses_it() {
+fn in_navigate_mode_escape_the_prefix_and_ctrl_bracket_leave_it() {
     let mut keys = keys();
-    let typed = key('j', KeyModifiers::NONE);
+    for key in [
+        plain(KeyCode::Esc),
+        prefix(),
+        key('[', KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(navigating(&mut keys, &key), [Outcome::Dismiss], "{key:?}");
+    }
+}
+
+#[test]
+fn in_navigate_mode_up_and_down_move_the_workspace_selection() {
+    let mut keys = keys();
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::Up)),
+        [Outcome::Navigate(Navigation::Move(-1))]
+    );
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::Down)),
+        [Outcome::Navigate(Navigation::Move(1))]
+    );
+}
+
+#[test]
+fn in_navigate_mode_enter_accepts_the_selection_and_a_modified_enter_does_not() {
+    let mut keys = keys();
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::Enter)),
+        [Outcome::Navigate(Navigation::Accept)]
+    );
+    assert_eq!(
+        navigating(
+            &mut keys,
+            &TerminalKey::new(KeyCode::Enter, KeyModifiers::ALT)
+        ),
+        []
+    );
+}
+
+#[test]
+fn in_navigate_mode_a_digit_jumps_to_that_workspace() {
+    let mut keys = keys();
+    assert_eq!(
+        navigating(&mut keys, &key('1', KeyModifiers::NONE)),
+        [Outcome::Navigate(Navigation::Jump(
+            KeybindAction::SwitchWorkspace(0)
+        ))]
+    );
+    assert_eq!(
+        navigating(&mut keys, &key('9', KeyModifiers::NONE)),
+        [Outcome::Navigate(Navigation::Jump(
+            KeybindAction::SwitchWorkspace(8)
+        ))]
+    );
+}
+
+#[test]
+fn in_navigate_mode_tab_and_back_tab_cycle_the_shown_panes() {
+    let mut keys = keys();
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::Tab)),
+        [Outcome::Navigate(Navigation::Cycle(1))]
+    );
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::BackTab)),
+        [Outcome::Navigate(Navigation::Cycle(-1))]
+    );
+}
+
+#[test]
+fn in_navigate_mode_arrows_and_the_pane_keys_focus_panes_and_stay() {
+    let mut keys = keys();
+    for (key, action) in [
+        (plain(KeyCode::Left), KeybindAction::FocusPaneLeft),
+        (plain(KeyCode::Right), KeybindAction::FocusPaneRight),
+        (key('h', KeyModifiers::NONE), KeybindAction::FocusPaneLeft),
+        (key('j', KeyModifiers::NONE), KeybindAction::FocusPaneDown),
+        (key('k', KeyModifiers::NONE), KeybindAction::FocusPaneUp),
+        (key('l', KeyModifiers::NONE), KeybindAction::FocusPaneRight),
+    ] {
+        assert_eq!(
+            navigating(&mut keys, &key),
+            [Outcome::Action(action)],
+            "{key:?}"
+        );
+    }
+}
+
+#[test]
+fn in_navigate_mode_a_prefix_binding_runs_without_the_prefix_and_leaves() {
+    let mut keys = keys();
+    assert_eq!(
+        navigating(&mut keys, &key('z', KeyModifiers::NONE)),
+        [Outcome::Action(KeybindAction::Zoom), Outcome::Dismiss]
+    );
+    assert_eq!(
+        navigating(&mut keys, &key('?', KeyModifiers::NONE)),
+        [Outcome::Action(KeybindAction::Help), Outcome::Dismiss]
+    );
+}
+
+#[test]
+fn in_navigate_mode_a_prefix_custom_command_runs_and_leaves() {
+    let config: Config = toml::from_str(
+        r#"
+[[keys.command]]
+key = "prefix+y"
+command = "true"
+"#,
+    )
+    .expect("config parses");
+    let mut keys = keys_with(config.keybinds(), false);
+    assert_eq!(
+        navigating(&mut keys, &key('y', KeyModifiers::NONE)),
+        [Outcome::Command, Outcome::Dismiss]
+    );
+}
+
+#[test]
+fn in_navigate_mode_the_configured_cycle_keys_cycle_the_shown_panes_unless_the_selection_vanished()
+{
+    let config: Config = toml::from_str(
+        r#"
+[keys]
+cycle_pane_next = "prefix+u"
+cycle_pane_previous = "prefix+i"
+"#,
+    )
+    .expect("config parses");
+    let mut keys = keys_with(config.keybinds(), false);
+    let next = key('u', KeyModifiers::NONE);
+    assert_eq!(
+        navigating(&mut keys, &next),
+        [Outcome::Navigate(Navigation::Cycle(1))]
+    );
+    assert_eq!(
+        navigating(&mut keys, &next.clone().with_kind(KeyEventKind::Repeat)),
+        []
+    );
+    assert_eq!(
+        navigating(&mut keys, &key('i', KeyModifiers::NONE)),
+        [Outcome::Navigate(Navigation::Cycle(-1))]
+    );
+    assert_eq!(
+        outcomes(
+            keys.route_host(next, Some(left()), false, Mode::NavigateVanished(1), |_| {
+                None
+            })
+        ),
+        []
+    );
+}
+
+#[test]
+fn in_navigate_mode_an_indexed_prefix_binding_becomes_a_jump() {
+    let config: Config = toml::from_str(
+        r#"
+[keys]
+switch_tab = "prefix+alt+1..9"
+"#,
+    )
+    .expect("config parses");
+    let mut keys = keys_with(config.keybinds(), false);
+    assert_eq!(
+        navigating(&mut keys, &key('2', KeyModifiers::ALT)),
+        [Outcome::Navigate(Navigation::Jump(
+            KeybindAction::SwitchTab(1)
+        ))]
+    );
+}
+
+#[test]
+fn in_navigate_mode_no_key_reaches_a_pane_and_direct_bindings_do_nothing() {
+    let mut keys = keys();
+    let typed = key('u', KeyModifiers::NONE);
     for key in [
         typed.clone(),
-        typed.clone().with_kind(KeyEventKind::Repeat),
         typed.with_kind(KeyEventKind::Release),
         key('n', KeyModifiers::CONTROL),
-        TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE),
     ] {
-        assert_eq!(in_the_switcher(&mut keys, &key), [], "{key:?}");
+        assert_eq!(navigating(&mut keys, &key), [], "{key:?}");
     }
-    let escape = TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(in_the_switcher(&mut keys, &escape), [Outcome::Dismiss]);
-    assert_eq!(in_the_switcher(&mut keys, &prefix()), [Outcome::Dismiss]);
-    assert_eq!(
-        in_the_switcher(&mut keys, &key('z', KeyModifiers::NONE)),
-        []
-    );
 }
 
 #[test]
-fn a_prefix_pending_when_the_switcher_opens_runs_no_binding_there_or_after() {
+fn a_prefix_pending_when_navigate_mode_opens_is_dropped() {
     let mut keys = keys();
     press(&mut keys, &prefix());
-    assert_eq!(
-        in_the_switcher(&mut keys, &key('z', KeyModifiers::NONE)),
-        []
-    );
+    assert_eq!(navigating(&mut keys, &plain(KeyCode::Up)).len(), 1);
     assert_eq!(
         press(&mut keys, &key('z', KeyModifiers::NONE)),
         [Outcome::Pane(left())]
@@ -551,16 +724,16 @@ fn a_prefix_pending_when_the_switcher_opens_runs_no_binding_there_or_after() {
 }
 
 #[test]
-fn a_key_held_before_the_switcher_opened_stops_repeating_and_its_release_reaches_its_pane() {
+fn a_key_held_before_navigate_mode_opened_stops_repeating_and_its_release_reaches_its_pane() {
     let mut keys = keys();
-    let down = key('x', KeyModifiers::NONE);
+    let down = key('u', KeyModifiers::NONE);
     assert_eq!(press(&mut keys, &down), [Outcome::Pane(left())]);
     assert_eq!(
-        in_the_switcher(&mut keys, &down.clone().with_kind(KeyEventKind::Repeat)),
+        navigating(&mut keys, &down.clone().with_kind(KeyEventKind::Repeat)),
         []
     );
     assert_eq!(
-        in_the_switcher(&mut keys, &down.with_kind(KeyEventKind::Release)),
+        navigating(&mut keys, &down.with_kind(KeyEventKind::Release)),
         [Outcome::Pane(left())]
     );
 }
@@ -604,5 +777,101 @@ fn a_prefix_pending_when_a_dialog_opens_runs_no_binding_there_or_after() {
     assert_eq!(
         press(&mut keys, &key('z', KeyModifiers::NONE)),
         [Outcome::Pane(left())]
+    );
+}
+
+#[test]
+fn a_held_tab_that_left_navigate_mode_does_not_repeat_in_the_next_navigate_session() {
+    let mut keys = keys();
+    let tab = plain(KeyCode::Tab);
+    assert_eq!(
+        navigating(&mut keys, &tab),
+        [Outcome::Navigate(Navigation::Cycle(1))]
+    );
+
+    assert_eq!(
+        navigating(&mut keys, &tab.clone().with_kind(KeyEventKind::Repeat)),
+        []
+    );
+    assert_eq!(
+        navigating(&mut keys, &tab.with_repeat_count(3)),
+        [Outcome::Navigate(Navigation::Cycle(1))]
+    );
+}
+
+#[test]
+fn with_the_selection_vanished_navigate_mode_only_moves_accepts_or_leaves() {
+    let mut keys = keys();
+    let mut vanished = |key: &TerminalKey| {
+        outcomes(keys.route_host(
+            key.clone(),
+            Some(left()),
+            false,
+            Mode::NavigateVanished(1),
+            |_| None,
+        ))
+    };
+    for key in [
+        key('x', KeyModifiers::NONE),
+        key('z', KeyModifiers::NONE),
+        key('1', KeyModifiers::NONE),
+        key('h', KeyModifiers::NONE),
+        plain(KeyCode::Tab),
+        plain(KeyCode::Left),
+    ] {
+        assert_eq!(vanished(&key), [], "{key:?}");
+    }
+    assert_eq!(
+        vanished(&plain(KeyCode::Up)),
+        [Outcome::Navigate(Navigation::Move(-1))]
+    );
+    assert_eq!(
+        vanished(&plain(KeyCode::Enter)),
+        [Outcome::Navigate(Navigation::Accept)]
+    );
+    for key in [
+        plain(KeyCode::Esc),
+        prefix(),
+        key('[', KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(vanished(&key), [Outcome::Dismiss], "{key:?}");
+    }
+}
+
+#[test]
+fn the_prefix_is_held_from_its_press_until_the_next_key() {
+    let mut keys = keys();
+    assert!(!keys.prefixed());
+    press(&mut keys, &prefix());
+    assert!(keys.prefixed());
+    press(&mut keys, &key('u', KeyModifiers::NONE));
+    assert!(!keys.prefixed());
+}
+
+#[test]
+fn a_movement_key_held_into_a_reopened_navigate_session_moves_only_on_a_fresh_press() {
+    let mut keys = keys();
+    let down = plain(KeyCode::Down);
+    assert_eq!(
+        navigating(&mut keys, &down),
+        [Outcome::Navigate(Navigation::Move(1))]
+    );
+    assert_eq!(
+        navigating(&mut keys, &plain(KeyCode::Esc)),
+        [Outcome::Dismiss]
+    );
+    press(&mut keys, &prefix());
+    assert_eq!(
+        press(&mut keys, &key('w', KeyModifiers::NONE)),
+        [Outcome::Action(KeybindAction::WorkspacePicker)]
+    );
+
+    assert_eq!(
+        navigating_in(&mut keys, 2, &down.clone().with_kind(KeyEventKind::Repeat)),
+        []
+    );
+    assert_eq!(
+        navigating_in(&mut keys, 2, &down),
+        [Outcome::Navigate(Navigation::Move(1))]
     );
 }

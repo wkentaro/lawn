@@ -1796,6 +1796,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 }
 
 mod mobile;
+mod navigate;
 
 #[tokio::test]
 async fn a_divider_drag_held_when_a_dialog_opens_ends_there_and_saves_the_width_it_reached() {

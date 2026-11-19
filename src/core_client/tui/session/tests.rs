@@ -356,7 +356,7 @@ fn a_created_terminal_takes_focus_when_its_layout_arrived_first() {
 }
 
 fn operation(session: &Session, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
-    match session.operation(action, confirm_close)? {
+    match session.operation(action, confirm_close, None)? {
         Request::Run(operation) => Some(operation),
         Request::Confirm(_) => None,
     }
@@ -487,7 +487,7 @@ fn a_tab_with_only_parked_panes_does_not_count_against_asking_to_close() {
 }
 
 fn asked(session: &Session, action: KeybindAction) -> super::Closing {
-    match session.operation(action, true) {
+    match session.operation(action, true, None) {
         Some(Request::Confirm(closing)) => closing,
         other => panic!("{action:?} did not ask: {other:?}"),
     }

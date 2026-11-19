@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
 use super::dialog::{Dialog, Modal, Outcome, Rename};
+use super::keys::Navigation;
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Request, Session, Tiles};
 use super::terminals::Report;
@@ -70,6 +71,7 @@ struct Overlays {
     toast: Rect,
     cover: Rect,
     dialog: Rect,
+    bar: Rect,
 }
 
 impl Overlays {
@@ -84,6 +86,7 @@ impl Overlays {
                 &self.toast,
                 &self.cover,
                 &self.dialog,
+                &self.bar,
             ])
     }
 
@@ -192,6 +195,7 @@ pub(super) struct Surface {
     select: Select,
     copy: Option<CopyMode>,
     dialog: Option<Modal>,
+    prefixed: bool,
     keybinds: LiveKeybindConfig,
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
@@ -233,6 +237,7 @@ impl Surface {
             select: Select::new(copying.on_select),
             copy: None,
             dialog: None,
+            prefixed: false,
             keybinds,
             toast_at: copying.toast,
             toast: None,
@@ -264,8 +269,15 @@ impl Surface {
             action,
             KeybindAction::RenameWorkspace | KeybindAction::RenameTab
         ) {
-            if let Some(rename) = Rename::of(action, &self.session) {
+            if let Some(rename) = Rename::of(action, &self.session, self.outer.selected()) {
                 self.open(Dialog::Rename(rename));
+            }
+            return None;
+        }
+        if action == KeybindAction::WorkspacePicker {
+            self.outer.navigate(&self.session);
+            if self.outer.switching() {
+                self.let_go();
             }
             return None;
         }
@@ -274,7 +286,10 @@ impl Surface {
             self.relayout = true;
             self.sync_focus();
         }
-        match self.session.operation(action, confirm_close)? {
+        match self
+            .session
+            .operation(action, confirm_close, self.outer.selected())?
+        {
             Request::Run(operation) => Some(operation),
             Request::Confirm(closing) => {
                 self.open(Dialog::Confirm(closing));
@@ -285,6 +300,7 @@ impl Surface {
 
     fn open(&mut self, dialog: Dialog) {
         self.let_go();
+        self.outer.leave();
         self.dialog = Some(Modal::new(dialog));
     }
 
@@ -323,6 +339,41 @@ impl Surface {
             Outcome::Accept => dialog.accepted(&self.session),
             Outcome::Stay | Outcome::Close => None,
         }
+    }
+
+    pub(super) fn navigate(&mut self, step: Navigation) -> Option<KeybindAction> {
+        match step {
+            Navigation::Move(by) => {
+                let mobile = !self.lay_out_chrome().mobile_header.is_empty();
+                self.outer.select(by, mobile, &self.session);
+            }
+            Navigation::Accept => return self.outer.accept(&self.session),
+            Navigation::Cycle(step) => {
+                self.outer.leave();
+                return (!self.session.zoomed()).then_some(if step < 0 {
+                    KeybindAction::CyclePanePrevious
+                } else {
+                    KeybindAction::CyclePaneNext
+                });
+            }
+            Navigation::Jump(action) => {
+                let reaches = match action {
+                    KeybindAction::SwitchWorkspace(index) => {
+                        self.session.workspaces().get(index).is_some()
+                    }
+                    KeybindAction::SwitchTab(index) => self
+                        .session
+                        .focused_workspace()
+                        .is_some_and(|workspace| workspace.tabs.get(index).is_some()),
+                    _ => true,
+                };
+                if reaches {
+                    self.outer.leave();
+                    return Some(action);
+                }
+            }
+        }
+        None
     }
 
     pub(super) fn heard(&mut self, report: Report) {
@@ -386,12 +437,24 @@ impl Surface {
         self.dialog.is_none() && !self.copy_mode() && self.select.copyable()
     }
 
-    pub(super) fn switching(&self) -> bool {
-        self.outer.switching()
+    pub(super) fn navigating(&self) -> bool {
+        self.outer.navigating()
     }
 
-    pub(super) fn close_switcher(&mut self) {
-        self.outer.close();
+    pub(super) fn navigate_session(&self) -> Option<u64> {
+        self.outer.navigate_session()
+    }
+
+    pub(super) fn hold_prefix(&mut self, prefixed: bool) {
+        self.prefixed = prefixed;
+    }
+
+    pub(super) fn selection_vanished(&self) -> bool {
+        self.outer.vanished(&self.session)
+    }
+
+    pub(super) fn leave_navigate(&mut self) {
+        self.outer.leave();
     }
 
     pub(super) fn copy_mode(&self) -> bool {
@@ -612,6 +675,10 @@ impl Surface {
             let outcome = dialog.mouse(event);
             return self.settle(outcome).map(Pointed::Run);
         }
+        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        if press && !self.outer.switching() && self.selection_vanished() {
+            self.outer.leave();
+        }
         if let Some(mut gesture) = self.gesture {
             match event.kind {
                 MouseEventKind::Drag(button) | MouseEventKind::Up(button)
@@ -654,7 +721,6 @@ impl Surface {
                 _ => {}
             }
         }
-        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
         let point = ratatui::layout::Position::new(event.column, event.row);
         if !self.outer.switching() && self.painted.hides(point) {
             return None;
@@ -663,9 +729,12 @@ impl Surface {
             if press {
                 self.select.press(None, event, now);
             }
-            let pointed = self
-                .outer
-                .mouse(event, &self.session, now, self.copy_mode());
+            let pointed = self.outer.mouse(
+                event,
+                &self.session,
+                now,
+                !self.copy_mode() && !self.prefixed,
+            );
             if let Some(terminal) = self.outer.revealed() {
                 if self.session.reveal(&terminal) {
                     self.relayout = true;
@@ -711,6 +780,9 @@ impl Surface {
                 return None;
             }
         };
+        if press && on_bar && self.bar(id).is_some() {
+            self.outer.leave();
+        }
         let owner = if on_bar {
             self.press_bar(id, event)
         } else {
@@ -870,10 +942,14 @@ impl Surface {
             self.outer.recheck();
         }
         let host = self.host_area();
+        let switching = self.outer.switching();
         let chrome = (relayout || self.outer.stale())
             && self
                 .outer
                 .refresh(host, self.areas, &self.session, &self.palette);
+        if !switching && self.outer.switching() {
+            self.let_go();
+        }
         let focused = self.session.focused_id();
         if let Some(copy) = self.copy.as_mut() {
             if let Some((view, inner)) = visible(&self.views, copy.pane()) {
@@ -941,7 +1017,8 @@ impl Surface {
             .as_ref()
             .and_then(|copy| {
                 let (view, inner) = visible(&self.views, copy.pane())?;
-                let active = Some(copy.pane()) == self.session.focused_id();
+                let active =
+                    Some(copy.pane()) == self.session.focused_id() && !self.outer.navigating();
                 Some(copy.marks(inner, area, view.frame(), &self.select, active))
             })
             .unwrap_or_default();
@@ -960,6 +1037,7 @@ impl Surface {
                 .dialog
                 .as_ref()
                 .map_or_else(Rect::default, |_| self.host_area()),
+            bar: self.outer.bar().map_or_else(Rect::default, |bar| bar.0),
         }
     }
 
@@ -1020,8 +1098,11 @@ impl Surface {
                 to.clone_from_slice(bar);
             }
             let images = self.toast.as_ref().map(|toast| &toast.image);
-            let switcher = self.outer.cover().filter(|_| self.dialog.is_none());
-            for image in images.into_iter().chain(switcher) {
+            for image in images
+                .into_iter()
+                .chain(self.outer.cover())
+                .chain(self.outer.bar())
+            {
                 place(&mut cells, image, y);
             }
             rows.push(PaneSurfacePatchRow { x: 0, y, cells });
@@ -1206,7 +1287,7 @@ impl Surface {
         if let Some(dialog) = &self.dialog {
             return dialog.cursor();
         }
-        if self.copy_mode() || self.switching() {
+        if self.copy_mode() || self.outer.cover().is_some() {
             return None;
         }
         let Shown {
@@ -1222,7 +1303,8 @@ impl Surface {
             .filter(|cursor| cursor.x < inner.width && cursor.y < inner.height)?;
         cursor.x += inner.x;
         cursor.y += inner.y;
-        Some(cursor)
+        let bar = self.outer.bar().map(|bar| bar.0.y);
+        (Some(cursor.y) != bar).then_some(cursor)
     }
 }
 
