@@ -13,6 +13,6 @@ pub(crate) use style::{
     status_color, status_dot, status_icon, status_text,
 };
 pub(crate) use tabs::{
-    render_tab_bar_status, render_tab_strip, tab_bar_content_area, tab_bar_status_width,
+    render_tab_bar_status, render_tab_strip, tab_bar_content_area, tab_bar_status_width, tab_width,
     StatusSegment, Tab, TabBarState, TabBarStyle,
 };

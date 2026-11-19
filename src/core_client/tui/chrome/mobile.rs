@@ -5,7 +5,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
 use super::{Drawn, Hits};
-use crate::ui::chrome::{display_width, put_text};
+use crate::api::schema::AgentStatus;
+use crate::config::StatusIndicatorStyle;
+use crate::ui::chrome::{display_width, put_text, status_color, status_icon};
 use crate::ui::theme::Palette;
 
 const BUTTON_WIDTH: u16 = 10;
@@ -19,6 +21,7 @@ pub(super) struct Switcher {
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Target {
+    Agent(usize),
     NewWorkspace,
     Workspace(usize),
     NewTab,
@@ -69,7 +72,13 @@ pub(super) fn tab_status(label: &str, active: usize, count: usize) -> String {
     }
 }
 
-pub(super) fn draw_header(buffer: &mut Buffer, drawn: &Drawn, palette: &Palette, hits: &mut Hits) {
+pub(super) fn draw_header(
+    buffer: &mut Buffer,
+    drawn: &Drawn,
+    indicators: StatusIndicatorStyle,
+    palette: &Palette,
+    hits: &mut Hits,
+) {
     let area = drawn.layout.mobile_header;
     if area.is_empty() {
         return;
@@ -84,7 +93,7 @@ pub(super) fn draw_header(buffer: &mut Buffer, drawn: &Drawn, palette: &Palette,
         button.x.saturating_sub(area.x).saturating_sub(1),
         area.height,
     );
-    draw_status(buffer, status, drawn, palette);
+    draw_status(buffer, status, drawn, indicators, palette);
     draw_button(buffer, button, palette);
     let label_y = if button.height > 1 {
         button.y + 1
@@ -102,9 +111,29 @@ pub(super) fn draw_header(buffer: &mut Buffer, drawn: &Drawn, palette: &Palette,
             .bg(palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
+    if drawn
+        .agents
+        .iter()
+        .any(|agent| agent.status == AgentStatus::Blocked)
+    {
+        put_text(
+            buffer,
+            button.right() - 1,
+            button.y,
+            1,
+            status_icon(AgentStatus::Blocked, indicators),
+            Style::default().fg(palette.red).bg(palette.surface0),
+        );
+    }
 }
 
-fn draw_status(buffer: &mut Buffer, area: Rect, drawn: &Drawn, palette: &Palette) {
+fn draw_status(
+    buffer: &mut Buffer,
+    area: Rect,
+    drawn: &Drawn,
+    indicators: StatusIndicatorStyle,
+    palette: &Palette,
+) {
     if area.is_empty() {
         return;
     }
@@ -112,9 +141,10 @@ fn draw_status(buffer: &mut Buffer, area: Rect, drawn: &Drawn, palette: &Palette
         Some((
             &drawn.workspaces.get(index)?.text,
             drawn.tab_statuses.get(index)?,
+            *drawn.statuses.get(index)?,
         ))
     });
-    let Some((name, tabs)) = focused else {
+    let Some((name, tabs, status)) = focused else {
         put_text(
             buffer,
             area.x,
@@ -129,10 +159,20 @@ fn draw_status(buffer: &mut Buffer, area: Rect, drawn: &Drawn, palette: &Palette
     let name_width = area.width - tab_width;
     put_text(
         buffer,
-        area.x.saturating_add(1),
+        area.x,
         area.y,
-        name_width.saturating_sub(1),
-        &crate::ui::truncate_end(name, usize::from(name_width.saturating_sub(2))),
+        name_width.min(3),
+        &format!(" {} ", status_icon(status, indicators)),
+        Style::default()
+            .fg(status_color(status, palette))
+            .bg(palette.panel_bg),
+    );
+    put_text(
+        buffer,
+        area.x.saturating_add(3),
+        area.y,
+        name_width.saturating_sub(3),
+        &crate::ui::truncate_end(name, usize::from(name_width.saturating_sub(4))),
         Style::default()
             .fg(palette.text)
             .bg(palette.panel_bg)
@@ -146,6 +186,90 @@ fn draw_status(buffer: &mut Buffer, area: Rect, drawn: &Drawn, palette: &Palette
         tabs,
         Style::default().fg(palette.overlay1).bg(palette.panel_bg),
     );
+    if area.height > 1 {
+        draw_summary(
+            buffer,
+            Rect::new(area.x, area.y + 1, area.width, 1),
+            drawn,
+            indicators,
+            palette,
+        );
+    }
+}
+
+fn draw_summary(
+    buffer: &mut Buffer,
+    area: Rect,
+    drawn: &Drawn,
+    indicators: StatusIndicatorStyle,
+    palette: &Palette,
+) {
+    let counts = [
+        (AgentStatus::Blocked, "blocked"),
+        (AgentStatus::Done, "done"),
+        (AgentStatus::Working, "working"),
+        (AgentStatus::Idle, "idle"),
+    ]
+    .map(|(status, label)| {
+        let count = drawn
+            .agents
+            .iter()
+            .filter(|agent| agent.status == status)
+            .count();
+        (status, label, count)
+    });
+    let quiet = Style::default().fg(palette.overlay1).bg(palette.panel_bg);
+    if counts.iter().all(|(.., count)| *count == 0) {
+        put_text(buffer, area.x, area.y, area.width, " no agents", quiet);
+        return;
+    }
+    if counts[..3].iter().all(|(.., count)| *count == 0) {
+        put_text(buffer, area.x, area.y, area.width, " all idle", quiet);
+        return;
+    }
+    let separator = Style::default().fg(palette.overlay0).bg(palette.panel_bg);
+    let mut x = area.x.saturating_add(1);
+    let shown = counts.into_iter().filter(|(.., count)| *count > 0);
+    for (index, (status, label, count)) in shown.enumerate() {
+        let symbol = match (indicators, status) {
+            (StatusIndicatorStyle::Dots, AgentStatus::Blocked) => Some("◉"),
+            (StatusIndicatorStyle::Dots, AgentStatus::Done) => Some("●"),
+            (StatusIndicatorStyle::Dots, _) => None,
+            _ => Some(status_icon(status, indicators)),
+        };
+        let text = symbol.map_or_else(
+            || format!("{count} {label}"),
+            |symbol| format!("{symbol} {count} {label}"),
+        );
+        let gap = if index == 0 { "" } else { " · " };
+        if area.right().saturating_sub(x) < display_width(gap) + display_width(&text) {
+            if area.right().saturating_sub(x) >= 2 {
+                put_text(buffer, x, area.y, 2, " …", separator);
+            }
+            return;
+        }
+        put_text(buffer, x, area.y, display_width(gap), gap, separator);
+        x += display_width(gap);
+        let style = if index == 0 {
+            Style::default()
+                .fg(match status {
+                    AgentStatus::Done => palette.blue,
+                    _ => status_color(status, palette),
+                })
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.overlay1)
+        };
+        put_text(
+            buffer,
+            x,
+            area.y,
+            display_width(&text),
+            &text,
+            style.bg(palette.panel_bg),
+        );
+        x += display_width(&text);
+    }
 }
 
 fn draw_button(buffer: &mut Buffer, area: Rect, palette: &Palette) {
@@ -175,6 +299,7 @@ pub(super) fn draw_switcher(
     buffer: &mut Buffer,
     drawn: &Drawn,
     switcher: &mut Switcher,
+    indicators: StatusIndicatorStyle,
     palette: &Palette,
     hits: &mut Hits,
 ) {
@@ -229,7 +354,7 @@ pub(super) fn draw_switcher(
         switcher.scroll = 0;
         return;
     }
-    let items = items(drawn, palette, viewport.width.saturating_sub(1));
+    let items = items(drawn, indicators, palette, viewport.width.saturating_sub(1));
     let total: usize = items.iter().map(|item| item.lines.len()).sum();
     let height = usize::from(viewport.height);
     let max = total.saturating_sub(height);
@@ -322,11 +447,71 @@ fn draw_close(buffer: &mut Buffer, area: Rect, palette: &Palette) {
     }
 }
 
-fn items(drawn: &Drawn, palette: &Palette, width: u16) -> Vec<Item> {
-    let mut items = vec![
-        Item::section("spaces", palette),
-        Item::action("  + new workspace", Target::NewWorkspace, palette),
-    ];
+fn marked(
+    status: AgentStatus,
+    name: &str,
+    indicators: StatusIndicatorStyle,
+    palette: &Palette,
+    background: Color,
+    width: u16,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  ", Style::default().fg(palette.overlay0).bg(background)),
+        Span::styled(
+            status_icon(status, indicators),
+            Style::default()
+                .fg(status_color(status, palette))
+                .bg(background),
+        ),
+        Span::styled(" ", Style::default().bg(background)),
+        Span::styled(
+            crate::ui::truncate_end(name, usize::from(width.saturating_sub(5))),
+            Style::default()
+                .fg(palette.text)
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+fn items(
+    drawn: &Drawn,
+    indicators: StatusIndicatorStyle,
+    palette: &Palette,
+    width: u16,
+) -> Vec<Item> {
+    let mut items = Vec::new();
+    if !drawn.agents.is_empty() {
+        items.push(Item::section("agents", palette));
+    }
+    for (index, agent) in drawn.agents.iter().enumerate() {
+        let background = if agent.focused {
+            palette.surface_dim
+        } else {
+            palette.panel_bg
+        };
+        let name = drawn
+            .workspaces
+            .get(agent.workspace)
+            .map_or("agent", |workspace| &workspace.text);
+        items.push(Item {
+            lines: vec![
+                marked(agent.status, name, indicators, palette, background, width),
+                Line::from(Span::styled(
+                    crate::ui::truncate_end(&format!("  {}", agent.detail), usize::from(width)),
+                    Style::default().fg(palette.overlay0).bg(background),
+                )),
+            ],
+            background,
+            target: Some(Target::Agent(index)),
+        });
+    }
+    items.push(Item::section("spaces", palette));
+    items.push(Item::action(
+        "  + new workspace",
+        Target::NewWorkspace,
+        palette,
+    ));
     let highlight = if palette.surface0 == Color::Reset {
         palette.active_row_bg
     } else {
@@ -338,21 +523,21 @@ fn items(drawn: &Drawn, palette: &Palette, width: u16) -> Vec<Item> {
         } else {
             palette.panel_bg
         };
+        let status = drawn
+            .statuses
+            .get(index)
+            .copied()
+            .unwrap_or(AgentStatus::Unknown);
         items.push(Item {
             lines: vec![
-                Line::from(vec![
-                    Span::styled("  ", Style::default().fg(palette.overlay0).bg(background)),
-                    Span::styled(
-                        crate::ui::truncate_end(
-                            &workspace.text,
-                            usize::from(width.saturating_sub(3)),
-                        ),
-                        Style::default()
-                            .fg(palette.text)
-                            .bg(background)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]),
+                marked(
+                    status,
+                    &workspace.text,
+                    indicators,
+                    palette,
+                    background,
+                    width,
+                ),
                 Line::from(Span::styled(
                     crate::ui::truncate_end(&format!("  {tabs}"), usize::from(width)),
                     Style::default().fg(palette.overlay0).bg(background),

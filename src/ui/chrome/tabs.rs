@@ -64,23 +64,11 @@ pub(crate) fn render_tab_strip(
     let mut visible_for_drag = tab_drag_insert_index.map(|_| Vec::new());
     let names = tabs
         .iter()
-        .map(|tab| {
-            let name = tab_label(tab);
-            if let Some((status, blocked)) = tab.status {
-                let count = if blocked > 1 {
-                    blocked.to_string()
-                } else {
-                    String::new()
-                };
-                format!("{}{count} {name}", status_icon(status, chrome.indicators))
-            } else {
-                name
-            }
-        })
+        .map(|tab| tab_name(tab, chrome.indicators))
         .collect::<Vec<_>>();
     let desired_widths = names
         .iter()
-        .map(|name| display_width(name).saturating_add(4).max(MIN_TAB_WIDTH))
+        .map(|name| name_width(name))
         .collect::<Vec<_>>();
     let content = area;
     let mouse_chrome = chrome.mouse;
@@ -450,6 +438,28 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
         start -= 1;
     }
     start
+}
+
+pub(crate) fn tab_width(tab: &Tab<'_>, indicators: StatusIndicatorStyle) -> u16 {
+    name_width(&tab_name(tab, indicators))
+}
+
+fn name_width(name: &str) -> u16 {
+    display_width(name).saturating_add(4).max(MIN_TAB_WIDTH)
+}
+
+fn tab_name(tab: &Tab<'_>, indicators: StatusIndicatorStyle) -> String {
+    let name = tab_label(tab);
+    if let Some((status, blocked)) = tab.status {
+        let count = if blocked > 1 {
+            blocked.to_string()
+        } else {
+            String::new()
+        };
+        format!("{}{count} {name}", status_icon(status, indicators))
+    } else {
+        name
+    }
 }
 
 fn tab_label(tab: &Tab<'_>) -> String {

@@ -10,14 +10,15 @@ use time::format_description::OwnedFormatItem;
 
 use self::mobile::{Switcher, Target};
 use super::session::Session;
+use crate::api::schema::AgentStatus;
 use crate::app::tab_bar_status::{
     format_local_datetime, sanitize_literal_text, sanitize_separator, sanitize_status_text,
 };
 use crate::client::preferences::{self, ClientChromePreferences};
 use crate::client::scroll;
 use crate::config::{
-    Config, SidebarCollapsedModeConfig, SpacesSidebarConfig, StatusIndicatorStyle,
-    TabBarPositionConfig, TabBarRightEntryConfig,
+    AgentPanelSortConfig, Config, SidebarCollapsedModeConfig, SpacesSidebarConfig,
+    StatusIndicatorStyle, TabBarPositionConfig, TabBarRightEntryConfig,
 };
 use crate::input::KeybindAction;
 use crate::pane::ScrollMetrics;
@@ -55,7 +56,19 @@ struct Drawn {
     zoomed: bool,
     status: Vec<(String, bool)>,
     tab_statuses: Vec<String>,
+    statuses: Vec<AgentStatus>,
+    tab_marks: Vec<Option<(AgentStatus, usize)>>,
+    agents: Vec<Agent>,
     switching: bool,
+}
+
+#[derive(PartialEq)]
+struct Agent {
+    terminal: String,
+    workspace: usize,
+    detail: String,
+    status: AgentStatus,
+    focused: bool,
 }
 
 #[derive(PartialEq)]
@@ -93,6 +106,26 @@ enum Press {
 }
 
 impl Drawn {
+    fn strip(&self) -> impl Iterator<Item = paint::Tab<'_>> {
+        self.tabs.iter().enumerate().map(|(index, tab)| {
+            let focused = self.focused_tab == Some(index);
+            paint::Tab {
+                key: &tab.id,
+                label: &tab.text,
+                focused,
+                custom_label: tab.custom,
+                zoomed: focused && self.zoomed,
+                interactive: true,
+                status: self.tab_marks.get(index).copied().flatten(),
+            }
+        })
+    }
+
+    fn tab_widths(&self, indicators: StatusIndicatorStyle) -> impl Iterator<Item = u16> + '_ {
+        self.strip()
+            .map(move |tab| paint::tab_width(&tab, indicators))
+    }
+
     fn focused_workspace_id(&self) -> Option<&str> {
         let label = self.workspaces.get(self.focused_workspace?)?;
         Some(&label.id)
@@ -113,6 +146,7 @@ pub(super) struct Chrome {
     width_manual: bool,
     spaces: SpacesSidebarConfig,
     indicators: StatusIndicatorStyle,
+    sort: AgentPanelSortConfig,
     entries: Vec<Entry>,
     separator: String,
     collapsed: bool,
@@ -130,6 +164,7 @@ pub(super) struct Chrome {
     press: Option<Press>,
     switcher: Option<Switcher>,
     cover: Option<(Rect, Vec<CellData>)>,
+    reveal: Option<String>,
 }
 
 impl Chrome {
@@ -176,6 +211,7 @@ impl Chrome {
             width_manual: false,
             spaces: ui.sidebar.spaces.clone(),
             indicators: ui.status_indicators,
+            sort: ui.agent_panel_sort,
             entries,
             separator: sanitize_separator(&ui.tab_bar_right_separator),
             collapsed: ui.sidebar_start_collapsed,
@@ -193,6 +229,7 @@ impl Chrome {
             press: None,
             switcher: None,
             cover: None,
+            reveal: None,
         };
         chrome.width = chrome.bounded(chrome.width);
         chrome
@@ -300,6 +337,10 @@ impl Chrome {
         if self.switcher.take().is_some() {
             self.redraw = true;
         }
+    }
+
+    pub(super) fn revealed(&mut self) -> Option<String> {
+        self.reveal.take()
     }
 
     pub(super) fn cover(&self) -> Option<&(Rect, Vec<CellData>)> {
@@ -468,6 +509,11 @@ impl Chrome {
                 focusing(Press::Workspace(id(&drawn.workspaces, index)?), session)?
             }
             Target::Tab(index) => focusing(Press::Tab(id(&drawn.tabs, index)?), session)?,
+            Target::Agent(index) => {
+                self.reveal = Some(drawn.agents.get(index)?.terminal.clone());
+                self.close();
+                return None;
+            }
         };
         self.close();
         Some(action)
@@ -575,6 +621,9 @@ impl Chrome {
             previous.tabs != drawn.tabs
                 || previous.focused_tab != drawn.focused_tab
                 || previous.zoomed != drawn.zoomed
+                || !previous
+                    .tab_widths(self.indicators)
+                    .eq(drawn.tab_widths(self.indicators))
                 || previous.layout.tab_bar.width != drawn.layout.tab_bar.width
                 || paint::tab_bar_status_width(previous.status(), &self.separator)
                     != paint::tab_bar_status_width(drawn.status(), &self.separator)
@@ -599,6 +648,7 @@ impl Chrome {
         let tabs = focused.map_or(&[][..], |workspace| &workspace.tabs);
         let focused_tab = session.focused_tab();
         let zoomed = session.zoomed();
+        let mobile = !layout.mobile_header.is_empty();
         Drawn {
             host,
             layout,
@@ -639,7 +689,7 @@ impl Chrome {
                         .map(|text| (text, false)),
                 })
                 .collect(),
-            tab_statuses: if layout.mobile_header.is_empty() {
+            tab_statuses: if !mobile {
                 Vec::new()
             } else {
                 workspaces
@@ -654,8 +704,62 @@ impl Chrome {
                     })
                     .collect()
             },
+            statuses: if mobile {
+                workspaces
+                    .iter()
+                    .map(|workspace| session.workspace_status(workspace))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            tab_marks: if layout.tab_bar.is_empty() {
+                Vec::new()
+            } else {
+                tabs.iter().map(|tab| session.tab_status(tab)).collect()
+            },
+            agents: if mobile {
+                self.agents(session)
+            } else {
+                Vec::new()
+            },
             switching: self.switcher.is_some(),
         }
+    }
+
+    fn agents(&self, session: &Session) -> Vec<Agent> {
+        let workspaces = session.workspaces();
+        let mut agents: Vec<_> = session
+            .agents()
+            .map(|(workspace, index, terminal, status)| {
+                let tabs = &workspaces[workspace].tabs;
+                let tab = &tabs[index];
+                let shown = status.shown();
+                let state = paint::status_text(shown);
+                let name = status.agent.map_or("agent", crate::detect::agent_label);
+                let detail = if tab.name.is_some() || tabs.len() > 1 {
+                    format!("{} · {state} · {name}", tab_label(index, tab))
+                } else {
+                    format!("{state} · {name}")
+                };
+                let agent = Agent {
+                    terminal: terminal.to_owned(),
+                    workspace,
+                    detail,
+                    status: shown,
+                    focused: session.focused() == Some(terminal),
+                };
+                (status.changed, agent)
+            })
+            .collect();
+        if self.sort == AgentPanelSortConfig::Priority {
+            agents.sort_by_key(|(changed, agent)| {
+                (
+                    std::cmp::Reverse(crate::client::status_priority(agent.status)),
+                    std::cmp::Reverse(*changed),
+                )
+            });
+        }
+        agents.into_iter().map(|(_, agent)| agent).collect()
     }
 
     fn draw(&mut self, drawn: &Drawn, palette: &Palette) -> Vec<PaneSurfacePatchRow> {
@@ -677,7 +781,7 @@ impl Chrome {
         if !tab_bar.is_empty() {
             self.draw_tab_bar(&mut buffer, drawn, palette);
         }
-        mobile::draw_header(&mut buffer, drawn, palette, &mut self.hits);
+        mobile::draw_header(&mut buffer, drawn, self.indicators, palette, &mut self.hits);
         let rows = [sidebar, tab_bar, mobile_header]
             .into_iter()
             .flat_map(|rect| (rect.y..rect.bottom()).map(move |y| (rect, y)))
@@ -690,7 +794,14 @@ impl Chrome {
             })
             .collect();
         self.cover = self.switcher.as_mut().map(|switcher| {
-            mobile::draw_switcher(&mut buffer, drawn, switcher, palette, &mut self.hits);
+            mobile::draw_switcher(
+                &mut buffer,
+                drawn,
+                switcher,
+                self.indicators,
+                palette,
+                &mut self.hits,
+            );
             (
                 drawn.host,
                 buffer
@@ -902,23 +1013,7 @@ impl Chrome {
     fn draw_tab_bar(&mut self, buffer: &mut Buffer, drawn: &Drawn, palette: &Palette) {
         let area = drawn.layout.tab_bar;
         buffer.set_style(area, Style::default().bg(palette.panel_bg));
-        let tabs: Vec<_> = drawn
-            .tabs
-            .iter()
-            .enumerate()
-            .map(|(index, tab)| {
-                let focused = drawn.focused_tab == Some(index);
-                paint::Tab {
-                    key: &tab.id,
-                    label: &tab.text,
-                    focused,
-                    custom_label: tab.custom,
-                    zoomed: focused && drawn.zoomed,
-                    interactive: true,
-                    status: None,
-                }
-            })
-            .collect();
+        let tabs: Vec<_> = drawn.strip().collect();
         let content = paint::tab_bar_content_area(
             area,
             paint::tab_bar_status_width(drawn.status(), &self.separator),

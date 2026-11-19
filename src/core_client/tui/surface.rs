@@ -311,6 +311,16 @@ impl Surface {
         }
     }
 
+    fn look(&mut self) -> bool {
+        let views = &self.views;
+        self.host_focused
+            && self.session.look(|id| {
+                views
+                    .get(&id)
+                    .is_some_and(|shown| matches!(shown.place, Place::Visible { .. }))
+            })
+    }
+
     pub(super) fn created(&mut self, terminal: String) {
         if self.session.created(terminal) {
             self.relayout = true;
@@ -320,7 +330,9 @@ impl Surface {
 
     pub(super) fn host_focus(&mut self, focused: bool) {
         self.host_focused = focused;
-        if !focused {
+        if focused {
+            self.outer.recheck();
+        } else {
             self.end_gesture(None);
         }
         self.sync_focus();
@@ -630,6 +642,12 @@ impl Surface {
             let pointed = self
                 .outer
                 .mouse(event, &self.session, now, self.copy_mode());
+            if let Some(terminal) = self.outer.revealed() {
+                if self.session.reveal(&terminal) {
+                    self.relayout = true;
+                    self.sync_focus();
+                }
+            }
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed.map(Pointed::Act);
         }
@@ -824,6 +842,9 @@ impl Surface {
         let relayout = std::mem::take(&mut self.relayout);
         if relayout {
             self.lay_out(attach, leave);
+        }
+        if (relayout || self.outer.stale()) && self.look() {
+            self.outer.recheck();
         }
         let host = self.host_area();
         let chrome = (relayout || self.outer.stale())

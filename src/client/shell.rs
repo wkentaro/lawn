@@ -179,7 +179,7 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
 
 use crate::ui::chrome::{panel_contrast_fg, status_color, status_icon, status_text};
 
-fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
+pub(crate) fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
     match status {
         AgentStatus::Blocked => 4,
