@@ -768,7 +768,11 @@ async fn a_created_terminal_takes_focus_and_tells_both_panes() {
     reports(&mut first);
     reports(&mut second);
 
-    surface.created("t1".to_owned());
+    let Some(super::Operation::Start(request, _)) = surface.act(KeybindAction::SplitVertical, true)
+    else {
+        panic!("a split starts");
+    };
+    surface.started(request, Some("t1".to_owned()));
 
     assert!(surface.needs_frame());
     assert_eq!(reports(&mut first), b"\x1b[O");

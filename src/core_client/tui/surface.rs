@@ -330,8 +330,8 @@ impl Surface {
             })
     }
 
-    pub(super) fn created(&mut self, terminal: String) {
-        if self.session.created(terminal) {
+    pub(super) fn started(&mut self, request: u64, terminal: Option<String>) {
+        if self.session.started(request, terminal) {
             self.relayout = true;
             self.sync_focus();
         }
