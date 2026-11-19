@@ -125,7 +125,7 @@ fn toast_agent_label(agent_label: &str) -> &str {
     agent_label
 }
 
-fn toast_event_text(kind: ToastKind) -> &'static str {
+pub(crate) fn toast_event_text(kind: ToastKind) -> &'static str {
     match kind {
         ToastKind::NeedsAttention => "needs attention",
         ToastKind::Finished => "finished",
@@ -133,7 +133,7 @@ fn toast_event_text(kind: ToastKind) -> &'static str {
     }
 }
 
-fn sound_for_toast_kind(
+pub(crate) fn sound_for_toast_kind(
     kind: ToastKind,
     suppress_active_tab_notifications: bool,
 ) -> Option<crate::sound::Sound> {

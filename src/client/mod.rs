@@ -33,7 +33,10 @@ mod input;
 mod loop_config;
 mod notifications;
 mod shell;
-pub(crate) use shell::{preferences, scroll, status_priority};
+pub(crate) use shell::{
+    notification_duration, preferences, render_mobile_notice_banner, render_notification_card,
+    scroll, status_priority,
+};
 mod shell_runtime;
 mod startup;
 mod state;

@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
 use super::dialog::{Dialog, Modal, Outcome};
+use super::notices::{Effect, Notices, Notifying};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Request, Session, Tiles};
 use super::terminals::Report;
@@ -67,6 +68,8 @@ enum Owner {
 struct Overlays {
     selection: [Rect; 3],
     copy: Marks,
+    notice: Rect,
+    shows: u64,
     toast: Rect,
     cover: Rect,
     dialog: Rect,
@@ -81,6 +84,7 @@ impl Overlays {
             .chain([
                 &self.copy.cursor,
                 &self.copy.bar,
+                &self.notice,
                 &self.toast,
                 &self.cover,
                 &self.dialog,
@@ -89,6 +93,10 @@ impl Overlays {
 
     fn covers(&self, y: u16) -> bool {
         self.rects().any(|rect| covers(rect, y))
+    }
+
+    fn toasts(&self) -> (Rect, u64, Rect) {
+        (self.notice, self.shows, self.toast)
     }
 }
 
@@ -189,6 +197,9 @@ pub(super) struct Surface {
     keybinds: LiveKeybindConfig,
     toast_at: Option<ToastClipboardPosition>,
     toast: Option<Toast>,
+    notices: Notices,
+    notice: Option<(Rect, Vec<CellData>)>,
+    placed: (u64, Rect, bool, Rect),
     highlight: CellData,
     painted: Overlays,
     relayout: bool,
@@ -230,12 +241,20 @@ impl Surface {
             keybinds,
             toast_at: copying.toast,
             toast: None,
+            notices: Notices::default(),
+            notice: None,
+            placed: Default::default(),
             highlight: CellData::from_ratatui_cell(&highlight),
             painted: Overlays::default(),
             relayout: true,
             canvas: Vec::new(),
             canvas_cols: 0,
         }
+    }
+
+    pub(super) fn notifying(mut self, notifying: Notifying) -> Self {
+        self.notices = Notices::new(notifying);
+        self
     }
 
     pub(super) fn update(&mut self, layout: Layout) {
@@ -305,9 +324,55 @@ impl Surface {
         }
     }
 
-    pub(super) fn heard(&mut self, report: Report) {
+    pub(super) fn heard(&mut self, report: Report, now: Instant) -> Vec<Effect> {
         if self.session.heard(report) {
             self.outer.recheck();
+        }
+        for moved in self.session.moves() {
+            self.notices.hear(moved, &self.session, now);
+        }
+        self.notify(now)
+    }
+
+    fn notify(&mut self, now: Instant) -> Vec<Effect> {
+        let effects = self.notices.deliver(&self.session, self.host_focused, now);
+        self.place_toasts();
+        effects
+    }
+
+    pub(super) fn open_notice(&mut self, now: Instant) {
+        if self.painted.shows != self.notices.shows() {
+            return;
+        }
+        let opened = self.notices.open(now);
+        self.place_toasts();
+        if opened.is_some_and(|terminal| self.session.reveal(&terminal)) {
+            self.relayout = true;
+            self.sync_focus();
+        }
+    }
+
+    fn place_toasts(&mut self) {
+        let host = Rect::new(0, 0, self.host.cols, self.host.rows);
+        let mobile = !self.areas.mobile_header.is_empty();
+        let placed = (self.notices.shows(), host, mobile, self.areas.pane_surface);
+        if std::mem::replace(&mut self.placed, placed) == placed {
+            return;
+        }
+        let position = self.notices.position();
+        self.notice = self
+            .notices
+            .shown()
+            .map(|notice| notice.image(host, mobile, position, &self.palette));
+        if let (Some(toast), Some(position)) = (&mut self.toast, self.toast_at) {
+            toast.image = toast_image(
+                self.areas.pane_surface,
+                position,
+                self.notice
+                    .as_ref()
+                    .map_or_else(Rect::default, |notice| notice.0),
+                &self.palette,
+            );
         }
     }
 
@@ -480,7 +545,14 @@ impl Surface {
         if let Some(position) = self.toast_at {
             self.toast = Some(Toast {
                 until: now + TOAST,
-                image: toast_image(self.areas.pane_surface, position, &self.palette),
+                image: toast_image(
+                    self.areas.pane_surface,
+                    position,
+                    self.notice
+                        .as_ref()
+                        .map_or_else(Rect::default, |notice| notice.0),
+                    &self.palette,
+                ),
             });
         }
     }
@@ -490,11 +562,12 @@ impl Surface {
             .deadline()
             .into_iter()
             .chain(self.toast.as_ref().map(|toast| toast.until))
+            .chain(self.notices.deadline())
             .chain(self.outer.deadline())
             .min()
     }
 
-    pub(super) fn tick(&mut self, now: Instant) {
+    pub(super) fn tick(&mut self, now: Instant) -> Vec<Effect> {
         if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
             self.toast = None;
         }
@@ -504,6 +577,7 @@ impl Surface {
             .pane()
             .and_then(|pane| visible(&self.views, pane));
         self.select.tick(view, now);
+        self.notify(now)
     }
 
     pub(super) fn needs_frame(&self) -> bool {
@@ -635,6 +709,11 @@ impl Surface {
             }
         }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        let point = ratatui::layout::Position::new(event.column, event.row);
+        if press && !self.switching() && !self.copy_mode() && self.painted.notice.contains(point) {
+            self.open_notice(now);
+            return None;
+        }
         if self.outer.claim(event, self.painted.copy.bar) {
             if press {
                 self.select.press(None, event, now);
@@ -651,7 +730,6 @@ impl Surface {
             self.relayout |= self.lay_out_chrome() != self.areas;
             return pointed.map(Pointed::Act);
         }
-        let point = ratatui::layout::Position::new(event.column, event.row);
         let Some(tile) = self
             .tiles
             .tiles
@@ -925,6 +1003,11 @@ impl Surface {
         Overlays {
             selection,
             copy,
+            notice: self
+                .notice
+                .as_ref()
+                .map_or_else(Rect::default, |notice| notice.0),
+            shows: self.notice.as_ref().map_or(0, |_| self.notices.shows()),
             toast: self
                 .toast
                 .as_ref()
@@ -952,6 +1035,12 @@ impl Surface {
             if *overlays == Overlays::default() {
                 return;
             }
+        } else if let Some(dialog) = self
+            .dialog
+            .as_mut()
+            .filter(|_| painted.toasts() != overlays.toasts())
+        {
+            dialog.redraw();
         }
         let mut ys: BTreeSet<u16> = rows
             .iter()
@@ -990,16 +1079,21 @@ impl Surface {
             }
             tint(&mut cells, &copy.current, y, &mark);
             tint(&mut cells, std::slice::from_ref(&copy.cursor), y, &mark);
+            let toasts = self
+                .notice
+                .iter()
+                .chain(self.toast.as_ref().map(|toast| &toast.image));
+            for image in toasts {
+                place(&mut cells, image, y);
+            }
             if let (Some(to), Some(bar)) = (
                 cells.get_mut(usize::from(copy.bar.x)..usize::from(copy.bar.right())),
                 bar.as_deref().filter(|_| covers(&copy.bar, y)),
             ) {
                 to.clone_from_slice(bar);
             }
-            let images = self.toast.as_ref().map(|toast| &toast.image);
-            let switcher = self.outer.cover().filter(|_| self.dialog.is_none());
-            for image in images.into_iter().chain(switcher) {
-                place(&mut cells, image, y);
+            if let Some(switcher) = self.outer.cover().filter(|_| self.dialog.is_none()) {
+                place(&mut cells, switcher, y);
             }
             rows.push(PaneSurfacePatchRow { x: 0, y, cells });
         }
@@ -1036,12 +1130,8 @@ impl Surface {
         mut leave: impl FnMut(PaneId, &View),
     ) {
         let areas = self.lay_out_chrome();
-        if areas.pane_surface != self.areas.pane_surface {
-            if let (Some(toast), Some(position)) = (&mut self.toast, self.toast_at) {
-                toast.image = toast_image(areas.pane_surface, position, &self.palette);
-            }
-        }
         self.areas = areas;
+        self.place_toasts();
         self.tiles = self.session.tiles(areas.pane_surface, self.chrome);
         let mut views = std::mem::take(&mut self.views);
         for tile in &self.tiles.tiles {
@@ -1249,14 +1339,22 @@ fn place(cells: &mut [CellData], (rect, image): &(Rect, Vec<CellData>), y: u16) 
 fn toast_image(
     area: Rect,
     position: ToastClipboardPosition,
+    notice: Rect,
     palette: &Palette,
 ) -> (Rect, Vec<CellData>) {
     let mut buffer = Buffer::empty(area);
     let feedback = crate::app::state::CopyFeedback {
         message: "copied to clipboard".to_owned(),
     };
-    let rect =
-        crate::ui::render_copy_feedback_buffer(&mut buffer, area, &feedback, 0, position, palette);
+    let offset = crate::ui::copy_feedback_offset_for_toast(area, &feedback, 0, position, notice);
+    let rect = crate::ui::render_copy_feedback_buffer(
+        &mut buffer,
+        area,
+        &feedback,
+        offset,
+        position,
+        palette,
+    );
     let cells = (rect.y..rect.bottom())
         .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
         .map(|position| CellData::from_ratatui_cell(&buffer[position]))

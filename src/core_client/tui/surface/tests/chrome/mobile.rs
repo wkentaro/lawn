@@ -608,10 +608,13 @@ async fn the_switcher_lists_every_agent_first_with_its_workspace_tab_state_and_n
     let mut surface = symbols(64, 20);
     surface.update(paired());
     said(&mut surface, "t2", "working");
-    surface.heard(Report::Status(
-        "t5".to_owned(),
-        crate::pane::core_status(&json!({"state": "blocked", "app": "mytool"})),
-    ));
+    surface.heard(
+        Report::Status(
+            "t5".to_owned(),
+            crate::pane::core_status(&json!({"state": "blocked", "app": "mytool"})),
+        ),
+        std::time::Instant::now(),
+    );
 
     let screen = switcher(&mut surface);
 

@@ -44,7 +44,7 @@ pub(crate) fn copy_feedback_rect(
             area.y + area.height.saturating_sub(height + offset_rows)
         }
     };
-    Rect::new(x, y, width, height)
+    Rect::new(x, y, width, height).intersection(area)
 }
 
 pub(crate) fn render_copy_feedback_buffer(

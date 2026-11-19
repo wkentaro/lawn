@@ -1908,3 +1908,4 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
 mod chrome;
 mod copy_mode;
 mod dialog;
+mod notices;

@@ -574,3 +574,28 @@ async fn a_dialog_opened_in_copy_mode_dims_the_copy_bar_under_it_and_copy_mode_r
     screen.show(&mut surface, &HashSet::new());
     assert!(screen.cells == before);
 }
+
+#[tokio::test]
+async fn a_dialog_stays_as_drawn_while_the_copy_cursor_moves_behind_it() {
+    let (mut surface, _, _input) = selecting(false, b"hello");
+    surface.resize(host(COLS, ROWS));
+    surface.enter_copy_mode();
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    let image = |surface: &Surface| {
+        surface
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.image())
+            .map(|(_, cells)| cells.clone())
+    };
+    let drawn = image(&surface);
+    let cursor = surface.painted.copy.cursor;
+
+    feed(&surface, "t0", &b"line\r\n".repeat(60));
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+
+    assert_ne!(surface.painted.copy.cursor, cursor);
+    assert!(image(&surface) == drawn);
+}
