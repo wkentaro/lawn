@@ -7,6 +7,7 @@ mod keys;
 mod select;
 mod session;
 mod surface;
+mod terminals;
 #[cfg(all(test, unix))]
 mod tests;
 
@@ -194,6 +195,7 @@ mod unix {
             mouse_capture.clone(),
         )?;
         let mut sizes = HostSizes::watch(host)?;
+        let mut reports = super::terminals::follow()?;
         let (copy, mut copied) = clipboard()?;
         let wake = Wake::default();
         let mut events = Events::default();
@@ -276,6 +278,12 @@ mod unix {
                 }
                 Some(terminal) = created.recv() => {
                     surface.created(terminal);
+                    if surface.needs_frame() {
+                        due.get_or_insert_with(Instant::now);
+                    }
+                }
+                Some(report) = reports.recv() => {
+                    surface.heard(report);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }

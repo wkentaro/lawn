@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 
+use super::terminals::{Report, Terminals};
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
 use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
@@ -52,6 +53,7 @@ pub(super) struct Session {
     previous_of_tab: HashMap<String, String>,
     zoomed: bool,
     created: Option<String>,
+    terminals: Terminals,
 }
 
 impl Session {
@@ -61,6 +63,19 @@ impl Session {
         let focus = self.reconciled_focus();
         self.set_focus(focus);
         self.reveal_created();
+    }
+
+    pub(super) fn heard(&mut self, report: Report) -> bool {
+        let workspaces = &self.layout.workspaces;
+        self.terminals.hear(report, |terminal| {
+            workspaces
+                .iter()
+                .any(|workspace| workspace.name.is_none() && naming(workspace) == Some(terminal))
+        })
+    }
+
+    pub(super) fn folder_name(&self, workspace: &Workspace) -> Option<&str> {
+        self.terminals.folder_name(naming(workspace)?)
     }
 
     pub(super) fn created(&mut self, terminal: String) -> bool {
@@ -490,6 +505,10 @@ impl Session {
             .or_else(|| workspace.tabs.first())?;
         Some(self.landing(workspace, tab))
     }
+}
+
+fn naming(workspace: &Workspace) -> Option<&str> {
+    Some(workspace.tabs.first()?.root.first_terminal())
 }
 
 fn wrapped(index: usize, step: isize, len: usize) -> usize {

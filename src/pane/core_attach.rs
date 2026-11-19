@@ -105,7 +105,7 @@ fn follow_core_terminal(
 
 /// Hands each message of an `events.subscribe` stream to `on_message`, until
 /// the stream ends.
-fn read_events(
+pub(crate) fn read_events(
     core: &Core,
     channel: u32,
     mut stream: mpsc::UnboundedReceiver<Stream>,

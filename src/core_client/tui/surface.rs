@@ -11,6 +11,7 @@ use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Session, Tiles};
+use super::terminals::Report;
 use crate::config::ToastClipboardPosition;
 use crate::core_client::view::{Geometry, View};
 use crate::input::{KeybindAction, TerminalKey};
@@ -241,6 +242,12 @@ impl Surface {
             self.sync_focus();
         }
         self.session.operation(action, confirm_close)
+    }
+
+    pub(super) fn heard(&mut self, report: Report) {
+        if self.session.heard(report) {
+            self.outer.recheck();
+        }
     }
 
     pub(super) fn created(&mut self, terminal: String) {

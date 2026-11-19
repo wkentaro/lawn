@@ -119,7 +119,7 @@ pub(super) struct Chrome {
     collapsed_manual: bool,
     divider_click: Option<Instant>,
     preferences: Option<PathBuf>,
-    ticked: bool,
+    recheck: bool,
     redraw: bool,
     tab_bar: TabBarState,
     workspace_scroll: usize,
@@ -182,7 +182,7 @@ impl Chrome {
             collapsed_manual: false,
             divider_click: None,
             preferences: None,
-            ticked: false,
+            recheck: false,
             redraw: false,
             tab_bar: TabBarState::default(),
             workspace_scroll: 0,
@@ -531,11 +531,15 @@ impl Chrome {
             ticked |= text != clock.text;
             clock.text = text;
         }
-        self.ticked |= ticked;
+        self.recheck |= ticked;
+    }
+
+    pub(super) fn recheck(&mut self) {
+        self.recheck = true;
     }
 
     pub(super) fn stale(&self) -> bool {
-        self.ticked || self.redraw
+        self.recheck || self.redraw
     }
 
     pub(super) fn rows(&self) -> &[PaneSurfacePatchRow] {
@@ -549,7 +553,7 @@ impl Chrome {
         session: &Session,
         palette: &Palette,
     ) -> bool {
-        self.ticked = false;
+        self.recheck = false;
         if layout.mobile_header.is_empty() {
             self.switcher = None;
         }
@@ -605,8 +609,10 @@ impl Chrome {
                     id: workspace.id.clone(),
                     text: workspace
                         .name
-                        .clone()
-                        .unwrap_or_else(|| "workspace".to_owned()),
+                        .as_deref()
+                        .or_else(|| session.folder_name(workspace))
+                        .unwrap_or("workspace")
+                        .to_owned(),
                     custom: workspace.name.is_some(),
                 })
                 .collect(),
