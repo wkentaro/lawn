@@ -80,6 +80,7 @@ pub(super) struct Session {
 impl Session {
     pub(super) fn update(&mut self, layout: Layout) {
         self.layout = layout;
+        self.terminals.endings().own(self.layout.terminals());
         self.ids.retain(|terminal, _| self.layout.owns(terminal));
         let focus = self.reconciled_focus();
         self.set_focus(focus);
@@ -174,6 +175,19 @@ impl Session {
             .as_deref()
             .or_else(|| self.terminals.folder_name(naming(workspace)?))
             .unwrap_or("workspace")
+    }
+
+    pub(super) fn closing(&mut self, viewed: impl Fn(PaneId) -> bool) -> Option<Operation> {
+        let ids = &self.ids;
+        let closing = self
+            .terminals
+            .endings()
+            .closing(|terminal| ids.get(terminal).is_some_and(|id| viewed(*id)));
+        (!closing.is_empty()).then_some(Operation::Close(closing))
+    }
+
+    pub(super) fn ask(&mut self, terminal: &str) -> bool {
+        self.terminals.endings().ask(terminal)
     }
 
     pub(super) fn created(&mut self, terminal: String) -> bool {

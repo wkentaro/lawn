@@ -320,6 +320,16 @@ impl Surface {
         }
     }
 
+    pub(super) fn closing(&mut self) -> Option<Operation> {
+        let (views, attaching) = (&self.views, &self.attaching);
+        self.session
+            .closing(|id| views.contains_key(&id) || attaching.contains_key(&id))
+    }
+
+    pub(super) fn ask(&mut self, terminal: &str) -> bool {
+        self.session.ask(terminal)
+    }
+
     fn look(&mut self) -> bool {
         let views = &self.views;
         self.host_focused

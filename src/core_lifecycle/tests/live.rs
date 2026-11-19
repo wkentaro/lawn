@@ -331,6 +331,28 @@ fn a_saved_close_is_finished_by_another_client() {
 }
 
 #[test]
+fn closing_a_terminal_again_leaves_the_sessions_as_the_first_close_did() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let kept = lifecycle
+        .start(workspace(), Path::new("/tmp"), &program())
+        .unwrap();
+    let closed = lifecycle
+        .start(workspace(), Path::new("/tmp"), &program())
+        .unwrap();
+    lifecycle.close(&closed.terminal).unwrap();
+    let (once, _) = lifecycle.store.load_all().unwrap();
+
+    assert!(lifecycle.close(&closed.terminal).is_err());
+
+    assert_eq!(lifecycle.store.load_all().unwrap().0, once);
+    assert!(once["work"].shows(&kept.terminal));
+    assert_eq!(record(&test.core, &kept.terminal)["state"], "live");
+}
+
+#[test]
 fn explicit_unpark_retries_reconcile_keep_without_another_pane() {
     let Some(test) = TestCore::start() else {
         return;

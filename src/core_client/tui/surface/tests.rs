@@ -12,7 +12,7 @@ use crate::config::PaneBordersConfig;
 use crate::config::ToastClipboardPosition;
 use crate::core_client::tui::chrome::Chrome;
 use crate::core_client::tui::select::Copying;
-use crate::core_client::tui::session::PaneChrome;
+use crate::core_client::tui::session::{Operation, PaneChrome};
 use crate::core_client::view::{Geometry, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
@@ -1903,6 +1903,59 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
     surface.mouse(click(inner.x, inner.y), now);
     let word = copied_text(surface.mouse(release_at(inner.x, inner.y), now));
     assert_eq!(word.as_deref(), Some("ab"));
+}
+
+fn two_tabs() -> Layout {
+    serde_json::from_value(json!({"workspaces": [{"id": "w0", "tabs": [
+        {"id": "t0", "root": {"kind": "pane", "terminal": "a"}},
+        {"id": "t1", "root": {"kind": "pane", "terminal": "b"}},
+    ]}]}))
+    .expect("layout")
+}
+
+fn ended(surface: &mut Surface, terminal: &str) {
+    surface.heard(crate::core_client::tui::terminals::Report::Ending(
+        crate::core_client::tui::endings::Ending::Finished(terminal.to_owned()),
+    ));
+}
+
+#[tokio::test]
+async fn an_end_reported_for_a_pane_with_a_view_is_left_to_its_view() {
+    let mut surface = surface(40, 10);
+    surface.update(two_tabs());
+    frame(&mut surface, &HashSet::new());
+
+    ended(&mut surface, "a");
+
+    assert_eq!(surface.closing(), None);
+}
+
+#[tokio::test]
+async fn a_pane_whose_end_was_heard_while_viewed_closes_once_its_view_leaves() {
+    let mut surface = surface(40, 10);
+    surface.update(two_tabs());
+    frame(&mut surface, &HashSet::new());
+    ended(&mut surface, "a");
+    assert_eq!(surface.closing(), None);
+
+    surface.act(KeybindAction::NextTab, true);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(
+        surface.closing(),
+        Some(Operation::Close(vec!["a".to_owned()]))
+    );
+}
+
+#[tokio::test]
+async fn an_end_reported_for_a_pane_still_attaching_is_left_to_its_view() {
+    let mut surface = surface(40, 10);
+    surface.update(two_tabs());
+    assert_eq!(requests(&mut surface).len(), 1);
+
+    ended(&mut surface, "a");
+
+    assert_eq!(surface.closing(), None);
 }
 
 mod chrome;

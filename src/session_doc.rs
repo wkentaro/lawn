@@ -87,7 +87,6 @@ impl Layout {
         id
     }
 
-    #[cfg(test)]
     pub(crate) fn terminals(&self) -> impl Iterator<Item = &str> {
         self.workspaces
             .iter()
