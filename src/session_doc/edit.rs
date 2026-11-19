@@ -1,10 +1,13 @@
+#[cfg(any(unix, test))]
+use std::collections::BTreeSet;
+
 use ratatui::layout::Rect;
 
 use super::{Direction, Layout, Node, Tab, Workspace};
 use crate::layout::NavDirection;
 
-const MIN_RATIO: f32 = 0.1;
-const MAX_RATIO: f32 = 0.9;
+pub(crate) const MIN_RATIO: f32 = 0.1;
+pub(crate) const MAX_RATIO: f32 = 0.9;
 #[cfg(any(unix, test))]
 const RESIZE_STEP: f32 = 0.05;
 pub(super) const EVEN_RATIO: f32 = 0.5;
@@ -31,6 +34,10 @@ pub(crate) enum Arrangement {
         tab: String,
         name: String,
     },
+    MoveWorkspace {
+        workspace: String,
+        to: Place,
+    },
     MoveTab {
         tab: String,
         to: Place,
@@ -45,10 +52,18 @@ pub(crate) enum Arrangement {
         toward: NavDirection,
         area: Rect,
     },
+    SetRatio {
+        first: String,
+        second: String,
+        direction: Direction,
+        ratio: f32,
+    },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
+    Before(String),
+    End,
     Next,
     Previous,
 }
@@ -70,18 +85,17 @@ impl Layout {
                 .find(|t| t.id == *tab)
                 .map(|t| t.name = Some(name.clone()))
                 .is_some(),
+            Arrangement::MoveWorkspace { workspace, to } => self
+                .workspaces
+                .iter()
+                .position(|w| w.id == *workspace)
+                .is_some_and(|source| moved(&mut self.workspaces, source, to, |w| &w.id)),
             Arrangement::MoveTab { tab, to } => self.workspaces.iter_mut().any(|workspace| {
-                let Some(source) = workspace.tabs.iter().position(|t| t.id == *tab) else {
-                    return false;
-                };
-                let len = workspace.tabs.len();
-                let insert = match to {
-                    Place::Next if source + 1 >= len => 0,
-                    Place::Next => source + 2,
-                    Place::Previous if source == 0 => len,
-                    Place::Previous => source - 1,
-                };
-                crate::session_model::move_item(&mut workspace.tabs, source, insert).is_some()
+                workspace
+                    .tabs
+                    .iter()
+                    .position(|t| t.id == *tab)
+                    .is_some_and(|source| moved(&mut workspace.tabs, source, to, |t| &t.id))
             }),
             Arrangement::Swap {
                 terminal,
@@ -91,7 +105,7 @@ impl Layout {
                 let Some(with) = self.neighbour(terminal, *toward, *area).map(str::to_owned) else {
                     return false;
                 };
-                self.tab_mut(terminal)
+                tab_mut(&mut self.workspaces, terminal)
                     .map(|tab| tab.root.swap(terminal, &with))
                     .is_some()
             }
@@ -110,20 +124,22 @@ impl Layout {
                     NavDirection::Right | NavDirection::Down => RESIZE_STEP,
                     NavDirection::Left | NavDirection::Up => -RESIZE_STEP,
                 };
-                self.tab_mut(terminal)
-                    .and_then(|tab| tab.root.ratio_between(&first, &second))
-                    .map(|ratio| *ratio = (*ratio + by).clamp(MIN_RATIO, MAX_RATIO))
+                tab_mut(&mut self.workspaces, terminal)
+                    .and_then(|tab| tab.root.ratio_between(&self.parked, &first, &second))
+                    .map(|(ratio, _)| *ratio = (*ratio + by).clamp(MIN_RATIO, MAX_RATIO))
                     .is_some()
             }
+            Arrangement::SetRatio {
+                first,
+                second,
+                direction,
+                ratio: to,
+            } => tab_mut(&mut self.workspaces, first)
+                .and_then(|tab| tab.root.ratio_between(&self.parked, first, second))
+                .filter(|(_, split)| split == direction)
+                .map(|(ratio, _)| *ratio = to.clamp(MIN_RATIO, MAX_RATIO))
+                .is_some(),
         }
-    }
-
-    #[cfg(any(unix, test))]
-    fn tab_mut(&mut self, terminal: &str) -> Option<&mut Tab> {
-        self.workspaces
-            .iter_mut()
-            .flat_map(|workspace| workspace.tabs.iter_mut())
-            .find(|tab| tab.root.contains(terminal))
     }
 
     /// Adds a workspace whose one tab shows `terminal`; returns the workspace
@@ -335,20 +351,30 @@ impl Node {
     }
 
     #[cfg(any(unix, test))]
-    fn ratio_between(&mut self, before: &str, after: &str) -> Option<&mut f32> {
+    fn ratio_between(
+        &mut self,
+        parked: &BTreeSet<String>,
+        before: &str,
+        after: &str,
+    ) -> Option<(&mut f32, Direction)> {
         let Node::Split {
             ratio,
             first,
             second,
-            ..
+            direction,
         } = self
         else {
             return None;
         };
         match (first.contains(before), second.contains(after)) {
-            (true, true) => Some(ratio),
-            (true, false) => first.ratio_between(before, after),
-            (false, _) => second.ratio_between(before, after),
+            (true, true) => {
+                let shown = |terminal: &&str| !parked.contains(*terminal);
+                let last = first.terminals().into_iter().rfind(shown);
+                let next = second.terminals().into_iter().find(shown);
+                (last == Some(before) && next == Some(after)).then_some((ratio, *direction))
+            }
+            (true, false) => first.ratio_between(parked, before, after),
+            (false, _) => second.ratio_between(parked, before, after),
         }
     }
 
@@ -369,6 +395,31 @@ impl Node {
         *self = sibling;
         true
     }
+}
+
+#[cfg(any(unix, test))]
+fn tab_mut<'a>(workspaces: &'a mut [Workspace], terminal: &str) -> Option<&'a mut Tab> {
+    workspaces
+        .iter_mut()
+        .flat_map(|workspace| workspace.tabs.iter_mut())
+        .find(|tab| tab.root.contains(terminal))
+}
+
+#[cfg(any(unix, test))]
+fn moved<T>(items: &mut [T], source: usize, to: &Place, id: impl Fn(&T) -> &String) -> bool {
+    let len = items.len();
+    let insert = match to {
+        Place::Before(item) => match items.iter().position(|other| id(other) == item) {
+            Some(index) => index,
+            None => return false,
+        },
+        Place::End => len,
+        Place::Next if source + 1 >= len => 0,
+        Place::Next => source + 2,
+        Place::Previous if source == 0 => len,
+        Place::Previous => source - 1,
+    };
+    crate::session_model::move_item(items, source, insert).is_some()
 }
 
 fn empty_pane() -> Node {

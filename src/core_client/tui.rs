@@ -296,7 +296,9 @@ mod unix {
                     due = None;
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
-                    surface.tick(std::time::Instant::now());
+                    if let Some(operation) = surface.tick(std::time::Instant::now()) {
+                        run(&surface, operation);
+                    }
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }

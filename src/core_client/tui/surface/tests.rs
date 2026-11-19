@@ -1517,6 +1517,23 @@ async fn any_left_press_clears_the_selection() {
     assert!(surface.select.shown().is_none());
 }
 
+#[tokio::test]
+async fn a_press_on_a_split_border_clears_the_selection() {
+    let (mut surface, inner, _input) = selecting(false, b"hello world");
+    let now = std::time::Instant::now();
+    surface.mouse(click(inner.x, inner.y), now);
+    surface.mouse(drag_to(inner.x + 4, inner.y), now);
+    surface.mouse(release_at(inner.x + 4, inner.y), now);
+    assert!(surface.copyable());
+    let border = surface.tiles.splits[0].pos;
+
+    surface.mouse(click(border, inner.y), now);
+    surface.mouse(release_at(border, inner.y), now);
+
+    assert!(surface.select.shown().is_none());
+    assert!(!surface.copyable());
+}
+
 fn kept_selection(surface: &mut Surface, terminal: &str) {
     let (_, inner) = super::visible(&surface.views, id_of(surface, terminal)).expect("visible");
     let now = std::time::Instant::now();
