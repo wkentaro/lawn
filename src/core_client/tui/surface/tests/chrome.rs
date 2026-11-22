@@ -1753,11 +1753,12 @@ async fn a_finish_in_a_tab_left_before_its_panes_attach_still_reads_done() {
 
     said(&mut surface, "t3", "working");
     said(&mut surface, "t3", "done");
+    let attaching = requests(&mut surface);
+    assert!(!attaching.is_empty());
     assert!(tab_bar(&mut surface).contains("✓ 2"));
 
     surface.act(KeybindAction::NextTab, false);
-    let attaching = requests(&mut surface);
-    assert!(!attaching.is_empty());
+    assert!(tab_bar(&mut surface).contains("✓ 2"));
     surface.act(KeybindAction::PreviousTab, false);
     assert!(tab_bar(&mut surface).contains("✓ 2"));
 
@@ -2114,4 +2115,26 @@ async fn a_drag_from_the_configured_width_away_and_back_saves_that_width_as_the_
     point(&mut surface, MouseEventKind::Up(MouseButton::Left), 25, 5);
 
     assert_eq!(saved(&path), Some((Some(26), None)));
+}
+
+#[tokio::test]
+async fn a_divider_drag_lays_the_panes_out_once_per_width_and_the_frame_reuses_it() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    frame(&mut surface, &HashSet::new());
+    let before = surface.session.placements;
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    for column in [2, 3, 4, 5] {
+        point(
+            &mut surface,
+            MouseEventKind::Drag(MouseButton::Left),
+            column,
+            5,
+        );
+    }
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 18);
+    assert_eq!(surface.session.placements - before, 1);
 }

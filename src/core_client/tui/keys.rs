@@ -100,6 +100,12 @@ impl Keys {
                 let target = self.press(&key, focused, mode, &mut routed);
                 if let Some(target) = target {
                     routed.push(Routed::Key(target, key.clone()));
+                } else if routed.is_empty()
+                    && initial == (self.prefix, mode)
+                    && (key.generated_text.is_none() || key.has_physical_identity())
+                {
+                    self.leases
+                        .insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
                 }
                 let leaves = routed.iter().any(|routed| {
                     matches!(

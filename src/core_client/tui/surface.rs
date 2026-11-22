@@ -13,13 +13,13 @@ use super::copy_mode::{CopyMode, Marks, Step};
 use super::dialog::{Dialog, Modal, Outcome, Rename};
 use super::keys::Navigation;
 use super::select::{Copying, Select};
-use super::session::{Operation, PaneChrome, Request, Session, Tiles};
+use super::session::{Operation, PaneChrome, Request, Session, Tile, Tiles};
 use super::terminals::Report;
 use crate::config::{LiveKeybindConfig, ToastClipboardPosition};
-use crate::core_client::view::{Geometry, View};
+use crate::core_client::view::{Geometry, Placing, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::{PaneId, SplitBorder};
-use crate::pane::ScrollMetrics;
+use crate::pane::{ScrollMetrics, MIN_PANE_COLS, MIN_PANE_ROWS};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::raw_input::RawInputEvent;
 use crate::session_doc::{Arrangement, Layout};
@@ -236,6 +236,10 @@ pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
     attaching: HashMap<PaneId, bool>,
+    owned: HashMap<PaneId, String>,
+    targets: HashSet<PaneId>,
+    ended: Vec<PaneId>,
+    presented: Option<HashSet<PaneId>>,
     host_focused: bool,
     tiles: Tiles,
     chrome: PaneChrome,
@@ -257,6 +261,9 @@ pub(super) struct Surface {
     highlight: CellData,
     painted: Overlays,
     relayout: bool,
+    laid_for: Option<Rect>,
+    #[cfg(test)]
+    retargets: usize,
     canvas: Vec<CellData>,
     canvas_cols: u16,
 }
@@ -280,6 +287,10 @@ impl Surface {
             session: Session::default(),
             views: HashMap::new(),
             attaching: HashMap::new(),
+            owned: HashMap::new(),
+            targets: HashSet::new(),
+            ended: Vec::new(),
+            presented: None,
             host_focused: true,
             tiles: Tiles::default(),
             chrome,
@@ -301,6 +312,9 @@ impl Surface {
             highlight: CellData::from_ratatui_cell(&highlight),
             painted: Overlays::default(),
             relayout: true,
+            laid_for: None,
+            #[cfg(test)]
+            retargets: 0,
             canvas: Vec::new(),
             canvas_cols: 0,
         }
@@ -312,14 +326,14 @@ impl Surface {
 
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
-        self.relayout = true;
-        self.sync_focus();
+        self.owned = self.session.owned();
+        self.reflow();
     }
 
     pub(super) fn act(&mut self, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
         if action == KeybindAction::ToggleSidebar {
             self.outer.toggle();
-            self.relayout = true;
+            self.reflow();
             return None;
         }
         if action == KeybindAction::Help {
@@ -349,8 +363,7 @@ impl Surface {
         }
         let area = self.lay_out_chrome().pane_surface;
         if self.session.navigate(action, area, self.chrome) {
-            self.relayout = true;
-            self.sync_focus();
+            self.reflow();
         }
         if let Some(arrangement) = self.session.arrangement(action, area) {
             return Some(Operation::Arrange(arrangement));
@@ -487,8 +500,7 @@ impl Surface {
 
     pub(super) fn created(&mut self, terminal: String) {
         if self.session.created(terminal) {
-            self.relayout = true;
-            self.sync_focus();
+            self.reflow();
         }
     }
 
@@ -517,14 +529,85 @@ impl Surface {
             self.select.clear();
         }
         let focused = self.reporting_focus();
-        for (id, shown) in &mut self.views {
-            shown.tell_focus(focused == Some(*id));
+        for id in &self.targets {
+            if let Some(shown) = self.views.get_mut(id) {
+                shown.tell_focus(focused == Some(*id));
+            }
+        }
+    }
+
+    fn reflow(&mut self) {
+        self.relayout = true;
+        let area = self.lay_out_chrome().pane_surface;
+        self.tiles = self.session.tiles(area, self.chrome);
+        self.laid_for = Some(area);
+        if self
+            .gesture
+            .is_some_and(|gesture| !self.placed(gesture.pane))
+        {
+            self.end_gesture(None);
+        }
+        self.retarget();
+    }
+
+    fn placed(&self, id: PaneId) -> bool {
+        let Some(Shown {
+            place: Place::Visible { inner, gutter, .. },
+            ..
+        }) = self.views.get(&id)
+        else {
+            return false;
+        };
+        let track = gutter.as_ref().map(|gutter| gutter.track);
+        self.tiles.tiles.iter().any(|tile| {
+            tile.info.id == id
+                && crate::ui::scrollbar_gutter_for(tile.info.inner_rect, gutter.is_some())
+                    == (*inner, track)
+        })
+    }
+
+    fn retarget(&mut self) {
+        #[cfg(test)]
+        {
+            self.retargets += 1;
+        }
+        let blank: HashSet<PaneId> = self
+            .tiles
+            .tiles
+            .iter()
+            .filter(|tile| tile.info.inner_rect.is_empty())
+            .map(|tile| tile.info.id)
+            .collect();
+        let targets: HashSet<PaneId> = self
+            .session
+            .reachable()
+            .into_iter()
+            .filter(|id| !blank.contains(id))
+            .collect();
+        for id in self.targets.difference(&targets) {
+            if let Some(shown) = self.views.get_mut(id) {
+                if shown.told_focus == Some(true) {
+                    shown.tell_focus(false);
+                }
+                shown.told_focus = None;
+                self.ended.push(*id);
+            }
+        }
+        self.targets = targets;
+        self.sync_focus();
+    }
+
+    pub(super) fn end_input(&mut self, mut leave: impl FnMut(PaneId, &View)) {
+        for id in std::mem::take(&mut self.ended) {
+            if let Some(shown) = self.views.get(&id) {
+                leave(id, &shown.view);
+            }
         }
     }
 
     pub(super) fn resize(&mut self, host: Geometry) {
         self.host = host;
-        self.relayout = true;
+        self.reflow();
     }
 
     fn lay_out_chrome(&self) -> crate::ui::chrome::Layout {
@@ -727,49 +810,61 @@ impl Surface {
 
     pub(super) fn attached(&mut self, id: PaneId, geometry: Geometry, view: io::Result<View>) {
         let detached = self.attaching.remove(&id).unwrap_or(true);
-        self.relayout = true;
+        let on_screen = self
+            .tiles
+            .tiles
+            .iter()
+            .any(|tile| tile.info.id == id && !tile.info.inner_rect.is_empty());
         match view {
             Ok(view) if !detached && self.terminal(id).is_some() => {
+                self.relayout |= on_screen;
                 self.views.insert(
                     id,
                     Shown {
                         view,
-                        place: Place::Visible {
-                            inner: Rect::default(),
-                            alternate: false,
-                            gutter: None,
-                            retained: None,
-                        },
+                        place: Place::Hidden(Vec::new()),
                         geometry,
                         told_focus: None,
                     },
                 );
             }
-            Ok(_) => {}
+            Ok(_) => self.relayout |= on_screen,
             Err(error) => {
+                self.relayout |= on_screen;
                 tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
             }
         }
-        self.sync_focus();
+        let focused = self.reporting_focus() == Some(id);
+        if let Some(shown) = self
+            .views
+            .get_mut(&id)
+            .filter(|_| self.targets.contains(&id))
+        {
+            shown.tell_focus(focused);
+        }
     }
 
-    pub(super) fn terminal(&self, id: PaneId) -> Option<&str> {
-        self.tiles
-            .tiles
-            .iter()
-            .find(|tile| tile.info.id == id)
-            .map(|tile| tile.terminal.as_str())
-            .or_else(|| {
-                self.tiles
-                    .hidden
-                    .iter()
-                    .find(|(hidden, _)| *hidden == id)
-                    .map(|(_, terminal)| terminal.as_str())
-            })
+    pub(super) fn ended(&self, id: PaneId) -> Option<Operation> {
+        Some(Operation::Close(vec![self.terminal(id)?.to_owned()]))
     }
 
+    pub(super) fn presented(&mut self) -> Option<HashSet<PaneId>> {
+        self.presented.take()
+    }
+
+    fn terminal(&self, id: PaneId) -> Option<&str> {
+        self.owned.get(&id).map(String::as_str)
+    }
+
+    #[cfg(test)]
     pub(super) fn focused_id(&self) -> Option<PaneId> {
         self.session.focused_id()
+    }
+
+    pub(super) fn input_focus(&self) -> Option<PaneId> {
+        self.session
+            .focused_id()
+            .filter(|id| self.view(*id).is_some())
     }
 
     pub(super) fn focused(&self) -> Option<&View> {
@@ -777,7 +872,9 @@ impl Surface {
     }
 
     pub(super) fn view(&self, id: PaneId) -> Option<&View> {
-        Some(&self.views.get(&id)?.view)
+        self.targets
+            .contains(&id)
+            .then(|| self.views.get(&id).map(|shown| &shown.view))?
     }
 
     pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<Pointed> {
@@ -866,6 +963,7 @@ impl Surface {
             if press {
                 self.select.press(None, event, now);
             }
+            let before = self.lay_out_chrome();
             let pointed = self.outer.mouse(
                 event,
                 &self.session,
@@ -874,12 +972,13 @@ impl Surface {
             );
             if let Some(terminal) = self.outer.revealed() {
                 if self.session.reveal(&terminal) {
-                    self.relayout = true;
-                    self.sync_focus();
+                    self.reflow();
                 }
             }
             self.resizing &= !self.outer.navigating();
-            self.relayout |= self.lay_out_chrome() != self.areas;
+            if self.lay_out_chrome() != before {
+                self.reflow();
+            }
             return pointed;
         }
         if press && !hidden.contains(point) {
@@ -912,8 +1011,13 @@ impl Surface {
                         | MouseEventKind::ScrollRight
                 );
         if focuses && self.session.focus(&tile.terminal) {
-            self.relayout = true;
-            self.sync_focus();
+            self.reflow();
+        }
+        if !self.placed(id) {
+            if press {
+                self.select.press(None, event, now);
+            }
+            return None;
         }
         let button = match event.kind {
             MouseEventKind::Down(button) => button,
@@ -1124,15 +1228,21 @@ impl Surface {
     pub(super) fn frame(
         &mut self,
         dirty: &HashSet<PaneId>,
-        attach: impl FnMut(&str, PaneId, Geometry),
+        attach: impl FnMut(&str, PaneId, Placing),
         leave: impl FnMut(PaneId, &View),
     ) -> (Vec<PaneSurfacePatchRow>, Option<CursorState>) {
         let focused = self.reporting_focus();
-        for id in dirty {
-            if let Some(shown) = self.views.get_mut(id) {
-                shown.tell_focus(focused == Some(*id));
-                self.relayout = self.relayout || shown.gutter_is_stale(self.scrollbars);
-            }
+        for tile in &self.tiles.tiles {
+            let id = tile.info.id;
+            let Some(shown) = self
+                .views
+                .get_mut(&id)
+                .filter(|_| dirty.contains(&id) && self.targets.contains(&id))
+            else {
+                continue;
+            };
+            shown.tell_focus(focused == Some(id));
+            self.relayout = self.relayout || shown.gutter_is_stale(self.scrollbars);
         }
         let relayout = std::mem::take(&mut self.relayout);
         if relayout {
@@ -1162,16 +1272,20 @@ impl Surface {
         } else {
             let mut rows = Vec::new();
             let focused = self.session.focused_id();
-            for id in dirty {
+            for tile in &self.tiles.tiles {
+                let id = tile.info.id;
+                if !dirty.contains(&id) {
+                    continue;
+                }
                 if let Some(Shown {
                     view,
                     place: Place::Visible { inner, gutter, .. },
                     ..
-                }) = self.views.get_mut(id)
+                }) = self.views.get_mut(&id)
                 {
                     rows.extend(placed(view.draw(), *inner));
                     if let Some(gutter) = gutter {
-                        rows.extend(gutter.redraw(view, &self.palette, focused == Some(*id)));
+                        rows.extend(gutter.redraw(view, &self.palette, focused == Some(id)));
                     }
                 }
             }
@@ -1349,7 +1463,7 @@ impl Surface {
 
     fn lay_out(
         &mut self,
-        mut attach: impl FnMut(&str, PaneId, Geometry),
+        mut attach: impl FnMut(&str, PaneId, Placing),
         mut leave: impl FnMut(PaneId, &View),
     ) {
         let areas = self.lay_out_chrome();
@@ -1358,8 +1472,19 @@ impl Surface {
                 toast.image = toast_image(areas.pane_surface, position, &self.palette);
             }
         }
+        self.end_input(&mut leave);
         self.areas = areas;
-        self.tiles = self.session.tiles(areas.pane_surface, self.chrome);
+        if self.laid_for.take() != Some(areas.pane_surface) {
+            self.tiles = self.session.tiles(areas.pane_surface, self.chrome);
+        }
+        self.presented = Some(
+            self.tiles
+                .tiles
+                .iter()
+                .filter(|tile| !tile.info.inner_rect.is_empty())
+                .map(|tile| tile.info.id)
+                .collect(),
+        );
         let mut views = std::mem::take(&mut self.views);
         for tile in &self.tiles.tiles {
             if tile.info.inner_rect.is_empty() {
@@ -1368,35 +1493,43 @@ impl Surface {
             let alternate = views
                 .get(&tile.info.id)
                 .is_some_and(|shown| shown.view.alternate_screen());
-            let (inner, track) = crate::ui::scrollbar_gutter_for(
+            let (inner, track, geometry) = fitted(
                 tile.info.inner_rect,
                 self.scrollbars && !alternate,
+                self.host,
             );
-            let geometry = Geometry {
-                cols: inner.width,
-                rows: inner.height,
-                ..self.host
-            };
             let Some(mut shown) = views.remove(&tile.info.id) else {
                 if let Entry::Vacant(attempt) = self.attaching.entry(tile.info.id) {
                     attempt.insert(false);
-                    attach(&tile.terminal, tile.info.id, geometry);
+                    attach(
+                        &tile.terminal,
+                        tile.info.id,
+                        Placing {
+                            geometry,
+                            shown: true,
+                        },
+                    );
                 }
                 continue;
             };
             let retained = match std::mem::replace(&mut shown.place, Place::Hidden(Vec::new())) {
-                Place::Visible { inner: was, .. } => (was.width == inner.width
-                    && was.height == inner.height)
-                    .then_some(Retained::At(was)),
-                Place::Hidden(image) => (shown.geometry.cols == inner.width
-                    && shown.geometry.rows == inner.height)
-                    .then_some(Retained::Image(image)),
+                Place::Visible { inner: was, .. } => {
+                    if shown.geometry == geometry {
+                        shown.view.invalidate();
+                    } else {
+                        shown.view.resize(geometry);
+                    }
+                    (was.width == inner.width && was.height == inner.height)
+                        .then_some(Retained::At(was))
+                }
+                Place::Hidden(image) => {
+                    let kept = (shown.geometry.cols == inner.width
+                        && shown.geometry.rows == inner.height)
+                        .then_some(Retained::Image(image));
+                    shown.view.show(geometry);
+                    kept
+                }
             };
-            if shown.geometry == geometry {
-                shown.view.invalidate();
-            } else {
-                shown.view.resize(geometry);
-            }
             shown.place = Place::Visible {
                 inner,
                 alternate,
@@ -1406,10 +1539,40 @@ impl Surface {
             shown.geometry = geometry;
             self.views.insert(tile.info.id, shown);
         }
+        let needs: HashSet<PaneId> = self
+            .owned
+            .keys()
+            .copied()
+            .filter(|id| {
+                !views.contains_key(id)
+                    && !self.views.contains_key(id)
+                    && !self.attaching.contains_key(id)
+            })
+            .collect();
+        for tile in self.offstage_tiles(areas.pane_surface, &needs) {
+            if !needs.contains(&tile.info.id) {
+                continue;
+            }
+            if let Entry::Vacant(attempt) = self.attaching.entry(tile.info.id) {
+                attempt.insert(false);
+                let geometry = fitted(tile.info.inner_rect, self.scrollbars, self.host).2;
+                attach(
+                    &tile.terminal,
+                    tile.info.id,
+                    Placing {
+                        geometry: Geometry {
+                            cols: geometry.cols.max(MIN_PANE_COLS),
+                            rows: geometry.rows.max(MIN_PANE_ROWS),
+                            ..geometry
+                        },
+                        shown: false,
+                    },
+                );
+            }
+        }
         for (id, mut shown) in views {
             self.end_gesture(Some((id, &shown.view)));
-            if !self.tiles.hidden.iter().any(|(hidden, _)| *hidden == id) {
-                leave(id, &shown.view);
+            if !self.owned.contains_key(&id) {
                 continue;
             }
             if let Place::Visible { inner, .. } = shown.place {
@@ -1417,6 +1580,29 @@ impl Surface {
             }
             self.views.insert(id, shown);
         }
+    }
+
+    fn offstage_tiles(&mut self, area: Rect, needs: &HashSet<PaneId>) -> Vec<Tile> {
+        if needs.is_empty() {
+            return Vec::new();
+        }
+        let (cols, rows, outer) = (self.host.cols, self.host.rows, &self.outer);
+        let mut tiles: Vec<Tile> = self
+            .tiles
+            .tiles
+            .iter()
+            .filter(|tile| tile.info.inner_rect.is_empty())
+            .cloned()
+            .collect();
+        tiles.extend(self.session.offstage(
+            |workspace| outer.layout_for(cols, rows, Some(workspace)).pane_surface,
+            self.chrome,
+            |id| needs.contains(&id),
+        ));
+        if self.tiles.hidden.iter().any(|(id, _)| needs.contains(id)) {
+            tiles.extend(self.session.unzoomed(area, self.chrome).tiles);
+        }
+        tiles
     }
 
     fn compose(&mut self) -> Vec<PaneSurfacePatchRow> {
@@ -1519,6 +1705,16 @@ impl Surface {
         let bar = self.outer.bar().map(|bar| bar.0.y);
         (!covers(&self.painted.resize, cursor.y) && Some(cursor.y) != bar).then_some(cursor)
     }
+}
+
+fn fitted(rect: Rect, gutter: bool, host: Geometry) -> (Rect, Option<Rect>, Geometry) {
+    let (inner, track) = crate::ui::scrollbar_gutter_for(rect, gutter);
+    let geometry = Geometry {
+        cols: inner.width,
+        rows: inner.height,
+        ..host
+    };
+    (inner, track, geometry)
 }
 
 fn visible(views: &HashMap<PaneId, Shown>, id: PaneId) -> Option<(&View, Rect)> {

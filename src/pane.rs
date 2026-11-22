@@ -3445,6 +3445,21 @@ impl PaneRuntime {
         );
     }
 
+    pub(crate) fn claim_size(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
+        let size = (
+            rows.max(MIN_PANE_ROWS),
+            cols.max(MIN_PANE_COLS),
+            cell_width_px,
+            cell_height_px,
+        );
+        if self.current_size.get() == size {
+            self.io
+                .resize(size.0, size.1, cell_width_px, cell_height_px, Vec::new());
+        } else {
+            self.resize(rows, cols, cell_width_px, cell_height_px);
+        }
+    }
+
     #[cfg(unix)]
     pub fn nudge_child_redraw_after_handoff(&self) {
         let (rows, cols, cell_width_px, cell_height_px) = self.current_size.get();

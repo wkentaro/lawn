@@ -33,6 +33,12 @@ pub(crate) struct Geometry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Placing {
+    pub(crate) geometry: Geometry,
+    pub(crate) shown: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Scrollback {
     pub(crate) limit_bytes: usize,
     pub(crate) wheel_lines: usize,
@@ -56,6 +62,20 @@ pub(crate) struct Wake {
 impl Wake {
     pub(crate) async fn wait(&self) {
         self.notify.notified().await;
+    }
+
+    pub(crate) fn request(&self, pane: PaneId) {
+        if self.dirty.request_pty(pane) {
+            self.notify.notify_one();
+        }
+    }
+
+    pub(crate) fn present(&self, panes: HashSet<PaneId>) {
+        self.dirty.set_immediate_pty_sources(panes);
+    }
+
+    pub(crate) fn presents_output(&self) -> bool {
+        self.dirty.has_pending_visible_pty_source(|_| true)
     }
 
     pub(crate) fn take(&self) -> HashSet<PaneId> {
@@ -139,26 +159,26 @@ impl View {
     pub(crate) fn attach(
         core: Arc<Core>,
         address: &str,
-        geometry: Geometry,
+        placing: Placing,
         id: PaneId,
         wake: &Wake,
         events: &EventSender,
         scrollback: Scrollback,
     ) -> io::Result<Self> {
+        let Placing { geometry, shown } = placing;
         let runtime = TerminalRuntime::attach_core_terminal(
             id,
             core,
             address,
             geometry.rows,
             geometry.cols,
+            !shown,
             scrollback.limit_bytes,
             events.0.clone(),
             wake.notify.clone(),
             wake.dirty.clone(),
         )?;
-        let mut view = Self::new(runtime, id, wake.clone(), scrollback.wheel_lines);
-        view.resize(geometry);
-        Ok(view)
+        Ok(Self::new(runtime, id, wake.clone(), scrollback.wheel_lines))
     }
 
     fn new(runtime: TerminalRuntime, id: PaneId, wake: Wake, wheel_lines: usize) -> Self {
@@ -181,6 +201,16 @@ impl View {
 
     pub(crate) fn resize(&mut self, geometry: Geometry) {
         self.runtime.resize(
+            geometry.rows,
+            geometry.cols,
+            geometry.cell_width_px,
+            geometry.cell_height_px,
+        );
+        self.repaint = true;
+    }
+
+    pub(crate) fn show(&mut self, geometry: Geometry) {
+        self.runtime.claim_size(
             geometry.rows,
             geometry.cols,
             geometry.cell_width_px,
@@ -441,9 +471,7 @@ impl View {
     }
 
     fn redraw(&self) {
-        if self.wake.dirty.request_pty(self.id) {
-            self.wake.notify.notify_one();
-        }
+        self.wake.request(self.id);
     }
 
     fn mouse_report(&self, event: MouseEvent) -> Option<Vec<u8>> {

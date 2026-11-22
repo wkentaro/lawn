@@ -93,10 +93,23 @@ mod unix {
     use crate::core_lifecycle::Lifecycle;
     use crate::hc::Core;
     use crate::input::{KeybindAction, KeybindMatch};
+    use crate::layout::PaneId;
     use crate::raw_input::RawInputEvent;
     use crate::session_doc::Loaded;
 
     const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn release(bindings: &mut Keys, id: PaneId, view: &View) {
+        for release in bindings.release(id) {
+            view.key(release);
+        }
+    }
+
+    pub(super) fn schedule_output(wake: &Wake, due: &mut Option<Instant>, last_draw: Instant) {
+        if wake.presents_output() {
+            due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
+        }
+    }
 
     fn connected(core: Arc<Core>) -> io::Result<Arc<Core>> {
         if core.is_closed() {
@@ -259,12 +272,10 @@ mod unix {
         loop {
             gate.queued(edits.take(), std::time::Instant::now());
             tokio::select! {
-                () = wake.wait() => {
-                    due.get_or_insert_with(|| (last_draw + FRAME).max(Instant::now()));
-                }
+                () = wake.wait() => schedule_output(&wake, &mut due, last_draw),
                 () = wait(due) => {
                     let dirty = wake.take();
-                    let (rows, cursor) = surface.frame(&dirty, |terminal, id, geometry| {
+                    let (rows, cursor) = surface.frame(&dirty, |terminal, id, placing| {
                         let (core, terminal, wake, events, attached) = (
                             core.clone(),
                             terminal.to_owned(),
@@ -275,26 +286,26 @@ mod unix {
                         tokio::spawn(async move {
                             let view = tokio::task::spawn_blocking(move || {
                                 let core = connected(core)?;
-                                View::attach(core, &terminal, geometry, id, &wake, &events, scrollback)
+                                View::attach(core, &terminal, placing, id, &wake, &events, scrollback)
                             })
                             .await
                             .unwrap_or_else(|error| Err(io::Error::other(error)));
                             if view.is_err() {
                                 tokio::time::sleep(RETRY).await;
                             }
-                            attached.send((id, geometry, view)).ok();
+                            attached.send((id, placing.geometry, view)).ok();
                         });
-                    }, |id, view| {
-                        for release in bindings.release(id) {
-                            view.key(release);
-                        }
-                    });
+                    }, |id, view| release(&mut bindings, id, view));
                     screen.present(&mut out, (host.cols, host.rows), rows, cursor)?;
                     gate.drawn();
                     let all_keys = surface.focused().is_some_and(View::reports_all_keys);
                     follow_key_reporting(all_keys, &mut keys.all, &mut out)?;
                     last_draw = Instant::now();
                     due = None;
+                    if let Some(panes) = surface.presented() {
+                        wake.present(panes);
+                        schedule_output(&wake, &mut due, last_draw);
+                    }
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
                     if let Some(operation) = surface.tick(std::time::Instant::now(), gate.holding()) {
@@ -310,7 +321,9 @@ mod unix {
                 }
                 Some((id, geometry, view)) = attached.recv() => {
                     surface.attached(id, geometry, view);
-                    due.get_or_insert_with(Instant::now);
+                    if surface.needs_frame() {
+                        due.get_or_insert_with(Instant::now);
+                    }
                 }
                 Some(terminal) = created.recv() => {
                     surface.created(terminal);
@@ -342,6 +355,7 @@ mod unix {
                         return Ok(());
                     }
                     loop {
+                        surface.end_input(|id, view| release(&mut bindings, id, view));
                         gate.queued(edits.take(), std::time::Instant::now());
                         let Some(event) = gate.take(std::time::Instant::now()) else {
                             break;
@@ -385,7 +399,7 @@ mod unix {
                                 continue;
                             }
                         };
-                        let focused = surface.focused_id();
+                        let focused = surface.input_focus();
                         let deselects = key.kind != KeyEventKind::Release
                             && !matches!(key.code, KeyCode::Modifier(_))
                             && !surface.dialog_open();
@@ -500,12 +514,9 @@ mod unix {
                 }
                 event = events.recv() => match event {
                     Event::Ended(id) => {
-                        let Some(terminal) = surface.terminal(id).map(str::to_owned) else {
-                            continue;
-                        };
-                        operations
-                            .send((Operation::Close(vec![terminal]), launched_in.clone()))
-                            .ok();
+                        if let Some(operation) = surface.ended(id) {
+                            operations.send((operation, launched_in.clone())).ok();
+                        }
                     }
                     Event::Detached(id) => {
                         surface.forget(id);

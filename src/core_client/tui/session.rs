@@ -77,6 +77,10 @@ pub(super) struct Session {
     zoomed: bool,
     created: Option<String>,
     terminals: Terminals,
+    #[cfg(test)]
+    pub(super) placements: usize,
+    #[cfg(test)]
+    pub(super) offstage_walks: usize,
 }
 
 impl Session {
@@ -598,6 +602,94 @@ impl Session {
         self.arranged(area, chrome, self.zoomed)
     }
 
+    pub(super) fn unzoomed(&mut self, area: Rect, chrome: PaneChrome) -> Tiles {
+        self.arranged(area, chrome, false)
+    }
+
+    pub(super) fn owned(&mut self) -> HashMap<PaneId, String> {
+        let terminals: Vec<String> = self
+            .layout
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .flat_map(|tab| tab.root.terminals())
+            .map(str::to_owned)
+            .collect();
+        terminals
+            .into_iter()
+            .map(|terminal| (self.id(&terminal), terminal))
+            .collect()
+    }
+
+    pub(super) fn reachable(&mut self) -> Vec<PaneId> {
+        let Some(focus) = self.focus.as_ref() else {
+            return Vec::new();
+        };
+        let terminals: Vec<String> = match (self.zoomed, &focus.terminal) {
+            (true, Some(terminal)) => vec![terminal.clone()],
+            _ => tab(&self.layout, focus).map_or_else(Vec::new, |tab| {
+                tab.root
+                    .terminals()
+                    .into_iter()
+                    .filter(|terminal| !self.layout.parked.contains(*terminal))
+                    .map(str::to_owned)
+                    .collect()
+            }),
+        };
+        terminals.iter().map(|terminal| self.id(terminal)).collect()
+    }
+
+    pub(super) fn offstage(
+        &mut self,
+        area: impl Fn(&Workspace) -> Rect,
+        chrome: PaneChrome,
+        needs: impl Fn(PaneId) -> bool,
+    ) -> Vec<Tile> {
+        #[cfg(test)]
+        {
+            self.offstage_walks += 1;
+        }
+        let shown = self
+            .focus
+            .as_ref()
+            .map(|focus| (focus.workspace.as_str(), focus.tab.as_str()));
+        let (ids, parked) = (&self.ids, &self.layout.parked);
+        let needed = |terminal: &str| ids.get(terminal).is_some_and(|id| needs(*id));
+        let mut placing = Vec::new();
+        for workspace in &self.layout.workspaces {
+            let area = area(workspace);
+            for tab in &workspace.tabs {
+                let terminals = tab.root.terminals();
+                if shown != Some((workspace.id.as_str(), tab.id.as_str()))
+                    && terminals
+                        .iter()
+                        .any(|terminal| !parked.contains(*terminal) && needed(terminal))
+                {
+                    placing.push((tab.root.clone(), None, area));
+                }
+                placing.extend(
+                    terminals
+                        .into_iter()
+                        .filter(|terminal| parked.contains(*terminal) && needed(terminal))
+                        .map(|terminal| {
+                            let alone = Node::Pane {
+                                terminal: terminal.to_owned(),
+                            };
+                            (alone, Some(terminal.to_owned()), area)
+                        }),
+                );
+            }
+        }
+        placing
+            .into_iter()
+            .filter_map(|(root, alone, area)| {
+                let zoomed = alone.is_some();
+                self.placed(&root, alone.as_deref(), zoomed, area, chrome)
+            })
+            .flat_map(|(tiles, _)| tiles)
+            .collect()
+    }
+
     fn arranged(&mut self, area: Rect, chrome: PaneChrome, zoomed: bool) -> Tiles {
         let Some(focus) = self.focus.clone() else {
             return Tiles::default();
@@ -605,17 +697,12 @@ impl Session {
         let Some(tab) = tab(&self.layout, &focus).cloned() else {
             return Tiles::default();
         };
-        let focused = focus
-            .terminal
-            .as_deref()
-            .map_or(PaneId::from_raw(0), |terminal| self.id(terminal));
-        let root = match zoomed {
-            true => Some(crate::layout::Node::Pane(focused)),
-            false => self.project(&tab.root),
-        };
-        let Some(root) = root else {
+        let Some((tiles, layout)) =
+            self.placed(&tab.root, focus.terminal.as_deref(), zoomed, area, chrome)
+        else {
             return Tiles::default();
         };
+        let splits = layout.splits(area);
         let hidden: Vec<&str> = match zoomed {
             true => tab
                 .root
@@ -632,9 +719,32 @@ impl Session {
             .into_iter()
             .map(|terminal| (self.id(terminal), terminal.to_owned()))
             .collect();
-        let layout = TileLayout::from_saved(root, focused);
-        let terminals: HashMap<PaneId, &str> = tab
-            .root
+        Tiles {
+            tiles,
+            splits,
+            hidden,
+        }
+    }
+
+    fn placed(
+        &mut self,
+        root: &Node,
+        focused: Option<&str>,
+        zoomed: bool,
+        area: Rect,
+        chrome: PaneChrome,
+    ) -> Option<(Vec<Tile>, TileLayout)> {
+        #[cfg(test)]
+        {
+            self.placements += 1;
+        }
+        let focused = focused.map_or(PaneId::from_raw(0), |terminal| self.id(terminal));
+        let projected = match zoomed {
+            true => Some(crate::layout::Node::Pane(focused)),
+            false => self.project(root),
+        }?;
+        let layout = TileLayout::from_saved(projected, focused);
+        let terminals: HashMap<PaneId, &str> = root
             .terminals()
             .into_iter()
             .filter_map(|terminal| Some((*self.ids.get(terminal)?, terminal)))
@@ -645,20 +755,17 @@ impl Session {
             chrome.gaps,
             chrome.outer_borders,
         );
-        Tiles {
-            tiles: infos
-                .into_iter()
-                .filter_map(|mut info| {
-                    info.inner_rect = crate::ui::pane_inner_rect(info.rect, info.borders);
-                    Some(Tile {
-                        terminal: (*terminals.get(&info.id)?).to_owned(),
-                        info,
-                    })
+        let tiles = infos
+            .into_iter()
+            .filter_map(|mut info| {
+                info.inner_rect = crate::ui::pane_inner_rect(info.rect, info.borders);
+                Some(Tile {
+                    terminal: (*terminals.get(&info.id)?).to_owned(),
+                    info,
                 })
-                .collect(),
-            splits: layout.splits(area),
-            hidden,
-        }
+            })
+            .collect();
+        Some((tiles, layout))
     }
 
     fn project(&mut self, node: &Node) -> Option<crate::layout::Node> {
