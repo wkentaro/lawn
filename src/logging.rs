@@ -11,8 +11,12 @@ const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 0;
 
 pub(crate) fn init_file_logging(file_name: &str) {
+    init_file_logging_in(crate::session::data_dir(), file_name);
+}
+
+pub(crate) fn init_file_logging_in(dir: PathBuf, file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        crate::session::data_dir(),
+        dir,
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
@@ -32,11 +36,23 @@ pub(crate) fn init_file_logging(file_name: &str) {
 }
 
 pub(crate) fn help_log_paths_summary() -> String {
-    let dir = crate::session::data_dir();
-    format!(
+    #[cfg(unix)]
+    let core_client_log = crate::core_client::enabled()
+        .then(|| crate::core_client::log_dir().join(crate::core_client::LOG_FILE));
+    #[cfg(not(unix))]
+    let core_client_log = None;
+    help_log_lines(&crate::session::data_dir(), core_client_log)
+}
+
+fn help_log_lines(legacy_dir: &Path, core_client_log: Option<PathBuf>) -> String {
+    let legacy = format!(
         "{} (plus herdr-client.log, herdr-server.log)",
-        dir.join("herdr.log").display()
-    )
+        legacy_dir.join("herdr.log").display()
+    );
+    match core_client_log {
+        Some(path) => format!("{legacy}\n        LAWN_REWRITE=1 TUI: {}", path.display()),
+        None => legacy,
+    }
 }
 
 pub(crate) fn startup(role: &'static str) {
@@ -572,6 +588,30 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("herdr.log")
+    }
+
+    #[test]
+    fn help_names_only_the_legacy_logs_when_the_core_tui_log_is_absent() {
+        assert_eq!(
+            help_log_lines(Path::new("/data"), None),
+            format!(
+                "{} (plus herdr-client.log, herdr-server.log)",
+                Path::new("/data").join("herdr.log").display()
+            )
+        );
+    }
+
+    #[test]
+    fn help_keeps_the_legacy_log_line_and_adds_the_core_tui_log_on_a_labelled_line_below() {
+        let legacy = help_log_lines(Path::new("/data"), None);
+        let both = help_log_lines(
+            Path::new("/data"),
+            Some(PathBuf::from("/state/core-client/herdr-client.log")),
+        );
+        assert_eq!(
+            both,
+            format!("{legacy}\n        LAWN_REWRITE=1 TUI: /state/core-client/herdr-client.log")
+        );
     }
 
     #[test]

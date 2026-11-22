@@ -178,4 +178,25 @@ fn ls_text_lists_a_parked_terminal_only_under_parked() {
 }
 
 #[cfg(unix)]
+#[test]
+fn the_default_session_and_one_named_like_it_log_to_different_directories() {
+    let state = std::path::Path::new("/state");
+    let default = super::log_dir_in(state, None);
+    let named = super::log_dir_in(state, Some("Default"));
+    assert_ne!(
+        default.to_string_lossy().to_lowercase(),
+        named.to_string_lossy().to_lowercase()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_session_log_is_not_among_the_old_session_directories_under_a_shared_root() {
+    let root = std::path::Path::new("/shared");
+    let dir = super::log_dir_in(root, Some("fresh"));
+    assert!(dir.starts_with(root.join("core-client")));
+    assert!(!dir.starts_with(root.join("sessions")));
+}
+
+#[cfg(unix)]
 mod live;
