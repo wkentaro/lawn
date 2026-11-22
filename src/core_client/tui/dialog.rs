@@ -155,6 +155,10 @@ impl Modal {
         }
     }
 
+    pub(super) fn launched(&self) -> bool {
+        matches!(&self.dialog, Dialog::Menu(menu) if menu.launched())
+    }
+
     pub(super) fn stale(&self, host: Rect) -> bool {
         self.outdated || self.frame.as_ref().is_none_or(|frame| frame.0 != host)
     }
@@ -250,6 +254,7 @@ impl Modal {
     pub(super) fn draw(
         &mut self,
         mut buffer: Buffer,
+        launcher: Option<Rect>,
         keybinds: &LiveKeybindConfig,
         palette: &Palette,
         session: &Session,
@@ -303,7 +308,7 @@ impl Modal {
                     })
             }
             Dialog::Move(moving) => moving.draw(&mut buffer, palette, session),
-            Dialog::Menu(menu) => menu.draw(&mut buffer, palette, session),
+            Dialog::Menu(menu) => menu.draw(&mut buffer, launcher, palette, session),
         }
         .unwrap_or_default();
         let cells = buffer

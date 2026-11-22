@@ -1,10 +1,10 @@
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 
 use super::{Hits, Outcome};
 use crate::core_client::tui::session::Session;
-use crate::input::TerminalKey;
+use crate::input::{KeybindAction, TerminalKey};
 use crate::ui::theme::Palette;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,6 +12,7 @@ pub(in crate::core_client::tui) enum Aim {
     Workspace(String),
     Tab(String),
     Pane(String),
+    Global,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,9 +29,21 @@ pub(in crate::core_client::tui) enum Item {
     SplitDown,
     Zoom,
     ClosePane,
+    Keybinds,
+    ReloadConfig,
+    Detach,
 }
 
 impl Item {
+    pub(in crate::core_client::tui) fn action(&self) -> Option<KeybindAction> {
+        match self {
+            Item::Keybinds => Some(KeybindAction::Help),
+            Item::ReloadConfig => Some(KeybindAction::ReloadConfig),
+            Item::Detach => Some(KeybindAction::Detach),
+            _ => None,
+        }
+    }
+
     fn label(&self) -> &'static str {
         match self {
             Item::Rename => "Rename",
@@ -45,6 +58,9 @@ impl Item {
             Item::SplitDown => "Split down",
             Item::Zoom => "Zoom",
             Item::ClosePane => "Close pane",
+            Item::Keybinds => "keybinds",
+            Item::ReloadConfig => "reload config",
+            Item::Detach => "detach",
         }
     }
 }
@@ -65,6 +81,14 @@ impl Menu {
         }
     }
 
+    pub(in crate::core_client::tui) fn launcher() -> Self {
+        Self::new(Aim::Global, Position::default())
+    }
+
+    pub(super) fn launched(&self) -> bool {
+        self.aim == Aim::Global
+    }
+
     pub(super) fn chosen(&self, session: &Session, hits: &Hits) -> Option<(Aim, Item)> {
         let drawn = self.drawn(hits)?;
         (self.on_screen(session) && self.items(session).contains(drawn))
@@ -78,6 +102,7 @@ impl Menu {
                 .focused_workspace()
                 .is_some_and(|workspace| workspace.tabs.iter().any(|tab| &tab.id == id)),
             Aim::Pane(terminal) => session.on_screen(terminal),
+            Aim::Global => true,
         }
     }
 
@@ -87,6 +112,8 @@ impl Menu {
             KeyCode::Esc => return Outcome::Close,
             KeyCode::Up => -1,
             KeyCode::Down => 1,
+            KeyCode::Char('k') if self.launched() => -1,
+            KeyCode::Char('j') if self.launched() => 1,
             _ => return Outcome::Stay,
         };
         let next = self
@@ -126,6 +153,7 @@ impl Menu {
     pub(super) fn draw(
         &self,
         buffer: &mut Buffer,
+        launcher: Option<Rect>,
         palette: &Palette,
         session: &Session,
     ) -> Option<Hits> {
@@ -135,20 +163,33 @@ impl Menu {
             Some(highlighted) => items.iter().position(|item| item == highlighted),
             None => Some(0),
         };
-        let drawn = crate::ui::dialog::render_context_menu(
-            buffer,
-            self.at.x,
-            self.at.y,
-            &labels,
-            highlighted.unwrap_or(usize::MAX),
-            palette,
-        )?;
+        let highlighted = highlighted.unwrap_or(usize::MAX);
+        let drawn = match self.aim {
+            Aim::Global => {
+                let items: Vec<(&str, bool)> = labels.iter().map(|label| (*label, false)).collect();
+                crate::ui::dialog::render_launcher_menu(
+                    buffer,
+                    launcher?,
+                    &items,
+                    highlighted,
+                    palette,
+                )
+            }
+            _ => crate::ui::dialog::render_context_menu(
+                buffer,
+                self.at.x,
+                self.at.y,
+                &labels,
+                highlighted,
+                palette,
+            ),
+        }?;
         Some(Hits {
             area: drawn.area,
             items: drawn
                 .rows
                 .into_iter()
-                .filter(|(rect, _)| !rect.is_empty())
+                .filter(|(rect, _)| rect.width > u16::from(self.launched()))
                 .filter_map(|(rect, index)| Some((rect, items.get(index)?.clone())))
                 .collect(),
             ..Hits::default()
@@ -167,6 +208,7 @@ impl Menu {
         match &self.aim {
             Aim::Workspace(_) => vec![Item::Rename, Item::Close],
             Aim::Tab(_) => vec![Item::NewTab, Item::Rename, Item::Close],
+            Aim::Global => vec![Item::Keybinds, Item::ReloadConfig, Item::Detach],
             Aim::Pane(terminal) => {
                 let mut items = vec![Item::Park, Item::RenamePane];
                 if session.name(terminal).is_some() {

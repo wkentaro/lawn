@@ -27,7 +27,7 @@ fn inner(surface: &Surface) -> Rect {
 }
 
 fn press(surface: &mut Surface, code: KeyCode) -> Option<Operation> {
-    surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE))
+    ran(surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE)))
 }
 
 fn typed(surface: &mut Surface, text: &str) {

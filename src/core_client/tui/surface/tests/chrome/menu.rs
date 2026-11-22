@@ -45,7 +45,7 @@ fn right(surface: &mut Surface, column: u16, row: u16) -> Option<Operation> {
 }
 
 fn key(surface: &mut Surface, code: KeyCode) -> Option<Operation> {
-    surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE))
+    ran(surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE)))
 }
 
 fn listed(surface: &mut Surface, x: u16, y: u16) -> Vec<String> {
@@ -288,6 +288,8 @@ async fn up_and_down_move_the_highlight_within_the_menu_and_enter_picks_it() {
     assert_eq!(highlighted(&mut surface, x, 0), [true, false, false]);
     assert_eq!(key(&mut surface, KeyCode::Up), None);
     assert_eq!(highlighted(&mut surface, x, 0), [true, false, false]);
+    assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
+    assert_eq!(highlighted(&mut surface, x, 0), [true, false, false]);
     for _ in 0..3 {
         assert_eq!(key(&mut surface, KeyCode::Down), None);
     }
@@ -493,9 +495,9 @@ async fn a_right_click_on_a_pane_that_reports_the_mouse_opens_the_menu_and_sends
 }
 
 fn held(surface: &mut Surface) -> Option<Operation> {
-    surface.dialog_key(
+    ran(surface.dialog_key(
         &TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE).with_kind(KeyEventKind::Repeat),
-    )
+    ))
 }
 
 fn parked(terminal: &str) -> Layout {
@@ -804,4 +806,294 @@ async fn an_open_pane_menu_closes_when_a_zoom_hides_its_pane() {
     right(&mut surface, focused.x + 1, focused.y + 1);
     surface.act(KeybindAction::Zoom, false);
     assert!(surface.dialog_open());
+}
+
+fn launcher(surface: &Surface) -> (u16, u16) {
+    let footer = surface.host.rows - 2;
+    (find(surface, footer, "menu"), footer)
+}
+
+fn launch(surface: &mut Surface) -> Option<Pointed> {
+    let (x, y) = launcher(surface);
+    launch_at(surface, x, y)
+}
+
+fn launch_at(surface: &mut Surface, x: u16, y: u16) -> Option<Pointed> {
+    surface.mouse(
+        mouse_at(MouseEventKind::Down(MouseButton::Left), x, y),
+        std::time::Instant::now(),
+    )
+}
+
+fn launched(surface: &mut Surface) -> Vec<String> {
+    let (x, y) = launcher(surface);
+    listed(surface, x + 4 - 17, y - 5)
+}
+
+fn pick(surface: &mut Surface, label: &str) -> Option<Pointed> {
+    let (x, y) = launcher(surface);
+    let (left, top) = (x + 4 - 17, y - 5);
+    let index = launched(surface)
+        .iter()
+        .position(|item| item == label)
+        .expect(label);
+    surface.mouse(
+        mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            left + 2,
+            top + 1 + index as u16,
+        ),
+        std::time::Instant::now(),
+    )
+}
+
+#[tokio::test]
+async fn the_menu_launcher_in_the_sidebar_footer_lists_keybinds_reload_config_and_detach() {
+    let mut surface = spread_out();
+    assert!(line(&surface, 28).starts_with(" new "));
+    let (x, y) = launcher(&surface);
+    assert_eq!(x + 4, surface.areas.sidebar.width - 1);
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        point(&mut surface, kind, x, y);
+        assert!(!surface.dialog_open(), "{kind:?}");
+    }
+
+    assert_eq!(launch(&mut surface), None);
+
+    assert!(surface.dialog_open());
+    assert_eq!(
+        launched(&mut surface),
+        ["keybinds", "reload config", "detach"]
+    );
+}
+
+#[tokio::test]
+async fn each_global_item_hands_its_action_to_the_client_and_closes_the_menu() {
+    for (label, action) in [
+        ("keybinds", KeybindAction::Help),
+        ("reload config", KeybindAction::ReloadConfig),
+        ("detach", KeybindAction::Detach),
+    ] {
+        let mut surface = spread_out();
+        launch(&mut surface);
+
+        assert_eq!(pick(&mut surface, label), Some(Pointed::Act(action)));
+        assert!(!surface.dialog_open(), "{label}");
+    }
+}
+
+#[tokio::test]
+async fn keys_move_through_the_global_menu_and_a_held_enter_picks_nothing() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    launched(&mut surface);
+
+    assert_eq!(key(&mut surface, KeyCode::Down), None);
+    assert_eq!(held(&mut surface), None);
+    assert!(surface.dialog_open());
+    assert_eq!(
+        surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Some(Pointed::Act(KeybindAction::ReloadConfig))
+    );
+}
+
+#[tokio::test]
+async fn clicking_the_launcher_while_the_menu_is_open_closes_it() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    launched(&mut surface);
+
+    assert_eq!(launch(&mut surface), None);
+
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn the_launcher_opens_nothing_in_copy_or_resize_mode() {
+    let mut surface = spread_out();
+    surface.enter_copy_mode();
+    assert_eq!(launch(&mut surface), None);
+    assert!(!surface.dialog_open());
+
+    let mut surface = spread_out();
+    surface.act(KeybindAction::EnterResizeMode, false);
+    assert_eq!(launch(&mut surface), None);
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn j_and_k_move_through_the_global_menu_like_the_arrows() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    launched(&mut surface);
+
+    assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
+    assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
+    assert_eq!(key(&mut surface, KeyCode::Char('k')), None);
+    Screen::of(&mut surface);
+
+    assert_eq!(
+        surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Some(Pointed::Act(KeybindAction::ReloadConfig))
+    );
+}
+
+#[tokio::test]
+async fn a_shorter_terminal_redraws_the_open_menu_above_the_launcher_it_moved() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    launched(&mut surface);
+
+    surface.resize(host(120, 25));
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(launcher(&surface).1, 23);
+    assert_eq!(
+        launched(&mut surface),
+        ["keybinds", "reload config", "detach"]
+    );
+}
+
+#[tokio::test]
+async fn a_reload_that_widens_the_sidebar_redraws_the_open_menu_above_the_moved_launcher() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    let before = launcher(&surface);
+    let mut screen = Screen::of(&mut surface);
+
+    surface.configure(&toml::from_str("[ui]\nsidebar_width = 34").expect("config"));
+    screen.show(&mut surface, &HashSet::new());
+
+    let (x, y) = launcher(&surface);
+    assert_ne!((x, y), before);
+    let (left, top) = (x + 4 - 17, y - 5);
+    assert_eq!(screen.cell(left, top).symbol, "┌");
+    assert!(screen.span(top + 3, left..left + 17).contains("detach"));
+}
+
+#[tokio::test]
+async fn the_open_menu_closes_when_the_launcher_goes_away() {
+    let mut surface = spread_out();
+    launch(&mut surface);
+    launched(&mut surface);
+
+    surface.resize(host(64, 30));
+    Screen::of(&mut surface);
+
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn on_a_short_terminal_a_second_press_on_the_launcher_closes_the_menu_over_it() {
+    let mut surface = plain(120, 5);
+    surface.update(two_spaces());
+    frame(&mut surface, &HashSet::new());
+    launch(&mut surface);
+    let (_, y) = launcher(&surface);
+    assert!(Screen::of(&mut surface).span(y, 0..120).contains("detach"));
+
+    assert_eq!(launch(&mut surface), None);
+
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_press_on_the_launcher_clears_the_pane_selection() {
+    let mut surface = plain(120, 30);
+    surface.select = crate::core_client::tui::select::Select::new(false);
+    surface.update(spaces(&[(Some("main"), &[None])]));
+    attach_with_input(&mut surface, b"hello world");
+    frame(&mut surface, &HashSet::new());
+    let id = surface.session.focused_id().expect("focused");
+    let (_, inner) =
+        crate::core_client::tui::surface::visible(&surface.views, id).expect("visible");
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        inner.x,
+        inner.y,
+    );
+    point(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        inner.x + 4,
+        inner.y,
+    );
+    point(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        inner.x + 4,
+        inner.y,
+    );
+    assert!(surface.select.shown().is_some());
+
+    launch(&mut surface);
+
+    assert!(surface.dialog_open());
+    assert!(surface.select.shown().is_none());
+}
+
+#[tokio::test]
+async fn in_copy_or_resize_mode_a_press_on_the_launcher_over_new_does_nothing() {
+    for resizing in [false, true] {
+        let mut surface = dressed(120, 30, |config| {
+            config.ui.sidebar_width = 8;
+            config.ui.sidebar_min_width = 8;
+            config.ui.sidebar_max_width = 8;
+        });
+        surface.update(two_spaces());
+        frame(&mut surface, &HashSet::new());
+        match resizing {
+            true => {
+                surface.act(KeybindAction::EnterResizeMode, false);
+            }
+            false => surface.enter_copy_mode(),
+        }
+        let (x, y) = launcher(&surface);
+        let workspaces = surface.session.workspaces().len();
+
+        for column in x..x + 2 {
+            assert_eq!(launch_at(&mut surface, column, y), None, "{resizing}");
+        }
+
+        assert!(!surface.dialog_open());
+        assert_eq!(surface.session.workspaces().len(), workspaces);
+    }
+}
+
+#[tokio::test]
+async fn a_global_menu_squeezed_to_its_leading_space_picks_nothing() {
+    let mut surface = dressed(120, 10, |config| config.ui.mobile_width_threshold = 0);
+    surface.update(two_spaces());
+    frame(&mut surface, &HashSet::new());
+    launch(&mut surface);
+    Screen::of(&mut surface);
+
+    surface.resize(host(3, 10));
+    Screen::of(&mut surface);
+    assert!(surface.dialog_open());
+
+    assert_eq!(key(&mut surface, KeyCode::Down), None);
+    assert_eq!(key(&mut surface, KeyCode::Down), None);
+    assert_eq!(
+        surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE)),
+        None
+    );
+}
+
+#[tokio::test]
+async fn a_context_menu_squeezed_to_one_column_still_picks_the_label_it_drew() {
+    let mut surface = dressed(120, 10, |config| config.ui.mobile_width_threshold = 0);
+    surface.update(two_spaces());
+    frame(&mut surface, &HashSet::new());
+    let x = find(&surface, 0, "logs");
+    right(&mut surface, x, 0);
+    Screen::of(&mut surface);
+
+    surface.resize(host(3, 10));
+    let screen = Screen::of(&mut surface);
+    assert!(surface.dialog_open());
+    assert_eq!(screen.cell(1, 1).symbol, "N");
+
+    assert!(key(&mut surface, KeyCode::Enter).is_some());
 }

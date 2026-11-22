@@ -268,6 +268,14 @@ fn mouse(surface: &mut Surface, event: MouseEvent) -> Option<String> {
     copied_text(surface.mouse(event, std::time::Instant::now()))
 }
 
+fn ran(pointed: Option<super::Pointed>) -> Option<crate::core_client::tui::session::Operation> {
+    match pointed {
+        Some(super::Pointed::Run(operation)) => Some(operation),
+        None => None,
+        other => panic!("{other:?}"),
+    }
+}
+
 fn copied_text(pointed: Option<super::Pointed>) -> Option<String> {
     match pointed? {
         super::Pointed::Copied(text) => Some(text),

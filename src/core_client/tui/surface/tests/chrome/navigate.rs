@@ -299,7 +299,7 @@ async fn closing_a_workspace_with_confirm_on_asks_about_the_selected_one_and_end
         screen.lines(0..30)
     );
     assert_eq!(
-        surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ran(surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE))),
         Some(Operation::Close(vec!["t2".to_owned(), "t3".to_owned()]))
     );
     assert!(!surface.navigating());
@@ -319,7 +319,7 @@ async fn renaming_a_workspace_in_navigate_mode_renames_the_selected_one_and_ends
         None
     );
     assert_eq!(
-        surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE)),
+        ran(surface.dialog_key(&TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE))),
         Some(Operation::Arrange(
             crate::session_doc::Arrangement::NameWorkspace {
                 workspace: "w1".to_owned(),

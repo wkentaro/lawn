@@ -98,6 +98,7 @@ struct Hits {
     track: Rect,
     workspaces: Vec<(Rect, usize)>,
     new_workspace: Rect,
+    launcher: Rect,
     tabs: Vec<(Rect, usize)>,
     new_tab: Rect,
     scroll_left: Rect,
@@ -673,6 +674,14 @@ impl Chrome {
 
     fn covered(&self, point: Position) -> bool {
         self.hidden.contains(point) || self.bar.as_ref().is_some_and(|bar| bar.0.contains(point))
+    }
+
+    pub(super) fn launcher(&self) -> Option<Rect> {
+        Some(self.hits.launcher).filter(|launcher| !launcher.is_empty())
+    }
+
+    pub(super) fn on_launcher(&self, point: Position) -> bool {
+        self.hits.launcher.contains(point) && !self.covered(point)
     }
 
     pub(super) fn pressing(&self) -> bool {
@@ -1366,6 +1375,14 @@ impl Chrome {
             u16::from(list.height > 0),
         );
         paint::put_text(buffer, list.x, footer, list.width, " new", quiet);
+        let launcher = list.width.min(6);
+        self.hits.launcher = Rect::new(
+            list.right() - launcher,
+            footer,
+            launcher,
+            u16::from(list.height > 0),
+        );
+        paint::put_right_text(buffer, list, footer, "menu", quiet);
         if self.settings.sidebar_collapsed_mode != SidebarCollapsedModeConfig::Hidden {
             self.hits.toggle = Rect::new(
                 area.right().saturating_sub(2),

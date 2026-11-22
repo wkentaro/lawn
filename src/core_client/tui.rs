@@ -389,6 +389,10 @@ mod unix {
                                     Some(Pointed::Copied(text)) => {
                                         copy.send(text.into_bytes()).ok();
                                     }
+                                    Some(Pointed::Act(KeybindAction::Detach)) => return Ok(()),
+                                    Some(Pointed::Act(KeybindAction::ReloadConfig)) => {
+                                        reload(&mut config, &mut surface, &mut bindings);
+                                    }
                                     Some(Pointed::Act(action)) => act(&mut surface, action),
                                     Some(Pointed::Run(operation)) => run(&surface, operation),
                                     None => {}
@@ -486,10 +490,14 @@ mod unix {
                                     {
                                         continue;
                                     }
-                                    if let Some(operation) = surface.dialog_key(&key) {
-                                        run(&surface, operation);
+                                    match surface.dialog_key(&key) {
+                                        Some(Pointed::Act(action)) => action,
+                                        Some(Pointed::Run(operation)) => {
+                                            run(&surface, operation);
+                                            continue;
+                                        }
+                                        Some(Pointed::Copied(_)) | None => continue,
                                     }
-                                    continue;
                                 }
                                 Routed::Resize(key) => {
                                     if let Some(operation) = surface.resize_key(&key) {

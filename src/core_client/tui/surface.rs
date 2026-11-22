@@ -660,9 +660,14 @@ impl Surface {
                 Item::SplitRight => (terminal, KeybindAction::SplitVertical),
                 Item::SplitDown => (terminal, KeybindAction::SplitHorizontal),
                 Item::ClosePane => (terminal, KeybindAction::ClosePane),
-                Item::Rename | Item::Close | Item::NewTab => return None,
+                Item::Rename
+                | Item::Close
+                | Item::NewTab
+                | Item::Keybinds
+                | Item::ReloadConfig
+                | Item::Detach => return None,
             },
-            (Aim::Workspace(_), _) => return None,
+            (Aim::Workspace(_) | Aim::Global, _) => return None,
         };
         let request = self.session.operation_on(&terminal, action, confirm_close);
         self.request(request)
@@ -702,7 +707,7 @@ impl Surface {
         true
     }
 
-    pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Operation> {
+    pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Pointed> {
         let outcome = self
             .dialog
             .as_mut()?
@@ -733,15 +738,16 @@ impl Surface {
         self.act(action, false)
     }
 
-    fn settle(&mut self, outcome: Outcome) -> Option<Operation> {
+    fn settle(&mut self, outcome: Outcome) -> Option<Pointed> {
         if outcome == Outcome::Stay {
             return None;
         }
         let dialog = self.dialog.take()?;
         match outcome {
             Outcome::Accept => match dialog.chosen(&self.session) {
-                Some((aim, item)) => self.choose(aim, item),
-                None => dialog.accepted(&self.session),
+                Some((Aim::Global, item)) => item.action().map(Pointed::Act),
+                Some((aim, item)) => self.choose(aim, item).map(Pointed::Run),
+                None => dialog.accepted(&self.session).map(Pointed::Run),
             },
             Outcome::Stay | Outcome::Close => None,
         }
@@ -1295,11 +1301,16 @@ impl Surface {
     }
 
     pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<Pointed> {
-        if let Some(dialog) = self.dialog.as_mut() {
-            let outcome = dialog.mouse(event, &self.session);
-            return self.settle(outcome).map(Pointed::Run);
-        }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        if let Some(dialog) = self.dialog.as_mut() {
+            let point = Position::new(event.column, event.row);
+            if press && dialog.launched() && self.outer.on_launcher(point) {
+                self.dialog = None;
+                return None;
+            }
+            let outcome = dialog.mouse(event, &self.session);
+            return self.settle(outcome);
+        }
         if press {
             self.splitting = None;
         }
@@ -1394,14 +1405,25 @@ impl Surface {
         if right && self.outer.pressing() {
             return None;
         }
-        let menu = right && !self.copy_mode() && !self.resizing;
+        let opens = !self.copy_mode() && !self.resizing;
+        let menu = right && opens;
         if self.outer.claim(event, hidden) {
-            if let Some(aim) = menu
-                .then(|| self.outer.aimed(point))
-                .flatten()
-                .filter(|_| !self.outer.switching())
-            {
-                self.open_menu(Menu::new(aim, point));
+            if press && self.outer.on_launcher(point) {
+                self.select.press(None, event, now);
+                if opens && !self.outer.switching() {
+                    self.open_menu(Menu::launcher());
+                }
+                return None;
+            }
+            let chrome_menu = if !opens || self.outer.switching() {
+                None
+            } else if right {
+                self.outer.aimed(point).map(|aim| Menu::new(aim, point))
+            } else {
+                None
+            };
+            if let Some(menu) = chrome_menu {
+                self.open_menu(menu);
                 return None;
             }
             if press {
@@ -1717,6 +1739,9 @@ impl Surface {
         if !switching && self.outer.switching() {
             self.let_go();
         }
+        if self.outer.launcher().is_none() && self.dialog.as_ref().is_some_and(Modal::launched) {
+            self.dialog = None;
+        }
         let focused = self.session.focused_id();
         if let Some(copy) = self.copy.as_mut() {
             if let Some((view, inner)) = visible(&self.views, copy.pane()) {
@@ -1907,6 +1932,7 @@ impl Surface {
             rows.push(PaneSurfacePatchRow { x: 0, y, cells });
         }
         let host = self.host_area();
+        let launcher = self.outer.launcher();
         let Some(dialog) = self.dialog.as_mut() else {
             return;
         };
@@ -1924,7 +1950,7 @@ impl Surface {
             }
             .to_ratatui_buffer()
             .unwrap_or_else(|| Buffer::empty(host));
-            dialog.draw(seed, &self.keybinds, &self.palette, &self.session);
+            dialog.draw(seed, launcher, &self.keybinds, &self.palette, &self.session);
         }
         if let Some(image) = dialog.image() {
             for row in rows.iter_mut() {
