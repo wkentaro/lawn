@@ -165,6 +165,14 @@ impl TileLayout {
         result
     }
 
+    pub fn split_where(
+        &self,
+        area: Rect,
+        mut found: impl FnMut(Direction, &Node, &Node) -> bool,
+    ) -> Option<SplitBorder> {
+        find_split(&self.root, area, &mut Vec::new(), &mut found)
+    }
+
     /// Split the focused pane. Returns the new pane's id. Production splits
     /// flow through `Tab` so a failed runtime spawn can roll back; this remains
     /// as the user-split shape for tests.
@@ -540,23 +548,61 @@ fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Ve
     } = node
     {
         let (a, b) = split_rect(area, *direction, *ratio);
-        let pos = match direction {
-            Direction::Horizontal => a.x + a.width,
-            Direction::Vertical => a.y + a.height,
-        };
-        result.push(SplitBorder {
-            pos,
-            direction: *direction,
-            ratio: *ratio,
-            area,
-            path: path.clone(),
-        });
+        result.push(border(area, a, *direction, *ratio, path.clone()));
         path.push(false);
         collect_splits(first, a, path, result);
         path.pop();
         path.push(true);
         collect_splits(second, b, path, result);
         path.pop();
+    }
+}
+
+fn find_split<F: FnMut(Direction, &Node, &Node) -> bool>(
+    node: &Node,
+    area: Rect,
+    path: &mut Vec<bool>,
+    found: &mut F,
+) -> Option<SplitBorder> {
+    let Node::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = node
+    else {
+        return None;
+    };
+    let (a, b) = split_rect(area, *direction, *ratio);
+    if found(*direction, first, second) {
+        return Some(border(area, a, *direction, *ratio, path.clone()));
+    }
+    [(false, &**first, a), (true, &**second, b)]
+        .into_iter()
+        .find_map(|(side, child, rect)| {
+            path.push(side);
+            let hit = find_split(child, rect, path, found);
+            path.pop();
+            hit
+        })
+}
+
+fn border(
+    area: Rect,
+    first: Rect,
+    direction: Direction,
+    ratio: f32,
+    path: Vec<bool>,
+) -> SplitBorder {
+    SplitBorder {
+        pos: match direction {
+            Direction::Horizontal => first.x + first.width,
+            Direction::Vertical => first.y + first.height,
+        },
+        direction,
+        ratio,
+        area,
+        path,
     }
 }
 

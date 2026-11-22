@@ -9,7 +9,8 @@ use ratatui::style::{Modifier, Style};
 use time::format_description::OwnedFormatItem;
 
 use self::mobile::{Switcher, Target};
-use super::session::Session;
+use super::session::{Operation, Session};
+use super::surface::Pointed;
 use crate::api::schema::AgentStatus;
 use crate::app::tab_bar_status::{
     format_local_datetime, sanitize_literal_text, sanitize_separator, sanitize_status_text,
@@ -23,6 +24,7 @@ use crate::config::{
 use crate::input::KeybindAction;
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
+use crate::session_doc::{Arrangement, Place};
 use crate::ui::chrome::{self as paint, Layout, LayoutSettings, StatusSegment, TabBarState};
 use crate::ui::theme::Palette;
 
@@ -60,6 +62,9 @@ struct Drawn {
     tab_marks: Vec<Option<(AgentStatus, usize)>>,
     agents: Vec<Agent>,
     switching: bool,
+    tab_drop: Option<usize>,
+    dragged: Option<usize>,
+    workspace_drop: Option<u16>,
 }
 
 #[derive(PartialEq)]
@@ -97,12 +102,35 @@ struct Hits {
     switcher_max: usize,
 }
 
+impl Hits {
+    fn drops_like(&self, other: &Hits, drag: &Drag) -> bool {
+        match drag {
+            Drag::Tab(_) => {
+                self.tabs == other.tabs
+                    && self.scroll_left == other.scroll_left
+                    && self.scroll_right == other.scroll_right
+            }
+            Drag::Workspace(_) => {
+                self.workspaces == other.workspaces
+                    && self.body == other.body
+                    && self.new_workspace == other.new_workspace
+            }
+        }
+    }
+}
+
 #[derive(PartialEq)]
 enum Press {
     Workspace(String),
     Tab(String),
     Thumb(u16),
     Width,
+}
+
+#[derive(PartialEq)]
+enum Drag {
+    Tab(Option<usize>),
+    Workspace(Option<(usize, u16)>),
 }
 
 impl Drawn {
@@ -124,6 +152,16 @@ impl Drawn {
     fn tab_widths(&self, indicators: StatusIndicatorStyle) -> impl Iterator<Item = u16> + '_ {
         self.strip()
             .map(move |tab| paint::tab_width(&tab, indicators))
+    }
+
+    fn rows_like(&self, other: &Drawn, drag: &Drag) -> bool {
+        let (one, other) = match drag {
+            Drag::Tab(_) => (&self.tabs, &other.tabs),
+            Drag::Workspace(_) => (&self.workspaces, &other.workspaces),
+        };
+        one.iter()
+            .map(|label| &label.id)
+            .eq(other.iter().map(|label| &label.id))
     }
 
     fn focused_workspace_id(&self) -> Option<&str> {
@@ -163,6 +201,8 @@ pub(super) struct Chrome {
     hits: Hits,
     press: Option<Press>,
     hidden: Rect,
+    pressed: Position,
+    drag: Option<Drag>,
     switcher: Option<Switcher>,
     cover: Option<(Rect, Vec<CellData>)>,
     reveal: Option<String>,
@@ -229,6 +269,8 @@ impl Chrome {
             hits: Hits::default(),
             press: None,
             hidden: Rect::default(),
+            pressed: Position::default(),
+            drag: None,
             switcher: None,
             cover: None,
             reveal: None,
@@ -309,6 +351,7 @@ impl Chrome {
     pub(super) fn claim(&mut self, event: MouseEvent, hidden: Rect) -> bool {
         if event.kind == MouseEventKind::Down(MouseButton::Left) {
             self.press = None;
+            self.end_drag();
         }
         self.hidden = hidden;
         let point = Position::new(event.column, event.row);
@@ -356,9 +399,9 @@ impl Chrome {
         session: &Session,
         now: Instant,
         copying: bool,
-    ) -> Option<KeybindAction> {
+    ) -> Option<Pointed> {
         if self.switcher.is_some() {
-            return self.switcher_mouse(event, session);
+            return self.switcher_mouse(event, session).map(Pointed::Act);
         }
         let point = Position::new(event.column, event.row);
         match event.kind {
@@ -369,7 +412,10 @@ impl Chrome {
                 }
                 None
             }
-            MouseEventKind::Down(MouseButton::Left) => self.press_at(point, now),
+            MouseEventKind::Down(MouseButton::Left) => {
+                self.pressed = point;
+                self.press_at(point, now).map(Pointed::Act)
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
                 match (&self.press, self.hits.list) {
                     (Some(Press::Width), _) => self.resize_to(point.x),
@@ -382,13 +428,14 @@ impl Chrome {
                         );
                         self.scroll_list(metrics.max_offset_from_bottom.saturating_sub(offset));
                     }
+                    (Some(Press::Tab(_) | Press::Workspace(_)), _) => self.drag_to(point),
                     _ => {}
                 }
                 None
             }
             MouseEventKind::Up(MouseButton::Left) => self.release(point, session),
-            MouseEventKind::ScrollUp => self.wheel(point, true),
-            MouseEventKind::ScrollDown => self.wheel(point, false),
+            MouseEventKind::ScrollUp => self.wheel(point, true).map(Pointed::Act),
+            MouseEventKind::ScrollDown => self.wheel(point, false).map(Pointed::Act),
             _ => None,
         }
     }
@@ -463,15 +510,117 @@ impl Chrome {
             })
     }
 
-    fn release(&mut self, point: Position, session: &Session) -> Option<KeybindAction> {
-        match self.press.take()? {
-            Press::Width => {
+    fn drag_to(&mut self, point: Position) {
+        let drag = match self.press {
+            Some(Press::Tab(_)) => Drag::Tab(self.tab_drop(point)),
+            Some(Press::Workspace(_)) => Drag::Workspace(self.workspace_drop(point)),
+            _ => return,
+        };
+        let starts =
+            point != self.pressed && !matches!(drag, Drag::Tab(None) | Drag::Workspace(None));
+        if (self.drag.is_some() || starts) && self.drag.as_ref() != Some(&drag) {
+            self.drag = Some(drag);
+            self.recheck = true;
+        }
+    }
+
+    pub(super) fn cancel_drag(&mut self) {
+        if matches!(self.press, Some(Press::Tab(_) | Press::Workspace(_))) {
+            self.press = None;
+        }
+        self.end_drag();
+    }
+
+    fn end_drag(&mut self) -> Option<Drag> {
+        let drag = self.drag.take();
+        self.recheck |= drag.is_some();
+        drag
+    }
+
+    fn tab_drop(&self, point: Position) -> Option<usize> {
+        if self.hidden.contains(point) {
+            return None;
+        }
+        let hits = &self.hits;
+        let count = self.drawn.as_ref()?.tabs.len();
+        let &(first_rect, first) = hits.tabs.first()?;
+        let &(_, last) = hits.tabs.last()?;
+        if point.y != first_rect.y {
+            return None;
+        }
+        if hits.scroll_left.contains(point) {
+            return Some(0);
+        }
+        if hits.scroll_right.contains(point) {
+            return Some(count);
+        }
+        let left = match hits.scroll_left.is_empty() {
+            true => first_rect.x,
+            false => hits.scroll_left.right(),
+        };
+        if point.x <= left {
+            return Some(first);
+        }
+        hits.tabs
+            .iter()
+            .find_map(|&(rect, index)| {
+                if point.x < rect.x + rect.width / 2 {
+                    Some(index)
+                } else {
+                    (point.x < rect.right()).then_some(index + 1)
+                }
+            })
+            .or(Some(last + 1))
+    }
+
+    fn workspace_drop(&self, point: Position) -> Option<(usize, u16)> {
+        let hits = &self.hits;
+        if self.hidden.contains(point)
+            || hits.body.height == 0
+            || point.y < hits.body.y.saturating_sub(1)
+            || point.y >= hits.new_workspace.y
+        {
+            return None;
+        }
+        let &(last_rect, last) = hits.workspaces.last()?;
+        let after =
+            (last_rect.bottom() < hits.new_workspace.y).then_some((last + 1, last_rect.bottom()));
+        hits.workspaces
+            .iter()
+            .map(|&(rect, index)| (index, rect.y.saturating_sub(1)))
+            .chain(after)
+            .min_by_key(|(_, row)| point.y.abs_diff(*row))
+    }
+
+    fn release(&mut self, point: Position, session: &Session) -> Option<Pointed> {
+        let press = self.press.take()?;
+        match (press, self.end_drag()) {
+            (Press::Width, _) => {
                 self.save();
                 None
             }
-            Press::Thumb(_) => None,
-            press if self.over(point).as_ref() != Some(&press) => None,
-            press => focusing(press, session),
+            (Press::Thumb(_), _) => None,
+            (Press::Tab(tab), Some(Drag::Tab(_))) => {
+                let insert = self.tab_drop(point)?;
+                let before = self.drawn.as_ref()?.tabs.get(insert).map(|t| t.id.clone());
+                let tabs = session.focused_workspace()?.tabs.iter().map(|t| &t.id);
+                let to = place(tabs, &tab, before)?;
+                Some(arranging(Arrangement::MoveTab { tab, to }))
+            }
+            (Press::Workspace(workspace), Some(Drag::Workspace(Some((index, _))))) => {
+                let before = self
+                    .drawn
+                    .as_ref()?
+                    .workspaces
+                    .get(index)
+                    .map(|w| w.id.clone());
+                let workspaces = session.workspaces().iter().map(|w| &w.id);
+                let to = place(workspaces, &workspace, before)?;
+                Some(arranging(Arrangement::MoveWorkspace { workspace, to }))
+            }
+            (_, Some(_)) => None,
+            (press, None) if self.over(point).as_ref() != Some(&press) => None,
+            (press, None) => focusing(press, session).map(Pointed::Act),
         }
     }
 
@@ -636,7 +785,24 @@ impl Chrome {
         }) {
             self.tab_bar.reveal_focused = true;
         }
+        let hits = std::mem::take(&mut self.hits);
         self.rows = self.draw(&drawn, palette);
+        let moved = self.drag.as_ref().is_some_and(|drag| {
+            !self.hits.drops_like(&hits, drag)
+                || previous
+                    .as_ref()
+                    .is_some_and(|previous| !previous.rows_like(&drawn, drag))
+        });
+        let drawn = match moved {
+            true => {
+                self.press = None;
+                self.drag = None;
+                let undragged = self.drawn(host, drawn.layout, session);
+                self.rows = self.draw(&undragged, palette);
+                undragged
+            }
+            false => drawn,
+        };
         self.drawn = Some(drawn);
         true
     }
@@ -729,6 +895,20 @@ impl Chrome {
                 Vec::new()
             },
             switching: self.switcher.is_some(),
+            tab_drop: match self.drag {
+                Some(Drag::Tab(insert)) => insert,
+                _ => None,
+            },
+            dragged: match (&self.drag, &self.press) {
+                (Some(Drag::Workspace(_)), Some(Press::Workspace(id))) => {
+                    workspaces.iter().position(|workspace| workspace.id == *id)
+                }
+                _ => None,
+            },
+            workspace_drop: match &self.drag {
+                Some(Drag::Workspace(Some((_, row)))) => Some(*row),
+                _ => None,
+            },
         }
     }
 
@@ -938,7 +1118,7 @@ impl Chrome {
                     focused: drawn.focused_workspace == Some(index),
                     selected: false,
                     navigating: false,
-                    dragged: false,
+                    dragged: drawn.dragged == Some(index),
                 },
                 self.indicators,
                 palette,
@@ -948,6 +1128,16 @@ impl Chrome {
         if scrollbar {
             self.hits.track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
             scroll::render_list_scrollbar(buffer, self.hits.track, metrics, palette);
+        }
+        if let Some(row) = drawn.workspace_drop {
+            paint::put_text(
+                buffer,
+                body.x,
+                row,
+                body.width,
+                &"─".repeat(usize::from(body.width)),
+                Style::default().fg(palette.accent),
+            );
         }
         let footer = list.bottom().saturating_sub(1);
         self.hits.new_workspace = Rect::new(
@@ -1035,7 +1225,7 @@ impl Chrome {
                 mouse: true,
             },
             self.tab_bar,
-            None,
+            drawn.tab_drop,
             |rect, key| {
                 if let Some(index) = drawn.tabs.iter().position(|tab| tab.id == key) {
                     hits.push((rect, index));
@@ -1058,6 +1248,21 @@ pub(super) fn preferences_path(session: &str) -> PathBuf {
 
 pub(super) fn tab_label(index: usize, tab: &crate::session_doc::Tab) -> String {
     tab.name.clone().unwrap_or_else(|| (index + 1).to_string())
+}
+
+fn place<'a>(
+    mut ids: impl Iterator<Item = &'a String>,
+    moved: &str,
+    before: Option<String>,
+) -> Option<Place> {
+    ids.position(|id| id == moved)?;
+    let next = ids.next().map(String::as_str);
+    (before.as_deref() != Some(moved) && before.as_deref() != next)
+        .then(|| before.map_or(Place::End, Place::Before))
+}
+
+fn arranging(arrangement: Arrangement) -> Pointed {
+    Pointed::Run(Operation::Arrange(arrangement))
 }
 
 fn focusing(press: Press, session: &Session) -> Option<KeybindAction> {

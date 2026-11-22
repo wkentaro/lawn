@@ -604,7 +604,7 @@ fn client_popup_size(size: crate::popup_size::PopupSize) -> protocol::ClientShel
     }
 }
 
-fn split_hit_rect(
+pub(crate) fn split_hit_rect(
     split: &crate::layout::SplitBorder,
     pane_borders: bool,
     pane_gaps: bool,

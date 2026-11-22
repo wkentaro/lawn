@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Direction, Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use super::chrome::Chrome;
@@ -17,15 +17,16 @@ use super::terminals::Report;
 use crate::config::{LiveKeybindConfig, ToastClipboardPosition};
 use crate::core_client::view::{Geometry, View};
 use crate::input::{KeybindAction, TerminalKey};
-use crate::layout::PaneId;
+use crate::layout::{PaneId, SplitBorder};
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::raw_input::RawInputEvent;
-use crate::session_doc::Layout;
+use crate::session_doc::{Arrangement, Layout};
 use crate::ui::theme::Palette;
 use crate::ui::ScrollbarThumb;
 
 const TOAST: Duration = Duration::from_secs(2);
+const SPLIT_DRAG: Duration = Duration::from_millis(33);
 
 struct Shown {
     view: View,
@@ -62,6 +63,55 @@ enum Owner {
     Thumb { grab: u16 },
     Track,
     Select,
+}
+
+struct Splitting {
+    direction: Direction,
+    grab: i32,
+    first: String,
+    second: String,
+    sent: Option<(Instant, f32)>,
+    pending: Option<u16>,
+}
+
+impl Splitting {
+    fn due(&self) -> Option<Instant> {
+        self.pending?;
+        Some(self.sent?.0 + SPLIT_DRAG)
+    }
+
+    fn pointer(&self, event: MouseEvent) -> u16 {
+        match self.direction {
+            Direction::Horizontal => event.column,
+            Direction::Vertical => event.row,
+        }
+    }
+
+    fn change(&self, split: &SplitBorder, pointer: u16) -> Option<f32> {
+        let (origin, length) = match self.direction {
+            Direction::Horizontal => (split.area.x, split.area.width),
+            Direction::Vertical => (split.area.y, split.area.height),
+        };
+        if split.area.is_empty() {
+            return None;
+        }
+        let ratio = ((i32::from(pointer) + self.grab - i32::from(origin)) as f32
+            / f32::from(length))
+        .clamp(crate::session_doc::MIN_RATIO, crate::session_doc::MAX_RATIO);
+        (ratio != split.ratio || self.sent.is_some_and(|(_, last)| last != ratio)).then_some(ratio)
+    }
+
+    fn set(&self, ratio: f32) -> Operation {
+        Operation::Arrange(Arrangement::SetRatio {
+            first: self.first.clone(),
+            second: self.second.clone(),
+            direction: match self.direction {
+                Direction::Horizontal => crate::session_doc::Direction::Right,
+                Direction::Vertical => crate::session_doc::Direction::Down,
+            },
+            ratio,
+        })
+    }
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -186,6 +236,7 @@ pub(super) struct Surface {
     host: Geometry,
     scrollbars: bool,
     gesture: Option<Gesture>,
+    splitting: Option<Splitting>,
     select: Select,
     copy: Option<CopyMode>,
     dialog: Option<Modal>,
@@ -228,6 +279,7 @@ impl Surface {
             host,
             scrollbars,
             gesture: None,
+            splitting: None,
             select: Select::new(copying.on_select),
             copy: None,
             dialog: None,
@@ -295,6 +347,7 @@ impl Surface {
 
     fn open(&mut self, dialog: Dialog) {
         self.end_gesture(None);
+        self.end_drags();
         self.dialog = Some(Modal::new(dialog));
     }
 
@@ -382,8 +435,14 @@ impl Surface {
             self.outer.recheck();
         } else {
             self.end_gesture(None);
+            self.end_drags();
         }
         self.sync_focus();
+    }
+
+    fn end_drags(&mut self) {
+        self.splitting = None;
+        self.outer.cancel_drag();
     }
 
     fn reporting_focus(&self) -> Option<PaneId> {
@@ -539,10 +598,11 @@ impl Surface {
             .into_iter()
             .chain(self.toast.as_ref().map(|toast| toast.until))
             .chain(self.outer.deadline())
+            .chain(self.splitting.as_ref().and_then(Splitting::due))
             .min()
     }
 
-    pub(super) fn tick(&mut self, now: Instant) {
+    pub(super) fn tick(&mut self, now: Instant, holding: bool) -> Option<Operation> {
         if self.toast.as_ref().is_some_and(|toast| now >= toast.until) {
             self.toast = None;
         }
@@ -552,6 +612,16 @@ impl Surface {
             .pane()
             .and_then(|pane| visible(&self.views, pane));
         self.select.tick(view, now);
+        let mut splitting = self
+            .splitting
+            .take_if(|splitting| splitting.due().is_some_and(|due| now >= due))?;
+        if holding {
+            splitting.pending = None;
+            self.splitting = Some(splitting);
+            return None;
+        }
+        let split = self.split(&splitting)?;
+        self.flushed(splitting, &split, now)
     }
 
     pub(super) fn needs_frame(&self) -> bool {
@@ -640,6 +710,30 @@ impl Surface {
             let outcome = dialog.mouse(event);
             return self.settle(outcome).map(Pointed::Run);
         }
+        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
+        if press {
+            self.splitting = None;
+        }
+        if let Some(mut splitting) = self.splitting.take() {
+            let split = self.split(&splitting)?;
+            let pointer = splitting.pointer(event);
+            if event.kind == MouseEventKind::Up(MouseButton::Left) {
+                return splitting
+                    .change(&split, pointer)
+                    .map(|ratio| Pointed::Run(splitting.set(ratio)));
+            }
+            if event.kind == MouseEventKind::Drag(MouseButton::Left) {
+                splitting.pending = Some(pointer);
+                if splitting
+                    .sent
+                    .is_none_or(|(at, _)| now.duration_since(at) >= SPLIT_DRAG)
+                {
+                    return self.flushed(splitting, &split, now).map(Pointed::Run);
+                }
+            }
+            self.splitting = Some(splitting);
+            return None;
+        }
         if let Some(mut gesture) = self.gesture {
             match event.kind {
                 MouseEventKind::Drag(button) | MouseEventKind::Up(button)
@@ -682,7 +776,6 @@ impl Surface {
                 _ => {}
             }
         }
-        let press = event.kind == MouseEventKind::Down(MouseButton::Left);
         let hidden = match self.painted.resize.is_empty() {
             true => self.painted.copy.bar,
             false => self.painted.resize,
@@ -705,9 +798,16 @@ impl Surface {
             }
             self.resizing &= !self.outer.switching();
             self.relayout |= self.lay_out_chrome() != self.areas;
-            return pointed.map(Pointed::Act);
+            return pointed;
         }
-        let point = ratatui::layout::Position::new(event.column, event.row);
+        let point = Position::new(event.column, event.row);
+        if press && !hidden.contains(point) {
+            self.splitting = self.split_at(point);
+            if self.splitting.is_some() {
+                self.select.press(None, event, now);
+                return None;
+            }
+        }
         let Some(tile) = self
             .tiles
             .tiles
@@ -773,6 +873,61 @@ impl Surface {
             owner,
         });
         None
+    }
+
+    fn split_at(&mut self, point: Position) -> Option<Splitting> {
+        if self.relayout {
+            return None;
+        }
+        let frames: Vec<Rect> = self.tiles.tiles.iter().map(|tile| tile.info.rect).collect();
+        let split = self.tiles.splits.iter().find(|split| {
+            crate::server::client_shell::split_hit_rect(
+                split,
+                self.chrome.borders.draws_borders(),
+                self.chrome.gaps,
+                &frames,
+            )
+            .is_some_and(|hit| hit.contains(point))
+        })?;
+        let (first, second) = self.session.between(&split.path)?;
+        let pointer = match split.direction {
+            Direction::Horizontal => point.x,
+            Direction::Vertical => point.y,
+        };
+        Some(Splitting {
+            direction: split.direction,
+            grab: i32::from(split.pos) - i32::from(pointer),
+            first,
+            second,
+            sent: None,
+            pending: None,
+        })
+    }
+
+    fn split(&self, splitting: &Splitting) -> Option<SplitBorder> {
+        self.session.split(
+            self.lay_out_chrome().pane_surface,
+            splitting.direction,
+            (&splitting.first, &splitting.second),
+        )
+    }
+
+    fn flushed(
+        &mut self,
+        mut splitting: Splitting,
+        split: &SplitBorder,
+        now: Instant,
+    ) -> Option<Operation> {
+        let set = splitting
+            .pending
+            .take()
+            .and_then(|pointer| splitting.change(split, pointer))
+            .map(|ratio| {
+                splitting.sent = Some((now, ratio));
+                splitting.set(ratio)
+            });
+        self.splitting = Some(splitting);
+        set
     }
 
     fn to_terminal(&self, id: PaneId, mut event: MouseEvent) -> Option<(MouseEvent, bool)> {

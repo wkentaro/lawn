@@ -434,7 +434,7 @@ async fn an_unchanged_datetime_does_not_redraw_the_tab_bar() {
     frame(&mut surface, &HashSet::new());
     let due = surface.deadline().expect("deadline");
 
-    surface.tick(due);
+    surface.tick(due, false);
 
     assert!(!surface.needs_frame());
     assert!(surface.deadline().expect("deadline") > due);
@@ -524,7 +524,7 @@ async fn a_changed_datetime_redraws_the_chrome_without_the_panes() {
             + std::time::Duration::from_millis(20),
     );
 
-    surface.tick(std::time::Instant::now());
+    surface.tick(std::time::Instant::now(), false);
     assert!(surface.needs_frame());
     let rows = frame(&mut surface, &HashSet::new());
 
@@ -1795,6 +1795,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
     assert!(surface.needs_frame());
 }
 
+mod drag;
 mod mobile;
 
 #[tokio::test]
