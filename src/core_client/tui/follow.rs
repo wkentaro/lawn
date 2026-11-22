@@ -7,17 +7,16 @@ use tokio::sync::mpsc;
 
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::{Core, Stream};
-use crate::session_doc::{Layout, Store};
+use crate::session_doc::{Loaded, Store};
 
 pub(super) const RECONNECT: Duration = Duration::from_millis(500);
 
-pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Layout>> {
+pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Loaded>> {
     let (layouts, received) = mpsc::unbounded_channel();
     crate::thread_spawn::spawn_named("lawn-follow", move || {
         let mut follower = Follower {
             session,
             shown: false,
-            last: None,
         };
         while follower.follow(&layouts) {
             std::thread::sleep(RECONNECT);
@@ -29,11 +28,10 @@ pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Layo
 struct Follower {
     session: String,
     shown: bool,
-    last: Option<Layout>,
 }
 
 impl Follower {
-    fn follow(&mut self, layouts: &mpsc::UnboundedSender<Layout>) -> bool {
+    fn follow(&mut self, layouts: &mpsc::UnboundedSender<Loaded>) -> bool {
         let core = match crate::core_client::core() {
             Ok(core) => core,
             Err(error) => {
@@ -49,12 +47,13 @@ impl Follower {
             }
         };
         let store = Store::new(core.clone(), &self.session, None);
+        let mut version = None;
         loop {
             match store.load() {
-                Ok(loaded) if self.last.as_ref() != Some(&loaded.layout) => {
+                Ok(loaded) if version != Some(loaded.version) => {
                     self.closed_out(&core, &loaded.layout);
-                    self.last = Some(loaded.layout.clone());
-                    if layouts.send(loaded.layout).is_err() {
+                    version = Some(loaded.version);
+                    if layouts.send(loaded).is_err() {
                         return false;
                     }
                 }
@@ -74,7 +73,7 @@ impl Follower {
         }
     }
 
-    fn closed_out(&mut self, core: &Arc<Core>, layout: &Layout) {
+    fn closed_out(&mut self, core: &Arc<Core>, layout: &crate::session_doc::Layout) {
         let shown = !layout.workspaces.is_empty();
         if std::mem::replace(&mut self.shown, shown) && !shown {
             let home = crate::home_path::expand_tilde_path("~");

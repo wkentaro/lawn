@@ -162,6 +162,7 @@ pub(super) struct Chrome {
     rows: Vec<PaneSurfacePatchRow>,
     hits: Hits,
     press: Option<Press>,
+    hidden: Rect,
     switcher: Option<Switcher>,
     cover: Option<(Rect, Vec<CellData>)>,
     reveal: Option<String>,
@@ -227,6 +228,7 @@ impl Chrome {
             rows: Vec::new(),
             hits: Hits::default(),
             press: None,
+            hidden: Rect::default(),
             switcher: None,
             cover: None,
             reveal: None,
@@ -308,6 +310,7 @@ impl Chrome {
         if event.kind == MouseEventKind::Down(MouseButton::Left) {
             self.press = None;
         }
+        self.hidden = hidden;
         let point = Position::new(event.column, event.row);
         let held = self.press.is_some()
             && matches!(
@@ -445,6 +448,9 @@ impl Chrome {
     }
 
     fn over(&self, point: Position) -> Option<Press> {
+        if self.hidden.contains(point) {
+            return None;
+        }
         let drawn = self.drawn.as_ref()?;
         let id = |labels: &[Label], index: usize| Some(labels.get(index)?.id.clone());
         hit(&self.hits.workspaces, point)

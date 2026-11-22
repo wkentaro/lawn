@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use super::follow;
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::test_support::TestCore;
-use crate::session_doc::Layout;
+use crate::session_doc::Loaded;
 
 const SESSION: &str = "followed";
 
@@ -18,15 +18,15 @@ fn shared() -> Option<TestCore> {
 }
 
 async fn until(
-    layouts: &mut mpsc::UnboundedReceiver<Layout>,
+    layouts: &mut mpsc::UnboundedReceiver<Loaded>,
     what: &str,
-    wanted: impl Fn(&Layout) -> bool,
-) -> Layout {
+    wanted: impl Fn(&Loaded) -> bool,
+) -> Loaded {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let layout = layouts.recv().await.expect("the follower stopped");
-            if wanted(&layout) {
-                return layout;
+            let loaded = layouts.recv().await.expect("the follower stopped");
+            if wanted(&loaded) {
+                return loaded;
             }
         }
     })
@@ -49,8 +49,8 @@ async fn the_follower_sees_each_edit_and_follows_again_after_the_core_connection
     };
     let terminal = start(&test);
     let mut layouts = follow(SESSION.to_owned()).expect("follow");
-    until(&mut layouts, "the started pane", |layout| {
-        layout.shows(&terminal)
+    until(&mut layouts, "the started pane", |loaded| {
+        loaded.layout.shows(&terminal)
     })
     .await;
 
@@ -68,8 +68,8 @@ async fn the_follower_sees_each_edit_and_follows_again_after_the_core_connection
     .expect("a new connection");
     Lifecycle::new(core, SESSION).park(&terminal).expect("park");
 
-    until(&mut layouts, "the parked pane", |layout| {
-        layout.parked.contains(&terminal)
+    until(&mut layouts, "the parked pane", |loaded| {
+        loaded.layout.parked.contains(&terminal)
     })
     .await;
 }
@@ -81,8 +81,8 @@ async fn a_session_closed_out_while_followed_gets_one_new_shell() {
     };
     let terminal = start(&test);
     let mut layouts = follow(SESSION.to_owned()).expect("follow");
-    until(&mut layouts, "the started pane", |layout| {
-        layout.shows(&terminal)
+    until(&mut layouts, "the started pane", |loaded| {
+        loaded.layout.shows(&terminal)
     })
     .await;
 
@@ -90,11 +90,33 @@ async fn a_session_closed_out_while_followed_gets_one_new_shell() {
         .close(&terminal)
         .expect("close");
 
-    let layout = until(&mut layouts, "a new shell", |layout| {
-        !layout.workspaces.is_empty()
+    let layout = until(&mut layouts, "a new shell", |loaded| {
+        !loaded.layout.workspaces.is_empty()
     })
-    .await;
+    .await
+    .layout;
     let terminals: Vec<_> = layout.terminals().collect();
     assert_eq!(terminals.len(), 1);
     assert_ne!(terminals[0], terminal);
+}
+
+#[tokio::test]
+async fn the_first_load_after_the_core_connection_drops_is_passed_on_even_at_the_version_already_seen(
+) {
+    let Some(test) = shared() else {
+        return;
+    };
+    let terminal = start(&test);
+    let mut layouts = follow(SESSION.to_owned()).expect("follow");
+    let seen = until(&mut layouts, "the started pane", |loaded| {
+        loaded.layout.shows(&terminal)
+    })
+    .await;
+
+    test.disconnect();
+
+    until(&mut layouts, "the same version again", |loaded| {
+        loaded.version == seen.version
+    })
+    .await;
 }

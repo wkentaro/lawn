@@ -9,8 +9,9 @@ use crate::hc::Core;
 mod edit;
 mod legacy;
 mod start;
+mod tiling;
 
-pub(crate) use edit::{Arrangement, Placement};
+pub(crate) use edit::{Arrangement, Place, Placement};
 pub(crate) use start::{Created, Destination, PendingStart};
 
 const SCHEMA: u64 = 3;
@@ -192,19 +193,29 @@ impl Store {
     /// reapplying when another writer got there first.
     pub(crate) fn edit<T>(
         &self,
-        mut change: impl FnMut(&mut Layout) -> T,
+        change: impl FnMut(&mut Layout) -> T,
     ) -> Result<(T, Loaded), String> {
+        let (output, loaded, _) = self.edited(change)?;
+        Ok((output, loaded))
+    }
+
+    pub(crate) fn edited<T>(
+        &self,
+        mut change: impl FnMut(&mut Layout) -> T,
+    ) -> Result<(T, Loaded, bool), String> {
+        let mut wrote = false;
         let (output, mut sessions, version) = self.write(|sessions, _| {
             let mut layout = sessions.get(&self.session).cloned().unwrap_or_default();
             let before = layout.clone();
             let output = change(&mut layout);
-            if layout != before {
+            wrote = layout != before;
+            if wrote {
                 sessions.insert(self.session.clone(), layout);
             }
             output
         })?;
         let layout = sessions.remove(&self.session).unwrap_or_default();
-        Ok((output, Loaded { layout, version }))
+        Ok((output, Loaded { layout, version }, wrote))
     }
 
     /// Applies `change` to every session's layout in one write, rereading and
