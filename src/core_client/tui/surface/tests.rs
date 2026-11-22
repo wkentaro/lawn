@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crossterm::event::{
     KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -14,6 +14,7 @@ use crate::core_client::tui::chrome::Chrome;
 use crate::core_client::tui::keys::Navigation;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
+use crate::core_client::tui::terminals::Report;
 use crate::core_client::view::{Geometry, Placing, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
@@ -263,6 +264,91 @@ async fn a_layout_draws_the_whole_screen_with_borders_and_each_pane_inside_them(
         .collect();
     assert!(line.starts_with("right"), "{line:?}");
     assert_eq!(rows[0].cells[0].symbol, "┌");
+}
+
+fn named(surface: &mut Surface, terminal: &str, name: Option<&str>) {
+    surface.heard(Report::Name(terminal.to_owned(), name.map(str::to_owned)));
+}
+
+#[tokio::test]
+async fn a_named_pane_shows_its_name_on_its_own_top_border_until_the_name_is_removed() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    let mut screen = Screen::of(&mut surface);
+
+    named(&mut surface, "t1", Some("build"));
+    assert!(surface.needs_frame());
+    screen.show(&mut surface, &HashSet::new());
+    let top = screen.line(0);
+    let column = top[..top.find("build").expect(&top)].chars().count() as u16;
+    assert!(column > surface.tiles.tiles[1].info.rect.x, "{top:?}");
+
+    named(&mut surface, "t1", None);
+    assert!(surface.needs_frame());
+    screen.show(&mut surface, &HashSet::new());
+    assert!(!screen.line(0).contains("build"), "{:?}", screen.line(0));
+}
+
+fn behind_and_parked() -> Layout {
+    serde_json::from_value(json!({
+        "workspaces": [{"id": "w0", "tabs": [
+            {"id": "tab0", "root": balanced(&terminals(3))},
+            {"id": "tab1", "root": {"kind": "pane", "terminal": "t3"}},
+        ]}],
+        "parked": ["t1"],
+    }))
+    .expect("layout")
+}
+
+#[tokio::test]
+async fn a_name_recomposes_the_panes_only_when_it_changes_a_pane_on_screen() {
+    let mut surface = surface(40, 10);
+    surface.update(behind_and_parked());
+    named(&mut surface, "t0", Some("build"));
+    Screen::of(&mut surface);
+
+    named(&mut surface, "t0", Some("build"));
+    named(&mut surface, "t1", Some("parked"));
+    named(&mut surface, "t3", Some("behind"));
+    surface.heard(Report::Status(
+        "t0".to_owned(),
+        crate::pane::core_status(&json!({"state": "working", "app": "claude"})),
+    ));
+    assert!(!surface.relayout);
+
+    named(&mut surface, "t0", Some("test"));
+    assert!(surface.relayout);
+}
+
+#[tokio::test]
+async fn a_name_of_a_pane_with_no_top_border_recomposes_nothing() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&["t0".to_owned()]));
+    Screen::of(&mut surface);
+    assert!(surface.tiles.tiles[0].info.borders.is_empty());
+
+    named(&mut surface, "t0", Some("build"));
+
+    assert!(!surface.relayout);
+    assert_eq!(surface.named_tiles().capacity(), 0);
+    assert_eq!(surface.session.name("t0"), Some("build"));
+}
+
+#[tokio::test]
+async fn the_border_names_hold_only_the_named_panes_on_screen_and_nothing_when_none_is_named() {
+    let mut surface = surface(40, 10);
+    surface.update(behind_and_parked());
+    Screen::of(&mut surface);
+    assert_eq!(surface.named_tiles().capacity(), 0);
+
+    named(&mut surface, "t0", Some("build"));
+    named(&mut surface, "t1", Some("parked"));
+    named(&mut surface, "t3", Some("behind"));
+
+    assert_eq!(
+        surface.named_tiles(),
+        HashMap::from([(id_of(&surface, "t0"), "build")])
+    );
 }
 
 #[tokio::test]

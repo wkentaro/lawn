@@ -4,7 +4,10 @@ use std::time::Duration;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{follow, reported, snapshot, status_reported, statuses, Report, Status, Terminals};
+use super::{
+    follow, name_reported, names, rename, reported, snapshot, status_reported, statuses, Report,
+    Status, Terminals,
+};
 use crate::api::schema::AgentStatus;
 use crate::core_lifecycle::Lifecycle;
 use crate::hc::test_support::TestCore;
@@ -253,13 +256,115 @@ fn a_fresh_status_snapshot_forgets_the_terminals_it_no_longer_lists() {
     assert_eq!(terminals.status("t1"), None);
 }
 
+fn named(pairs: &[(&str, &str)]) -> Report {
+    Report::Names(
+        pairs
+            .iter()
+            .map(|(terminal, name)| ((*terminal).to_owned(), (*name).to_owned()))
+            .collect(),
+    )
+}
+
+#[test]
+fn a_snapshot_names_only_the_terminals_with_a_lawn_name_label() {
+    let message = json!({"terminals": [
+        {"address": "t1", "labels": {"lawn-name": "build", "lawn-start": "r1"}},
+        {"address": "t2", "labels": {"lawn": "core", "name": "other"}},
+        {"address": "t3", "labels": {}},
+    ]});
+
+    assert_eq!(names(&message), named(&[("t1", "build")]));
+}
+
+#[test]
+fn a_labels_event_reports_the_name_it_now_carries_or_none_when_it_lost_it() {
+    let labelled = |labels| {
+        json!({"method": "event", "params": {
+            "type": "labels", "terminal": "t1", "data": {"labels": labels},
+        }})
+    };
+
+    assert_eq!(
+        name_reported(&labelled(json!({"lawn-name": "build"}))),
+        Some(Report::Name("t1".to_owned(), Some("build".to_owned())))
+    );
+    assert_eq!(
+        name_reported(&labelled(json!({"other": "x"}))),
+        Some(Report::Name("t1".to_owned(), None))
+    );
+}
+
+#[test]
+fn a_created_event_reports_the_name_the_terminal_started_with() {
+    let message = json!({"method": "event", "params": {
+        "type": "created",
+        "terminal": "t3",
+        "data": {"address": "t3", "cwd": "/", "labels": {"lawn-name": "logs"}},
+    }});
+
+    assert_eq!(
+        name_reported(&message),
+        Some(Report::Name("t3".to_owned(), Some("logs".to_owned())))
+    );
+}
+
+#[test]
+fn a_removed_event_forgets_the_name() {
+    let message = json!({"method": "event", "params": {
+        "type": "removed", "terminal": "t3", "data": {},
+    }});
+
+    assert_eq!(
+        name_reported(&message),
+        Some(Report::Name("t3".to_owned(), None))
+    );
+}
+
+#[test]
+fn a_missed_message_reports_fresh_names() {
+    let message = json!({"method": "missed", "params": {"terminals": [
+        {"address": "t2", "labels": {"lawn-name": "logs"}},
+    ]}});
+
+    assert_eq!(name_reported(&message), Some(named(&[("t2", "logs")])));
+}
+
+#[test]
+fn a_name_draws_only_when_a_shown_terminals_name_changes() {
+    let mut terminals = Terminals::default();
+    let mut hear = |terminal: &str, name: Option<&str>| {
+        terminals.hear(
+            Report::Name(terminal.to_owned(), name.map(str::to_owned)),
+            |_| false,
+            |terminal| terminal == "t1",
+        )
+    };
+
+    assert!(hear("t1", Some("build")));
+    assert!(!hear("t1", Some("build")));
+    assert!(hear("t1", Some("test")));
+    assert!(!hear("t2", Some("logs")));
+    assert!(hear("t1", None));
+    assert!(!hear("t1", None));
+}
+
+#[test]
+fn a_fresh_name_snapshot_forgets_the_names_it_no_longer_lists() {
+    let mut terminals = Terminals::default();
+    terminals.hear(named(&[("t1", "build")]), |_| false, |_| true);
+    assert_eq!(terminals.name("t1"), Some("build"));
+
+    assert!(terminals.hear(named(&[]), |_| false, |_| true));
+    assert_eq!(terminals.name("t1"), None);
+}
+
 async fn until_seen(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: &str) -> String {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let folder = match reports.recv().await.expect("the follower stopped") {
                 Report::Snapshot(folders) => folders.get(terminal).cloned(),
                 Report::Folder(reported, folder) if reported == terminal => Some(folder),
-                Report::Folder(..) | Report::Statuses(_) | Report::Status(..) => None,
+                _ => None,
             };
             if let Some(folder) = folder {
                 return folder.display().to_string();
@@ -345,4 +450,50 @@ async fn the_follower_reports_the_status_a_program_sends_and_a_later_follower_fi
 
     let mut later = follow().expect("follow");
     until_working(&mut later, &terminal).await;
+}
+
+async fn until_named(
+    reports: &mut mpsc::UnboundedReceiver<Report>,
+    terminal: &str,
+    name: Option<&str>,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let heard = match reports.recv().await.expect("the follower stopped") {
+                Report::Names(names) => Some(names.get(terminal).cloned()),
+                Report::Name(reported, name) if reported == terminal => Some(name),
+                _ => None,
+            };
+            if heard.is_some_and(|heard| heard.as_deref() == name) {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("never saw {terminal} named {name:?}"));
+}
+
+#[tokio::test]
+async fn a_rename_reaches_every_follower_and_an_empty_name_removes_it() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    test.share();
+    let argv = ["sleep".to_owned(), "60".to_owned()];
+    let mut reports = follow().expect("follow");
+    let terminal = Lifecycle::new(test.core.clone(), "followed")
+        .start_first(Path::new("/"), &argv)
+        .expect("start")
+        .expect("a first shell")
+        .terminal;
+
+    rename(&test.core, &terminal, "build").expect("renamed");
+    until_named(&mut reports, &terminal, Some("build")).await;
+    let mut later = follow().expect("follow");
+    until_named(&mut later, &terminal, Some("build")).await;
+
+    rename(&test.core, &terminal, "").expect("cleared");
+    until_named(&mut reports, &terminal, None).await;
+    until_named(&mut later, &terminal, None).await;
 }

@@ -347,7 +347,7 @@ impl Surface {
         }
         if matches!(
             action,
-            KeybindAction::RenameWorkspace | KeybindAction::RenameTab
+            KeybindAction::RenameWorkspace | KeybindAction::RenameTab | KeybindAction::RenamePane
         ) {
             if let Some(rename) = Rename::of(action, &self.session, self.outer.selected()) {
                 self.open(Dialog::Rename(rename));
@@ -483,8 +483,18 @@ impl Surface {
     }
 
     pub(super) fn heard(&mut self, report: Report) {
-        if self.session.heard(report) {
-            self.outer.recheck();
+        let names = matches!(report, Report::Names(_) | Report::Name(..));
+        let tiles = &self.tiles.tiles;
+        if self.session.heard(report, |terminal| {
+            tiles.iter().any(|tile| {
+                tile.terminal == terminal && crate::ui::pane_border_shows_title(&tile.info)
+            })
+        }) {
+            if names {
+                self.relayout = true;
+            } else {
+                self.outer.recheck();
+            }
         }
     }
 
@@ -1605,6 +1615,15 @@ impl Surface {
         tiles
     }
 
+    fn named_tiles(&self) -> HashMap<PaneId, &str> {
+        self.tiles
+            .tiles
+            .iter()
+            .filter(|tile| crate::ui::pane_border_shows_title(&tile.info))
+            .filter_map(|tile| Some((tile.info.id, self.session.name(&tile.terminal)?)))
+            .collect()
+    }
+
     fn compose(&mut self) -> Vec<PaneSurfacePatchRow> {
         let (cols, rows) = (self.host.cols, self.host.rows);
         let previous = std::mem::take(&mut self.canvas);
@@ -1618,13 +1637,14 @@ impl Surface {
             .iter()
             .map(|tile| tile.info.clone())
             .collect();
+        let names = self.named_tiles();
         crate::ui::paint_pane_borders(
             &mut buffer,
             &infos,
             &self.tiles.splits,
             self.chrome.gaps,
             &self.palette,
-            |_| None,
+            |id| names.get(&id).map(|name| (*name).to_owned()),
         );
         let mut cells: Vec<CellData> = buffer
             .content

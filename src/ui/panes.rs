@@ -798,6 +798,10 @@ fn line_touches_pane(x: u16, y: u16, info: &PaneInfo, pane_gaps: bool) -> bool {
         || (x == shared_right && y == shared_bottom)
 }
 
+pub(crate) fn pane_border_shows_title(info: &PaneInfo) -> bool {
+    info.borders.contains(Borders::TOP) && info.rect.width > 4
+}
+
 fn paint_pane_border_titles(
     buf: &mut Buffer,
     pane_infos: &[PaneInfo],
@@ -806,7 +810,7 @@ fn paint_pane_border_titles(
 ) {
     let area = buf.area;
     for info in pane_infos {
-        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
+        if !pane_border_shows_title(info) {
             continue;
         }
         let Some(title) = label(info.id)
