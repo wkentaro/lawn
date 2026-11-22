@@ -362,6 +362,10 @@ impl Chrome {
         self.redraw = true;
     }
 
+    pub(super) fn restyle(&mut self) {
+        self.redraw = true;
+    }
+
     pub(super) fn remembering(mut self, path: PathBuf) -> Self {
         let saved = preferences::load(&path).unwrap_or_default();
         if let Some(width) = saved.sidebar_width {

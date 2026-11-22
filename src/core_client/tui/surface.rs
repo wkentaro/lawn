@@ -11,7 +11,9 @@ use ratatui::style::{Modifier, Style};
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
-use super::dialog::{Aim, Change, Dialog, Item, Menu, Modal, Move, Outcome, Rename};
+use super::dialog::{
+    Aim, Change, Chosen, Dialog, Item, Menu, Modal, Move, Outcome, Preferences, Rename,
+};
 use super::gate::Gate;
 use super::keys::Navigation;
 use super::notices::{Effect, Notices, Notifying};
@@ -169,6 +171,7 @@ pub(super) enum Pointed {
     Copied(String),
     Act(KeybindAction),
     Run(Operation),
+    Save(crate::config::ConfigEdit<'static>),
 }
 
 struct Toast {
@@ -267,6 +270,7 @@ pub(super) struct Settings {
     pub(super) keybinds: LiveKeybindConfig,
     pub(super) confirm_close: bool,
     pub(super) scrollback: Scrollback,
+    pub(super) chosen: Chosen,
 }
 
 impl From<&Config> for Settings {
@@ -297,6 +301,7 @@ impl From<&Config> for Settings {
                 }),
             confirm_close: ui.confirm_close,
             scrollback: Scrollback::from(config),
+            chosen: Chosen::from(config),
         }
     }
 }
@@ -369,6 +374,8 @@ pub(super) struct Surface {
     outer: Chrome,
     areas: crate::ui::chrome::Layout,
     palette: Palette,
+    unpreviewed: Option<Palette>,
+    chosen: Chosen,
     host: Geometry,
     scrollbars: bool,
     gesture: Option<Gesture>,
@@ -406,6 +413,7 @@ impl Surface {
             keybinds,
             confirm_close,
             scrollback,
+            chosen,
         } = settings;
         Self {
             session: Session::default(),
@@ -422,6 +430,8 @@ impl Surface {
             areas: crate::ui::chrome::Layout::default(),
             highlight: highlight(&palette),
             palette,
+            unpreviewed: None,
+            chosen,
             host,
             scrollbars,
             gesture: None,
@@ -463,11 +473,12 @@ impl Surface {
             keybinds,
             confirm_close,
             scrollback,
+            chosen,
         } = Settings::from(config);
         self.outer.configure(config);
         self.chrome = chrome;
-        self.highlight = highlight(&palette);
-        self.palette = palette;
+        self.unpreviewed = None;
+        self.chosen = chosen;
         self.scrollbars = scrollbars;
         self.select.copy_on_select(copying.on_select);
         self.toast_at = copying.toast;
@@ -479,10 +490,43 @@ impl Surface {
         for shown in self.views.values_mut() {
             shown.view.scroll_by(scrollback.wheel_lines);
         }
+        self.restyle(palette);
+    }
+
+    fn restyle(&mut self, palette: Palette) {
+        self.highlight = highlight(&palette);
+        self.palette = palette;
+        self.outer.restyle();
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.restyle();
         }
         self.relayout = true;
+    }
+
+    fn preview(&mut self, theme: usize) {
+        let Some(palette) = self.chosen.palette(theme) else {
+            return;
+        };
+        self.unpreviewed.get_or_insert_with(|| self.palette.clone());
+        self.chosen.preview(Some(theme));
+        self.restyle(palette);
+    }
+
+    fn unpreview(&mut self) {
+        if let Some(palette) = self.unpreviewed.take() {
+            self.chosen.preview(None);
+            self.restyle(palette);
+        }
+    }
+
+    pub(super) fn saved(&mut self, written: bool) {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return;
+        };
+        if dialog.saved(&self.chosen, written) == Outcome::Close {
+            self.dialog = None;
+        }
+        self.unpreview();
     }
 
     pub(super) fn keybinds(&self) -> &LiveKeybindConfig {
@@ -533,6 +577,10 @@ impl Surface {
         }
         if action == KeybindAction::Help {
             self.open(Dialog::Help(Default::default()));
+            return None;
+        }
+        if action == KeybindAction::Settings {
+            self.open(Dialog::Settings(Preferences::new(&self.chosen)));
             return None;
         }
         if action == KeybindAction::EnterResizeMode {
@@ -663,6 +711,7 @@ impl Surface {
                 Item::Rename
                 | Item::Close
                 | Item::NewTab
+                | Item::Settings
                 | Item::Keybinds
                 | Item::ReloadConfig
                 | Item::Detach => return None,
@@ -708,10 +757,8 @@ impl Surface {
     }
 
     pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Pointed> {
-        let outcome = self
-            .dialog
-            .as_mut()?
-            .key(key, &self.keybinds, &self.session);
+        let dialog = self.dialog.as_mut()?;
+        let outcome = dialog.key(key, &self.keybinds, &self.session, &self.chosen);
         self.settle(outcome)
     }
 
@@ -742,14 +789,22 @@ impl Surface {
         if outcome == Outcome::Stay {
             return None;
         }
+        if let Outcome::Save(edit) = outcome {
+            return Some(Pointed::Save(edit));
+        }
+        if let Outcome::Preview(theme) = outcome {
+            self.preview(theme);
+            return None;
+        }
         let dialog = self.dialog.take()?;
+        self.unpreview();
         match outcome {
             Outcome::Accept => match dialog.chosen(&self.session) {
                 Some((Aim::Global, item)) => item.action().map(Pointed::Act),
                 Some((aim, item)) => self.choose(aim, item).map(Pointed::Run),
                 None => dialog.accepted(&self.session).map(Pointed::Run),
             },
-            Outcome::Stay | Outcome::Close => None,
+            Outcome::Stay | Outcome::Close | Outcome::Save(_) | Outcome::Preview(_) => None,
         }
     }
 
@@ -1308,7 +1363,7 @@ impl Surface {
                 self.dialog = None;
                 return None;
             }
-            let outcome = dialog.mouse(event, &self.session);
+            let outcome = dialog.mouse(event, &self.session, &self.chosen);
             return self.settle(outcome);
         }
         if press {
@@ -1950,7 +2005,14 @@ impl Surface {
             }
             .to_ratatui_buffer()
             .unwrap_or_else(|| Buffer::empty(host));
-            dialog.draw(seed, launcher, &self.keybinds, &self.palette, &self.session);
+            dialog.draw(
+                seed,
+                launcher,
+                &self.keybinds,
+                &self.chosen,
+                &self.palette,
+                &self.session,
+            );
         }
         if let Some(image) = dialog.image() {
             for row in rows.iter_mut() {

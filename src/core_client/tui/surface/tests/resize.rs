@@ -203,6 +203,7 @@ async fn swapping_picks_the_neighbour_by_the_panes_before_gaps_shrink_them() {
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     );
     let mut tall: Layout = serde_json::from_value(
@@ -242,6 +243,7 @@ fn gapped() -> Surface {
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     ))
 }
@@ -760,6 +762,7 @@ async fn a_split_whose_area_is_empty_across_its_axis_gets_no_ratio_as_when_the_m
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     ));
     let now = std::time::Instant::now();

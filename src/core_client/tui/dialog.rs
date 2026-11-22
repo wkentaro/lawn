@@ -15,10 +15,12 @@ use crate::ui::theme::Palette;
 
 mod menu;
 mod picker;
+mod settings;
 
 pub(super) use menu::{Aim, Item, Menu};
 pub(super) use picker::Move;
 use picker::Target;
+pub(super) use settings::{Chosen, Preferences};
 
 const CLOSE_TITLE: &str = "Close workspace?";
 const WHEEL_ROWS: usize = 3;
@@ -31,6 +33,7 @@ pub(super) enum Dialog {
     Rename(Rename),
     Move(Move),
     Menu(Menu),
+    Settings(Preferences),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +71,8 @@ pub(super) enum Outcome {
     Stay,
     Close,
     Accept,
+    Save(crate::config::ConfigEdit<'static>),
+    Preview(usize),
 }
 
 #[derive(Default)]
@@ -82,6 +87,8 @@ struct Hits {
     rows: Vec<(Rect, Target)>,
     action: Option<Target>,
     items: Vec<(Rect, Item)>,
+    tabs: Vec<(Rect, crate::ui::dialog::SettingsSection)>,
+    choices: Vec<(Rect, (crate::ui::dialog::SettingsSection, usize))>,
     cursor: Option<CursorState>,
 }
 
@@ -113,7 +120,7 @@ impl Modal {
             Dialog::Confirm(closing) => session.confirmed(closing),
             Dialog::Rename(rename) => rename.saved(session),
             Dialog::Move(moving) => moving.accepted(session),
-            Dialog::Help(_) | Dialog::Menu(_) => None,
+            Dialog::Help(_) | Dialog::Menu(_) | Dialog::Settings(_) => None,
         }
     }
 
@@ -122,6 +129,13 @@ impl Modal {
             (Dialog::Menu(menu), Some(_)) => menu.chosen(session, &self.hits),
             _ => None,
         }
+    }
+
+    pub(super) fn saved(&mut self, chosen: &Chosen, written: bool) -> Outcome {
+        self.changing(|dialog, _, _| match dialog {
+            Dialog::Settings(preferences) => preferences.saved(chosen, written),
+            _ => Outcome::Stay,
+        })
     }
 
     pub(super) fn restyle(&mut self) {
@@ -142,7 +156,7 @@ impl Modal {
             Dialog::Menu(menu) if !menu.on_screen(session) => return false,
             Dialog::Menu(_) => self.outdated |= change != Change::Folders,
             Dialog::Move(_) => self.outdated = true,
-            Dialog::Confirm(_) | Dialog::Help(_) | Dialog::Rename(_) => {}
+            Dialog::Confirm(_) | Dialog::Help(_) | Dialog::Rename(_) | Dialog::Settings(_) => {}
         }
         true
     }
@@ -151,7 +165,7 @@ impl Modal {
         match &self.dialog {
             Dialog::Help(help) => help.searching,
             Dialog::Rename(_) | Dialog::Move(_) => true,
-            Dialog::Confirm(_) | Dialog::Menu(_) => false,
+            Dialog::Confirm(_) | Dialog::Menu(_) | Dialog::Settings(_) => false,
         }
     }
 
@@ -192,7 +206,7 @@ impl Modal {
                     input.insert(text);
                 }),
                 Dialog::Move(moving) => moving.text(text, session),
-                Dialog::Confirm(_) | Dialog::Menu(_) => {}
+                Dialog::Confirm(_) | Dialog::Menu(_) | Dialog::Settings(_) => {}
             }
             Outcome::Stay
         });
@@ -203,6 +217,7 @@ impl Modal {
         key: &TerminalKey,
         keybinds: &LiveKeybindConfig,
         session: &Session,
+        chosen: &Chosen,
     ) -> Outcome {
         if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
             return Outcome::Stay;
@@ -217,10 +232,16 @@ impl Modal {
             Dialog::Rename(rename) => rename.key(key),
             Dialog::Move(moving) => moving.key(key, keybinds, session, hits),
             Dialog::Menu(menu) => menu.key(key, hits),
+            Dialog::Settings(preferences) => preferences.key(key, hits, chosen),
         })
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent, session: &Session) -> Outcome {
+    pub(super) fn mouse(
+        &mut self,
+        event: MouseEvent,
+        session: &Session,
+        chosen: &Chosen,
+    ) -> Outcome {
         let follows = matches!(self.dialog, Dialog::Menu(_));
         if event.kind == MouseEventKind::Moved && !follows || self.frame.is_none() {
             return Outcome::Stay;
@@ -248,6 +269,7 @@ impl Modal {
             },
             Dialog::Move(moving) => moving.mouse(event, point, hits, grab, session),
             Dialog::Menu(menu) => menu.mouse(event, point, hits),
+            Dialog::Settings(preferences) => preferences.mouse(event, point, hits, chosen),
         })
     }
 
@@ -256,6 +278,7 @@ impl Modal {
         mut buffer: Buffer,
         launcher: Option<Rect>,
         keybinds: &LiveKeybindConfig,
+        chosen: &Chosen,
         palette: &Palette,
         session: &Session,
     ) {
@@ -309,6 +332,7 @@ impl Modal {
             }
             Dialog::Move(moving) => moving.draw(&mut buffer, palette, session),
             Dialog::Menu(menu) => menu.draw(&mut buffer, launcher, palette, session),
+            Dialog::Settings(preferences) => preferences.draw(&mut buffer, chosen, palette),
         }
         .unwrap_or_default();
         let cells = buffer

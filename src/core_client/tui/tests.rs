@@ -72,3 +72,219 @@ fn operations_wait_on_one_blocking_task_until_the_split_before_them_finishes() {
         "{reports:?}"
     );
 }
+
+struct Configured {
+    path: PathBuf,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl Configured {
+    fn at(name: &str) -> Self {
+        let lock = crate::config::test_config_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("lawn-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("config.toml");
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+        Self { path, _lock: lock }
+    }
+}
+
+impl Drop for Configured {
+    fn drop(&mut self) {
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        if let Some(dir) = self.path.parent() {
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+}
+
+fn running(config: &crate::config::Config) -> (super::surface::Surface, super::keys::Keys) {
+    let surface = super::surface::Surface::new(
+        crate::core_client::view::Geometry {
+            cols: 120,
+            rows: 30,
+            cell_width_px: 0,
+            cell_height_px: 0,
+        },
+        super::chrome::Chrome::new(config),
+        super::surface::Settings::from(config),
+    );
+    let keys = super::keys::Keys::new(surface.keybinds().clone(), false, false);
+    (surface, keys)
+}
+
+#[tokio::test]
+async fn saving_a_setting_edits_only_its_key_and_applies_everything_the_file_now_says() {
+    let file = Configured::at("save-applies");
+    std::fs::write(&file.path, "[ui]\nstatus_indicators = \"dots\"\n").expect("write");
+    let mut config = crate::config::load_live_config().expect("config").config;
+    let (mut surface, mut keys) = running(&config);
+    std::fs::write(
+        &file.path,
+        "[ui]\nstatus_indicators = \"symbols\"\nconfirm_close = true\n",
+    )
+    .expect("write");
+
+    super::unix::save(
+        crate::config::ConfigEdit::Theme("gruvbox"),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    let written = std::fs::read_to_string(&file.path).expect("read");
+    assert!(
+        written.contains("status_indicators = \"symbols\""),
+        "{written}"
+    );
+    assert!(written.contains("confirm_close = true"), "{written}");
+    assert!(written.contains("name = \"gruvbox\""), "{written}");
+    assert_eq!(config.theme.name.as_deref(), Some("gruvbox"));
+    assert_eq!(
+        config.ui.status_indicators,
+        crate::config::StatusIndicatorStyle::Symbols
+    );
+    assert!(surface.confirms_close());
+}
+
+#[tokio::test]
+async fn a_save_the_file_refuses_leaves_the_dialog_open_and_the_running_config_as_it_was() {
+    let file = Configured::at("save-refused");
+    std::fs::create_dir_all(&file.path).expect("dir");
+    let mut config = crate::config::Config::default();
+    let (mut surface, mut keys) = running(&config);
+    surface.act(crate::input::KeybindAction::Settings, false);
+    for _ in 0..7 {
+        surface.dialog_key(&crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    super::unix::save(
+        crate::config::ConfigEdit::Theme("gruvbox"),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    assert!(surface.dialog_open());
+    assert_eq!(config.theme.name, None);
+}
+
+fn drawn(surface: &mut super::surface::Surface) -> String {
+    let (rows, _) = surface.frame(&std::collections::HashSet::new(), |_, _, _| {}, |_, _| {});
+    rows.iter()
+        .map(|row| {
+            row.cells
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn a_saved_setting_the_reload_kept_out_leaves_the_dialog_on_the_value_in_effect() {
+    let file = Configured::at("save-kept-out");
+    std::fs::write(&file.path, "[ui]\nstatus_indicators = \"dots\"\n").expect("write");
+    let mut config = crate::config::load_live_config().expect("config").config;
+    let (mut surface, mut keys) = running(&config);
+    surface.act(crate::input::KeybindAction::Settings, false);
+    for code in [
+        crossterm::event::KeyCode::Tab,
+        crossterm::event::KeyCode::Down,
+    ] {
+        surface.dialog_key(&crate::input::TerminalKey::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+    std::fs::write(
+        &file.path,
+        "[ui]\nstatus_indicators = \"dots\"\nsidebar_min_width = 40\nsidebar_max_width = 20\n",
+    )
+    .expect("write");
+
+    super::unix::save(
+        crate::config::ConfigEdit::StatusIndicators(crate::config::StatusIndicatorStyle::Symbols),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    assert_eq!(
+        config.ui.status_indicators,
+        crate::config::StatusIndicatorStyle::Dots
+    );
+    assert!(surface.dialog_open());
+    let screen = drawn(&mut surface);
+    assert!(screen.contains("▸ color dots"), "{screen}");
+}
+
+#[tokio::test]
+async fn a_theme_apply_the_reload_kept_out_leaves_the_dialog_open_while_auto_switch_still_paints() {
+    let file = Configured::at("save-auto-switch");
+    let theme = "[theme]\nname = \"nord\"\nauto_switch = true\ndark_name = \"gruvbox\"\n";
+    std::fs::write(&file.path, theme).expect("write");
+    let mut config = crate::config::load_live_config().expect("config").config;
+    let (mut surface, mut keys) = running(&config);
+    surface.act(crate::input::KeybindAction::Settings, false);
+    std::fs::write(&file.path, format!("{theme}light_name = 42\n")).expect("write");
+
+    super::unix::save(
+        crate::config::ConfigEdit::Theme("nord"),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    let written = std::fs::read_to_string(&file.path).expect("read");
+    assert!(written.contains("auto_switch = false"), "{written}");
+    assert!(config.theme.auto_switch);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn applying_the_first_theme_while_an_alias_the_reload_kept_stays_in_effect_leaves_the_dialog_open(
+) {
+    let file = Configured::at("save-alias");
+    let theme = "[theme]\nname = \"latte\"\n";
+    std::fs::write(&file.path, theme).expect("write");
+    let mut config = crate::config::load_live_config().expect("config").config;
+    let (mut surface, mut keys) = running(&config);
+    surface.act(crate::input::KeybindAction::Settings, false);
+    std::fs::write(&file.path, format!("{theme}light_name = 42\n")).expect("write");
+
+    super::unix::save(
+        crate::config::ConfigEdit::Theme(crate::config::THEME_NAMES[0]),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    assert_eq!(config.theme.name.as_deref(), Some("latte"));
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_refused_write_of_the_running_theme_leaves_the_dialog_open() {
+    let file = Configured::at("save-refused-running");
+    std::fs::create_dir_all(&file.path).expect("dir");
+    let mut config: crate::config::Config =
+        toml::from_str("[theme]\nname = \"gruvbox\"").expect("config");
+    let (mut surface, mut keys) = running(&config);
+    surface.act(crate::input::KeybindAction::Settings, false);
+
+    super::unix::save(
+        crate::config::ConfigEdit::Theme("gruvbox"),
+        &mut config,
+        &mut surface,
+        &mut keys,
+    );
+
+    assert!(surface.dialog_open());
+}

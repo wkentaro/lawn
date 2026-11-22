@@ -42,6 +42,7 @@ impl SettingsSection {
 pub(crate) struct Settings<'a> {
     pub(crate) section: SettingsSection,
     pub(crate) selected: usize,
+    pub(crate) sections: &'a [SettingsSection],
     pub(crate) original_theme_name: &'a str,
     pub(crate) integrations: &'a [IntegrationInfo],
     pub(crate) integration_messages: &'a [String],
@@ -139,7 +140,7 @@ pub(crate) fn render_settings(
             .any(|integration| integration.state == IntegrationState::Outdated);
     let mut tab_x = inner.x;
     let mut tab_hits = Vec::new();
-    for section in SettingsSection::ALL {
+    for section in settings.sections {
         let badge = *section == SettingsSection::Integrations && integration_badge;
         let label = if badge {
             format!(" ● {} ", section.label())

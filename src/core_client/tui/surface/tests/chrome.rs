@@ -32,6 +32,7 @@ fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     )
 }
@@ -576,7 +577,7 @@ fn point_at(
     match surface.mouse(mouse_at(kind, column, row), now) {
         Some(Pointed::Act(action)) => surface.act(action, false),
         Some(Pointed::Run(operation)) => Some(operation),
-        Some(Pointed::Copied(text)) => unreachable!("{text}"),
+        Some(other @ (Pointed::Copied(_) | Pointed::Save(_))) => unreachable!("{other:?}"),
         None => None,
     }
 }
@@ -1823,6 +1824,7 @@ mod menu;
 mod mobile;
 mod navigate;
 mod reload;
+mod settings;
 
 #[tokio::test]
 async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {

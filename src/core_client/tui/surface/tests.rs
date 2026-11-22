@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::config::PaneBordersConfig;
 use crate::config::ToastClipboardPosition;
 use crate::core_client::tui::chrome::Chrome;
+use crate::core_client::tui::dialog::Chosen;
 use crate::core_client::tui::keys::Navigation;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
@@ -101,6 +102,7 @@ fn surface_with_scrollbars(cols: u16, rows: u16, scrollbars: bool) -> Surface {
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     )
 }
@@ -711,6 +713,7 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
             keybinds: keybinds(),
             confirm_close: false,
             scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
     );
     surface.update(

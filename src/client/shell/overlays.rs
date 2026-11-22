@@ -138,6 +138,7 @@ fn render_settings_overlay(
         &dialog::Settings {
             section: settings.section,
             selected: settings.selected,
+            sections: dialog::SettingsSection::ALL,
             original_theme_name: &settings.original_theme_name,
             integrations: &settings.integrations,
             integration_messages: &settings.integration_messages,

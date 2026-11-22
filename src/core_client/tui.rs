@@ -162,6 +162,21 @@ mod unix {
         }
     }
 
+    pub(super) fn save(
+        edit: crate::config::ConfigEdit<'_>,
+        running: &mut Config,
+        surface: &mut Surface,
+        bindings: &mut Keys,
+    ) {
+        let written = crate::config::write_edit(edit)
+            .inspect_err(|error| warn!(%error, "the setting was not saved"))
+            .is_ok();
+        if written {
+            reload(running, surface, bindings);
+        }
+        surface.saved(written);
+    }
+
     pub(super) fn operations(
         mut perform: impl FnMut(Operation, PathBuf) + Send + 'static,
     ) -> std::sync::mpsc::Sender<(Operation, PathBuf)> {
@@ -395,6 +410,9 @@ mod unix {
                                     }
                                     Some(Pointed::Act(action)) => act(&mut surface, action),
                                     Some(Pointed::Run(operation)) => run(&surface, operation),
+                                    Some(Pointed::Save(edit)) => {
+                                        save(edit, &mut config, &mut surface, &mut bindings);
+                                    }
                                     None => {}
                                 }
                                 continue;
@@ -494,6 +512,10 @@ mod unix {
                                         Some(Pointed::Act(action)) => action,
                                         Some(Pointed::Run(operation)) => {
                                             run(&surface, operation);
+                                            continue;
+                                        }
+                                        Some(Pointed::Save(edit)) => {
+                                            save(edit, &mut config, &mut surface, &mut bindings);
                                             continue;
                                         }
                                         Some(Pointed::Copied(_)) | None => continue,

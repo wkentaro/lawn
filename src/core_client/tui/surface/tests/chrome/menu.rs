@@ -827,12 +827,12 @@ fn launch_at(surface: &mut Surface, x: u16, y: u16) -> Option<Pointed> {
 
 fn launched(surface: &mut Surface) -> Vec<String> {
     let (x, y) = launcher(surface);
-    listed(surface, x + 4 - 17, y - 5)
+    listed(surface, x + 4 - 17, y - 6)
 }
 
 fn pick(surface: &mut Surface, label: &str) -> Option<Pointed> {
     let (x, y) = launcher(surface);
-    let (left, top) = (x + 4 - 17, y - 5);
+    let (left, top) = (x + 4 - 17, y - 6);
     let index = launched(surface)
         .iter()
         .position(|item| item == label)
@@ -848,7 +848,8 @@ fn pick(surface: &mut Surface, label: &str) -> Option<Pointed> {
 }
 
 #[tokio::test]
-async fn the_menu_launcher_in_the_sidebar_footer_lists_keybinds_reload_config_and_detach() {
+async fn the_menu_launcher_in_the_sidebar_footer_lists_settings_keybinds_reload_config_and_detach()
+{
     let mut surface = spread_out();
     assert!(line(&surface, 28).starts_with(" new "));
     let (x, y) = launcher(&surface);
@@ -863,13 +864,14 @@ async fn the_menu_launcher_in_the_sidebar_footer_lists_keybinds_reload_config_an
     assert!(surface.dialog_open());
     assert_eq!(
         launched(&mut surface),
-        ["keybinds", "reload config", "detach"]
+        ["settings", "keybinds", "reload config", "detach"]
     );
 }
 
 #[tokio::test]
 async fn each_global_item_hands_its_action_to_the_client_and_closes_the_menu() {
     for (label, action) in [
+        ("settings", KeybindAction::Settings),
         ("keybinds", KeybindAction::Help),
         ("reload config", KeybindAction::ReloadConfig),
         ("detach", KeybindAction::Detach),
@@ -888,6 +890,7 @@ async fn keys_move_through_the_global_menu_and_a_held_enter_picks_nothing() {
     launch(&mut surface);
     launched(&mut surface);
 
+    assert_eq!(key(&mut surface, KeyCode::Down), None);
     assert_eq!(key(&mut surface, KeyCode::Down), None);
     assert_eq!(held(&mut surface), None);
     assert!(surface.dialog_open());
@@ -929,6 +932,7 @@ async fn j_and_k_move_through_the_global_menu_like_the_arrows() {
 
     assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
     assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
+    assert_eq!(key(&mut surface, KeyCode::Char('j')), None);
     assert_eq!(key(&mut surface, KeyCode::Char('k')), None);
     Screen::of(&mut surface);
 
@@ -950,7 +954,7 @@ async fn a_shorter_terminal_redraws_the_open_menu_above_the_launcher_it_moved() 
     assert_eq!(launcher(&surface).1, 23);
     assert_eq!(
         launched(&mut surface),
-        ["keybinds", "reload config", "detach"]
+        ["settings", "keybinds", "reload config", "detach"]
     );
 }
 
@@ -966,9 +970,9 @@ async fn a_reload_that_widens_the_sidebar_redraws_the_open_menu_above_the_moved_
 
     let (x, y) = launcher(&surface);
     assert_ne!((x, y), before);
-    let (left, top) = (x + 4 - 17, y - 5);
+    let (left, top) = (x + 4 - 17, y - 6);
     assert_eq!(screen.cell(left, top).symbol, "┌");
-    assert!(screen.span(top + 3, left..left + 17).contains("detach"));
+    assert!(screen.span(top + 4, left..left + 17).contains("detach"));
 }
 
 #[tokio::test]
@@ -990,7 +994,9 @@ async fn on_a_short_terminal_a_second_press_on_the_launcher_closes_the_menu_over
     frame(&mut surface, &HashSet::new());
     launch(&mut surface);
     let (_, y) = launcher(&surface);
-    assert!(Screen::of(&mut surface).span(y, 0..120).contains("detach"));
+    assert!(Screen::of(&mut surface)
+        .span(y, 0..120)
+        .contains("reload config"));
 
     assert_eq!(launch(&mut surface), None);
 

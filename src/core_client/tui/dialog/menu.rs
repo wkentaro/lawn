@@ -29,6 +29,7 @@ pub(in crate::core_client::tui) enum Item {
     SplitDown,
     Zoom,
     ClosePane,
+    Settings,
     Keybinds,
     ReloadConfig,
     Detach,
@@ -37,6 +38,7 @@ pub(in crate::core_client::tui) enum Item {
 impl Item {
     pub(in crate::core_client::tui) fn action(&self) -> Option<KeybindAction> {
         match self {
+            Item::Settings => Some(KeybindAction::Settings),
             Item::Keybinds => Some(KeybindAction::Help),
             Item::ReloadConfig => Some(KeybindAction::ReloadConfig),
             Item::Detach => Some(KeybindAction::Detach),
@@ -58,6 +60,7 @@ impl Item {
             Item::SplitDown => "Split down",
             Item::Zoom => "Zoom",
             Item::ClosePane => "Close pane",
+            Item::Settings => "settings",
             Item::Keybinds => "keybinds",
             Item::ReloadConfig => "reload config",
             Item::Detach => "detach",
@@ -208,7 +211,12 @@ impl Menu {
         match &self.aim {
             Aim::Workspace(_) => vec![Item::Rename, Item::Close],
             Aim::Tab(_) => vec![Item::NewTab, Item::Rename, Item::Close],
-            Aim::Global => vec![Item::Keybinds, Item::ReloadConfig, Item::Detach],
+            Aim::Global => vec![
+                Item::Settings,
+                Item::Keybinds,
+                Item::ReloadConfig,
+                Item::Detach,
+            ],
             Aim::Pane(terminal) => {
                 let mut items = vec![Item::Park, Item::RenamePane];
                 if session.name(terminal).is_some() {
