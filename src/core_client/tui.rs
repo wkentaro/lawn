@@ -83,18 +83,17 @@ mod unix {
     use super::gate::Gate;
     use super::keys::{Keys, Mode, Routed};
     use super::notices::{Effect, Notifying};
-    use super::select::Copying;
-    use super::session::{Operation, PaneChrome};
-    use super::surface::{Arrival, Pointed, Surface};
+    use super::session::Operation;
+    use super::surface::{reloaded, Arrival, Pointed, Settings, Surface};
     use crate::client::terminal_setup::TerminalGuard;
-    use crate::config::{Config, LiveKeybindConfig, SoundConfig};
+    use crate::config::{Config, SoundConfig};
     use crate::core_client::commands::creation_lifecycle;
     use crate::core_client::host::{
         clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
         HostKeys, HostSizes, Stop, FRAME,
     };
     use crate::core_client::screen::Screen;
-    use crate::core_client::view::{Event, Events, Geometry, Scrollback, View, Wake};
+    use crate::core_client::view::{Event, Events, Geometry, View, Wake};
     use crate::core_lifecycle::Lifecycle;
     use crate::hc::Core;
     use crate::input::{KeybindAction, KeybindMatch};
@@ -122,14 +121,21 @@ mod unix {
         Ok(core)
     }
 
-    fn live_keybinds(config: &Config) -> LiveKeybindConfig {
-        config
-            .live_keybinds_with_diagnostics()
-            .map(|(keybinds, _diagnostics)| keybinds)
-            .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
-                prefix: config.prefix_keys(),
-                keybinds: config.keybinds(),
-            })
+    fn reload(running: &mut Config, surface: &mut Surface, bindings: &mut Keys) {
+        let loaded = match crate::config::load_live_config() {
+            Ok(loaded) => loaded,
+            Err(diagnostics) => {
+                warn!(?diagnostics, "the config did not reload");
+                return;
+            }
+        };
+        let (next, kept) = reloaded(running, loaded.config, &loaded.invalid_sections);
+        if !loaded.diagnostics.is_empty() || !kept.is_empty() {
+            warn!(diagnostics = ?loaded.diagnostics, ?kept, "the config reloaded with problems");
+        }
+        surface.configure(&next);
+        bindings.rebind(surface.keybinds().clone());
+        *running = next;
     }
 
     fn notify(effects: Vec<Effect>, sound: &SoundConfig) {
@@ -231,31 +237,13 @@ mod unix {
         guard: &mut TerminalGuard,
         mut stop: Stop,
     ) -> io::Result<()> {
-        let config = Config::load().config;
-        let keybinds = live_keybinds(&config);
+        let mut config = Config::load().config;
         let mut surface = Surface::new(
             host,
-            PaneChrome {
-                borders: config.ui.pane_borders,
-                gaps: config.ui.pane_gaps,
-                outer_borders: config.ui.pane_outer_borders,
-            },
             Chrome::new(&config).remembering(super::chrome::preferences_path(&session)),
-            crate::ui::theme::client_palette_from_config(&config),
-            config.ui.pane_scrollbars,
-            Copying {
-                on_select: config.ui.copy_on_select,
-                toast: config
-                    .ui
-                    .toast
-                    .clipboard
-                    .enabled
-                    .then_some(config.ui.toast.clipboard.position),
-            },
-            keybinds.clone(),
+            Settings::from(&config),
         )
-        .notifying(Notifying::from_config(&config))
-        .confirming_close(config.ui.confirm_close);
+        .notifying(Notifying::from_config(&config));
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
             guard.take_buffered_host_input(),
@@ -273,8 +261,7 @@ mod unix {
         let edits = Cell::new(0);
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
-        let mut bindings = Keys::new(keybinds, keys.erase_is_ctrl_h, keys.kitty);
-        let scrollback = Scrollback::from(&config);
+        let mut bindings = Keys::new(surface.keybinds().clone(), keys.erase_is_ctrl_h, keys.kitty);
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
@@ -297,14 +284,16 @@ mod unix {
             }
             operations.send((operation, cwd)).ok();
         };
-        let settle = |surface: &Surface, (operation, effects): (Option<Operation>, Vec<Effect>)| {
+        let settle = |surface: &Surface,
+                      (operation, effects): (Option<Operation>, Vec<Effect>),
+                      sound: &SoundConfig| {
             if let Some(operation) = operation {
                 run(surface, operation);
             }
-            notify(effects, &config.ui.sound);
+            notify(effects, sound);
         };
         let act = |surface: &mut Surface, action: KeybindAction| {
-            if let Some(operation) = surface.act(action, config.ui.confirm_close) {
+            if let Some(operation) = surface.act(action, surface.confirms_close()) {
                 run(surface, operation);
             }
         };
@@ -314,6 +303,7 @@ mod unix {
                 () = wake.wait() => schedule_output(&wake, &mut due, last_draw),
                 () = wait(due) => {
                     let dirty = wake.take();
+                    let scrollback = surface.scrollback();
                     let (rows, cursor) = surface.frame(&dirty, |terminal, id, placing| {
                         let (core, terminal, wake, events, attached) = (
                             core.clone(),
@@ -348,7 +338,7 @@ mod unix {
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
-                    settle(&surface, caught);
+                    settle(&surface, caught, &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -375,7 +365,7 @@ mod unix {
                     };
                     surface.received(arrival, &mut gate);
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
-                    settle(&surface, caught);
+                    settle(&surface, caught, &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -525,13 +515,16 @@ mod unix {
                                     surface.open_notice(std::time::Instant::now());
                                     continue;
                                 }
-                                Routed::Binding(KeybindMatch::Action(KeybindAction::Detach)) => {
-                                    return Ok(());
-                                }
                                 Routed::Binding(KeybindMatch::Action(action)) => action,
                                 Routed::Binding(KeybindMatch::Command(_)) => continue,
                             };
-                            act(&mut surface, action);
+                            match action {
+                                KeybindAction::Detach => return Ok(()),
+                                KeybindAction::ReloadConfig => {
+                                    reload(&mut config, &mut surface, &mut bindings);
+                                }
+                                action => act(&mut surface, action),
+                            }
                         }
                         if deselects {
                             surface.deselect();

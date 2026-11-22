@@ -124,6 +124,10 @@ impl Modal {
         }
     }
 
+    pub(super) fn restyle(&mut self) {
+        self.outdated = true;
+    }
+
     pub(super) fn forget(&mut self) {
         self.frame = None;
         self.hits = Hits {

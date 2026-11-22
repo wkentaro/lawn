@@ -18,8 +18,8 @@ use super::notices::{Effect, Notices, Notifying};
 use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Request, Session, Tile, Tiles};
 use super::terminals::Report;
-use crate::config::{LiveKeybindConfig, ToastClipboardPosition};
-use crate::core_client::view::{Geometry, Placing, View};
+use crate::config::{Config, LiveKeybindConfig, ToastClipboardPosition};
+use crate::core_client::view::{Geometry, Placing, Scrollback, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::{PaneId, SplitBorder};
 use crate::pane::{ScrollMetrics, MIN_PANE_COLS, MIN_PANE_ROWS};
@@ -259,6 +259,102 @@ impl From<Report> for Arrival {
     }
 }
 
+pub(super) struct Settings {
+    pub(super) chrome: PaneChrome,
+    pub(super) palette: Palette,
+    pub(super) scrollbars: bool,
+    pub(super) copying: Copying,
+    pub(super) keybinds: LiveKeybindConfig,
+    pub(super) confirm_close: bool,
+    pub(super) scrollback: Scrollback,
+}
+
+impl From<&Config> for Settings {
+    fn from(config: &Config) -> Self {
+        let ui = &config.ui;
+        Self {
+            chrome: PaneChrome {
+                borders: ui.pane_borders,
+                gaps: ui.pane_gaps,
+                outer_borders: ui.pane_outer_borders,
+            },
+            palette: crate::ui::theme::client_palette_from_config(config),
+            scrollbars: ui.pane_scrollbars,
+            copying: Copying {
+                on_select: ui.copy_on_select,
+                toast: ui
+                    .toast
+                    .clipboard
+                    .enabled
+                    .then_some(ui.toast.clipboard.position),
+            },
+            keybinds: config
+                .live_keybinds_with_diagnostics()
+                .map(|(keybinds, _diagnostics)| keybinds)
+                .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
+                    prefix: config.prefix_keys(),
+                    keybinds: config.keybinds(),
+                }),
+            confirm_close: ui.confirm_close,
+            scrollback: Scrollback::from(config),
+        }
+    }
+}
+
+pub(super) fn reloaded(
+    running: &mut Config,
+    mut next: Config,
+    invalid: &[String],
+) -> (Config, Vec<String>) {
+    let mut diagnostics = Vec::new();
+    let failed = |section: &str| invalid.iter().any(|invalid| invalid == section);
+    let bad_keys = match next.live_keybinds_with_diagnostics() {
+        Ok((_, warnings)) => {
+            diagnostics.extend(warnings);
+            false
+        }
+        Err(errors) => {
+            diagnostics.extend(
+                errors
+                    .into_iter()
+                    .map(|error| format!("{error}; kept current keybinds")),
+            );
+            true
+        }
+    };
+    let bounds = next.invalid_sidebar_bounds_diagnostic();
+    let bad_bounds = bounds.is_some();
+    diagnostics.extend(bounds.map(|bounds| format!("{bounds}; keeping previous [ui] settings")));
+    if !failed("ui") && !bad_bounds {
+        diagnostics.extend(next.ui.sidebar.spaces.diagnostics());
+        diagnostics.extend(crate::config::tab_bar_right_diagnostics(
+            &next.ui.tab_bar_right,
+        ));
+    }
+    if failed("theme") {
+        next.theme = std::mem::take(&mut running.theme);
+    }
+    if failed("keys") || bad_keys {
+        next.keys = std::mem::take(&mut running.keys);
+    }
+    if failed("ui") || bad_bounds {
+        next.ui = std::mem::take(&mut running.ui);
+    }
+    if failed("advanced") {
+        next.advanced = std::mem::take(&mut running.advanced);
+    }
+    (next, diagnostics)
+}
+
+fn highlight(palette: &Palette) -> CellData {
+    let mut highlight = ratatui::buffer::Cell::default();
+    highlight.set_style(crate::ui::automatic_selection_style(
+        palette,
+        crate::terminal_theme::TerminalTheme::default(),
+    ));
+    CellData::from_ratatui_cell(&highlight)
+}
+
 pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
@@ -289,6 +385,7 @@ pub(super) struct Surface {
     notices: Notices,
     notice: Option<(Rect, Vec<CellData>)>,
     placed: (u64, Rect, bool, Rect),
+    scrollback: Scrollback,
     highlight: CellData,
     painted: Overlays,
     relayout: bool,
@@ -300,20 +397,16 @@ pub(super) struct Surface {
 }
 
 impl Surface {
-    pub(super) fn new(
-        host: Geometry,
-        chrome: PaneChrome,
-        outer: Chrome,
-        palette: Palette,
-        scrollbars: bool,
-        copying: Copying,
-        keybinds: LiveKeybindConfig,
-    ) -> Self {
-        let mut highlight = ratatui::buffer::Cell::default();
-        highlight.set_style(crate::ui::automatic_selection_style(
-            &palette,
-            crate::terminal_theme::TerminalTheme::default(),
-        ));
+    pub(super) fn new(host: Geometry, outer: Chrome, settings: Settings) -> Self {
+        let Settings {
+            chrome,
+            palette,
+            scrollbars,
+            copying,
+            keybinds,
+            confirm_close,
+            scrollback,
+        } = settings;
         Self {
             session: Session::default(),
             views: HashMap::new(),
@@ -327,6 +420,7 @@ impl Surface {
             chrome,
             outer,
             areas: crate::ui::chrome::Layout::default(),
+            highlight: highlight(&palette),
             palette,
             host,
             scrollbars,
@@ -335,7 +429,7 @@ impl Surface {
             select: Select::new(copying.on_select),
             copy: None,
             dialog: None,
-            confirm_close: false,
+            confirm_close,
             resizing: false,
             prefixed: false,
             keybinds,
@@ -344,7 +438,7 @@ impl Surface {
             notices: Notices::default(),
             notice: None,
             placed: Default::default(),
-            highlight: CellData::from_ratatui_cell(&highlight),
+            scrollback,
             painted: Overlays::default(),
             relayout: true,
             laid_for: None,
@@ -360,6 +454,50 @@ impl Surface {
         self
     }
 
+    pub(super) fn configure(&mut self, config: &Config) {
+        let Settings {
+            chrome,
+            palette,
+            scrollbars,
+            copying,
+            keybinds,
+            confirm_close,
+            scrollback,
+        } = Settings::from(config);
+        self.outer.configure(config);
+        self.chrome = chrome;
+        self.highlight = highlight(&palette);
+        self.palette = palette;
+        self.scrollbars = scrollbars;
+        self.select.copy_on_select(copying.on_select);
+        self.toast_at = copying.toast;
+        self.toast = None;
+        self.keybinds = keybinds;
+        self.confirm_close = confirm_close;
+        self.scrollback = scrollback;
+        self.notices.configure(Notifying::from_config(config));
+        for shown in self.views.values_mut() {
+            shown.view.scroll_by(scrollback.wheel_lines);
+        }
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.restyle();
+        }
+        self.relayout = true;
+    }
+
+    pub(super) fn keybinds(&self) -> &LiveKeybindConfig {
+        &self.keybinds
+    }
+
+    pub(super) fn scrollback(&self) -> Scrollback {
+        self.scrollback
+    }
+
+    pub(super) fn confirms_close(&self) -> bool {
+        self.confirm_close
+    }
+
+    #[cfg(test)]
     pub(super) fn confirming_close(mut self, confirm_close: bool) -> Self {
         self.confirm_close = confirm_close;
         self
@@ -1083,7 +1221,8 @@ impl Surface {
             .iter()
             .any(|tile| tile.info.id == id && !tile.info.inner_rect.is_empty());
         match view {
-            Ok(view) if !detached && self.terminal(id).is_some() => {
+            Ok(mut view) if !detached && self.terminal(id).is_some() => {
+                view.scroll_by(self.scrollback.wheel_lines);
                 self.relayout |= on_screen;
                 self.views.insert(
                     id,

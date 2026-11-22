@@ -928,3 +928,28 @@ fn characters_typed_with_no_pane_to_take_them_on_a_host_without_releases_leave_n
 
     assert!(keys.leases.is_empty());
 }
+
+#[test]
+fn a_rebind_routes_the_new_bindings_and_still_sends_a_held_key_to_the_pane_that_took_it() {
+    let mut keys = keys();
+    let up = TerminalKey::new(KeyCode::Up, KeyModifiers::NONE);
+    let next = key('n', KeyModifiers::CONTROL);
+    assert_eq!(press_in(&mut keys, &up, left()), [Outcome::Pane(left())]);
+
+    keys.rebind(LiveKeybindConfig {
+        prefix: Config::default().prefix_keys(),
+        keybinds: Keybinds {
+            previous_tab: ActionKeybinds::direct("ctrl+n"),
+            ..Config::default().keybinds()
+        },
+    });
+
+    assert_eq!(
+        press(&mut keys, &next),
+        [Outcome::Action(KeybindAction::PreviousTab)]
+    );
+    assert_eq!(
+        press_in(&mut keys, &up.with_kind(KeyEventKind::Release), right()),
+        [Outcome::Pane(left())]
+    );
+}

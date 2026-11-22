@@ -16,19 +16,23 @@ fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface
 fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
     Surface::new(
         host(cols, rows),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: false,
-            outer_borders: true,
-        },
         outer,
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: Some(ToastClipboardPosition::BottomCenter),
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: Some(ToastClipboardPosition::BottomCenter),
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
         },
-        keybinds(),
     )
 }
 
@@ -1818,6 +1822,7 @@ mod drag;
 mod menu;
 mod mobile;
 mod navigate;
+mod reload;
 
 #[tokio::test]
 async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {

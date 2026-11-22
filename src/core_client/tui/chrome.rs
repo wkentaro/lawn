@@ -58,6 +58,8 @@ struct Drawn {
     focused_tab: Option<usize>,
     zoomed: bool,
     status: Vec<(String, bool)>,
+    indicators: StatusIndicatorStyle,
+    separator: String,
     tab_statuses: Vec<String>,
     statuses: Vec<AgentStatus>,
     tab_marks: Vec<Option<(AgentStatus, usize)>>,
@@ -158,9 +160,16 @@ impl Drawn {
         })
     }
 
-    fn tab_widths(&self, indicators: StatusIndicatorStyle) -> impl Iterator<Item = u16> + '_ {
+    fn tab_widths(&self) -> impl Iterator<Item = u16> + '_ {
         self.strip()
-            .map(move |tab| paint::tab_width(&tab, indicators))
+            .map(move |tab| paint::tab_width(&tab, self.indicators))
+    }
+
+    fn tab_space(&self) -> Rect {
+        paint::tab_bar_content_area(
+            self.layout.tab_bar,
+            paint::tab_bar_status_width(self.status(), &self.separator),
+        )
     }
 
     fn rows_like(&self, other: &Drawn, drag: &Drag) -> bool {
@@ -300,6 +309,56 @@ impl Chrome {
         };
         chrome.width = chrome.bounded(chrome.width);
         chrome
+    }
+
+    pub(super) fn configure(&mut self, config: &Config) {
+        let Self {
+            settings,
+            width,
+            default_width,
+            width_manual: _,
+            spaces,
+            indicators,
+            sort,
+            entries,
+            separator,
+            collapsed: _,
+            collapsed_manual: _,
+            divider_click: _,
+            preferences: _,
+            unsaved: _,
+            recheck: _,
+            redraw: _,
+            tab_bar: _,
+            workspace_scroll: _,
+            reveal_selection: _,
+            reveal_focus: _,
+            drawn: _,
+            rows: _,
+            hits: _,
+            press: _,
+            hidden: _,
+            pressed: _,
+            drag: _,
+            navigate: _,
+            navigate_sessions: _,
+            cover: _,
+            reveal: _,
+            bar: _,
+            help,
+        } = Self::new(config);
+        self.settings = settings;
+        self.default_width = default_width;
+        if !self.width_manual {
+            self.width = width;
+        }
+        self.spaces = spaces;
+        self.indicators = indicators;
+        self.sort = sort;
+        self.entries = entries;
+        self.separator = separator;
+        self.help = help;
+        self.redraw = true;
     }
 
     pub(super) fn remembering(mut self, path: PathBuf) -> Self {
@@ -925,12 +984,8 @@ impl Chrome {
             previous.tabs != drawn.tabs
                 || previous.focused_tab != drawn.focused_tab
                 || previous.zoomed != drawn.zoomed
-                || !previous
-                    .tab_widths(self.indicators)
-                    .eq(drawn.tab_widths(self.indicators))
-                || previous.layout.tab_bar.width != drawn.layout.tab_bar.width
-                || paint::tab_bar_status_width(previous.status(), &self.separator)
-                    != paint::tab_bar_status_width(drawn.status(), &self.separator)
+                || !previous.tab_widths().eq(drawn.tab_widths())
+                || previous.tab_space().width != drawn.tab_space().width
         }) {
             self.tab_bar.reveal_focused = true;
         }
@@ -1010,6 +1065,8 @@ impl Chrome {
                         .map(|text| (text, false)),
                 })
                 .collect(),
+            indicators: self.indicators,
+            separator: self.separator.clone(),
             tab_statuses: if !mobile {
                 Vec::new()
             } else {
@@ -1427,10 +1484,7 @@ impl Chrome {
         let area = drawn.layout.tab_bar;
         buffer.set_style(area, Style::default().bg(palette.panel_bg));
         let tabs: Vec<_> = drawn.strip().collect();
-        let content = paint::tab_bar_content_area(
-            area,
-            paint::tab_bar_status_width(drawn.status(), &self.separator),
-        );
+        let content = drawn.tab_space();
         let mut hits = Vec::new();
         let outcome = paint::render_tab_strip(
             buffer,

@@ -62,6 +62,10 @@ impl Keys {
         }
     }
 
+    pub(super) fn rebind(&mut self, config: LiveKeybindConfig) {
+        self.config = config;
+    }
+
     pub(super) fn route_host(
         &mut self,
         key: TerminalKey,

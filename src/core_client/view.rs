@@ -346,6 +346,10 @@ impl View {
         self.runtime.content_seq()
     }
 
+    pub(crate) fn scroll_by(&mut self, wheel_lines: usize) {
+        self.wheel_lines = wheel_lines.max(1);
+    }
+
     pub(crate) fn wheel_lines(&self) -> usize {
         self.wheel_lines
     }

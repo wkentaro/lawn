@@ -25,19 +25,23 @@ fn notifying_on(cols: u16, rows: u16, configure: impl FnOnce(&mut Notifying)) ->
     config.ui.sidebar_start_collapsed = true;
     let mut surface = Surface::new(
         host(cols, rows),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: false,
-            outer_borders: true,
-        },
         Chrome::new(&config),
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: Some(ToastClipboardPosition::BottomRight),
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: Some(ToastClipboardPosition::BottomRight),
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
         },
-        keybinds(),
     )
     .notifying(notifying);
     surface.update(paired());
@@ -1003,4 +1007,53 @@ async fn a_press_on_the_toast_in_navigate_mode_opens_nothing_and_acts_as_it_woul
     assert!(shown);
     assert_ne!(with_toast.0.as_deref(), Some("t5"));
     assert_eq!(with_toast, without);
+}
+
+#[tokio::test]
+async fn a_reloaded_config_changes_how_the_next_notice_is_delivered() {
+    let mut surface = notifying(|notifying| notifying.delivery = ToastDelivery::Off);
+    let mut config = Config::default();
+    config.ui.sidebar_start_collapsed = true;
+    config.ui.toast.delivery = ToastDelivery::System;
+    config.ui.toast.delay_seconds = 0;
+
+    surface.configure(&config);
+
+    assert_eq!(
+        says(&mut surface, "t3", &["blocked"], Instant::now()),
+        [
+            Effect::Sound(Sound::Request),
+            Effect::System {
+                title: "claude needs attention".to_owned(),
+                body: "main · 1 · 2".to_owned(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_reloaded_config_moves_the_shown_toast_and_shows_no_queued_one_once_toasts_are_off() {
+    let mut surface = herdr();
+    let now = Instant::now();
+    says(&mut surface, "t3", &["blocked"], now);
+    says(&mut surface, "t5", &["blocked"], now);
+    assert!(showing(&mut surface, "main · 1 · 2"));
+    let first = notice(&surface);
+    let mut config = Config::default();
+    config.ui.sidebar_start_collapsed = true;
+    config.ui.toast.delivery = ToastDelivery::Herdr;
+    config.ui.toast.herdr.position = ToastHerdrPosition::TopLeft;
+
+    surface.configure(&config);
+
+    assert!(showing(&mut surface, "main · 1 · 2"));
+    let moved = notice(&surface);
+    assert_ne!((moved.x, moved.y), (first.x, first.y));
+
+    config.ui.toast.delivery = ToastDelivery::Off;
+    surface.configure(&config);
+    surface.due(now + Duration::from_secs(8));
+
+    assert!(!showing(&mut surface, "other · 2"));
+    assert!(surface.notice.is_none());
 }
