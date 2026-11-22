@@ -1815,6 +1815,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 }
 
 mod drag;
+mod menu;
 mod mobile;
 mod navigate;
 

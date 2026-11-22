@@ -490,6 +490,30 @@ fn arrange_swaps_a_pane_with_its_shown_neighbour_toward_the_key_and_reports_only
     assert_eq!(layout, before);
 }
 
+#[test]
+fn arrange_swaps_two_shown_panes_of_one_tab_and_refuses_any_other_pair() {
+    let mut layout = one_workspace(split(Direction::Right, pane("a"), pane("b")));
+    layout.add_tab("ws0", None, "c".to_owned());
+    let swapping = |terminal: &str, with: &str| Arrangement::SwapWith {
+        terminal: terminal.to_owned(),
+        with: with.to_owned(),
+    };
+    assert!(layout.arrange(&swapping("a", "b")));
+    assert_eq!(
+        layout.workspaces[0].tabs[0].root,
+        split(Direction::Right, pane("b"), pane("a"))
+    );
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&swapping("a", "c")));
+    assert!(!layout.arrange(&swapping("a", "z")));
+    layout.parked.insert("b".to_owned());
+    assert!(!layout.arrange(&swapping("a", "b")));
+    assert!(!layout.arrange(&swapping("b", "a")));
+    layout.parked.clear();
+    assert_eq!(layout, before);
+}
+
 fn ratios(node: &Node) -> Vec<f32> {
     match node {
         Node::Pane { .. } => Vec::new(),

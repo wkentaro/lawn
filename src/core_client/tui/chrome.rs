@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use time::format_description::OwnedFormatItem;
 
 use self::mobile::{Switcher, Target};
+use super::dialog::Aim;
 use super::session::{Operation, Session};
 use super::surface::Pointed;
 use crate::api::schema::AgentStatus;
@@ -613,6 +614,18 @@ impl Chrome {
 
     fn covered(&self, point: Position) -> bool {
         self.hidden.contains(point) || self.bar.as_ref().is_some_and(|bar| bar.0.contains(point))
+    }
+
+    pub(super) fn pressing(&self) -> bool {
+        self.press.is_some()
+    }
+
+    pub(super) fn aimed(&self, point: Position) -> Option<Aim> {
+        match self.over(point)? {
+            Press::Workspace(id) => Some(Aim::Workspace(id)),
+            Press::Tab(id) => Some(Aim::Tab(id)),
+            Press::Thumb(_) | Press::Width => None,
+        }
     }
 
     fn over(&self, point: Position) -> Option<Press> {

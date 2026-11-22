@@ -254,7 +254,8 @@ mod unix {
             },
             keybinds.clone(),
         )
-        .notifying(Notifying::from_config(&config));
+        .notifying(Notifying::from_config(&config))
+        .confirming_close(config.ui.confirm_close);
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
             guard.take_buffered_host_input(),
@@ -289,8 +290,7 @@ mod unix {
         };
         let run = |surface: &Surface, operation: Operation| {
             let cwd = surface
-                .focused()
-                .and_then(View::cwd)
+                .folder(&operation)
                 .unwrap_or_else(|| launched_in.clone());
             if matches!(operation, Operation::Arrange(_)) {
                 edits.set(edits.get() + 1);

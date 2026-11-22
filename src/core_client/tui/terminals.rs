@@ -51,7 +51,7 @@ pub(super) struct Moved {
 
 #[derive(Default)]
 pub(super) struct Terminals {
-    folder_names: HashMap<String, String>,
+    folders: HashMap<String, (PathBuf, String)>,
     statuses: HashMap<String, Status>,
     names: HashMap<String, String>,
     changes: u64,
@@ -61,7 +61,11 @@ pub(super) struct Terminals {
 
 impl Terminals {
     pub(super) fn folder_name(&self, terminal: &str) -> Option<&str> {
-        self.folder_names.get(terminal).map(String::as_str)
+        self.folders.get(terminal).map(|(_, name)| name.as_str())
+    }
+
+    pub(super) fn folder(&self, terminal: &str) -> Option<&PathBuf> {
+        self.folders.get(terminal).map(|(folder, _)| folder)
     }
 
     pub(super) fn name(&self, terminal: &str) -> Option<&str> {
@@ -99,11 +103,16 @@ impl Terminals {
             Report::Snapshot { folders, statuses } => {
                 let known = folders
                     .into_iter()
-                    .map(|(terminal, folder)| (terminal, derive_label_from_cwd(&folder)))
+                    .map(|(terminal, folder)| {
+                        let name = derive_label_from_cwd(&folder);
+                        (terminal, (folder, name))
+                    })
                     .collect();
-                let old = std::mem::replace(&mut self.folder_names, known);
-                let mut drawn = old.keys().chain(self.folder_names.keys()).any(|terminal| {
-                    names(terminal) && old.get(terminal) != self.folder_names.get(terminal)
+                let old = std::mem::replace(&mut self.folders, known);
+                let mut drawn = old.keys().chain(self.folders.keys()).any(|terminal| {
+                    names(terminal)
+                        && old.get(terminal).map(|(_, name)| name.as_str())
+                            != self.folder_name(terminal)
                 });
                 let listed: HashSet<&str> = statuses
                     .iter()
@@ -127,8 +136,8 @@ impl Terminals {
             }
             Report::Folder(terminal, folder) => {
                 let name = derive_label_from_cwd(&folder);
-                let renamed = names(&terminal) && self.folder_names.get(&terminal) != Some(&name);
-                self.folder_names.insert(terminal, name);
+                let renamed = names(&terminal) && self.folder_name(&terminal) != Some(&name);
+                self.folders.insert(terminal, (folder, name));
                 renamed
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows, &parks),

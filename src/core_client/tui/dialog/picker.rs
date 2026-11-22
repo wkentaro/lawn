@@ -42,8 +42,8 @@ pub(super) enum Target {
 }
 
 impl Move {
-    pub(in crate::core_client::tui) fn of(session: &Session) -> Option<Self> {
-        let terminal = session.focused()?.to_owned();
+    pub(in crate::core_client::tui) fn of(session: &Session, terminal: &str) -> Option<Self> {
+        let terminal = terminal.to_owned();
         title(session, &terminal)?;
         let workspace = session.focused_workspace()?.id.clone();
         Some(Self {

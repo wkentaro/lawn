@@ -1,6 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
@@ -10,7 +11,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
-use super::dialog::{Dialog, Modal, Move, Outcome, Rename};
+use super::dialog::{Aim, Change, Dialog, Item, Menu, Modal, Move, Outcome, Rename};
 use super::gate::Gate;
 use super::keys::Navigation;
 use super::notices::{Effect, Notices, Notifying};
@@ -24,7 +25,7 @@ use crate::layout::{PaneId, SplitBorder};
 use crate::pane::{ScrollMetrics, MIN_PANE_COLS, MIN_PANE_ROWS};
 use crate::protocol::{CellData, CursorState, PaneSurfacePatchRow};
 use crate::raw_input::RawInputEvent;
-use crate::session_doc::{Arrangement, Layout, Loaded};
+use crate::session_doc::{Arrangement, Destination, Layout, Loaded};
 use crate::ui::theme::Palette;
 use crate::ui::ScrollbarThumb;
 
@@ -279,6 +280,7 @@ pub(super) struct Surface {
     select: Select,
     copy: Option<CopyMode>,
     dialog: Option<Modal>,
+    confirm_close: bool,
     resizing: bool,
     prefixed: bool,
     keybinds: LiveKeybindConfig,
@@ -333,6 +335,7 @@ impl Surface {
             select: Select::new(copying.on_select),
             copy: None,
             dialog: None,
+            confirm_close: false,
             resizing: false,
             prefixed: false,
             keybinds,
@@ -357,17 +360,31 @@ impl Surface {
         self
     }
 
+    pub(super) fn confirming_close(mut self, confirm_close: bool) -> Self {
+        self.confirm_close = confirm_close;
+        self
+    }
+
     pub(super) fn holds(&self, layout: &Layout) -> bool {
         self.session.holds(layout)
     }
 
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
-        if let Some(dialog) = self.dialog.as_mut() {
-            dialog.session_changed();
-        }
         self.owned = self.session.owned();
         self.reflow();
+        self.session_changed(Change::Layout);
+    }
+
+    fn session_changed(&mut self, change: Change) {
+        let session = &self.session;
+        if !self
+            .dialog
+            .as_mut()
+            .is_none_or(|dialog| dialog.session_changed(session, change))
+        {
+            self.dialog = None;
+        }
     }
 
     pub(super) fn act(&mut self, action: KeybindAction, confirm_close: bool) -> Option<Operation> {
@@ -395,7 +412,11 @@ impl Surface {
             return None;
         }
         if action == KeybindAction::MovePane {
-            if let Some(moving) = Move::of(&self.session) {
+            if let Some(moving) = self
+                .session
+                .focused()
+                .and_then(|terminal| Move::of(&self.session, terminal))
+            {
                 self.open(Dialog::Move(moving));
             }
             return None;
@@ -410,14 +431,19 @@ impl Surface {
         let area = self.lay_out_chrome().pane_surface;
         if self.session.navigate(action, area, self.chrome) {
             self.reflow();
+            self.session_changed(Change::Layout);
         }
         if let Some(arrangement) = self.session.arrangement(action, area) {
             return Some(Operation::Arrange(arrangement));
         }
-        match self
+        let request = self
             .session
-            .operation(action, confirm_close, self.outer.selected())?
-        {
+            .operation(action, confirm_close, self.outer.selected());
+        self.request(request)
+    }
+
+    fn request(&mut self, request: Option<Request>) -> Option<Operation> {
+        match request? {
             Request::Run(operation) => Some(operation),
             Request::Confirm(closing) => {
                 self.open(Dialog::Confirm(closing));
@@ -426,10 +452,94 @@ impl Surface {
         }
     }
 
+    fn choose(&mut self, aim: Aim, item: Item) -> Option<Operation> {
+        let confirm_close = self.confirm_close;
+        let (terminal, action) = match (aim, item) {
+            (Aim::Workspace(id), Item::Rename) => {
+                let workspace = self.session.workspaces().iter().find(|w| w.id == id)?;
+                let rename = Rename::workspace(&self.session, workspace);
+                self.open(Dialog::Rename(rename));
+                return None;
+            }
+            (Aim::Workspace(id), Item::Close) => {
+                let request =
+                    self.session
+                        .operation(KeybindAction::CloseWorkspace, confirm_close, Some(&id));
+                return self.request(request);
+            }
+            (Aim::Tab(id), item) => {
+                let action = match item {
+                    Item::NewTab => KeybindAction::NewTab,
+                    Item::Rename => KeybindAction::RenameTab,
+                    Item::Close => KeybindAction::CloseTab,
+                    _ => return None,
+                };
+                let index = self
+                    .session
+                    .focused_workspace()?
+                    .tabs
+                    .iter()
+                    .position(|tab| tab.id == id)?;
+                self.act(KeybindAction::SwitchTab(index), confirm_close);
+                return self.act(action, confirm_close);
+            }
+            (Aim::Pane(terminal), item) => match item {
+                Item::RenamePane => {
+                    if let Some(rename) = Rename::pane(&self.session, &terminal) {
+                        self.open(Dialog::Rename(rename));
+                    }
+                    return None;
+                }
+                Item::Move => {
+                    if let Some(moving) = Move::of(&self.session, &terminal) {
+                        self.open(Dialog::Move(moving));
+                    }
+                    return None;
+                }
+                Item::ClearPaneName => {
+                    return Some(Operation::Name {
+                        terminal,
+                        name: String::new(),
+                    });
+                }
+                Item::SwapWithFocused(focused) => {
+                    return Some(Operation::Arrange(Arrangement::SwapWith {
+                        terminal: focused,
+                        with: terminal,
+                    }));
+                }
+                Item::Zoom => {
+                    if self.session.focus(&terminal) {
+                        self.relayout = true;
+                        self.sync_focus();
+                    }
+                    if self.session.focused() != Some(terminal.as_str()) {
+                        return None;
+                    }
+                    return self.act(KeybindAction::Zoom, confirm_close);
+                }
+                Item::Park => (terminal, KeybindAction::ParkPane),
+                Item::SplitRight => (terminal, KeybindAction::SplitVertical),
+                Item::SplitDown => (terminal, KeybindAction::SplitHorizontal),
+                Item::ClosePane => (terminal, KeybindAction::ClosePane),
+                Item::Rename | Item::Close | Item::NewTab => return None,
+            },
+            (Aim::Workspace(_), _) => return None,
+        };
+        let request = self.session.operation_on(&terminal, action, confirm_close);
+        self.request(request)
+    }
+
     fn open(&mut self, dialog: Dialog) {
         self.let_go();
         self.outer.leave();
         self.dialog = Some(Modal::new(dialog));
+    }
+
+    fn open_menu(&mut self, menu: Menu) {
+        if menu.on_screen(&self.session) {
+            self.open(Dialog::Menu(menu));
+        }
     }
 
     fn let_go(&mut self) {
@@ -491,7 +601,10 @@ impl Surface {
         }
         let dialog = self.dialog.take()?;
         match outcome {
-            Outcome::Accept => dialog.accepted(&self.session),
+            Outcome::Accept => match dialog.chosen(&self.session) {
+                Some((aim, item)) => self.choose(aim, item),
+                None => dialog.accepted(&self.session),
+            },
             Outcome::Stay | Outcome::Close => None,
         }
     }
@@ -532,11 +645,15 @@ impl Surface {
     }
 
     fn hear(&mut self, report: Report) {
-        let statuses = matches!(report, Report::Status(..) | Report::Removed(_));
-        if let Some(dialog) = self.dialog.as_mut().filter(|_| !statuses) {
-            dialog.session_changed();
+        let change = match report {
+            Report::Status(..) | Report::Removed(_) => None,
+            Report::Names(_) | Report::Name(..) => Some(Change::Names),
+            Report::Snapshot { .. } | Report::Folder(..) => Some(Change::Folders),
+        };
+        if let Some(change) = change {
+            self.session_changed(change);
         }
-        let names = matches!(report, Report::Names(_) | Report::Name(..));
+        let names = change == Some(Change::Names);
         let tiles = &self.tiles.tiles;
         if self.session.heard(report, |terminal| {
             tiles.iter().any(|tile| {
@@ -613,6 +730,7 @@ impl Surface {
     pub(super) fn created(&mut self, terminal: String) {
         if self.session.created(terminal) {
             self.reflow();
+            self.session_changed(Change::Layout);
         }
     }
 
@@ -1020,6 +1138,17 @@ impl Surface {
         self.view(self.session.focused_id()?)
     }
 
+    pub(super) fn folder(&self, operation: &Operation) -> Option<PathBuf> {
+        let terminal = match operation {
+            Operation::Start(Destination::Split { beside, .. }) => beside,
+            _ => self.session.focused()?,
+        };
+        self.session
+            .id_of(terminal)
+            .and_then(|id| self.view(id)?.cwd())
+            .or_else(|| self.session.folder(terminal).cloned())
+    }
+
     pub(super) fn view(&self, id: PaneId) -> Option<&View> {
         self.targets
             .contains(&id)
@@ -1122,7 +1251,20 @@ impl Surface {
             true => self.painted.copy.bar,
             false => self.painted.resize,
         };
+        let right = event.kind == MouseEventKind::Down(MouseButton::Right);
+        if right && self.outer.pressing() {
+            return None;
+        }
+        let menu = right && !self.copy_mode() && !self.resizing;
         if self.outer.claim(event, hidden) {
+            if let Some(aim) = menu
+                .then(|| self.outer.aimed(point))
+                .flatten()
+                .filter(|_| !self.outer.switching())
+            {
+                self.open_menu(Menu::new(aim, point));
+                return None;
+            }
             if press {
                 self.select.press(None, event, now);
             }
@@ -1143,6 +1285,19 @@ impl Surface {
                 self.reflow();
             }
             return pointed;
+        }
+        if menu {
+            if let Some(tile) = self
+                .tiles
+                .tiles
+                .iter()
+                .find(|tile| tile.info.rect.contains(point))
+                .filter(|_| !self.relayout && !hidden.contains(point))
+            {
+                let aim = Aim::Pane(tile.terminal.clone());
+                self.open_menu(Menu::new(aim, point));
+            }
+            return None;
         }
         if press && !hidden.contains(point) {
             self.splitting = self.split_at(point);

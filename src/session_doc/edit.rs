@@ -47,6 +47,10 @@ pub(crate) enum Arrangement {
         toward: NavDirection,
         area: Rect,
     },
+    SwapWith {
+        terminal: String,
+        with: String,
+    },
     Resize {
         terminal: String,
         toward: NavDirection,
@@ -115,6 +119,15 @@ impl Layout {
                     tab.root.swap(terminal, &with);
                 }
                 true
+            }
+            Arrangement::SwapWith { terminal, with } => {
+                if !self.shows(terminal) || !self.shows(with) {
+                    return false;
+                }
+                tab_mut(&mut self.workspaces, terminal)
+                    .filter(|tab| tab.root.contains(with))
+                    .map(|tab| tab.root.swap(terminal, with))
+                    .is_some()
             }
             Arrangement::Resize {
                 terminal,
