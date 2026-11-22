@@ -1,26 +1,30 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::{
-    follow, name_reported, names, rename, reported, snapshot, status_reported, statuses, Report,
-    Status, Terminals,
-};
+use super::{follow, name_reported, names, rename, reported, snapshot, Report, Status, Terminals};
 use crate::api::schema::AgentStatus;
 use crate::core_lifecycle::Lifecycle;
+use crate::detect::AgentState;
 use crate::hc::test_support::TestCore;
 use crate::pane::{core_status, CoreStatus};
 use crate::session_doc::Destination;
 
-fn folders(pairs: &[(&str, &str)]) -> Report {
-    Report::Snapshot(
-        pairs
-            .iter()
-            .map(|(terminal, folder)| ((*terminal).to_owned(), folder.into()))
-            .collect(),
-    )
+fn folders(pairs: &[(&str, &str)]) -> HashMap<String, PathBuf> {
+    pairs
+        .iter()
+        .map(|(terminal, folder)| ((*terminal).to_owned(), folder.into()))
+        .collect()
+}
+
+fn folders_in(report: Option<Report>) -> Option<HashMap<String, PathBuf>> {
+    match report? {
+        Report::Snapshot { folders, .. } => Some(folders),
+        _ => None,
+    }
 }
 
 #[test]
@@ -31,8 +35,8 @@ fn a_snapshot_reports_each_terminal_in_the_folder_it_started_in() {
     ]});
 
     assert_eq!(
-        snapshot(&message),
-        folders(&[("t1", "/srv/app"), ("t2", "/tmp")])
+        folders_in(Some(snapshot(&message))),
+        Some(folders(&[("t1", "/srv/app"), ("t2", "/tmp")]))
     );
 }
 
@@ -42,7 +46,10 @@ fn a_snapshot_reports_the_folder_the_program_is_in_now_over_the_one_it_started_i
         {"address": "t1", "cwd": "/srv/app", "foreground": {"cwd": "/srv/app/src", "pid": 7}},
     ]});
 
-    assert_eq!(snapshot(&message), folders(&[("t1", "/srv/app/src")]));
+    assert_eq!(
+        folders_in(Some(snapshot(&message))),
+        Some(folders(&[("t1", "/srv/app/src")]))
+    );
 }
 
 #[test]
@@ -80,17 +87,33 @@ fn a_created_event_reports_the_new_terminal_in_its_folder() {
     );
 }
 
-#[test]
-fn a_missed_message_reports_a_fresh_snapshot() {
-    let message = json!({"method": "missed", "params": {"terminals": [
-        {"address": "t2", "cwd": "/srv/app"},
-    ]}});
-
-    assert_eq!(reported(&message), Some(folders(&[("t2", "/srv/app")])));
-}
-
 fn said(state: &str) -> CoreStatus {
     core_status(&json!({"state": state, "app": "claude"}))
+}
+
+fn stated(pairs: &[(&str, CoreStatus)]) -> Report {
+    Report::Snapshot {
+        folders: HashMap::new(),
+        statuses: pairs
+            .iter()
+            .map(|(terminal, status)| ((*terminal).to_owned(), *status))
+            .collect(),
+    }
+}
+
+#[test]
+fn a_missed_message_reports_one_fresh_snapshot_of_folders_and_statuses() {
+    let message = json!({"method": "missed", "params": {"terminals": [
+        {"address": "t2", "cwd": "/srv/app", "status": {"state": "idle", "app": "claude"}},
+    ]}});
+
+    assert_eq!(
+        reported(&message),
+        Some(Report::Snapshot {
+            folders: folders(&[("t2", "/srv/app")]),
+            statuses: [("t2".to_owned(), said("idle"))].into_iter().collect(),
+        })
+    );
 }
 
 fn told(terminals: &mut Terminals, states: &[&str]) -> Option<AgentStatus> {
@@ -99,6 +122,7 @@ fn told(terminals: &mut Terminals, states: &[&str]) -> Option<AgentStatus> {
             Report::Status("t1".to_owned(), said(state)),
             |_| false,
             |_| true,
+            |_| false,
         );
     }
     terminals.status("t1").map(Status::shown)
@@ -112,15 +136,8 @@ fn a_snapshot_reports_each_terminals_status_and_no_status_for_one_without() {
     ]});
 
     assert_eq!(
-        statuses(&message),
-        Report::Statuses(
-            [
-                ("t1".to_owned(), said("working")),
-                ("t2".to_owned(), core_status(&json!(null))),
-            ]
-            .into_iter()
-            .collect()
-        )
+        snapshot(&message),
+        stated(&[("t1", said("working")), ("t2", core_status(&json!(null)))])
     );
 }
 
@@ -131,22 +148,8 @@ fn a_status_event_reports_the_status_the_program_sent() {
     }});
 
     assert_eq!(
-        status_reported(&message),
+        reported(&message),
         Some(Report::Status("t1".to_owned(), said("blocked")))
-    );
-}
-
-#[test]
-fn a_missed_message_reports_fresh_statuses() {
-    let message = json!({"method": "missed", "params": {"terminals": [
-        {"address": "t2", "status": {"state": "idle", "app": "claude"}},
-    ]}});
-
-    assert_eq!(
-        status_reported(&message),
-        Some(Report::Statuses(
-            [("t2".to_owned(), said("idle"))].into_iter().collect()
-        ))
     );
 }
 
@@ -220,7 +223,12 @@ fn a_state_lawn_does_not_know_forgets_the_status() {
 fn a_report_draws_only_when_the_agent_or_what_it_shows_changes() {
     let mut terminals = Terminals::default();
     let mut hear = |status: CoreStatus| {
-        terminals.hear(Report::Status("t1".to_owned(), status), |_| false, |_| true)
+        terminals.hear(
+            Report::Status("t1".to_owned(), status),
+            |_| false,
+            |_| true,
+            |_| false,
+        )
     };
 
     assert!(hear(said("working")));
@@ -239,6 +247,7 @@ fn a_report_for_a_terminal_no_layout_shows_draws_nothing() {
     assert!(!terminals.hear(
         Report::Status("t1".to_owned(), said("working")),
         |_| false,
+        |_| false,
         |_| false
     ));
     assert_eq!(
@@ -252,7 +261,7 @@ fn a_fresh_status_snapshot_forgets_the_terminals_it_no_longer_lists() {
     let mut terminals = Terminals::default();
     told(&mut terminals, &["working"]);
 
-    assert!(terminals.hear(Report::Statuses(Default::default()), |_| false, |_| true));
+    assert!(terminals.hear(stated(&[]), |_| false, |_| true, |_| false));
     assert_eq!(terminals.status("t1"), None);
 }
 
@@ -337,6 +346,7 @@ fn a_name_draws_only_when_a_shown_terminals_name_changes() {
             Report::Name(terminal.to_owned(), name.map(str::to_owned)),
             |_| false,
             |terminal| terminal == "t1",
+            |_| false,
         )
     };
 
@@ -351,18 +361,24 @@ fn a_name_draws_only_when_a_shown_terminals_name_changes() {
 #[test]
 fn a_fresh_name_snapshot_forgets_the_names_it_no_longer_lists() {
     let mut terminals = Terminals::default();
-    terminals.hear(named(&[("t1", "build")]), |_| false, |_| true);
+    terminals.hear(named(&[("t1", "build")]), |_| false, |_| true, |_| false);
     assert_eq!(terminals.name("t1"), Some("build"));
 
-    assert!(terminals.hear(named(&[]), |_| false, |_| true));
+    assert!(terminals.hear(named(&[]), |_| false, |_| true, |_| false));
     assert_eq!(terminals.name("t1"), None);
+}
+
+fn followed() -> mpsc::UnboundedReceiver<Report> {
+    let (reports, received) = mpsc::unbounded_channel();
+    follow(reports).expect("follow");
+    received
 }
 
 async fn until_seen(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: &str) -> String {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let folder = match reports.recv().await.expect("the follower stopped") {
-                Report::Snapshot(folders) => folders.get(terminal).cloned(),
+                Report::Snapshot { folders, .. } => folders.get(terminal).cloned(),
                 Report::Folder(reported, folder) if reported == terminal => Some(folder),
                 _ => None,
             };
@@ -384,7 +400,7 @@ async fn the_follower_reports_each_new_terminal_and_follows_again_after_the_core
     crate::hc::use_core_for_test();
     test.share();
     let argv = ["sleep".to_owned(), "60".to_owned()];
-    let mut reports = follow().expect("follow");
+    let mut reports = followed();
     let first = Lifecycle::new(test.core.clone(), "followed")
         .start_first(Path::new("/"), &argv)
         .expect("start")
@@ -394,7 +410,7 @@ async fn the_follower_reports_each_new_terminal_and_follows_again_after_the_core
 
     test.disconnect();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while !matches!(reports.recv().await, Some(Report::Snapshot(_)) | None) {}
+        while !matches!(reports.recv().await, Some(Report::Snapshot { .. }) | None) {}
     })
     .await
     .expect("a fresh snapshot");
@@ -414,7 +430,9 @@ async fn until_working(reports: &mut mpsc::UnboundedReceiver<Report>, terminal: 
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let status = match reports.recv().await.expect("the follower stopped") {
-                Report::Statuses(statuses) => statuses.get(terminal).copied(),
+                Report::Snapshot { statuses, .. } => statuses
+                    .into_iter()
+                    .find_map(|(listed, status)| (listed == terminal).then_some(status)),
                 Report::Status(reported, status) if reported == terminal => Some(status),
                 _ => None,
             };
@@ -440,7 +458,7 @@ async fn the_follower_reports_the_status_a_program_sends_and_a_later_follower_fi
         "-c".to_owned(),
         r"printf '\033]7501;state=working:app=claude\033\\'; sleep 60".to_owned(),
     ];
-    let mut reports = follow().expect("follow");
+    let mut reports = followed();
     let terminal = Lifecycle::new(test.core.clone(), "followed")
         .start_first(Path::new("/"), &argv)
         .expect("start")
@@ -448,7 +466,7 @@ async fn the_follower_reports_the_status_a_program_sends_and_a_later_follower_fi
         .terminal;
     until_working(&mut reports, &terminal).await;
 
-    let mut later = follow().expect("follow");
+    let mut later = followed();
     until_working(&mut later, &terminal).await;
 }
 
@@ -481,7 +499,7 @@ async fn a_rename_reaches_every_follower_and_an_empty_name_removes_it() {
     crate::hc::use_core_for_test();
     test.share();
     let argv = ["sleep".to_owned(), "60".to_owned()];
-    let mut reports = follow().expect("follow");
+    let mut reports = followed();
     let terminal = Lifecycle::new(test.core.clone(), "followed")
         .start_first(Path::new("/"), &argv)
         .expect("start")
@@ -490,10 +508,80 @@ async fn a_rename_reaches_every_follower_and_an_empty_name_removes_it() {
 
     rename(&test.core, &terminal, "build").expect("renamed");
     until_named(&mut reports, &terminal, Some("build")).await;
-    let mut later = follow().expect("follow");
+    let mut later = followed();
     until_named(&mut later, &terminal, Some("build")).await;
 
     rename(&test.core, &terminal, "").expect("cleared");
     until_named(&mut reports, &terminal, None).await;
     until_named(&mut later, &terminal, None).await;
+}
+
+#[test]
+fn a_removed_event_reports_the_terminal_gone() {
+    let message =
+        json!({"method": "event", "params": {"type": "removed", "terminal": "t1", "data": {}}});
+
+    assert_eq!(reported(&message), Some(Report::Removed("t1".to_owned())));
+}
+
+fn held(terminals: &mut Terminals) -> Vec<(String, AgentState, AgentState)> {
+    terminals
+        .moves(|_| true)
+        .into_iter()
+        .map(|moved| (moved.terminal, moved.from, moved.to))
+        .collect()
+}
+
+#[test]
+fn a_change_for_a_terminal_no_layout_holds_is_kept_alone_until_one_does() {
+    let mut terminals = Terminals::default();
+    told(&mut terminals, &["working", "blocked"]);
+    assert!(terminals.moves(|_| false).is_empty());
+    told(&mut terminals, &["working", "done"]);
+
+    assert_eq!(
+        held(&mut terminals),
+        [("t1".to_owned(), AgentState::Working, AgentState::Idle)]
+    );
+    assert!(held(&mut terminals).is_empty());
+}
+
+#[test]
+fn a_kept_change_drops_when_the_core_removes_its_terminal() {
+    let mut terminals = Terminals::default();
+    told(&mut terminals, &["blocked"]);
+
+    assert!(terminals.hear(
+        Report::Removed("t1".to_owned()),
+        |_| false,
+        |_| true,
+        |_| false
+    ));
+    assert_eq!(terminals.status("t1"), None);
+    assert!(held(&mut terminals).is_empty());
+}
+
+#[test]
+fn a_kept_change_drops_when_a_fresh_snapshot_does_not_list_its_terminal() {
+    let mut terminals = Terminals::default();
+    terminals.hear(stated(&[]), |_| false, |_| true, |_| false);
+    told(&mut terminals, &["blocked"]);
+    terminals.hear(
+        Report::Status("t2".to_owned(), said("blocked")),
+        |_| false,
+        |_| true,
+        |_| false,
+    );
+
+    terminals.hear(
+        stated(&[("t2", said("blocked"))]),
+        |_| false,
+        |_| true,
+        |_| false,
+    );
+
+    assert_eq!(
+        held(&mut terminals),
+        [("t2".to_owned(), AgentState::Unknown, AgentState::Blocked)]
+    );
 }

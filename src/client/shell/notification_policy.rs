@@ -12,7 +12,7 @@ enum NotificationValidation {
     Stale,
 }
 
-fn notification_duration(kind: SemanticNotificationKind) -> std::time::Duration {
+pub(crate) fn notification_duration(kind: SemanticNotificationKind) -> std::time::Duration {
     std::time::Duration::from_secs(match kind {
         SemanticNotificationKind::NeedsAttention => 8,
         SemanticNotificationKind::Finished => 5,

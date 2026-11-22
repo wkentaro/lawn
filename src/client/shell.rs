@@ -30,6 +30,8 @@ mod navigator_preview;
 mod notification_policy;
 mod notifications;
 pub(crate) use navigator_preview::PreviewDisplay;
+pub(crate) use notification_policy::notification_duration;
+pub(crate) use notifications::{render_mobile_notice_banner, render_notification_card};
 mod overlay_input;
 pub(crate) mod preferences;
 mod render;

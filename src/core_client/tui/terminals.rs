@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use super::arrivals::Arrivals;
 use crate::api::schema::AgentStatus;
 use crate::detect::{Agent, AgentState};
 use crate::hc::{Core, HcResult};
@@ -13,12 +14,15 @@ use crate::workspace::derive_label_from_cwd;
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Report {
-    Snapshot(HashMap<String, PathBuf>),
+    Snapshot {
+        folders: HashMap<String, PathBuf>,
+        statuses: Vec<(String, CoreStatus)>,
+    },
     Folder(String, PathBuf),
-    Statuses(HashMap<String, CoreStatus>),
     Status(String, CoreStatus),
     Names(HashMap<String, String>),
     Name(String, Option<String>),
+    Removed(String),
 }
 
 const NAME_LABEL: &str = "lawn-name";
@@ -37,12 +41,22 @@ impl Status {
     }
 }
 
+pub(super) struct Moved {
+    pub(super) terminal: String,
+    pub(super) agent: Option<Agent>,
+    pub(super) from: AgentState,
+    pub(super) to: AgentState,
+    pub(super) parked: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Terminals {
     folder_names: HashMap<String, String>,
     statuses: HashMap<String, Status>,
     names: HashMap<String, String>,
     changes: u64,
+    followed: bool,
+    moves: Arrivals<Moved>,
 }
 
 impl Terminals {
@@ -56,6 +70,10 @@ impl Terminals {
 
     pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
         self.statuses.get(terminal)
+    }
+
+    pub(super) fn moves(&mut self, holds: impl Fn(&str) -> bool) -> Vec<Moved> {
+        self.moves.take(holds)
     }
 
     pub(super) fn see<'a>(&mut self, terminals: impl IntoIterator<Item = &'a str>) -> bool {
@@ -75,17 +93,37 @@ impl Terminals {
         report: Report,
         names: impl Fn(&str) -> bool,
         shows: impl Fn(&str) -> bool,
+        parks: impl Fn(&str) -> bool,
     ) -> bool {
         match report {
-            Report::Snapshot(folders) => {
+            Report::Snapshot { folders, statuses } => {
                 let known = folders
                     .into_iter()
                     .map(|(terminal, folder)| (terminal, derive_label_from_cwd(&folder)))
                     .collect();
                 let old = std::mem::replace(&mut self.folder_names, known);
-                old.keys().chain(self.folder_names.keys()).any(|terminal| {
+                let mut drawn = old.keys().chain(self.folder_names.keys()).any(|terminal| {
                     names(terminal) && old.get(terminal) != self.folder_names.get(terminal)
-                })
+                });
+                let listed: HashSet<&str> = statuses
+                    .iter()
+                    .map(|(terminal, _)| terminal.as_str())
+                    .collect();
+                self.moves.retain(|terminal| listed.contains(terminal));
+                self.statuses.retain(|terminal, _| {
+                    let stays = listed.contains(terminal.as_str());
+                    drawn |= !stays && shows(terminal);
+                    stays
+                });
+                let drawn = statuses
+                    .into_iter()
+                    .fold(drawn, |drawn, (terminal, status)| {
+                        self.report(terminal, status, &shows, &parks) | drawn
+                    });
+                if !std::mem::replace(&mut self.followed, true) {
+                    self.moves.clear();
+                }
+                drawn
             }
             Report::Folder(terminal, folder) => {
                 let name = derive_label_from_cwd(&folder);
@@ -93,20 +131,11 @@ impl Terminals {
                 self.folder_names.insert(terminal, name);
                 renamed
             }
-            Report::Statuses(statuses) => {
-                let mut drawn = false;
-                self.statuses.retain(|terminal, _| {
-                    let stays = statuses.contains_key(terminal);
-                    drawn |= !stays && shows(terminal);
-                    stays
-                });
-                statuses
-                    .into_iter()
-                    .fold(drawn, |drawn, (terminal, status)| {
-                        self.report(terminal, status, &shows) | drawn
-                    })
+            Report::Status(terminal, status) => self.report(terminal, status, &shows, &parks),
+            Report::Removed(terminal) => {
+                self.moves.remove(&terminal);
+                self.statuses.remove(&terminal).is_some() && shows(&terminal)
             }
-            Report::Status(terminal, status) => self.report(terminal, status, &shows),
             Report::Names(names) => {
                 let old = std::mem::replace(&mut self.names, names);
                 old.keys().chain(self.names.keys()).any(|terminal| {
@@ -128,6 +157,7 @@ impl Terminals {
         terminal: String,
         reported: CoreStatus,
         shows: impl Fn(&str) -> bool,
+        parks: impl Fn(&str) -> bool,
     ) -> bool {
         let before = self.statuses.get(&terminal).copied();
         let previous = before.map_or(AgentState::Unknown, |status| status.state);
@@ -144,13 +174,27 @@ impl Terminals {
                 AgentState::Idle => before.is_none_or(|status| status.seen),
                 _ => true,
             };
+            let moved = previous != reported.state;
             let changed = match before {
-                Some(status) if status.state == reported.state => status.changed,
+                Some(status) if !moved => status.changed,
                 _ => {
                     self.changes += 1;
                     self.changes
                 }
             };
+            let other_agent = before.is_some_and(|status| status.agent != reported.agent);
+            if other_agent || (moved && (reported.state != AgentState::Idle || !seen)) {
+                self.moves.insert(
+                    terminal.clone(),
+                    Moved {
+                        terminal: terminal.clone(),
+                        agent: reported.agent.or(before.and_then(|status| status.agent)),
+                        from: previous,
+                        to: reported.state,
+                        parked: parks(&terminal),
+                    },
+                );
+            }
             self.statuses.insert(
                 terminal.clone(),
                 Status {
@@ -166,17 +210,18 @@ impl Terminals {
     }
 }
 
-pub(super) fn follow() -> io::Result<mpsc::UnboundedReceiver<Report>> {
-    let (reports, received) = mpsc::unbounded_channel();
+pub(super) fn follow<T: From<Report> + Send + 'static>(
+    reports: mpsc::UnboundedSender<T>,
+) -> io::Result<()> {
     crate::thread_spawn::spawn_named("lawn-terminals", move || {
         while listen(&reports) {
             std::thread::sleep(super::follow::RECONNECT);
         }
     })?;
-    Ok(received)
+    Ok(())
 }
 
-fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
+fn listen<T: From<Report>>(reports: &mpsc::UnboundedSender<T>) -> bool {
     let core = match crate::core_client::core() {
         Ok(core) => core,
         Err(error) => {
@@ -191,9 +236,10 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
             return !reports.is_closed();
         }
     };
-    if reports.send(snapshot(&subscription.snapshot)).is_err()
-        || reports.send(statuses(&subscription.snapshot)).is_err()
-        || reports.send(names(&subscription.snapshot)).is_err()
+    if reports
+        .send(snapshot(&subscription.snapshot).into())
+        .is_err()
+        || reports.send(names(&subscription.snapshot).into()).is_err()
     {
         return false;
     }
@@ -203,29 +249,33 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
         subscription.stream,
         |message| {
             if let Some(report) = reported(message) {
-                reports.send(report).ok();
-            }
-            if let Some(report) = status_reported(message) {
-                reports.send(report).ok();
+                reports.send(report.into()).ok();
             }
             if let Some(report) = name_reported(message) {
-                reports.send(report).ok();
+                reports.send(report.into()).ok();
             }
         },
     );
     !reports.is_closed()
 }
 
-fn reported(message: &Value) -> Option<Report> {
+pub(super) fn reported(message: &Value) -> Option<Report> {
     let params = &message["params"];
     match (message["method"].as_str()?, params["type"].as_str()) {
         ("event", Some("created")) => {
             let (terminal, folder) = record(&params["data"])?;
             Some(Report::Folder(terminal, folder))
         }
+        ("event", Some("removed")) => {
+            Some(Report::Removed(params["terminal"].as_str()?.to_owned()))
+        }
         ("event", Some("foreground")) => Some(Report::Folder(
             params["terminal"].as_str()?.to_owned(),
             params["data"]["cwd"].as_str()?.into(),
+        )),
+        ("event", Some("status")) => Some(Report::Status(
+            params["terminal"].as_str()?.to_owned(),
+            core_status(&params["data"]["status"]),
         )),
         ("missed", _) => Some(snapshot(params)),
         _ => None,
@@ -233,34 +283,10 @@ fn reported(message: &Value) -> Option<Report> {
 }
 
 fn snapshot(snapshot: &Value) -> Report {
-    Report::Snapshot(
-        snapshot["terminals"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(record)
-            .collect(),
-    )
-}
-
-fn status_reported(message: &Value) -> Option<Report> {
-    let params = &message["params"];
-    match (message["method"].as_str()?, params["type"].as_str()) {
-        ("event", Some("status")) => Some(Report::Status(
-            params["terminal"].as_str()?.to_owned(),
-            core_status(&params["data"]["status"]),
-        )),
-        ("missed", _) => Some(statuses(params)),
-        _ => None,
-    }
-}
-
-fn statuses(snapshot: &Value) -> Report {
-    Report::Statuses(
-        snapshot["terminals"]
-            .as_array()
-            .into_iter()
-            .flatten()
+    let records = || snapshot["terminals"].as_array().into_iter().flatten();
+    Report::Snapshot {
+        folders: records().filter_map(record).collect(),
+        statuses: records()
             .filter_map(|record| {
                 Some((
                     record["address"].as_str()?.to_owned(),
@@ -268,7 +294,7 @@ fn statuses(snapshot: &Value) -> Report {
                 ))
             })
             .collect(),
-    )
+    }
 }
 
 fn name_reported(message: &Value) -> Option<Report> {

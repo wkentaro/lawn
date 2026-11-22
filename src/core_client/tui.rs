@@ -1,11 +1,13 @@
 use std::io;
 
+mod arrivals;
 mod chrome;
 mod copy_mode;
 mod dialog;
 mod follow;
 mod gate;
 mod keys;
+mod notices;
 mod select;
 mod session;
 mod surface;
@@ -43,9 +45,11 @@ fn run() -> io::Result<()> {
     let host = super::host::host_geometry()?;
     run_with_bounded_shutdown(async {
         let stop = super::host::Stop::register()?;
-        let layouts = follow::follow(session.clone())?;
+        let (arriving, arrivals) = tokio::sync::mpsc::unbounded_channel();
+        follow::follow(session.clone(), arriving.clone())?;
+        terminals::follow(arriving)?;
         let mut guard = super::host::enter(true)?;
-        unix::show(core, session, launched_in, layouts, host, &mut guard, stop).await
+        unix::show(core, session, launched_in, arrivals, host, &mut guard, stop).await
     })?
 }
 
@@ -78,11 +82,12 @@ mod unix {
     use super::chrome::Chrome;
     use super::gate::Gate;
     use super::keys::{Keys, Mode, Routed};
+    use super::notices::{Effect, Notifying};
     use super::select::Copying;
     use super::session::{Operation, PaneChrome};
-    use super::surface::{Pointed, Surface};
+    use super::surface::{Arrival, Pointed, Surface};
     use crate::client::terminal_setup::TerminalGuard;
-    use crate::config::{Config, LiveKeybindConfig};
+    use crate::config::{Config, LiveKeybindConfig, SoundConfig};
     use crate::core_client::commands::creation_lifecycle;
     use crate::core_client::host::{
         clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
@@ -95,7 +100,6 @@ mod unix {
     use crate::input::{KeybindAction, KeybindMatch};
     use crate::layout::PaneId;
     use crate::raw_input::RawInputEvent;
-    use crate::session_doc::Loaded;
 
     const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -126,6 +130,30 @@ mod unix {
                 prefix: config.prefix_keys(),
                 keybinds: config.keybinds(),
             })
+    }
+
+    fn notify(effects: Vec<Effect>, sound: &SoundConfig) {
+        for effect in effects {
+            match effect {
+                Effect::Sound(played) => crate::sound::play(played, sound),
+                Effect::Terminal { title, body } => {
+                    if let Err(error) =
+                        crate::terminal_notify::show_notification(&title, Some(&body))
+                    {
+                        warn!(%error, "the notification did not reach the host terminal");
+                    }
+                }
+                Effect::System { title, body } => {
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) =
+                            crate::platform::show_desktop_notification(&title, Some(&body))
+                        {
+                            warn!(%error, "the system notification did not show");
+                        }
+                    });
+                }
+            }
+        }
     }
 
     pub(super) fn operations(
@@ -198,7 +226,7 @@ mod unix {
         core: Arc<Core>,
         session: String,
         launched_in: PathBuf,
-        mut layouts: mpsc::UnboundedReceiver<Loaded>,
+        mut arrivals: mpsc::UnboundedReceiver<Arrival>,
         mut host: Geometry,
         guard: &mut TerminalGuard,
         mut stop: Stop,
@@ -225,7 +253,8 @@ mod unix {
                     .then_some(config.ui.toast.clipboard.position),
             },
             keybinds.clone(),
-        );
+        )
+        .notifying(Notifying::from_config(&config));
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
             guard.take_buffered_host_input(),
@@ -233,7 +262,6 @@ mod unix {
             mouse_capture.clone(),
         )?;
         let mut sizes = HostSizes::watch(host)?;
-        let mut reports = super::terminals::follow()?;
         let (copy, mut copied) = clipboard()?;
         let wake = Wake::default();
         let mut events = Events::default();
@@ -268,6 +296,12 @@ mod unix {
                 edits.set(edits.get() + 1);
             }
             operations.send((operation, cwd)).ok();
+        };
+        let settle = |surface: &Surface, (operation, effects): (Option<Operation>, Vec<Effect>)| {
+            if let Some(operation) = operation {
+                run(surface, operation);
+            }
+            notify(effects, &config.ui.sound);
         };
         let act = |surface: &mut Surface, action: KeybindAction| {
             if let Some(operation) = surface.act(action, config.ui.confirm_close) {
@@ -313,9 +347,8 @@ mod unix {
                     }
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
-                    if let Some(operation) = surface.tick(std::time::Instant::now(), gate.holding()) {
-                        run(&surface, operation);
-                    }
+                    let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
+                    settle(&surface, caught);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -336,20 +369,14 @@ mod unix {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                Some(report) = reports.recv() => {
-                    surface.heard(report);
-                    if surface.needs_frame() {
-                        due.get_or_insert_with(Instant::now);
-                    }
-                }
-                loaded = layouts.recv() => {
-                    let Some(loaded) = loaded else {
+                arrival = arrivals.recv() => {
+                    let Some(arrival) = arrival else {
                         return Err(io::Error::other("lawn stopped following the session"));
                     };
-                    let redraws = !surface.holds(&loaded.layout);
-                    gate.arrived(loaded.version, redraws);
-                    if redraws {
-                        surface.update(loaded.layout);
+                    surface.received(arrival, &mut gate);
+                    let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
+                    settle(&surface, caught);
+                    if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
@@ -490,6 +517,12 @@ mod unix {
                                 },
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::CopyMode)) => {
                                     surface.enter_copy_mode();
+                                    continue;
+                                }
+                                Routed::Binding(KeybindMatch::Action(
+                                    KeybindAction::OpenNotificationTarget,
+                                )) => {
+                                    surface.open_notice(std::time::Instant::now());
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(KeybindAction::Detach)) => {
