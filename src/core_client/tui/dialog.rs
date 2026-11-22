@@ -11,6 +11,11 @@ use crate::session_doc::Arrangement;
 use crate::ui::text_editor::TextEditor;
 use crate::ui::theme::Palette;
 
+mod picker;
+
+pub(super) use picker::Move;
+use picker::Target;
+
 const CLOSE_TITLE: &str = "Close workspace?";
 const WHEEL_ROWS: usize = 3;
 const PAGE_ROWS: isize = 8;
@@ -20,6 +25,7 @@ pub(super) enum Dialog {
     Confirm(Closing),
     Help(Help),
     Rename(Rename),
+    Move(Move),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,23 +67,31 @@ struct Hits {
     scrollbar: Rect,
     metrics: Option<ScrollMetrics>,
     max_scroll: usize,
+    rows: Vec<(Rect, Target)>,
+    action: Option<Target>,
     cursor: Option<CursorState>,
 }
 
 pub(super) struct Modal {
     dialog: Dialog,
-    image: Option<(Rect, Vec<CellData>)>,
+    frame: Option<(Rect, Vec<CellData>)>,
     hits: Hits,
+    outdated: bool,
     grab: Option<u16>,
+    #[cfg(test)]
+    copies: usize,
 }
 
 impl Modal {
     pub(super) fn new(dialog: Dialog) -> Self {
         Self {
             dialog,
-            image: None,
+            frame: None,
             hits: Hits::default(),
+            outdated: false,
             grab: None,
+            #[cfg(test)]
+            copies: 0,
         }
     }
 
@@ -85,35 +99,54 @@ impl Modal {
         match &self.dialog {
             Dialog::Confirm(closing) => session.confirmed(closing),
             Dialog::Rename(rename) => rename.saved(session),
+            Dialog::Move(moving) => moving.accepted(session),
             Dialog::Help(_) => None,
         }
+    }
+
+    pub(super) fn forget(&mut self) {
+        self.frame = None;
+        self.hits = Hits {
+            max_scroll: self.hits.max_scroll,
+            ..Hits::default()
+        };
+        self.grab = None;
+    }
+
+    pub(super) fn session_changed(&mut self) {
+        self.outdated |= matches!(self.dialog, Dialog::Move(_));
     }
 
     pub(super) fn edits(&self) -> bool {
         match &self.dialog {
             Dialog::Help(help) => help.searching,
-            Dialog::Rename(_) => true,
+            Dialog::Rename(_) | Dialog::Move(_) => true,
             Dialog::Confirm(_) => false,
         }
     }
 
     pub(super) fn stale(&self, host: Rect) -> bool {
-        self.image.as_ref().is_none_or(|(area, _)| *area != host)
+        self.outdated || self.frame.as_ref().is_none_or(|frame| frame.0 != host)
+    }
+
+    #[cfg(test)]
+    pub(super) fn copies(&self) -> usize {
+        self.copies
     }
 
     pub(super) fn redraw(&mut self) {
-        self.image = None;
+        self.outdated = true;
     }
 
     pub(super) fn image(&self) -> Option<&(Rect, Vec<CellData>)> {
-        self.image.as_ref()
+        self.frame.as_ref()
     }
 
     pub(super) fn cursor(&self) -> Option<CursorState> {
         self.hits.cursor.clone()
     }
 
-    pub(super) fn text(&mut self, text: &str) {
+    pub(super) fn text(&mut self, text: &str, session: &Session) {
         self.changing(|dialog, _, _| {
             match dialog {
                 Dialog::Help(help) => {
@@ -124,13 +157,19 @@ impl Modal {
                 Dialog::Rename(rename) => rename.edit(|input| {
                     input.insert(text);
                 }),
+                Dialog::Move(moving) => moving.text(text, session),
                 Dialog::Confirm(_) => {}
             }
             Outcome::Stay
         });
     }
 
-    pub(super) fn key(&mut self, key: &TerminalKey) -> Outcome {
+    pub(super) fn key(
+        &mut self,
+        key: &TerminalKey,
+        keybinds: &LiveKeybindConfig,
+        session: &Session,
+    ) -> Outcome {
         self.changing(|dialog, hits, _| match dialog {
             Dialog::Confirm(_) => match key.code {
                 KeyCode::Enter => Outcome::Accept,
@@ -139,10 +178,14 @@ impl Modal {
             },
             Dialog::Help(help) => help.key(key, hits.max_scroll),
             Dialog::Rename(rename) => rename.key(key),
+            Dialog::Move(moving) => moving.key(key, keybinds, session, hits),
         })
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent) -> Outcome {
+    pub(super) fn mouse(&mut self, event: MouseEvent, session: &Session) -> Outcome {
+        if event.kind == MouseEventKind::Moved || self.frame.is_none() {
+            return Outcome::Stay;
+        }
         let point = Position::new(event.column, event.row);
         self.changing(|dialog, hits, grab| match dialog {
             Dialog::Confirm(_) => match event.kind {
@@ -164,6 +207,7 @@ impl Modal {
                 MouseEventKind::Down(MouseButton::Left) => Outcome::Close,
                 _ => Outcome::Stay,
             },
+            Dialog::Move(moving) => moving.mouse(event, point, hits, grab, session),
         })
     }
 
@@ -172,9 +216,10 @@ impl Modal {
         mut buffer: Buffer,
         keybinds: &LiveKeybindConfig,
         palette: &Palette,
+        session: &Session,
     ) {
         crate::ui::dialog::dim_backdrop(&mut buffer);
-        self.hits = match &mut self.dialog {
+        let hits = match &mut self.dialog {
             Dialog::Confirm(closing) => crate::ui::dialog::render_confirm(
                 &mut buffer,
                 CLOSE_TITLE,
@@ -219,6 +264,7 @@ impl Modal {
                         ..Hits::default()
                     })
             }
+            Dialog::Move(moving) => moving.draw(&mut buffer, palette, session),
         }
         .unwrap_or_default();
         let cells = buffer
@@ -226,7 +272,9 @@ impl Modal {
             .iter()
             .map(CellData::from_ratatui_cell)
             .collect();
-        self.image = Some((buffer.area, cells));
+        self.frame = Some((buffer.area, cells));
+        self.hits = hits;
+        self.outdated = false;
     }
 
     fn changing(
@@ -234,10 +282,12 @@ impl Modal {
         change: impl FnOnce(&mut Dialog, &Hits, &mut Option<u16>) -> Outcome,
     ) -> Outcome {
         let before = self.dialog.clone();
-        let outcome = change(&mut self.dialog, &self.hits, &mut self.grab);
-        if self.dialog != before {
-            self.image = None;
+        #[cfg(test)]
+        {
+            self.copies += 1;
         }
+        let outcome = change(&mut self.dialog, &self.hits, &mut self.grab);
+        self.outdated |= self.dialog != before;
         outcome
     }
 }

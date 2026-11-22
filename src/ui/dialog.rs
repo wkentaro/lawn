@@ -17,7 +17,7 @@ use crate::ui::theme::Palette;
 pub(crate) use help::render_help;
 pub(crate) use menu::{render_context_menu, render_launcher_menu};
 pub(crate) use navigator::{
-    render_navigator, Navigator, NavigatorMove, NavigatorRow, NavigatorRowKind,
+    render_navigator, Navigator, NavigatorListing, NavigatorMove, NavigatorRow, NavigatorRowKind,
 };
 pub(crate) use settings::{
     integration_needs_install, normalized_theme_name, render_settings, Settings, SettingsSection,

@@ -21,8 +21,19 @@ pub(crate) enum NavigatorRowKind {
     },
     Workspace,
     Pane,
+    Tab,
     NewWorkspace,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NavigatorListing {
+    Terminals,
+    Tabs,
+}
+
+const WIDEST: u16 = 116;
+const LIST_SHARE: u16 = 45;
+const LIST_WIDTH: u16 = (WIDEST - 2) * LIST_SHARE / 100;
 
 #[derive(Debug)]
 pub(crate) struct NavigatorRow<'a> {
@@ -46,6 +57,7 @@ pub(crate) struct NavigatorMove<'a> {
 }
 
 pub(crate) struct Navigator<'a> {
+    pub(crate) listing: NavigatorListing,
     pub(crate) query: &'a TextEditor,
     pub(crate) parked: bool,
     pub(crate) moving: Option<NavigatorMove<'a>>,
@@ -68,14 +80,24 @@ pub(crate) struct NavigatorDialog {
     pub(crate) cursor: Option<CursorState>,
 }
 
+fn navigator_lists_rows(area: Rect, listing: NavigatorListing) -> bool {
+    let narrowest = match listing {
+        NavigatorListing::Terminals => 4,
+        NavigatorListing::Tabs => 8,
+    };
+    area.width.saturating_sub(4) >= narrowest && area.height.saturating_sub(2).min(42) >= 6
+}
+
 pub(crate) fn render_navigator(
     b: &mut Buffer,
     n: &Navigator<'_>,
     p: &Palette,
 ) -> Option<NavigatorDialog> {
     let a = b.area;
-    let width = a.width.saturating_sub(4).min(116);
-    let minimum_height = 6;
+    let width = a.width.saturating_sub(4).min(match n.listing {
+        NavigatorListing::Terminals => WIDEST,
+        NavigatorListing::Tabs => LIST_WIDTH + 2,
+    });
     let rows = n.rows;
     let height = a.height.saturating_sub(2).min(42);
     if width < 4 || height < 3 {
@@ -102,7 +124,7 @@ pub(crate) fn render_navigator(
         &title,
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
-    if height < minimum_height {
+    if !navigator_lists_rows(a, n.listing) {
         if i.height > 1 {
             put_text(
                 b,
@@ -126,18 +148,12 @@ pub(crate) fn render_navigator(
             ..NavigatorDialog::default()
         });
     }
-    let terminal_count = rows
-        .iter()
-        .filter(|row| matches!(row.kind, NavigatorRowKind::Pane))
-        .count();
-    let count = format!(
-        "{terminal_count} {}",
-        if terminal_count == 1 {
-            "terminal"
-        } else {
-            "terminals"
-        }
-    );
+    let (counted, one, many) = match n.listing {
+        NavigatorListing::Terminals => (NavigatorRowKind::Pane, "terminal", "terminals"),
+        NavigatorListing::Tabs => (NavigatorRowKind::Tab, "tab", "tabs"),
+    };
+    let listed = rows.iter().filter(|row| row.kind == counted).count();
+    let count = format!("{listed} {}", if listed == 1 { one } else { many });
     put_text(
         b,
         i.x,
@@ -185,8 +201,11 @@ pub(crate) fn render_navigator(
         i.width,
         i.bottom().saturating_sub(body_y + footer_height),
     );
-    let (body, preview_panel) = if content.width >= 90 && content.height >= 3 {
-        let list_width = content.width * 45 / 100;
+    let previews = n.listing == NavigatorListing::Terminals;
+    let (body, preview_panel) = if !previews {
+        (content, Rect::default())
+    } else if content.width >= 90 && content.height >= 3 {
+        let list_width = content.width * LIST_SHARE / 100;
         for y in content.y..content.bottom() {
             put_text(
                 b,
@@ -282,7 +301,6 @@ pub(crate) fn render_navigator(
         .take(body.height as usize)
     {
         let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, row_width, 1);
-        row_hits.push((rect, ix));
         let st = if r.stale {
             Style::default()
                 .fg(p.overlay0)
@@ -307,17 +325,15 @@ pub(crate) fn render_navigator(
                 .bg(p.panel_bg)
         };
         let is_pane = matches!(r.kind, NavigatorRowKind::Pane);
-        let connector = if !is_pane {
+        let nested = matches!(r.kind, NavigatorRowKind::Pane | NavigatorRowKind::Tab);
+        let connector = if !nested {
             ""
-        } else if rows
-            .get(ix + 1)
-            .is_some_and(|next| matches!(next.kind, NavigatorRowKind::Pane))
-        {
+        } else if rows.get(ix + 1).is_some_and(|next| next.kind == r.kind) {
             "├─ "
         } else {
             "└─ "
         };
-        let padding = u16::from(r.depth.saturating_sub(u8::from(is_pane))) * 2 + 1;
+        let padding = u16::from(r.depth.saturating_sub(u8::from(nested))) * 2 + 1;
         let connector_x = rect.x + padding;
         let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
         let current = if r.current { "◆ " } else { "" };
@@ -327,12 +343,13 @@ pub(crate) fn render_navigator(
             r.status.map(status_dot).unwrap_or_default()
         };
         let status_separator = if status.is_empty() { "" } else { " " };
-        let label = if n.parked && is_pane && r.stale && rect.width < 45 {
-            format!("{indent}cached · {}", r.label)
+        let prefix = if n.parked && is_pane && r.stale && rect.width < 45 {
+            format!("{indent}cached · ")
         } else {
-            format!("{indent}{current}{status}{status_separator}{}", r.label)
+            format!("{indent}{current}{status}{status_separator}")
         };
-        let st = if !is_pane {
+        let label = format!("{prefix}{}", r.label);
+        let st = if !nested {
             st.add_modifier(Modifier::BOLD)
         } else {
             st
@@ -375,10 +392,10 @@ pub(crate) fn render_navigator(
         let marker_width = marker
             .as_ref()
             .map_or(0, |marker| display_width(marker) + 1);
-        put_text(
+        let label_x = rect.x.saturating_add(display_width(&prefix));
+        if drawn_past(
             b,
-            rect.x,
-            rect.y,
+            (rect.x, rect.y),
             rect.width.saturating_sub(columns + marker_width),
             &label,
             if selected_index == Some(ix) {
@@ -386,8 +403,11 @@ pub(crate) fn render_navigator(
             } else {
                 st
             },
-        );
-        if is_pane {
+        ) > label_x
+        {
+            row_hits.push((rect, ix));
+        }
+        if nested {
             put_text(
                 b,
                 connector_x,
@@ -531,40 +551,43 @@ pub(crate) fn render_navigator(
         display_width(action_label).min(i.width.saturating_sub(close_width + 1)),
         1,
     );
-    let preview = if selected_row.is_some_and(|row| !row.stale && !row.moving) {
+    let enabled = selected_row.is_some_and(|row| !row.stale && !row.moving);
+    let close = Rect::new(i.right() - close_width, i.bottom() - 1, close_width, 1);
+    let action_text = action_label.trim_start();
+    let action_x = action_area.x.saturating_add(display_width(
+        &action_label[..action_label.len() - action_text.len()],
+    ));
+    let action_drawn = drawn_past(
+        b,
+        (action_area.x, action_area.y),
+        action_area.width,
+        action_label,
+        Style::default()
+            .fg(if enabled { p.accent } else { p.overlay0 })
+            .bg(p.panel_bg),
+    ) > action_x;
+    let preview = if enabled && action_drawn {
         action_area
     } else {
         Rect::default()
     };
-    let close = Rect::new(i.right() - close_width, i.bottom() - 1, close_width, 1);
-    put_text(
-        b,
-        action_area.x,
-        action_area.y,
-        action_area.width,
-        action_label,
-        Style::default()
-            .fg(if preview.is_empty() {
-                p.overlay0
-            } else {
-                p.accent
-            })
-            .bg(p.panel_bg),
-    );
     let hint = Rect::new(
         action_area.right() + 1,
         close.y,
         close.x.saturating_sub(action_area.right() + 1),
         1,
     );
-    put_text(
-        b,
-        hint.x,
-        hint.y,
-        hint.width,
-        "↑↓ select · type to search",
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
+    let hint_text = "↑↓ select · type to search";
+    if previews || display_width(hint_text) < hint.width {
+        put_text(
+            b,
+            hint.x,
+            hint.y,
+            hint.width,
+            hint_text,
+            Style::default().fg(p.overlay0).bg(p.panel_bg),
+        );
+    }
     put_right_text(
         b,
         close,
@@ -584,3 +607,13 @@ pub(crate) fn render_navigator(
         cursor,
     })
 }
+
+fn drawn_past(b: &mut Buffer, (x, y): (u16, u16), width: u16, text: &str, style: Style) -> u16 {
+    if width == 0 || y >= b.area.bottom() || x >= b.area.right() {
+        return x;
+    }
+    b.set_stringn(x, y, text, usize::from(width), style).0
+}
+
+#[cfg(test)]
+mod tests;

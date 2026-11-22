@@ -542,6 +542,7 @@ pub(crate) fn render_navigator_overlay(
     let rendered = dialog::render_navigator(
         b,
         &dialog::Navigator {
+            listing: dialog::NavigatorListing::Terminals,
             query: &n.query,
             parked: n.parked,
             moving: n.moving.as_ref().map(|moving| dialog::NavigatorMove {

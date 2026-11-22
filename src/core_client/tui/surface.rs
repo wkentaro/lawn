@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::chrome::Chrome;
 use super::copy_mode::{CopyMode, Marks, Step};
-use super::dialog::{Dialog, Modal, Outcome, Rename};
+use super::dialog::{Dialog, Modal, Move, Outcome, Rename};
 use super::gate::Gate;
 use super::keys::Navigation;
 use super::notices::{Effect, Notices, Notifying};
@@ -363,6 +363,9 @@ impl Surface {
 
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.session_changed();
+        }
         self.owned = self.session.owned();
         self.reflow();
     }
@@ -388,6 +391,12 @@ impl Surface {
         ) {
             if let Some(rename) = Rename::of(action, &self.session, self.outer.selected()) {
                 self.open(Dialog::Rename(rename));
+            }
+            return None;
+        }
+        if action == KeybindAction::MovePane {
+            if let Some(moving) = Move::of(&self.session) {
+                self.open(Dialog::Move(moving));
             }
             return None;
         }
@@ -438,15 +447,18 @@ impl Surface {
             return false;
         };
         match event {
-            RawInputEvent::Text(text) => dialog.text(text.as_str()),
-            RawInputEvent::Paste(text) => dialog.text(text),
+            RawInputEvent::Text(text) => dialog.text(text.as_str(), &self.session),
+            RawInputEvent::Paste(text) => dialog.text(text, &self.session),
             _ => {}
         }
         true
     }
 
     pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Operation> {
-        let outcome = self.dialog.as_mut()?.key(key);
+        let outcome = self
+            .dialog
+            .as_mut()?
+            .key(key, &self.keybinds, &self.session);
         self.settle(outcome)
     }
 
@@ -520,6 +532,10 @@ impl Surface {
     }
 
     fn hear(&mut self, report: Report) {
+        let statuses = matches!(report, Report::Status(..) | Report::Removed(_));
+        if let Some(dialog) = self.dialog.as_mut().filter(|_| !statuses) {
+            dialog.session_changed();
+        }
         let names = matches!(report, Report::Names(_) | Report::Name(..));
         let tiles = &self.tiles.tiles;
         if self.session.heard(report, |terminal| {
@@ -703,6 +719,9 @@ impl Surface {
 
     pub(super) fn resize(&mut self, host: Geometry) {
         self.host = host;
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.forget();
+        }
         self.reflow();
     }
 
@@ -1009,7 +1028,7 @@ impl Surface {
 
     pub(super) fn mouse(&mut self, event: MouseEvent, now: Instant) -> Option<Pointed> {
         if let Some(dialog) = self.dialog.as_mut() {
-            let outcome = dialog.mouse(event);
+            let outcome = dialog.mouse(event, &self.session);
             return self.settle(outcome).map(Pointed::Run);
         }
         let press = event.kind == MouseEventKind::Down(MouseButton::Left);
@@ -1611,7 +1630,7 @@ impl Surface {
             }
             .to_ratatui_buffer()
             .unwrap_or_else(|| Buffer::empty(host));
-            dialog.draw(seed, &self.keybinds, &self.palette);
+            dialog.draw(seed, &self.keybinds, &self.palette, &self.session);
         }
         if let Some(image) = dialog.image() {
             for row in rows.iter_mut() {

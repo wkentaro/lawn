@@ -175,6 +175,10 @@ impl Session {
         })
     }
 
+    pub(super) fn parked(&self, terminal: &str) -> bool {
+        self.layout.parked.contains(terminal)
+    }
+
     pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {
         self.terminals.see(
             self.ids
@@ -565,23 +569,23 @@ impl Session {
     }
 
     fn landing(&self, workspace: &Workspace, tab: &Tab) -> Focus {
+        Focus {
+            workspace: workspace.id.clone(),
+            tab: tab.id.clone(),
+            terminal: self.tab_pane(tab).map(str::to_owned),
+        }
+    }
+
+    pub(super) fn tab_pane<'a>(&'a self, tab: &'a Tab) -> Option<&'a str> {
         let parked = &self.layout.parked;
-        let terminal = self
-            .pane_of_tab
+        self.pane_of_tab
             .get(&tab.id)
             .map(String::as_str)
             .filter(|terminal| tab.root.contains(terminal) && !parked.contains(*terminal))
             .or_else(|| {
                 tab.root
-                    .terminals()
-                    .into_iter()
-                    .find(|terminal| !parked.contains(*terminal))
-            });
-        Focus {
-            workspace: workspace.id.clone(),
-            tab: tab.id.clone(),
-            terminal: terminal.map(str::to_owned),
-        }
+                    .find_terminal(&|terminal| !parked.contains(terminal))
+            })
     }
 
     fn shown_in(&self, focus: &Focus, terminal: &str) -> bool {
