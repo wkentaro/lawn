@@ -19,12 +19,17 @@ const REPORT_HELP: &str = r#"Reads one JSON report from standard input, at most 
 Use an absolute cwd for this machine. Give each agent invocation a new
 reporter_id, with increasing seq values inside that invocation. Repeating an
 identical sequence is safe; a different payload at the same sequence conflicts.
-Sources, agents, and invocations keep separate records.
+Sources, agents, and invocations keep separate records. The argv must start
+with a plain command name and contain no apostrophes; other reports are
+refused.
 
-Optional program context is caller-supplied: {"pid": 123, "started_ms": 456}.
-Missing context stays unknown. These records are evidence only, not permission
-to run a command. Recording never executes the reported command. Existing agent
-hooks are not connected to this recorder yet. Remote terminals are not supported."#;
+Lawn records which program the report belongs to: the terminal's root
+program, when this command runs inside it. A report from outside a running
+root program is not stored and prints the status "ignored". A program sent
+in the report is ignored. Recording never executes the reported command.
+Existing agent hooks are not connected to this recorder yet. Remote terminals
+are not supported. Reports are recorded only on Linux and macOS; elsewhere
+this command prints "ignored"."#;
 
 fn parse(args: &[String]) -> Option<Result<String, clap::Error>> {
     if args.get(1).map(String::as_str) != Some("record-resume") {

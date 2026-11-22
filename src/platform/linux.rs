@@ -667,6 +667,16 @@ pub fn foreground_process_group_id_for_tty_fd(fd: RawFd) -> Option<u32> {
     (pgid > 0).then_some(pgid as u32)
 }
 
+pub fn process_group_id(pid: u32) -> Option<u32> {
+    process_job_stat(pid).and_then(|stat| u32::try_from(stat.pgrp).ok())
+}
+
+pub fn boot_id() -> Option<String> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
 /// Start time of `pid` in clock ticks since boot. It tells a process apart
 /// from a later one that reuses its pid.
 pub fn process_start_token(pid: u32) -> Option<u64> {
@@ -1188,6 +1198,13 @@ mod tests {
         assert_eq!(socket_peer_pid(local.as_raw_fd()), Some(pid));
         let (_, parent) = process_name_and_parent(pid).unwrap();
         assert_eq!(parent, std::os::unix::process::parent_id());
+    }
+
+    #[test]
+    fn the_boot_id_names_the_running_boot_the_same_way_every_time() {
+        let boot = boot_id().expect("boot id");
+        assert!(!boot.is_empty());
+        assert_eq!(boot_id(), Some(boot));
     }
 
     #[test]

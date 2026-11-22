@@ -641,9 +641,251 @@ pub(crate) fn set_default_plugin_pane_pwd(env: &mut Vec<(String, String)>, cwd: 
     }
 }
 
+pub(crate) fn process_has_ancestor(pid: u32, ancestor: u32) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut current = pid;
+    while current > 1 && seen.insert(current) {
+        match super::process_name_and_parent(current) {
+            Some((_, parent)) if parent == ancestor => return true,
+            Some((_, parent)) => current = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy)]
+struct Kin {
+    session: u32,
+    group: u32,
+    parent: u32,
+}
+
+pub(crate) fn process_in_job(pid: u32, root: u32, job: u32) -> bool {
+    in_job(pid, root, job, |pid| {
+        let session = unsafe { libc::getsid(pid as libc::pid_t) };
+        Some(Kin {
+            session: u32::try_from(session).ok().filter(|session| *session > 0)?,
+            group: super::process_group_id(pid)?,
+            parent: super::process_name_and_parent(pid)?.1,
+        })
+    })
+}
+
+fn in_job(pid: u32, root: u32, job: u32, kin: impl Fn(u32) -> Option<Kin>) -> bool {
+    let Some(session) = kin(root).map(|root| root.session) else {
+        return false;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut current = pid;
+    while seen.insert(current) {
+        let Some(process) = kin(current) else {
+            return false;
+        };
+        if process.session == session {
+            return process.group == job;
+        }
+        if process.parent <= 1 || process.parent == root {
+            return false;
+        }
+        current = process.parent;
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pane(processes: &[(u32, u32, u32, u32)]) -> impl Fn(u32) -> Option<Kin> + '_ {
+        |pid| {
+            processes
+                .iter()
+                .find(|(each, ..)| *each == pid)
+                .map(|&(_, session, group, parent)| Kin {
+                    session,
+                    group,
+                    parent,
+                })
+        }
+    }
+
+    const ROOT: (u32, u32, u32, u32) = (10, 10, 10, 1);
+    const NESTED_SHELL: (u32, u32, u32, u32) = (20, 10, 20, 10);
+    const NESTED_JOB: (u32, u32, u32, u32) = (25, 10, 25, 20);
+
+    #[test]
+    fn a_reporter_in_the_panes_session_belongs_to_its_own_group_and_nothing_else() {
+        let background = (30, 10, 30, 25);
+        let processes = [ROOT, NESTED_SHELL, NESTED_JOB, background];
+        assert!(in_job(30, 10, 30, pane(&processes)));
+        for job in [25, 20, 10] {
+            assert!(!in_job(30, 10, job, pane(&processes)), "{job}");
+        }
+    }
+
+    #[test]
+    fn a_detached_reporter_belongs_to_the_group_of_its_first_ancestor_in_the_panes_session() {
+        let detached = (40, 40, 40, 25);
+        let detached_again = (50, 50, 50, 40);
+        let processes = [ROOT, NESTED_SHELL, NESTED_JOB, detached, detached_again];
+        for reporter in [40, 50] {
+            assert!(in_job(reporter, 10, 25, pane(&processes)), "{reporter}");
+            for job in [40, 20, 10] {
+                assert!(
+                    !in_job(reporter, 10, job, pane(&processes)),
+                    "{reporter} {job}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_detached_reporter_whose_first_ancestor_in_the_session_is_the_root_belongs_to_no_job() {
+        let detached = (40, 40, 40, 10);
+        let processes = [ROOT, detached];
+        assert!(!in_job(40, 10, 10, pane(&processes)));
+        assert!(!in_job(40, 10, 40, pane(&processes)));
+        assert!(in_job(10, 10, 10, pane(&processes)));
+    }
+
+    #[test]
+    fn a_reporter_the_kernel_cannot_place_belongs_to_no_job() {
+        let detached = (40, 40, 40, 25);
+        assert!(!in_job(40, 10, 20, pane(&[ROOT, NESTED_SHELL, detached])));
+        assert!(!in_job(25, 10, 25, pane(&[NESTED_SHELL, NESTED_JOB])));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn this_processs_parent_and_grandparent_are_its_ancestors() {
+        let parent = std::os::unix::process::parent_id();
+        assert!(process_has_ancestor(std::process::id(), parent));
+        if let Some((_, grandparent)) = super::super::process_name_and_parent(parent)
+            .filter(|(_, grandparent)| *grandparent != 0)
+        {
+            assert!(process_has_ancestor(std::process::id(), grandparent));
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_child_is_not_an_ancestor_of_its_parent() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "read line"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let child_is_ancestor = process_has_ancestor(std::process::id(), child.id());
+        let parent_is_ancestor = process_has_ancestor(child.id(), std::process::id());
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert!(!child_is_ancestor);
+        assert!(parent_is_ancestor);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn child_in_its_own_group() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        std::process::Command::new("/bin/sh")
+            .args(["-c", "read line"])
+            .stdin(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn end(mut child: std::process::Child) {
+        drop(child.stdin.take());
+        child.wait().unwrap();
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_process_is_in_the_job_of_its_own_group_even_as_the_root() {
+        let me = std::process::id();
+        let group = super::super::process_group_id(me).unwrap();
+        assert!(process_in_job(
+            me,
+            std::os::unix::process::parent_id(),
+            group
+        ));
+        assert!(process_in_job(me, me, group));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn detached_child() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .args(["-c", "read line"])
+            .stdin(std::process::Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().unwrap()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_background_job_in_the_panes_session_is_not_in_the_job_of_its_parent() {
+        let child = child_in_its_own_group();
+        let group = super::super::process_group_id(std::process::id()).unwrap();
+        let inside = process_in_job(child.id(), std::os::unix::process::parent_id(), group);
+        end(child);
+        assert!(!inside);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_detached_process_is_in_the_job_of_its_parent_in_the_panes_session() {
+        let child = detached_child();
+        let group = super::super::process_group_id(std::process::id()).unwrap();
+        let inside = process_in_job(child.id(), std::os::unix::process::parent_id(), group);
+        end(child);
+        assert!(inside);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_roots_group_holds_no_process_through_the_root() {
+        let child = detached_child();
+        let me = std::process::id();
+        let group = super::super::process_group_id(me).unwrap();
+        let inside = process_in_job(child.id(), me, group);
+        end(child);
+        assert!(!inside);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn no_ancestor_above_the_root_puts_a_process_in_its_job() {
+        let child = child_in_its_own_group();
+        let group = super::super::process_group_id(std::process::id()).unwrap();
+        let inside = process_in_job(child.id(), child.id(), group);
+        end(child);
+        assert!(!inside);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_process_is_not_in_the_job_of_its_child() {
+        let child = child_in_its_own_group();
+        let group = super::super::process_group_id(child.id()).unwrap();
+        let inside = process_in_job(
+            std::process::id(),
+            std::os::unix::process::parent_id(),
+            group,
+        );
+        end(child);
+        assert!(!inside);
+    }
 
     #[test]
     fn server_hangup_evidence_expires() {

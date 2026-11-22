@@ -926,6 +926,14 @@ fn run_clipboard_command(command: &ClipboardCommand, bytes: &[u8]) -> bool {
     child.wait().map(|status| status.success()).unwrap_or(false)
 }
 
+pub fn process_group_id(pid: u32) -> Option<u32> {
+    process_bsdinfo(pid).map(|info| info.pbi_pgid)
+}
+
+pub fn boot_id() -> Option<String> {
+    None
+}
+
 /// Start time of `pid` in microseconds. It tells a process apart from a later
 /// one that reuses its pid.
 pub fn process_start_token(pid: u32) -> Option<u64> {
