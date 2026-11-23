@@ -346,6 +346,47 @@ fn field<T>(
         .ok_or_else(|| HcError::Unavailable(format!("{method} returned no {key}")))
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub(crate) struct Machine {
+    pub(crate) name: String,
+    pub(crate) id: String,
+    pub(crate) state: String,
+}
+
+pub(crate) fn core_id<'a>(cores: &'a [Machine], prefix: &'a str) -> Result<&'a str, String> {
+    let named = |prefix: &'a str| {
+        let named = move |core: &&Machine| core.name == prefix || core.id == prefix;
+        cores.iter().filter(named)
+    };
+    let mut reached = named(prefix);
+    let id = reached.next().map_or(prefix, |core| &core.id);
+    if reached.next().is_some() {
+        return Err(format!("{prefix} is the name of one core and the core id of another; rename one with `hc machine rename`"));
+    }
+    Ok(if named(id).nth(1).is_some() {
+        prefix
+    } else {
+        id
+    })
+}
+
+pub(crate) fn located(address: &str) -> Result<(Option<&str>, &str), String> {
+    match address.split_once('/') {
+        Some((_, local)) if local.contains('/') => {
+            Err(format!("{address} is more than one machine away"))
+        }
+        Some((machine, local)) => Ok((Some(machine), local)),
+        None => Ok((None, address)),
+    }
+}
+
+pub(crate) fn qualified(machine: Option<&str>, local: &str) -> String {
+    match machine {
+        Some(machine) => format!("{machine}/{local}"),
+        None => local.to_owned(),
+    }
+}
+
 /// Whether a core's `hello` says it can serve Lawn.
 pub(crate) fn check_hello(hello: &Value) -> HcResult<()> {
     let generation = hello.get("generation").and_then(Value::as_u64).unwrap_or(0);
@@ -695,6 +736,24 @@ impl Core {
             stream,
             snapshot,
         })
+    }
+
+    pub(crate) fn machines(&self) -> HcResult<Vec<Machine>> {
+        let result = self.call("machine.list", json!({}))?;
+        field("machine.list", &result, "machines", |machines| {
+            serde_json::from_value(machines.clone()).ok()
+        })
+    }
+
+    pub(crate) fn cores(&self) -> HcResult<Vec<Machine>> {
+        let text = |key: &str| self.hello["core"][key].as_str().unwrap_or_default();
+        let mut cores = self.machines()?;
+        cores.push(Machine {
+            name: text("name").to_owned(),
+            id: text("id").to_owned(),
+            state: "connected".to_owned(),
+        });
+        Ok(cores)
     }
 
     pub(crate) fn doc_get(&self, name: &str, on: Option<&str>) -> HcResult<Doc> {

@@ -3,11 +3,11 @@ use crate::hc::test_support::TestCore;
 use crate::session_doc::{Direction, Placement};
 use serde_json::Value;
 
-fn program() -> Vec<String> {
+pub(super) fn program() -> Vec<String> {
     ["sh", "-c", "sleep 120"].map(str::to_owned).to_vec()
 }
 
-fn workspace() -> Destination {
+pub(super) fn workspace() -> Destination {
     Destination::Workspace { name: None }
 }
 
@@ -18,7 +18,7 @@ fn run_unacknowledged(test: &TestCore, reference: &str) -> String {
         .unwrap()
 }
 
-fn record(core: &Core, terminal: &str) -> Value {
+pub(super) fn record(core: &Core, terminal: &str) -> Value {
     core.call("terminal.get", json!({"terminal": terminal}))
         .unwrap()
 }
@@ -30,10 +30,10 @@ fn a_default_tab_destination_stays_bound_to_its_original_workspace() {
     };
     let lifecycle = Lifecycle::new(test.core.clone(), "work");
     let first = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let second = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let reference = lifecycle
         .store
@@ -74,7 +74,7 @@ fn an_invalid_start_does_not_create_a_session_or_upgrade_its_document() {
                 workspace: None,
                 name: None
             },
-            Path::new("/tmp"),
+            Some(Path::new("/tmp")),
             &program()
         )
         .is_err());
@@ -85,7 +85,7 @@ fn an_invalid_start_does_not_create_a_session_or_upgrade_its_document() {
                 direction: Direction::Right,
                 ratio: 0.5
             },
-            Path::new("/tmp"),
+            Some(Path::new("/tmp")),
             &program()
         )
         .is_err());
@@ -129,7 +129,7 @@ fn a_confirmed_run_rejection_does_not_permanently_block_the_session() {
     let error = lifecycle
         .start(
             workspace(),
-            Path::new("/tmp"),
+            Some(Path::new("/tmp")),
             &["/nonexistent/lawn-test-program".to_owned()],
         )
         .unwrap_err();
@@ -142,7 +142,7 @@ fn a_confirmed_run_rejection_does_not_permanently_block_the_session() {
         .pending_starts
         .is_empty());
     lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
 }
 
@@ -153,7 +153,7 @@ fn successful_creation_is_kept_and_clears_its_start_record() {
     };
     let lifecycle = Lifecycle::new(test.core.clone(), "work");
     let created = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let loaded = lifecycle.store.load().unwrap().layout;
 
@@ -183,7 +183,7 @@ fn an_empty_lookup_does_not_clear_or_repeat_a_start() {
         .pending_starts
         .contains_key(&reference));
     assert!(later
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .is_err());
     let listed = test
         .core
@@ -292,7 +292,7 @@ fn a_drop_queues_the_close_of_a_terminal_whose_destination_is_gone() {
     };
     let lifecycle = Lifecycle::new(test.core.clone(), "work");
     let first = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let reference = lifecycle
         .store
@@ -321,7 +321,7 @@ fn a_vanished_destination_reserves_cleanup_before_killing() {
     };
     let lifecycle = Lifecycle::new(test.core.clone(), "work");
     let first = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let reference = lifecycle
         .store
@@ -364,7 +364,7 @@ fn a_saved_close_is_finished_by_another_client() {
     };
     let original = Lifecycle::new(test.core.clone(), "work");
     let created = original
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     original
         .store
@@ -388,7 +388,7 @@ fn explicit_unpark_retries_reconcile_keep_without_another_pane() {
     };
     let lifecycle = Lifecycle::new(test.core.clone(), "work");
     let first = lifecycle
-        .start(workspace(), Path::new("/tmp"), &program())
+        .start(workspace(), Some(Path::new("/tmp")), &program())
         .unwrap();
     let second = lifecycle
         .start(
@@ -397,7 +397,7 @@ fn explicit_unpark_retries_reconcile_keep_without_another_pane() {
                 direction: Direction::Right,
                 ratio: 0.5,
             },
-            Path::new("/tmp"),
+            Some(Path::new("/tmp")),
             &program(),
         )
         .unwrap();

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::hc::{Core, HcError};
-use crate::session_doc::{Created, Destination, Sessions, Store};
+use crate::session_doc::{Created, Destination, Layout, Sessions, Store};
 
 const START_LABEL: &str = "lawn-start";
 const KEEP_SETTLE_ATTEMPTS: usize = 4;
@@ -17,16 +17,31 @@ fn utf8(path: &Path) -> Result<&str, String> {
 pub(crate) struct Lifecycle {
     core: Arc<Core>,
     session: String,
+    on: Option<String>,
     store: Store,
 }
 
 impl Lifecycle {
     pub(crate) fn new(core: Arc<Core>, session: &str) -> Self {
+        Self::on(core, session, None)
+    }
+
+    pub(crate) fn on(core: Arc<Core>, session: &str, machine: Option<&str>) -> Self {
+        let on = machine.map(str::to_owned);
         Self {
-            store: Store::new(core.clone(), session, None),
+            store: Store::new(core.clone(), session, on.clone()),
             core,
             session: session.to_owned(),
+            on,
         }
+    }
+
+    fn address(&self, terminal: &str) -> String {
+        crate::hc::qualified(self.on.as_deref(), terminal)
+    }
+
+    pub(crate) fn layout(&self) -> Result<Layout, String> {
+        Ok(self.store.load()?.layout)
     }
 
     /// Records the start, then submits terminal.run exactly once. Failure
@@ -34,10 +49,10 @@ impl Lifecycle {
     pub(crate) fn start(
         &self,
         destination: Destination,
-        cwd: &Path,
+        cwd: Option<&Path>,
         argv: &[String],
     ) -> Result<Created, String> {
-        let cwd = utf8(cwd)?;
+        let cwd = cwd.map(utf8).transpose()?;
         let reference = self.store.reserve_start(&destination)?;
         self.submit(&reference, cwd, argv)?.ok_or_else(|| {
             format!(
@@ -66,7 +81,7 @@ impl Lifecycle {
     ) -> Result<Option<Created>, String> {
         let cwd = utf8(cwd)?;
         match self.store.reserve_first_start()? {
-            Some(reference) => self.submit(&reference, cwd, argv),
+            Some(reference) => self.submit(&reference, Some(cwd), argv),
             None => Ok(None),
         }
     }
@@ -74,14 +89,16 @@ impl Lifecycle {
     fn submit(
         &self,
         reference: &str,
-        cwd: &str,
+        cwd: Option<&str>,
         argv: &[String],
     ) -> Result<Option<Created>, String> {
         let mut params = json!({
+            "on": self.on,
             "cwd": cwd,
             "keep": true,
             "no_parent": true,
             "no_notify": true,
+            "name": start_name(reference),
             "labels": {START_LABEL: reference},
         });
         if !argv.is_empty() {
@@ -90,11 +107,13 @@ impl Lifecycle {
         let terminal = match self.core.run(params) {
             Ok(terminal) => terminal,
             Err(err @ HcError::Rpc { .. }) => {
-                self.store.edit(|layout| {
-                    if let Some(start) = layout.pending_starts.get_mut(reference) {
-                        start.reply_received = true;
-                    }
-                }).map_err(|recovery| format!("{err}; start {reference} remains unconfirmed: {recovery}"))?;
+                if is_final(self.on.as_deref(), err.kind()) {
+                    self.store.edit(|layout| {
+                        if let Some(start) = layout.pending_starts.get_mut(reference) {
+                            start.reply_received = true;
+                        }
+                    }).map_err(|recovery| format!("{err}; start {reference} remains unconfirmed: {recovery}"))?;
+                }
                 self.recover().map_err(|recovery| format!("{err}; recovery of {reference}: {recovery}"))?;
                 return Err(err.to_string());
             }
@@ -102,7 +121,7 @@ impl Lifecycle {
                 "start {reference} is unconfirmed: {err}; inspect `lawn --session {} ls` before starting another program", self.session
             )),
         };
-        self.finish_start(reference, &terminal)
+        self.finish_start(reference, local_of(&terminal))
     }
 
     /// Recovers saved starts and closes without ever starting another
@@ -124,16 +143,35 @@ impl Lifecycle {
     }
 
     fn lookup(&self, reference: &str) -> Result<Option<String>, String> {
-        let listed = self
-            .core
-            .call(
-                "terminal.list",
-                json!({
-                    "all": true, "labels": {START_LABEL: reference}
-                }),
-            )
-            .map_err(|err| err.to_string())?;
-        Ok(local_start(&listed)?.map(str::to_owned))
+        let list = |filter: serde_json::Value| {
+            self.core
+                .call("terminal.list", filter)
+                .map_err(|err| err.to_string())
+        };
+        if self.on.is_none() {
+            let listed = list(json!({"all": true, "labels": {START_LABEL: reference}}))?;
+            return Ok(started(&listed, None, reference)?.map(str::to_owned));
+        }
+        let named = self.address(&start_name(reference));
+        let record = match self.core.call("terminal.get", json!({"terminal": named})) {
+            Ok(record) => record,
+            Err(err) if err.kind() == Some("not_found") => return Ok(None),
+            Err(err) => return Err(err.to_string()),
+        };
+        let holder = record["address"]
+            .as_str()
+            .ok_or("the core returned no terminal address")?;
+        let (machine, local) = crate::hc::located(holder)?;
+        if record["labels"][START_LABEL] == reference {
+            return Ok(Some(local.to_owned()));
+        }
+        let listed = list(json!({"all": true}))?;
+        if !confirms(&listed, self.on.as_deref(), machine, holder) {
+            return Err(format!(
+                "the terminal list does not show {holder} on the same machine, so start {reference} cannot be confirmed; run the command again"
+            ));
+        }
+        Ok(started(&listed, machine, reference)?.map(str::to_owned))
     }
 
     pub(crate) fn drop_start(&self, reference: &str) -> Result<(), String> {
@@ -200,7 +238,7 @@ impl Lifecycle {
     fn end_close(&self, terminal: &str) -> Result<(), String> {
         match self
             .core
-            .call("terminal.kill", json!({"terminal": terminal}))
+            .call("terminal.kill", json!({"terminal": self.address(terminal)}))
         {
             Ok(record) if record["state"] == "live" => {
                 return Err(format!("{terminal} has not ended; close remains pending"))
@@ -247,11 +285,13 @@ impl Lifecycle {
     ) -> Result<String, String> {
         let record = self
             .core
-            .call("terminal.get", json!({"terminal": terminal}))
+            .call("terminal.get", json!({"terminal": self.address(terminal)}))
             .map_err(|err| err.to_string())?;
-        let terminal = record["address"]
-            .as_str()
-            .ok_or("the core returned no terminal address")?;
+        let terminal = local_of(
+            record["address"]
+                .as_str()
+                .ok_or("the core returned no terminal address")?,
+        );
         if record["labels"].get("lawn").is_some() {
             return Err(format!(
                 "{terminal} belongs to a Lawn session outside the rewrite"
@@ -286,7 +326,7 @@ impl Lifecycle {
         for _ in 0..KEEP_SETTLE_ATTEMPTS {
             if let Err(err) = self.core.call(
                 "terminal.keep",
-                json!({"terminal": terminal, "keep": shown}),
+                json!({"terminal": self.address(terminal), "keep": shown}),
             ) {
                 self.ended_or(terminal, err.to_string())?;
             }
@@ -302,7 +342,7 @@ impl Lifecycle {
     fn ended_or(&self, terminal: &str, err: String) -> Result<(), String> {
         match self
             .core
-            .call("terminal.get", json!({"terminal": terminal}))
+            .call("terminal.get", json!({"terminal": self.address(terminal)}))
         {
             Ok(record) if record["state"] != "live" => Ok(()),
             Err(missing) if missing.kind() == Some("not_found") => Ok(()),
@@ -311,25 +351,58 @@ impl Lifecycle {
     }
 }
 
-fn local_start(listed: &serde_json::Value) -> Result<Option<&str>, String> {
+fn is_final(on: Option<&str>, kind: Option<&str>) -> bool {
+    on.is_none() || kind != Some("unavailable")
+}
+
+fn start_name(reference: &str) -> String {
+    reference.replace(':', "-")
+}
+
+fn local_of(address: &str) -> &str {
+    address.rsplit_once('/').map_or(address, |(_, local)| local)
+}
+
+fn confirms(
+    listed: &serde_json::Value,
+    on: Option<&str>,
+    machine: Option<&str>,
+    holder: &str,
+) -> bool {
+    let list = |key: &str| listed[key].as_array().into_iter().flatten();
+    let named = |key: &str| list("machines").find(|machine| on == machine[key].as_str());
+    let alias = named("id").or_else(|| named("name"));
+    machine == alias.and_then(|machine| machine["name"].as_str())
+        && list("terminals").any(|terminal| terminal["address"] == holder)
+}
+
+fn started<'a>(
+    listed: &'a serde_json::Value,
+    machine: Option<&str>,
+    reference: &str,
+) -> Result<Option<&'a str>, String> {
     let terminals = listed["terminals"]
         .as_array()
         .ok_or("the core returned no terminal list")?;
-    let mut local = None;
+    let mut found = None;
     for terminal in terminals {
         let address = terminal["address"]
             .as_str()
             .ok_or("the core returned no terminal address")?;
-        if address.contains('/') {
-            continue;
-        }
-        if local.replace(address).is_some() {
-            return Err(
-                "the start identifies multiple local terminals; nothing was changed".to_owned(),
-            );
+        let local = match crate::hc::located(address) {
+            Ok((on, local)) if on == machine && terminal["labels"][START_LABEL] == reference => {
+                local
+            }
+            _ => continue,
+        };
+        if found.replace(local).is_some() {
+            return Err(format!(
+                "the start identifies multiple {} terminals; nothing was changed",
+                machine.unwrap_or("local")
+            ));
         }
     }
-    Ok(local)
+    Ok(found)
 }
 
 fn owner<'a>(sessions: &'a Sessions, terminal: &str) -> Option<&'a str> {

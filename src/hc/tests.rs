@@ -703,3 +703,38 @@ fn a_cut_link_leaves_a_remote_terminal_running_and_its_attach_open() {
 
     core.call("terminal.kill", terminal).expect("kill");
 }
+
+#[test]
+fn an_address_names_at_most_one_machine() {
+    assert_eq!(located("t3"), Ok((None, "t3")));
+    assert_eq!(located("boxb/t3"), Ok((Some("boxb"), "t3")));
+    assert_eq!(qualified(Some("boxb"), "t3"), "boxb/t3");
+    assert_eq!(qualified(None, "t3"), "t3");
+    let error = located("boxb/boxc/t3").unwrap_err();
+    assert_eq!(error, "boxb/boxc/t3 is more than one machine away");
+}
+
+#[test]
+fn a_machine_is_reached_by_its_core_id_unless_another_machine_has_that_name() {
+    let machine = |name: &str, id: &str| Machine {
+        name: name.to_owned(),
+        id: id.to_owned(),
+        state: "connected".to_owned(),
+    };
+    let machines = [machine("boxa", "ida"), machine("boxb", "idb")];
+    assert_eq!(core_id(&machines, "boxb"), Ok("idb"));
+    assert_eq!(core_id(&machines, "idb"), Ok("idb"));
+    assert_eq!(core_id(&machines, "gone"), Ok("gone"));
+
+    let machines = [machine("idb", "idc"), machine("boxb", "idb")];
+    assert_eq!(core_id(&machines, "boxb"), Ok("boxb"));
+    let error = core_id(&machines, "idb").unwrap_err();
+    assert!(error.starts_with("idb is the name of one"), "{error}");
+
+    assert_eq!(core_id(&[machine("idd", "idd")], "idd"), Ok("idd"));
+
+    let cores = [machine("boxb", "here"), machine("here", "idh")];
+    assert_eq!(core_id(&cores, "boxb"), Ok("boxb"));
+    let error = core_id(&cores, "here").unwrap_err();
+    assert!(error.starts_with("here is the name of one"), "{error}");
+}

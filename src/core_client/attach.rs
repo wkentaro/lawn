@@ -28,6 +28,7 @@ fn run(terminal: &str) -> io::Result<()> {
         return Err(io::Error::other("lawn attach needs a terminal"));
     }
     let core = super::core()?;
+    let terminal = &super::commands::core_address(&core, terminal).map_err(io::Error::other)?;
     let geometry = super::host::host_geometry()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

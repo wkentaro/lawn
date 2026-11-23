@@ -207,8 +207,8 @@ mod unix {
         match operation {
             Operation::Start(destination) => {
                 let report = |error| warn!(%error, session, "recovery failed");
-                match creation_lifecycle(&core, session, report)
-                    .and_then(|lifecycle| lifecycle.start(destination, cwd, &[]))
+                match creation_lifecycle(&core, session, None, None, report)
+                    .and_then(|lifecycle| lifecycle.start(destination, Some(cwd), &[]))
                 {
                     Ok(started) => {
                         created.send(started.terminal).ok();

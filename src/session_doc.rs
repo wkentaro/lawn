@@ -106,6 +106,42 @@ impl Layout {
     pub(crate) fn shows(&self, terminal: &str) -> bool {
         !self.parked.contains(terminal) && self.owns(terminal)
     }
+
+    pub(crate) fn qualified(mut self, machine: &str) -> Self {
+        let far = |local: &str| crate::hc::qualified(Some(machine), local);
+        for workspace in &mut self.workspaces {
+            workspace.id = far(&workspace.id);
+            for tab in &mut workspace.tabs {
+                tab.id = far(&tab.id);
+                tab.root.qualify(&far);
+            }
+        }
+        for terminals in [&mut self.parked, &mut self.closing] {
+            *terminals = terminals.iter().map(|terminal| far(terminal)).collect();
+        }
+        self.pending_starts = std::mem::take(&mut self.pending_starts)
+            .into_iter()
+            .map(|(reference, mut start)| {
+                match &mut start.destination {
+                    Destination::Split { beside: local, .. }
+                    | Destination::Tab {
+                        workspace: Some(local),
+                        ..
+                    } => *local = far(local),
+                    Destination::Tab { .. } | Destination::Workspace { .. } => {}
+                }
+                (far(&reference), start)
+            })
+            .collect();
+        self
+    }
+
+    pub(crate) fn join(&mut self, other: Self) {
+        self.workspaces.extend(other.workspaces);
+        self.parked.extend(other.parked);
+        self.closing.extend(other.closing);
+        self.pending_starts.extend(other.pending_starts);
+    }
 }
 
 impl Node {
@@ -143,6 +179,16 @@ impl Node {
             Node::Pane { terminal: owned } => owned == terminal,
             Node::Split { first, second, .. } => {
                 first.contains(terminal) || second.contains(terminal)
+            }
+        }
+    }
+
+    fn qualify(&mut self, far: &impl Fn(&str) -> String) {
+        match self {
+            Node::Pane { terminal } => *terminal = far(terminal),
+            Node::Split { first, second, .. } => {
+                first.qualify(far);
+                second.qualify(far);
             }
         }
     }

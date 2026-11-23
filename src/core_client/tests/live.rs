@@ -13,7 +13,7 @@ const SESSION: &str = "live";
 
 fn sleeper() -> Program {
     Program {
-        cwd: Path::new("/tmp").to_owned(),
+        cwd: Some(Path::new("/tmp").to_owned()),
         argv: ["sh", "-c", "sleep 30"].map(str::to_owned).to_vec(),
     }
 }
@@ -28,7 +28,7 @@ fn text(value: &Value, key: &str) -> String {
 }
 
 fn workspace(core: &Arc<Core>) -> Value {
-    commands::workspace_create(core, SESSION, Some("main".to_owned()), &sleeper())
+    commands::workspace_create(core, SESSION, Some("main".to_owned()), None, &sleeper())
         .expect("workspace create")
 }
 
@@ -60,7 +60,8 @@ fn retrying_a_pending_create_recovers_without_starting_a_second_program() {
     let reference = pending_start(&test.core);
     let terminal = started_for(&test.core, &reference);
 
-    let error = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap_err();
+    let error =
+        commands::workspace_create(&test.core, SESSION, None, None, &sleeper()).unwrap_err();
 
     assert!(error.contains("no new program was started"), "{error}");
     let layout = commands::ls(&test.core, SESSION).unwrap();
@@ -87,7 +88,7 @@ fn listing_an_unresolved_start_keeps_it_visible_without_blocking_other_sessions(
             .get(&reference)
             .is_some()
     );
-    commands::workspace_create(&test.core, "other", None, &sleeper()).unwrap();
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).unwrap();
     assert!(commands::ls(&test.core, SESSION)
         .unwrap()
         .pending_starts
@@ -100,7 +101,8 @@ fn dropping_a_pending_start_lets_the_session_start_again() {
         return;
     };
     let reference = pending_start(&test.core);
-    let refused = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap_err();
+    let refused =
+        commands::workspace_create(&test.core, SESSION, None, None, &sleeper()).unwrap_err();
     assert!(
         refused.contains(&format!("start drop {reference}")),
         "{refused}"
@@ -109,7 +111,7 @@ fn dropping_a_pending_start_lets_the_session_start_again() {
     commands::start_drop(&test.core, SESSION, &reference).unwrap();
 
     assert!(commands::start_drop(&test.core, SESSION, &reference).is_err());
-    let created = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap();
+    let created = commands::workspace_create(&test.core, SESSION, None, None, &sleeper()).unwrap();
     let layout = commands::ls(&test.core, SESSION).unwrap();
     assert!(layout.pending_starts.is_empty());
     assert!(layout.shows(&text(&created, "terminal")));
@@ -264,7 +266,7 @@ fn a_finished_terminal_parks_unparks_and_closes() {
     };
     let first = text(&workspace(&test.core), "terminal");
     let quick = Program {
-        cwd: Path::new("/tmp").to_owned(),
+        cwd: Some(Path::new("/tmp").to_owned()),
         argv: ["sh", "-c", "exit 0"].map(str::to_owned).to_vec(),
     };
     let split = commands::pane_split(&test.core, SESSION, &first, Direction::Right, 0.5, &quick)
@@ -304,7 +306,7 @@ fn a_terminal_shown_in_another_session_cannot_be_unparked() {
         return;
     };
     let first = text(&workspace(&test.core), "terminal");
-    commands::workspace_create(&test.core, "other", None, &sleeper()).expect("other session");
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).expect("other session");
 
     assert!(commands::unpark(&test.core, "other", &first, None).is_err());
     assert!(!commands::ls(&test.core, "other").expect("ls").shows(&first));
@@ -319,7 +321,7 @@ fn unparking_a_terminal_another_session_parked_takes_it_over() {
     let first = text(&workspace(&test.core), "terminal");
     let second = split_right(&test.core, &first);
     commands::park(&test.core, SESSION, &second).expect("park");
-    commands::workspace_create(&test.core, "other", None, &sleeper()).expect("other session");
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).expect("other session");
 
     commands::unpark(&test.core, "other", &second, None).expect("unpark elsewhere");
 
@@ -338,7 +340,7 @@ fn a_failed_takeover_leaves_the_other_session_parked() {
     let first = text(&workspace(&test.core), "terminal");
     let second = split_right(&test.core, &first);
     commands::park(&test.core, SESSION, &second).expect("park");
-    commands::workspace_create(&test.core, "other", None, &sleeper()).expect("other session");
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).expect("other session");
 
     let to = Placement::NewTab {
         workspace: Some("ws999".to_owned()),
@@ -363,7 +365,7 @@ fn a_stale_park_keeps_a_terminal_another_session_shows() {
     let first = text(&workspace(&test.core), "terminal");
     let second = split_right(&test.core, &first);
     commands::park(&test.core, SESSION, &second).expect("park");
-    commands::workspace_create(&test.core, "other", None, &sleeper()).expect("other session");
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).expect("other session");
     commands::unpark(&test.core, "other", &second, None).expect("unpark elsewhere");
 
     crate::core_lifecycle::Lifecycle::new(test.core.clone(), SESSION)
@@ -387,7 +389,7 @@ fn a_terminal_being_closed_cannot_be_claimed() {
             layout.closing.insert(second.clone());
         })
         .expect("reserve");
-    commands::workspace_create(&test.core, "other", None, &sleeper()).expect("other session");
+    commands::workspace_create(&test.core, "other", None, None, &sleeper()).expect("other session");
 
     assert!(commands::unpark(&test.core, "other", &second, None).is_err());
     assert!(!commands::ls(&test.core, "other")
@@ -471,4 +473,195 @@ fn parking_the_last_pane_keeps_its_workspace_and_starts_nothing() {
         .call("terminal.list", json!({"all": true}))
         .expect("list");
     assert_eq!(listed["terminals"].as_array().map(Vec::len), Some(1));
+}
+
+#[cfg(unix)]
+fn linked() -> Option<(TestCore, TestCore, crate::hc::test_support::Link)> {
+    let (here, there) = (TestCore::start()?, TestCore::start()?);
+    let link = here.link(&there, "boxb");
+    here.becomes("boxb", "connected");
+    Some((here, there, link))
+}
+
+#[cfg(unix)]
+fn far() -> Program {
+    Program {
+        cwd: None,
+        ..sleeper()
+    }
+}
+
+#[cfg(unix)]
+fn workspace_on_boxb(core: &Arc<Core>) -> Value {
+    commands::workspace_create(core, SESSION, None, Some("boxb"), &far()).expect("workspace create")
+}
+
+#[cfg(unix)]
+#[test]
+fn a_workspace_on_a_linked_machine_is_listed_and_changed_under_its_name() {
+    let Some((here, there, _link)) = linked() else {
+        return;
+    };
+    let core = &here.core;
+    let near = workspace(core);
+    let created = workspace_on_boxb(core);
+    let workspace = text(&created, "workspace");
+    assert_eq!(text(&created, "terminal"), "boxb/t1");
+    assert!(workspace.starts_with("boxb/"), "{workspace}");
+
+    let tab = commands::tab_create(core, SESSION, Some(&workspace), None, &far()).unwrap();
+    let split =
+        commands::pane_split(core, SESSION, "boxb/t1", Direction::Right, 0.5, &far()).unwrap();
+
+    assert_eq!(text(&tab, "terminal"), "boxb/t2");
+    assert!(text(&tab, "tab").starts_with("boxb/"), "{tab}");
+    assert_eq!(text(&split, "terminal"), "boxb/t3");
+    let layout = commands::ls(core, SESSION).unwrap();
+    let ids: Vec<&str> = layout.workspaces.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!(ids, [text(&near, "workspace"), workspace]);
+    for shown in ["t1", "boxb/t1", "boxb/t2", "boxb/t3"] {
+        assert!(layout.shows(shown), "{shown}: {layout:?}");
+    }
+    let error = commands::pane_close(core, SESSION, "boxb/t9").unwrap_err();
+    assert_eq!(error, "on boxb: t9 is not in session live");
+    commands::pane_close(core, SESSION, "boxb/t1").unwrap();
+    assert_eq!(get(core, "t1")["state"], "live");
+    assert_ne!(get(&there.core, "t1")["state"], "live");
+    let there = commands::ls(&there.core, SESSION).unwrap();
+    assert!(there.shows("t2") && there.shows("t3"), "{there:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parked_pane_returns_only_to_a_place_on_its_own_machine() {
+    let Some((here, _there, _link)) = linked() else {
+        return;
+    };
+    let core = &here.core;
+    let near = workspace(core);
+    let far = workspace_on_boxb(core);
+    commands::park(core, SESSION, "boxb/t1").unwrap();
+    let beside = |terminal: &str| Placement::Beside {
+        terminal: terminal.to_owned(),
+        direction: Direction::Right,
+    };
+    let tab = |workspace: String| Placement::NewTab {
+        workspace: Some(workspace),
+    };
+
+    for elsewhere in [beside("t1"), tab(text(&near, "workspace"))] {
+        let error = commands::unpark(core, SESSION, "boxb/t1", Some(elsewhere)).unwrap_err();
+        assert!(error.contains("another machine"), "{error}");
+    }
+    let error = commands::unpark(core, SESSION, "t1", Some(beside("boxb/t1"))).unwrap_err();
+    assert!(error.contains("another machine"), "{error}");
+
+    let shown = commands::unpark(core, SESSION, "boxb/t1", Some(tab(text(&far, "workspace"))));
+    assert_eq!(text(&shown.unwrap(), "terminal"), "boxb/t1");
+    assert!(commands::ls(core, SESSION).unwrap().shows("boxb/t1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_machine_that_is_away_or_removed_is_left_out_of_the_listing() {
+    let Some((here, _there, link)) = linked() else {
+        return;
+    };
+    let core = &here.core;
+    workspace(core);
+    workspace_on_boxb(core);
+    link.cut();
+    here.becomes("boxb", "unreachable");
+
+    let away = commands::ls(core, SESSION).unwrap();
+    let error = commands::pane_close(core, SESSION, "boxb/t1").unwrap_err();
+
+    assert_eq!(away.workspaces.len(), 1);
+    assert!(away.shows("t1") && !away.shows("boxb/t1"), "{away:?}");
+    assert!(error.contains("unreachable"), "{error}");
+    link.mend();
+    core.call("machine.connect", json!({"machine": "boxb"}))
+        .unwrap();
+    here.becomes("boxb", "connected");
+    assert!(commands::ls(core, SESSION).unwrap().shows("boxb/t1"));
+    core.call("machine.rm", json!({"machine": "boxb"})).unwrap();
+    let removed = commands::ls(core, SESSION).unwrap();
+    assert_eq!(removed.workspaces.len(), 1);
+    let error = commands::pane_close(core, SESSION, "boxb/t1").unwrap_err();
+    assert!(error.contains("boxb"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_machine_named_like_the_id_of_another_is_neither_listed_nor_changed() {
+    let Some((here, there, _link)) = linked() else {
+        return;
+    };
+    let Some(third) = TestCore::start() else {
+        return;
+    };
+    let core = &here.core;
+    workspace_on_boxb(core);
+    let id = core.machines().unwrap().remove(0).id;
+    let _third = here.link(&third, &id);
+    here.becomes(&id, "connected");
+    let terminals = |test: &TestCore| {
+        let listed = test.core.call("terminal.list", json!({"all": true}));
+        listed.unwrap()["terminals"].as_array().map(Vec::len)
+    };
+
+    let listed = commands::ls(core, SESSION).unwrap();
+    let created = commands::workspace_create(core, SESSION, None, Some(&id), &far());
+    let closed = commands::pane_close(core, SESSION, &format!("{id}/t1"));
+    let attached = commands::core_address(core, &format!("{id}/t1"));
+    let local = commands::core_address(core, "here/t1").unwrap();
+
+    assert_eq!(
+        Some(&*local),
+        core.hello["core"]["id"]
+            .as_str()
+            .map(|id| format!("{id}/t1"))
+            .as_deref()
+    );
+    assert_eq!(listed.workspaces.len(), 1, "{listed:?}");
+    assert!(listed.shows("boxb/t1"));
+    for error in [created, closed, attached.map(Value::from)] {
+        let error = error.unwrap_err();
+        assert!(error.contains("nothing was changed"), "{error}");
+    }
+    assert_eq!((terminals(&there), terminals(&third)), (Some(1), Some(0)));
+    assert_eq!(get(&there.core, "t1")["state"], "live");
+    assert!(commands::ls(core, SESSION).unwrap().shows("boxb/t1"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_start_left_pending_on_a_machine_is_dropped_under_its_name() {
+    let Some((here, _there, _link)) = linked() else {
+        return;
+    };
+    let core = &here.core;
+    let reference = crate::session_doc::Store::new(core.clone(), SESSION, Some("boxb".to_owned()))
+        .reserve_start(&crate::session_doc::Destination::Workspace { name: None })
+        .unwrap();
+    let typed = format!("boxb/{reference}");
+
+    let listed = commands::ls(core, SESSION).unwrap();
+    let refused =
+        commands::workspace_create(core, SESSION, None, Some("boxb"), &far()).unwrap_err();
+
+    assert!(listed.pending_starts.contains_key(&typed), "{listed:?}");
+    assert!(
+        refused.contains(&format!("start drop {typed}")),
+        "{refused}"
+    );
+    workspace(core);
+    let error = commands::start_drop(core, SESSION, &reference).unwrap_err();
+    assert!(error.contains("is not pending"), "{error}");
+    commands::start_drop(core, SESSION, &typed).unwrap();
+    assert!(commands::ls(core, SESSION)
+        .unwrap()
+        .pending_starts
+        .is_empty());
+    workspace_on_boxb(core);
 }
