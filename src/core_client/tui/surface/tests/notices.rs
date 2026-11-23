@@ -42,6 +42,7 @@ fn notifying_on(cols: u16, rows: u16, configure: impl FnOnce(&mut Notifying)) ->
             confirm_close: false,
             scrollback: SCROLLBACK,
             chosen: Chosen::from(&Config::default()),
+            right_click_passthrough: None,
         },
     )
     .notifying(notifying);

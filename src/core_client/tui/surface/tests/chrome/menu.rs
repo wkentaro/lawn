@@ -491,6 +491,212 @@ async fn a_right_click_on_a_pane_that_reports_the_mouse_opens_the_menu_and_sends
     }
 }
 
+fn with_alt(surface: &mut Surface, kind: MouseEventKind, column: u16, row: u16) {
+    let mut event = mouse_at(kind, column, row);
+    event.modifiers = KeyModifiers::ALT;
+    assert!(surface.mouse(event, std::time::Instant::now()).is_none());
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_goes_to_a_pane_that_reports_the_mouse_without_it(
+) {
+    let mut surface = plain(120, 30);
+    surface.configure(
+        &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
+    );
+    surface.update(two_spaces());
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    for input in inputs.iter_mut() {
+        reports(input);
+    }
+    let other = pane(&surface, "t1");
+    let (x, y) = (other.x + 1, other.y + 1);
+    assert_ne!(surface.session.focused(), Some("t1"));
+
+    frame(&mut surface, &HashSet::new());
+    with_alt(&mut surface, MouseEventKind::Down(MouseButton::Right), x, y);
+    with_alt(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Right),
+        x + 1,
+        y,
+    );
+    with_alt(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Right),
+        x + 1,
+        y,
+    );
+
+    assert!(!surface.dialog_open());
+    assert_eq!(surface.session.focused(), Some("t1"));
+    let sent: Vec<Vec<u8>> = inputs.iter_mut().map(reports).collect();
+    assert_eq!(
+        sent.iter()
+            .filter(|bytes| !bytes.is_empty())
+            .collect::<Vec<_>>(),
+        [b"\x1b[<2;2;2M\x1b[<34;3;2M\x1b[<2;3;2m"]
+    );
+
+    right(&mut surface, x, y);
+    assert!(surface.dialog_open());
+    assert!(inputs.iter_mut().all(|input| reports(input).is_empty()));
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_opens_the_menu_on_a_pane_that_reports_no_mouse(
+) {
+    let mut surface = plain(120, 30);
+    surface.configure(
+        &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
+    );
+    surface.update(two_spaces());
+    let mut inputs = attach_with_input(&mut surface, b"");
+    frame(&mut surface, &HashSet::new());
+    let other = pane(&surface, "t1");
+
+    with_alt(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Right),
+        other.x + 1,
+        other.y + 1,
+    );
+
+    assert!(surface.dialog_open());
+    assert!(inputs.iter_mut().all(|input| reports(input).is_empty()));
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_waits_for_a_frame_after_a_resize() {
+    let mut surface = plain(120, 30);
+    surface.configure(
+        &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
+    );
+    surface.update(two_spaces());
+    let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
+    frame(&mut surface, &HashSet::new());
+    for input in inputs.iter_mut() {
+        reports(input);
+    }
+    let other = pane(&surface, "t1");
+
+    surface.resize(host(100, 30));
+    with_alt(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Right),
+        other.x + 1,
+        other.y + 1,
+    );
+
+    assert_ne!(surface.session.focused(), Some("t1"));
+    assert!(inputs.iter_mut().all(|input| reports(input).is_empty()));
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_on_the_scrollbar_opens_the_menu() {
+    let shown = [lines(40), b"\x1b[?1000h\x1b[?1006h".to_vec()].concat();
+    let (mut surface, _, mut input) = selecting(true, &shown);
+    surface.right_click_passthrough = Some(KeyModifiers::ALT);
+    let track = track(&surface, "t0");
+    reports(&mut input);
+
+    with_alt(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Right),
+        track.x,
+        track.y + 3,
+    );
+
+    assert!(surface.dialog_open());
+    assert!(reports(&mut input).is_empty());
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_goes_to_the_pane_in_copy_and_resize_mode() {
+    for resizing in [false, true] {
+        let mut surface = plain(120, 30);
+        surface.right_click_passthrough = Some(KeyModifiers::ALT);
+        surface.update(two_spaces());
+        let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
+        match resizing {
+            true => {
+                surface.act(KeybindAction::EnterResizeMode, false);
+            }
+            false => surface.enter_copy_mode(),
+        }
+        frame(&mut surface, &HashSet::new());
+        for input in inputs.iter_mut() {
+            reports(input);
+        }
+        let other = pane(&surface, "t1");
+
+        with_alt(
+            &mut surface,
+            MouseEventKind::Down(MouseButton::Right),
+            other.x + 1,
+            other.y + 1,
+        );
+
+        assert_eq!(surface.session.focused(), Some("t1"), "{resizing}");
+        let sent: Vec<u8> = inputs.iter_mut().flat_map(reports).collect();
+        assert_eq!(sent, b"\x1b[<2;2;2M", "{resizing}");
+    }
+}
+
+#[tokio::test]
+async fn a_right_click_with_the_passthrough_modifier_on_a_mode_bar_reaches_no_pane() {
+    let mut surface = surface_with_scrollbars(20, 10, false);
+    surface.right_click_passthrough = Some(KeyModifiers::ALT);
+    surface.update(row_of(&terminals(1)));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+    surface.act(KeybindAction::EnterResizeMode, false);
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+    with_alt(&mut surface, MouseEventKind::Down(MouseButton::Right), 3, 9);
+    assert!(reports(&mut input).is_empty());
+
+    surface.resize_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!surface.resizing());
+    with_alt(&mut surface, MouseEventKind::Down(MouseButton::Right), 3, 9);
+    assert!(reports(&mut input).is_empty());
+
+    surface.enter_copy_mode();
+    frame(&mut surface, &HashSet::new());
+    with_alt(&mut surface, MouseEventKind::Down(MouseButton::Right), 3, 9);
+    assert!(reports(&mut input).is_empty());
+    assert!(!surface.dialog_open());
+
+    let mut surface = plain(120, 30);
+    surface.right_click_passthrough = Some(KeyModifiers::ALT);
+    surface.update(spaces(&[(None, &[None])]));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+    surface.act(KeybindAction::WorkspacePicker, false);
+    frame(&mut surface, &HashSet::new());
+    reports(&mut input);
+    for leave in [false, true] {
+        if leave {
+            surface.leave_navigate();
+        }
+        with_alt(
+            &mut surface,
+            MouseEventKind::Down(MouseButton::Right),
+            40,
+            29,
+        );
+        assert!(reports(&mut input).is_empty(), "{leave}");
+        assert!(!surface.dialog_open(), "{leave}");
+    }
+    frame(&mut surface, &HashSet::new());
+    with_alt(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Right),
+        40,
+        29,
+    );
+    assert!(!reports(&mut input).is_empty());
+}
+
 fn asked(surface: &mut Surface) -> bool {
     Screen::of(surface)
         .lines(0..30)
