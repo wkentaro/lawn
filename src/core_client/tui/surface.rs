@@ -164,6 +164,12 @@ impl Overlays {
     fn toasts(&self) -> (Rect, u64, Rect) {
         (self.notice, self.shows, self.toast)
     }
+
+    fn bars(&self, point: ratatui::layout::Position) -> bool {
+        [self.copy.bar, self.resize, self.bar]
+            .iter()
+            .any(|rect| rect.contains(point))
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -1461,15 +1467,12 @@ impl Surface {
         if !self.outer.switching() && self.painted.hides(point) {
             return None;
         }
-        let barred = [self.painted.copy.bar, self.painted.resize]
-            .iter()
-            .any(|bar| bar.contains(point));
         if press
             && !self.outer.switching()
             && !self.copy_mode()
             && !self.resizing
             && !self.outer.navigating()
-            && !barred
+            && !self.painted.bars(point)
             && self.painted.notice.contains(point)
         {
             self.open_notice(now);
@@ -1525,20 +1528,26 @@ impl Surface {
             }
             return pointed;
         }
+        if matches!(event.kind, MouseEventKind::Down(_)) && self.painted.bars(point) {
+            if press {
+                self.select.press(None, event, now);
+            }
+            return None;
+        }
         if menu {
             if let Some(tile) = self
                 .tiles
                 .tiles
                 .iter()
                 .find(|tile| tile.info.rect.contains(point))
-                .filter(|_| !self.relayout && !hidden.contains(point))
+                .filter(|_| !self.relayout)
             {
                 let aim = Aim::Pane(tile.terminal.clone());
                 self.open_menu(Menu::new(aim, point));
             }
             return None;
         }
-        if press && !hidden.contains(point) {
+        if press {
             self.splitting = self.split_at(point);
             if self.splitting.is_some() {
                 self.select.press(None, event, now);

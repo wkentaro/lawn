@@ -584,6 +584,53 @@ async fn a_press_on_the_copy_bar_over_a_split_border_starts_no_drag() {
     assert_eq!(pointed(&mut surface, DRAG, 45, ROWS - 1, now), None);
 }
 
+fn down(surface: &mut Surface, button: MouseButton, column: u16, row: u16) {
+    surface.mouse(
+        mouse_at(MouseEventKind::Down(button), column, row),
+        std::time::Instant::now(),
+    );
+    surface.mouse(
+        mouse_at(MouseEventKind::Up(button), column, row),
+        std::time::Instant::now(),
+    );
+}
+
+#[tokio::test]
+async fn a_press_on_the_resize_or_copy_bar_reaches_no_pane_until_a_frame_takes_the_bar_away() {
+    for copying in [false, true] {
+        let mut surface = surface_with_scrollbars(20, 10, false);
+        surface.update(row_of(&terminals(1)));
+        let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+        match copying {
+            true => surface.enter_copy_mode(),
+            false => drop(surface.act(KeybindAction::EnterResizeMode, false)),
+        }
+        frame(&mut surface, &HashSet::new());
+        reports(&mut input);
+
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            down(&mut surface, button, 3, 9);
+            assert!(reports(&mut input).is_empty(), "{copying} {button:?}");
+        }
+        down(&mut surface, MouseButton::Middle, 3, 8);
+        assert!(!reports(&mut input).is_empty(), "{copying}");
+
+        match copying {
+            true => {
+                drop(surface.copy_mode_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE)))
+            }
+            false => drop(key(&mut surface, KeyCode::Esc)),
+        }
+        assert!(!surface.copy_mode() && !surface.resizing());
+        down(&mut surface, MouseButton::Left, 3, 9);
+        assert!(reports(&mut input).is_empty(), "{copying}");
+
+        frame(&mut surface, &HashSet::new());
+        down(&mut surface, MouseButton::Left, 3, 9);
+        assert!(!reports(&mut input).is_empty(), "{copying}");
+    }
+}
+
 #[tokio::test]
 async fn a_split_drag_ends_when_a_dialog_opens() {
     let mut surface = grid();

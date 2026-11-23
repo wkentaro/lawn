@@ -284,6 +284,29 @@ async fn tabs_under_the_navigate_bar_take_no_clicks_or_wheel() {
 }
 
 #[tokio::test]
+async fn a_press_on_the_navigate_bar_reaches_no_pane_until_a_frame_takes_the_bar_away() {
+    let mut surface = plain(120, 30);
+    surface.update(spaces(&[(None, &[None])]));
+    let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
+    surface.act(KeybindAction::WorkspacePicker, false);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.painted.bar, Rect::new(26, 29, 94, 1));
+    reports(&mut input);
+
+    tap(&mut surface, 40, 29);
+    assert!(surface.navigating());
+    assert!(reports(&mut input).is_empty());
+
+    surface.leave_navigate();
+    tap(&mut surface, 40, 29);
+    assert!(reports(&mut input).is_empty());
+
+    frame(&mut surface, &HashSet::new());
+    tap(&mut surface, 40, 29);
+    assert!(!reports(&mut input).is_empty());
+}
+
+#[tokio::test]
 async fn closing_a_workspace_with_confirm_on_asks_about_the_selected_one_and_ends_navigate_mode() {
     let mut surface = navigating(plain(120, 30), three());
     surface.navigate(Navigation::Move(1));

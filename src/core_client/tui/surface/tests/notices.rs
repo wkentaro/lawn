@@ -880,6 +880,22 @@ async fn a_press_on_a_banner_still_under_the_resize_bar_opens_nothing_after_the_
 }
 
 #[tokio::test]
+async fn a_press_on_a_toast_still_under_the_navigate_bar_opens_nothing_after_the_mode_ends() {
+    let mut surface = herdr();
+    says(&mut surface, "t5", &["blocked"], Instant::now());
+    surface.act(KeybindAction::WorkspacePicker, false);
+    screen(&mut surface);
+    let under = surface.painted.bar.intersection(notice(&surface));
+    assert!(!under.is_empty());
+
+    surface.leave_navigate();
+    surface.mouse(click(under.x, under.y), Instant::now());
+
+    assert_ne!(surface.session.focused(), Some("t5"));
+    assert!(surface.notice.is_some());
+}
+
+#[tokio::test]
 async fn a_press_on_a_banner_still_under_the_copy_bar_opens_nothing_after_copy_mode_ends() {
     let mut surface = notifying_on(40, 20, |_| {});
     feed(&surface, "t1", b"hello");
