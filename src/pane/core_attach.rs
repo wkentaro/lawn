@@ -504,13 +504,15 @@ impl PaneRuntime {
         address: &str,
         rows: u16,
         cols: u16,
+        resumed: bool,
         scrollback_limit_bytes: usize,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
-        let attached =
-            attach_unless_finished(&core, address, reattach_params(address, rows, cols))?;
+        let mut params = reattach_params(address, rows, cols);
+        params["resumed"] = resumed.into();
+        let attached = attach_unless_finished(&core, address, params)?;
         Self::attach_core(
             pane_id,
             core,

@@ -14,7 +14,7 @@ use crate::core_client::tui::chrome::Chrome;
 use crate::core_client::tui::keys::Navigation;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
-use crate::core_client::view::{Geometry, View};
+use crate::core_client::view::{Geometry, Placing, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
@@ -100,15 +100,22 @@ fn frame(surface: &mut Surface, dirty: &HashSet<PaneId>) -> Vec<PaneSurfacePatch
 }
 
 fn requests(surface: &mut Surface) -> Vec<(String, PaneId, Geometry)> {
-    let mut requests = Vec::new();
+    placings(surface)
+        .into_iter()
+        .map(|(terminal, id, placing)| (terminal, id, placing.geometry))
+        .collect()
+}
+
+fn placings(surface: &mut Surface) -> Vec<(String, PaneId, Placing)> {
+    let mut placings = Vec::new();
     surface.frame(
         &HashSet::new(),
-        |terminal, id, geometry| {
-            requests.push((terminal.to_owned(), id, geometry));
+        |terminal, id, placing| {
+            placings.push((terminal.to_owned(), id, placing));
         },
         ignore_leaving,
     );
-    requests
+    placings
 }
 
 fn frame_attaching(
@@ -119,8 +126,8 @@ fn frame_attaching(
     let mut rows = surface
         .frame(
             dirty,
-            |terminal, id, geometry| {
-                requests.push((terminal.to_owned(), id, geometry));
+            |terminal, id, placing: Placing| {
+                requests.push((terminal.to_owned(), id, placing.geometry));
             },
             ignore_leaving,
         )
@@ -185,7 +192,7 @@ impl Screen {
     }
 }
 
-fn never_attach(_: &str, _: PaneId, _: Geometry) {
+fn never_attach(_: &str, _: PaneId, _: Placing) {
     unreachable!("no pane to attach");
 }
 
@@ -322,7 +329,7 @@ async fn a_fully_parked_tab_draws_a_blank_screen() {
 }
 
 #[tokio::test]
-async fn a_pane_without_room_gets_no_view() {
+async fn a_pane_without_room_gets_a_view_at_the_smallest_pane_size_that_takes_no_input() {
     let mut surface = surface(2, 2);
     surface.update(row_of(&terminals(2)));
 
@@ -334,7 +341,15 @@ async fn a_pane_without_room_gets_no_view() {
         .iter()
         .all(|tile| tile.info.inner_rect.is_empty()));
     assert_eq!(surface.tiles.tiles.len(), 2);
-    assert!(surface.views.is_empty());
+    assert_eq!(surface.views.len(), 2);
+    for shown in surface.views.values() {
+        assert!(matches!(shown.place, super::Place::Hidden(_)));
+        assert_eq!(
+            (shown.geometry.cols, shown.geometry.rows),
+            (crate::pane::MIN_PANE_COLS, crate::pane::MIN_PANE_ROWS)
+        );
+    }
+    assert!(surface.focused().is_none());
 }
 
 #[tokio::test]
@@ -590,7 +605,7 @@ fn attach_with_input(
     surface: &mut Surface,
     shown: &[u8],
 ) -> Vec<tokio::sync::mpsc::Receiver<bytes::Bytes>> {
-    requests(surface)
+    let inputs = requests(surface)
         .into_iter()
         .map(|(_, id, geometry)| {
             let (view, input) = View::test_with_input(geometry.cols, geometry.rows);
@@ -598,7 +613,9 @@ fn attach_with_input(
             surface.attached(id, geometry, Ok(view));
             input
         })
-        .collect()
+        .collect();
+    surface.frame(&HashSet::new(), never_attach, ignore_leaving);
+    inputs
 }
 
 #[tokio::test]
@@ -793,7 +810,7 @@ async fn input_reaches_a_pane_focused_out_of_zoom_before_the_next_frame() {
 }
 
 #[tokio::test]
-async fn a_pane_hidden_by_zoom_is_told_its_focus_once_it_asks() {
+async fn a_pane_hidden_by_zoom_is_told_its_focus_only_once_it_is_shown_again() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
     let mut inputs = attach_with_input(&mut surface, b"");
@@ -807,8 +824,11 @@ async fn a_pane_hidden_by_zoom_is_told_its_focus_once_it_asks() {
     let rows = surface
         .frame(&HashSet::from([right]), never_attach, ignore_leaving)
         .0;
-
     assert!(!text(&rows).contains("behind"));
+    assert_eq!(reports(&mut inputs[1]), b"");
+    surface.act(KeybindAction::Zoom, true);
+    frame(&mut surface, &HashSet::new());
+
     assert_eq!(reports(&mut inputs[1]), b"\x1b[O");
 }
 
@@ -832,17 +852,15 @@ async fn a_pane_holding_output_shows_its_last_image_when_zoom_ends() {
 }
 
 #[tokio::test]
-async fn a_parked_pane_is_told_before_its_view_goes() {
+async fn a_pane_leaving_the_layout_is_told_before_its_view_goes() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
     let mut inputs = attach_with_input(&mut surface, b"\x1b[>3u");
     frame(&mut surface, &HashSet::new());
-    let parked = id_of(&surface, "t0");
+    let leaving_id = id_of(&surface, "t0");
     reports(&mut inputs[0]);
 
-    let mut layout = row_of(&terminals(2));
-    layout.parked.insert("t0".to_owned());
-    surface.update(layout);
+    surface.update(row_of(&["t1".to_owned()]));
     let mut leaving = Vec::new();
     surface.frame(&HashSet::new(), never_attach, |id, view| {
         leaving.push(id);
@@ -851,8 +869,8 @@ async fn a_parked_pane_is_told_before_its_view_goes() {
         );
     });
 
-    assert_eq!(leaving, [parked]);
-    assert!(!surface.views.contains_key(&parked));
+    assert_eq!(leaving, [leaving_id]);
+    assert!(!surface.views.contains_key(&leaving_id));
     assert_eq!(reports(&mut inputs[0]), b"\x1b[1;1:3A");
 }
 
@@ -1926,6 +1944,7 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
 mod chrome;
 mod copy_mode;
 mod dialog;
+mod offstage;
 mod resize;
 
 #[tokio::test]

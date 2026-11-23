@@ -36,15 +36,19 @@ fn run(terminal: &str) -> io::Result<()> {
         let stop = super::host::Stop::register()?;
         let wake = super::view::Wake::default();
         let events = super::view::Events::default();
-        let view = super::view::View::attach(
+        let mut view = super::view::View::attach(
             core,
             terminal,
-            geometry,
+            super::view::Placing {
+                geometry,
+                shown: true,
+            },
             crate::layout::PaneId::from_raw(0),
             &wake,
             &events.sender(),
             super::view::Scrollback::from(&crate::config::Config::load().config),
         )?;
+        view.show(geometry);
         let mut guard = super::host::enter(false)?;
         unix::show(view, &wake, events, geometry, &mut guard, stop).await
     })

@@ -255,6 +255,7 @@ impl TerminalRuntime {
         address: &str,
         rows: u16,
         cols: u16,
+        resumed: bool,
         scrollback_limit_bytes: usize,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
@@ -266,6 +267,7 @@ impl TerminalRuntime {
             address,
             rows,
             cols,
+            resumed,
             scrollback_limit_bytes,
             events,
             render_notify,
@@ -314,6 +316,10 @@ impl TerminalRuntime {
 
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
+    }
+
+    pub(crate) fn claim_size(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
+        self.0.claim_size(rows, cols, cell_width_px, cell_height_px);
     }
 
     #[cfg(unix)]

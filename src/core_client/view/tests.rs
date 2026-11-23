@@ -193,7 +193,10 @@ async fn a_view_shows_a_core_terminal_until_its_program_ends() {
     let mut view = View::attach(
         test.core.clone(),
         &address,
-        geometry,
+        Placing {
+            geometry,
+            shown: true,
+        },
         PaneId::from_raw(7),
         &wake,
         &events.sender(),
@@ -257,7 +260,10 @@ async fn each_core_output_wakes_the_host_to_draw_it() {
     let mut view = View::attach(
         test.core.clone(),
         &address,
-        geometry,
+        Placing {
+            geometry,
+            shown: true,
+        },
         id,
         &wake,
         &Events::default().sender(),
@@ -279,6 +285,59 @@ async fn each_core_output_wakes_the_host_to_draw_it() {
         .await
         .unwrap_or_else(|_| panic!("{word} never reached the view; saw {screen:?}"));
     }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_attached_off_screen_takes_the_size_only_once_shown() {
+    let Some(test) = crate::hc::test_support::TestCore::start() else {
+        return;
+    };
+    let address = test
+        .core
+        .run(serde_json::json!({"argv": ["cat"], "no_parent": true}))
+        .expect("run");
+    let cols = || {
+        test.core
+            .call("terminal.get", serde_json::json!({"terminal": address}))
+            .expect("terminal.get")["cols"]
+            .as_u64()
+    };
+    let (wake, events) = (Wake::default(), Events::default());
+    let geometry = |cols| Geometry {
+        cols,
+        rows: 5,
+        cell_width_px: 8,
+        cell_height_px: 16,
+    };
+    let attach = |id, cols, shown| {
+        View::attach(
+            test.core.clone(),
+            &address,
+            Placing {
+                geometry: geometry(cols),
+                shown,
+            },
+            PaneId::from_raw(id),
+            &wake,
+            &events.sender(),
+            Scrollback::from(&crate::config::Config::default()),
+        )
+        .expect("attach")
+    };
+    let mut other = attach(1, 50, true);
+    assert_eq!(cols(), Some(50));
+
+    let mut behind = attach(2, 30, false);
+    assert_eq!(cols(), Some(50));
+    behind.show(geometry(30));
+    assert_eq!(cols(), Some(30));
+    other.resize(geometry(51));
+    assert_eq!(cols(), Some(51));
+    behind.show(geometry(30));
+    assert_eq!(cols(), Some(30));
+    let _shown = attach(3, 40, true);
+    assert_eq!(cols(), Some(40));
 }
 
 #[tokio::test]
@@ -639,7 +698,10 @@ impl CoreView {
         let view = View::attach(
             test.core.clone(),
             &address,
-            geometry,
+            Placing {
+                geometry,
+                shown: true,
+            },
             PaneId::from_raw(7),
             &wake,
             &Events::default().sender(),

@@ -909,3 +909,22 @@ fn a_movement_key_held_into_a_reopened_navigate_session_moves_only_on_a_fresh_pr
         [Outcome::Navigate(Navigation::Move(1))]
     );
 }
+
+#[test]
+fn characters_typed_with_no_pane_to_take_them_on_a_host_without_releases_leave_no_lease() {
+    let mut keys = Keys::new(
+        LiveKeybindConfig {
+            prefix: Config::default().prefix_keys(),
+            keybinds: Config::default().keybinds(),
+        },
+        false,
+        false,
+    );
+
+    for typed in [b"a", b"b", b"c"] {
+        let routed = keys.route_host(host_key(typed), None, false, Mode::Panes, |_| None);
+        assert!(routed.is_empty());
+    }
+
+    assert!(keys.leases.is_empty());
+}

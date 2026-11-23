@@ -316,9 +316,16 @@ impl Chrome {
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16, session: &Session) -> Layout {
-        let single_tab = session
-            .focused_workspace()
-            .is_some_and(|workspace| workspace.tabs.len() == 1);
+        self.layout_for(cols, rows, session.focused_workspace())
+    }
+
+    pub(super) fn layout_for(
+        &self,
+        cols: u16,
+        rows: u16,
+        workspace: Option<&crate::session_doc::Workspace>,
+    ) -> Layout {
+        let single_tab = workspace.is_some_and(|workspace| workspace.tabs.len() == 1);
         self.settings
             .layout(cols, rows, self.collapsed, single_tab, self.width)
     }
