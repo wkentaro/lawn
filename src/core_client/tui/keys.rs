@@ -2,8 +2,8 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::config::LiveKeybindConfig;
 use crate::input::{
-    ConsumedInputLease, InputLease, InputLeaseKey, InputLeaseTable, KeybindMatch, RepeatPlan,
-    TerminalKey,
+    ConsumedInputLease, InputLease, InputLeaseKey, InputLeaseTable, KeybindAction, KeybindDispatch,
+    KeybindMatch, RepeatPlan, TerminalKey,
 };
 use crate::layout::PaneId;
 
@@ -17,6 +17,15 @@ pub(super) enum Routed {
     Dialog(TerminalKey),
     Resize(TerminalKey),
     Dismiss,
+    Navigate(Navigation),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Navigation {
+    Move(isize),
+    Accept,
+    Cycle(isize),
+    Jump(KeybindAction),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +33,8 @@ pub(super) enum Mode {
     Panes,
     Copy,
     Prompt,
-    Switcher,
+    Navigate(u64),
+    NavigateVanished(u64),
     Dialog,
     Resize,
 }
@@ -91,11 +101,21 @@ impl Keys {
                 if let Some(target) = target {
                     routed.push(Routed::Key(target, key.clone()));
                 }
+                let leaves = routed.iter().any(|routed| {
+                    matches!(
+                        routed,
+                        Routed::Dismiss
+                            | Routed::Navigate(
+                                Navigation::Accept | Navigation::Cycle(_) | Navigation::Jump(_)
+                            )
+                    )
+                });
+                let resulting = (!leaves).then_some((self.prefix, mode));
                 let plan = self.leases.complete_press(
                     lease_key,
                     &key,
                     Some(&initial),
-                    Some(&(self.prefix, mode)),
+                    resulting.as_ref(),
                     target,
                 );
                 self.repeat(lease_key, key, plan, focused, mode, &mut routed);
@@ -125,6 +145,10 @@ impl Keys {
             }
         }
         routed
+    }
+
+    pub(super) fn prefixed(&self) -> bool {
+        self.prefix
     }
 
     pub(super) fn release(&mut self, pane: PaneId) -> Vec<TerminalKey> {
@@ -212,11 +236,9 @@ impl Keys {
             routed.push(Routed::Resize(key.clone()));
             return None;
         }
-        if mode == Mode::Switcher {
+        if let Mode::Navigate(_) | Mode::NavigateVanished(_) = mode {
             self.prefix = false;
-            if key.code == KeyCode::Esc || self.config.matches_prefix(key) {
-                routed.push(Routed::Dismiss);
-            }
+            self.navigate(key, matches!(mode, Mode::NavigateVanished(_)), routed);
             return None;
         }
         if !std::mem::take(&mut self.prefix) {
@@ -243,6 +265,101 @@ impl Keys {
             crate::input::resolve_prefix_binding(&self.config.keybinds, key).map(Routed::Binding),
         );
         None
+    }
+
+    fn navigate(&self, key: &TerminalKey, vanished: bool, routed: &mut Vec<Routed>) {
+        let keybinds = &self.config.keybinds;
+        if key.code == KeyCode::Esc || self.config.matches_prefix(key) {
+            routed.push(Routed::Dismiss);
+            return;
+        }
+        let (code, modifiers) = crate::config::normalize_key_combo((key.code, key.modifiers));
+        let step = if keybinds.navigate.workspace_up.matches_direct_key(key) {
+            Some(Navigation::Move(-1))
+        } else if keybinds.navigate.workspace_down.matches_direct_key(key) {
+            Some(Navigation::Move(1))
+        } else if code == KeyCode::Enter && modifiers.is_empty() {
+            Some(Navigation::Accept)
+        } else if vanished {
+            if crate::client::is_ctrl_bracket_key(key) {
+                routed.push(Routed::Dismiss);
+            }
+            return;
+        } else if modifiers.is_empty() && code == KeyCode::Tab {
+            Some(Navigation::Cycle(1))
+        } else if modifiers.is_empty() && code == KeyCode::BackTab {
+            Some(Navigation::Cycle(-1))
+        } else {
+            ('1'..='9')
+                .position(|digit| {
+                    crate::config::terminal_key_matches_combo(
+                        key,
+                        (KeyCode::Char(digit), KeyModifiers::empty()),
+                    )
+                })
+                .map(|index| Navigation::Jump(KeybindAction::SwitchWorkspace(index)))
+        };
+        if let Some(step) = step {
+            routed.push(Routed::Navigate(step));
+            return;
+        }
+        let binding = match code {
+            _ if !modifiers.is_empty() => None,
+            KeyCode::Left => Some((KeybindAction::FocusPaneLeft, true)),
+            KeyCode::Right => Some((KeybindAction::FocusPaneRight, true)),
+            _ => None,
+        }
+        .or_else(|| {
+            [
+                (&keybinds.navigate.pane_left, KeybindAction::FocusPaneLeft),
+                (&keybinds.navigate.pane_down, KeybindAction::FocusPaneDown),
+                (&keybinds.navigate.pane_up, KeybindAction::FocusPaneUp),
+                (&keybinds.navigate.pane_right, KeybindAction::FocusPaneRight),
+            ]
+            .into_iter()
+            .find_map(|(bindings, action)| {
+                bindings.matches_direct_key(key).then_some((action, true))
+            })
+        })
+        .map(|(action, stays)| (KeybindMatch::Action(action), stays))
+        .or_else(|| {
+            crate::input::resolve_non_indexed_action(keybinds, key, KeybindDispatch::Prefix)
+                .filter(|action| {
+                    !matches!(
+                        action,
+                        KeybindAction::FocusPaneLeft
+                            | KeybindAction::FocusPaneDown
+                            | KeybindAction::FocusPaneUp
+                            | KeybindAction::FocusPaneRight
+                    )
+                })
+                .map(|action| (KeybindMatch::Action(action), false))
+        })
+        .or_else(|| {
+            crate::input::resolve_custom_command(keybinds, key, KeybindDispatch::Prefix)
+                .map(|command| (KeybindMatch::Command(command), false))
+        });
+        if let Some((binding, stays)) = binding {
+            let cycle = match binding {
+                KeybindMatch::Action(KeybindAction::CyclePaneNext) => Some(1),
+                KeybindMatch::Action(KeybindAction::CyclePanePrevious) => Some(-1),
+                _ => None,
+            };
+            if let Some(step) = cycle {
+                routed.push(Routed::Navigate(Navigation::Cycle(step)));
+                return;
+            }
+            routed.push(Routed::Binding(binding));
+            if !stays {
+                routed.push(Routed::Dismiss);
+            }
+        } else if let Some(action) =
+            crate::input::resolve_indexed_action(keybinds, key, KeybindDispatch::Prefix)
+        {
+            routed.push(Routed::Navigate(Navigation::Jump(action)));
+        } else if crate::client::is_ctrl_bracket_key(key) {
+            routed.push(Routed::Dismiss);
+        }
     }
 
     fn take_release_lease(

@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::config::PaneBordersConfig;
 use crate::config::ToastClipboardPosition;
 use crate::core_client::tui::chrome::Chrome;
+use crate::core_client::tui::keys::Navigation;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
 use crate::core_client::view::{Geometry, View};
@@ -1926,3 +1927,57 @@ mod chrome;
 mod copy_mode;
 mod dialog;
 mod resize;
+
+#[tokio::test]
+async fn in_navigate_mode_a_press_on_a_scrollable_bar_leaves_while_a_body_or_bare_bar_press_stays()
+{
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    attach_with_input(&mut surface, b"");
+    feed_after_first_frame(&mut surface, "t1", &lines(40));
+    surface.act(KeybindAction::WorkspacePicker, false);
+    assert!(surface.navigating());
+
+    let bare = track(&surface, "t0");
+    for (x, y) in [(2, 2), (bare.x, bare.y)] {
+        mouse(&mut surface, click(x, y));
+        mouse(
+            &mut surface,
+            mouse_at(MouseEventKind::Up(MouseButton::Left), x, y),
+        );
+        assert!(surface.navigating(), "{x},{y}");
+    }
+
+    let scrollable = track(&surface, "t1");
+    mouse(&mut surface, click(scrollable.x, scrollable.y));
+    assert!(!surface.navigating());
+    let metrics = metrics(&surface, "t1");
+    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+}
+
+#[tokio::test]
+async fn in_navigate_mode_a_cycle_while_zoomed_keeps_the_zoomed_pane_and_leaves() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)));
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::Zoom, false);
+    surface.act(KeybindAction::WorkspacePicker, false);
+
+    for step in [1, -1] {
+        assert_eq!(surface.navigate(Navigation::Cycle(step)), None);
+        assert!(!surface.navigating());
+        assert_eq!(surface.session.focused(), Some("t0"));
+        assert!(surface.session.zoomed());
+        surface.act(KeybindAction::WorkspacePicker, false);
+    }
+
+    surface.act(KeybindAction::Zoom, false);
+    for (step, action) in [
+        (1, KeybindAction::CyclePaneNext),
+        (-1, KeybindAction::CyclePanePrevious),
+    ] {
+        surface.act(KeybindAction::WorkspacePicker, false);
+        assert_eq!(surface.navigate(Navigation::Cycle(step)), Some(action));
+        assert!(!surface.navigating());
+    }
+}

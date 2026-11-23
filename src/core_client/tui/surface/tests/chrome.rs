@@ -1443,8 +1443,10 @@ async fn a_still_press_on_the_divider_of_an_oversized_configured_width_leaves_it
     assert_eq!(surface.areas.sidebar.width, 36);
 
     drag_divider(&mut surface, 35, 35);
+    assert_eq!(saved(&path), None);
+    surface.act(KeybindAction::ToggleSidebar, false);
 
-    assert_eq!(saved(&path), Some((None, None)));
+    assert_eq!(saved(&path), Some((None, Some(true))));
 }
 
 fn moved(surface: &mut Surface, terminal: &str, folder: &str) {
@@ -1797,6 +1799,7 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 
 mod drag;
 mod mobile;
+mod navigate;
 
 #[tokio::test]
 async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {
@@ -1851,4 +1854,264 @@ async fn the_resize_bar_hides_the_cursor_on_its_row() {
     frame(&mut surface, &dirty);
     assert_eq!(surface.painted.resize.y, inner.bottom() - 1);
     assert_eq!(surface.cursor(), None);
+}
+
+#[tokio::test]
+async fn a_divider_drag_held_when_a_dialog_opens_ends_there_and_saves_the_width_it_reached() {
+    let dir = scratch("drag-into-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(saved(&path), None);
+
+    surface.act(KeybindAction::Help, false);
+    assert_eq!(saved(&path), Some((Some(34), None)));
+
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 40, 5);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 45, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 45, 5);
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 34);
+    assert_eq!(saved(&path), Some((Some(34), None)));
+}
+
+fn clipped(path: &std::path::Path) -> Surface {
+    let mut surface = remembered(path, |config| {
+        config.ui.sidebar_width = 80;
+        config.ui.sidebar_max_width = 80;
+        config.ui.mobile_width_threshold = 64;
+    });
+    surface.resize(host(70, 30));
+    frame(&mut surface, &HashSet::new());
+    assert_eq!(surface.areas.sidebar.width, 69);
+    surface
+}
+
+fn widened(surface: &mut Surface) -> u16 {
+    surface.resize(host(120, 30));
+    frame(surface, &HashSet::new());
+    surface.areas.sidebar.width
+}
+
+#[tokio::test]
+async fn a_press_and_release_on_the_divider_leave_the_width_and_save_nothing() {
+    let dir = scratch("still-press");
+    let path = dir.join("preferences.json");
+    let mut surface = clipped(&path);
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 68, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 68, 5);
+
+    assert_eq!(saved(&path), None);
+    assert_eq!(widened(&mut surface), 80);
+}
+
+#[tokio::test]
+async fn a_divider_drag_back_to_where_it_was_pressed_resizes_and_saves_once() {
+    let dir = scratch("drag-back");
+    let path = dir.join("preferences.json");
+    let mut surface = clipped(&path);
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 68, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 65, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 68, 5);
+    assert_eq!(saved(&path), None);
+    surface.act(KeybindAction::Help, false);
+    assert_eq!(saved(&path), Some((Some(69), None)));
+    std::fs::remove_file(&path).expect("remove preferences");
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 68, 5);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(saved(&path), None);
+    assert_eq!(widened(&mut surface), 69);
+}
+
+#[tokio::test]
+async fn a_divider_press_a_dialog_takes_over_leaves_the_width_as_it_was_before_the_press() {
+    let dir = scratch("still-press-into-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = clipped(&path);
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 68, 5);
+    surface.act(KeybindAction::Help, false);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 68, 5);
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert_eq!(saved(&path), None);
+    assert_eq!(widened(&mut surface), 80);
+}
+
+#[tokio::test]
+async fn a_divider_drag_back_to_the_width_a_toggle_did_not_save_saves_it_on_release() {
+    let dir = scratch("toggle-mid-drag");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    assert_eq!(saved(&path), Some((Some(34), Some(true))));
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 25, 5);
+
+    assert_eq!(saved(&path), Some((Some(26), Some(true))));
+}
+
+#[tokio::test]
+async fn a_release_saves_the_width_and_collapse_state_a_failed_toggle_write_left_unsaved() {
+    let dir = scratch("toggle-write-fails");
+    let blocker = dir.join("state");
+    let path = blocker.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    std::fs::write(&blocker, b"").expect("block the preferences directory");
+    surface.act(KeybindAction::ToggleSidebar, false);
+    std::fs::remove_file(&blocker).expect("unblock the preferences directory");
+    assert_eq!(saved(&path), None);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 33, 5);
+
+    assert_eq!(saved(&path), Some((Some(34), Some(true))));
+}
+
+#[tokio::test]
+async fn a_drag_back_to_the_pressed_width_saves_the_collapse_state_a_failed_toggle_write_left_unsaved(
+) {
+    let dir = scratch("toggle-write-fails-drag-back");
+    let blocker = dir.join("state");
+    let path = blocker.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    std::fs::write(&blocker, b"").expect("block the preferences directory");
+    surface.act(KeybindAction::ToggleSidebar, false);
+    std::fs::remove_file(&blocker).expect("unblock the preferences directory");
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 25, 5);
+
+    assert_eq!(saved(&path), Some((Some(26), Some(true))));
+}
+
+#[tokio::test]
+async fn a_drag_back_to_the_pressed_width_saves_what_a_write_failed_to_save_before_the_press() {
+    let dir = scratch("toggle-write-fails-before-press");
+    let blocker = dir.join("state");
+    let path = blocker.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+
+    std::fs::write(&blocker, b"").expect("block the preferences directory");
+    surface.act(KeybindAction::ToggleSidebar, false);
+    surface.act(KeybindAction::ToggleSidebar, false);
+    std::fs::remove_file(&blocker).expect("unblock the preferences directory");
+    assert_eq!(saved(&path), None);
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 25, 5);
+
+    assert_eq!(saved(&path), Some((Some(26), Some(false))));
+}
+
+#[tokio::test]
+async fn a_divider_press_right_after_a_drag_ended_by_a_dialog_starts_a_drag_and_resets_nothing() {
+    let dir = scratch("regrab-after-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    let start = std::time::Instant::now();
+    point_at(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        25,
+        5,
+        start,
+    );
+    point_at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        33,
+        5,
+        start,
+    );
+    surface.act(KeybindAction::Help, false);
+    point_at(
+        &mut surface,
+        MouseEventKind::Up(MouseButton::Left),
+        33,
+        5,
+        start,
+    );
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    frame(&mut surface, &HashSet::new());
+
+    let soon = start + std::time::Duration::from_millis(100);
+    point_at(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        33,
+        5,
+        soon,
+    );
+    assert_eq!(saved(&path), Some((Some(34), None)));
+    point_at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        30,
+        5,
+        soon,
+    );
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 31);
+}
+
+#[tokio::test]
+async fn a_press_and_drag_on_a_dialog_still_drawn_after_esc_do_not_resize_the_sidebar() {
+    let dir = scratch("drag-on-closed-dialog");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |_| {});
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 33, 5);
+
+    surface.dialog_key(&TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE));
+    point(
+        &mut surface,
+        MouseEventKind::Down(MouseButton::Left),
+        60,
+        10,
+    );
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 40, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 40, 5);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(surface.areas.sidebar.width, 34);
+    assert!(saved(&path).is_none_or(|(width, _)| width == Some(34)));
+}
+
+#[tokio::test]
+async fn a_drag_from_the_configured_width_away_and_back_saves_that_width_as_the_users_own() {
+    let dir = scratch("configured-round-trip");
+    let path = dir.join("preferences.json");
+    let mut surface = remembered(&path, |config| config.ui.sidebar_width = 26);
+    assert_eq!(cell(&surface, 25, 5).symbol, "│");
+
+    point(&mut surface, MouseEventKind::Down(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 33, 5);
+    point(&mut surface, MouseEventKind::Drag(MouseButton::Left), 25, 5);
+    point(&mut surface, MouseEventKind::Up(MouseButton::Left), 25, 5);
+
+    assert_eq!(saved(&path), Some((Some(26), None)));
 }

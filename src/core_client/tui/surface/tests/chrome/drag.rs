@@ -330,6 +330,52 @@ async fn a_tab_dragged_under_the_resize_bar_has_nowhere_to_land() {
 }
 
 #[tokio::test]
+async fn a_tab_dragged_under_the_navigate_bar_has_nowhere_to_land() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+    });
+    surface.update(spaces(&[(None, &[None, None, None])]));
+    frame(&mut surface, &HashSet::new());
+    let (first, plus) = (find(&surface, 29, " 1 ") + 1, find(&surface, 29, " + ") + 1);
+    press(&mut surface, first, 29);
+
+    surface.act(KeybindAction::WorkspacePicker, false);
+    frame(&mut surface, &HashSet::new());
+    drag(&mut surface, plus, 29);
+
+    assert_eq!(release(&mut surface, plus, 29), None);
+}
+
+#[tokio::test]
+async fn a_tab_drag_has_nowhere_to_land_while_the_navigate_bar_covers_the_tab_strip() {
+    let mut surface = dressed(120, 30, |config| {
+        config.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+    });
+    surface.update(spaces(&[(None, &[None, None, None])]));
+    frame(&mut surface, &HashSet::new());
+    let third = find(&surface, 29, " 3 ") + 1;
+    press(&mut surface, third, 29);
+
+    surface.act(KeybindAction::WorkspacePicker, false);
+    frame(&mut surface, &HashSet::new());
+    drag(&mut surface, 5, 29);
+
+    assert_eq!(release(&mut surface, 5, 29), None);
+}
+
+#[tokio::test]
+async fn a_workspace_released_on_the_navigate_bar_moves_nothing_even_with_a_slot_marked() {
+    let mut surface = workspaces();
+    press(&mut surface, 5, 2);
+    drag(&mut surface, 5, 6);
+
+    surface.act(KeybindAction::WorkspacePicker, false);
+    frame(&mut surface, &HashSet::new());
+
+    assert_eq!(release(&mut surface, 40, 29), None);
+}
+
+#[tokio::test]
 async fn a_workspace_drag_ends_when_a_redraw_moves_the_rows_under_it() {
     let mut surface = workspaces();
     press(&mut surface, 5, 2);
