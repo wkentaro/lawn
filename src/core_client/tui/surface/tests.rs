@@ -22,6 +22,44 @@ use crate::protocol::{CellData, PaneSurfacePatchRow};
 use crate::session_doc::Layout;
 use crate::ui::theme::Palette;
 
+impl Surface {
+    pub(super) fn due(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Vec<crate::core_client::tui::notices::Effect> {
+        self.caught_up(
+            &mut crate::core_client::tui::gate::Gate::default(),
+            &mut tokio::sync::mpsc::unbounded_channel().1,
+            now,
+        )
+        .1
+    }
+
+    pub(super) fn heard(
+        &mut self,
+        report: crate::core_client::tui::terminals::Report,
+        now: std::time::Instant,
+    ) -> Vec<crate::core_client::tui::notices::Effect> {
+        self.hear(report);
+        self.due(now)
+    }
+
+    pub(super) fn arranged(
+        &mut self,
+        layout: Layout,
+        arrivals: &mut tokio::sync::mpsc::UnboundedReceiver<super::Arrival>,
+        now: std::time::Instant,
+    ) -> Vec<crate::core_client::tui::notices::Effect> {
+        self.update(layout);
+        self.caught_up(
+            &mut crate::core_client::tui::gate::Gate::default(),
+            arrivals,
+            now,
+        )
+        .1
+    }
+}
+
 fn host(cols: u16, rows: u16) -> Geometry {
     Geometry {
         cols,
@@ -267,7 +305,10 @@ async fn a_layout_draws_the_whole_screen_with_borders_and_each_pane_inside_them(
 }
 
 fn named(surface: &mut Surface, terminal: &str, name: Option<&str>) {
-    surface.heard(Report::Name(terminal.to_owned(), name.map(str::to_owned)));
+    surface.heard(
+        Report::Name(terminal.to_owned(), name.map(str::to_owned)),
+        std::time::Instant::now(),
+    );
 }
 
 #[tokio::test]
@@ -310,10 +351,13 @@ async fn a_name_recomposes_the_panes_only_when_it_changes_a_pane_on_screen() {
     named(&mut surface, "t0", Some("build"));
     named(&mut surface, "t1", Some("parked"));
     named(&mut surface, "t3", Some("behind"));
-    surface.heard(Report::Status(
-        "t0".to_owned(),
-        crate::pane::core_status(&json!({"state": "working", "app": "claude"})),
-    ));
+    surface.heard(
+        Report::Status(
+            "t0".to_owned(),
+            crate::pane::core_status(&json!({"state": "working", "app": "claude"})),
+        ),
+        std::time::Instant::now(),
+    );
     assert!(!surface.relayout);
 
     named(&mut surface, "t0", Some("test"));
@@ -2030,6 +2074,7 @@ async fn a_double_click_in_a_pane_narrower_than_its_terminal_takes_only_the_show
 mod chrome;
 mod copy_mode;
 mod dialog;
+mod notices;
 mod offstage;
 mod resize;
 

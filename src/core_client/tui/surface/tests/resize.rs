@@ -799,3 +799,25 @@ async fn a_drag_motion_the_33_ms_limit_holds_back_is_dropped_when_it_falls_due_w
     assert_eq!(surface.deadline(), None);
     assert_eq!(surface.tick(at(40), false), None);
 }
+
+#[tokio::test]
+async fn catching_up_at_the_deadline_sends_a_drag_motion_the_33_ms_limit_held_back() {
+    let mut surface = grid();
+    let start = std::time::Instant::now();
+    let at = |ms| start + std::time::Duration::from_millis(ms);
+    let outer = split(&surface, &[]);
+    pointed(&mut surface, PRESS, outer.pos, 5, at(0));
+    pointed(&mut surface, DRAG, 40, 5, at(0));
+    pointed(&mut surface, DRAG, 43, 5, at(10));
+
+    let (operation, _) = surface.caught_up(
+        &mut crate::core_client::tui::gate::Gate::default(),
+        &mut tokio::sync::mpsc::unbounded_channel().1,
+        at(33),
+    );
+
+    assert_eq!(
+        operation,
+        set("b", "c", Direction::Right, across(&outer, 43))
+    );
+}

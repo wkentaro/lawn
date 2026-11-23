@@ -11,8 +11,10 @@ use crate::session_doc::{Loaded, Store};
 
 pub(super) const RECONNECT: Duration = Duration::from_millis(500);
 
-pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Loaded>> {
-    let (layouts, received) = mpsc::unbounded_channel();
+pub(super) fn follow<T: From<Loaded> + Send + 'static>(
+    session: String,
+    layouts: mpsc::UnboundedSender<T>,
+) -> io::Result<()> {
     crate::thread_spawn::spawn_named("lawn-follow", move || {
         let mut follower = Follower {
             session,
@@ -22,7 +24,7 @@ pub(super) fn follow(session: String) -> io::Result<mpsc::UnboundedReceiver<Load
             std::thread::sleep(RECONNECT);
         }
     })?;
-    Ok(received)
+    Ok(())
 }
 
 struct Follower {
@@ -31,7 +33,7 @@ struct Follower {
 }
 
 impl Follower {
-    fn follow(&mut self, layouts: &mpsc::UnboundedSender<Loaded>) -> bool {
+    fn follow<T: From<Loaded>>(&mut self, layouts: &mpsc::UnboundedSender<T>) -> bool {
         let core = match crate::core_client::core() {
             Ok(core) => core,
             Err(error) => {
@@ -53,7 +55,7 @@ impl Follower {
                 Ok(loaded) if version != Some(loaded.version) => {
                     self.closed_out(&core, &loaded.layout);
                     version = Some(loaded.version);
-                    if layouts.send(loaded).is_err() {
+                    if layouts.send(loaded.into()).is_err() {
                         return false;
                     }
                 }

@@ -1450,7 +1450,10 @@ async fn a_still_press_on_the_divider_of_an_oversized_configured_width_leaves_it
 }
 
 fn moved(surface: &mut Surface, terminal: &str, folder: &str) {
-    surface.heard(Report::Folder(terminal.to_owned(), folder.into()));
+    surface.heard(
+        Report::Folder(terminal.to_owned(), folder.into()),
+        std::time::Instant::now(),
+    );
 }
 
 fn first_row(surface: &mut Surface) -> String {
@@ -1464,9 +1467,13 @@ async fn an_unnamed_workspace_reads_as_the_folder_of_its_first_pane_and_follows_
     surface.update(spaces(&[(None, &[None])]));
     frame(&mut surface, &HashSet::new());
 
-    surface.heard(Report::Snapshot(
-        [("t1".to_owned(), "/srv/app".into())].into_iter().collect(),
-    ));
+    surface.heard(
+        Report::Snapshot {
+            folders: [("t1".to_owned(), "/srv/app".into())].into_iter().collect(),
+            statuses: Default::default(),
+        },
+        std::time::Instant::now(),
+    );
     assert!(surface.needs_frame());
     assert!(first_row(&mut surface).starts_with(" app "));
 
@@ -1482,7 +1489,13 @@ async fn a_fresh_snapshot_forgets_the_folders_it_no_longer_lists() {
     moved(&mut surface, "t1", "/srv/app");
     assert!(first_row(&mut surface).starts_with(" app "));
 
-    surface.heard(Report::Snapshot(Default::default()));
+    surface.heard(
+        Report::Snapshot {
+            folders: Default::default(),
+            statuses: Default::default(),
+        },
+        std::time::Instant::now(),
+    );
 
     assert!(surface.needs_frame());
     assert!(first_row(&mut surface).starts_with(" workspace "));
@@ -1564,10 +1577,13 @@ async fn a_move_to_another_folder_of_the_same_name_draws_no_frame() {
 }
 
 fn said(surface: &mut Surface, terminal: &str, state: &str) {
-    surface.heard(Report::Status(
-        terminal.to_owned(),
-        crate::pane::core_status(&json!({"state": state, "app": "claude"})),
-    ));
+    surface.heard(
+        Report::Status(
+            terminal.to_owned(),
+            crate::pane::core_status(&json!({"state": state, "app": "claude"})),
+        ),
+        std::time::Instant::now(),
+    );
 }
 
 fn symbols(cols: u16, rows: u16) -> Surface {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use ratatui::layout::Rect;
 
-use super::terminals::{Report, Status, Terminals};
+use super::terminals::{Moved, Report, Status, Terminals};
 use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
 use crate::input::KeybindAction;
@@ -69,6 +69,7 @@ impl Closing {
 #[derive(Default)]
 pub(super) struct Session {
     layout: Layout,
+    places: HashMap<String, (usize, usize)>,
     focus: Option<Focus>,
     ids: HashMap<String, PaneId>,
     next_id: u32,
@@ -91,15 +92,27 @@ impl Session {
 
     pub(super) fn update(&mut self, layout: Layout) {
         self.layout = layout;
-        self.ids.retain(|terminal, _| self.layout.owns(terminal));
+        self.places.clear();
+        for (index, workspace) in self.layout.workspaces.iter().enumerate() {
+            for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                for terminal in tab.root.terminals() {
+                    self.places
+                        .entry(terminal.to_owned())
+                        .or_insert((index, tab_index));
+                }
+            }
+        }
+        let places = &self.places;
+        self.ids.retain(|terminal, _| places.contains_key(terminal));
         let focus = self.reconciled_focus();
         self.set_focus(focus);
         self.reveal_created();
     }
 
     pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {
-        let layout = &self.layout;
-        let workspaces = &layout.workspaces;
+        let workspaces = &self.layout.workspaces;
+        let parked = &self.layout.parked;
+        let places = &self.places;
         let naming_panes = matches!(report, Report::Names(_) | Report::Name(..));
         self.terminals.hear(
             report,
@@ -110,13 +123,56 @@ impl Session {
             },
             |terminal| match naming_panes {
                 true => tiled(terminal),
-                false => layout.shows(terminal),
+                false => !parked.contains(terminal) && places.contains_key(terminal),
             },
+            |terminal| parked.contains(terminal),
         )
     }
 
     pub(super) fn owns(&self, terminal: &str) -> bool {
         self.layout.owns(terminal)
+    }
+
+    pub(super) fn moves(&mut self) -> Vec<Moved> {
+        let places = &self.places;
+        self.terminals
+            .moves(|terminal| places.contains_key(terminal))
+    }
+
+    pub(super) fn shows(&self, terminal: &str) -> bool {
+        self.place(terminal).is_some()
+    }
+
+    fn place(&self, terminal: &str) -> Option<(usize, &Workspace, usize, &Tab)> {
+        if self.layout.parked.contains(terminal) {
+            return None;
+        }
+        let (index, tab_index) = *self.places.get(terminal)?;
+        let workspace = self.layout.workspaces.get(index)?;
+        Some((index, workspace, tab_index, workspace.tabs.get(tab_index)?))
+    }
+
+    pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
+        self.terminals
+            .status(terminal)
+            .filter(|_| self.shows(terminal))
+    }
+
+    pub(super) fn in_focused_tab(&self, terminal: &str) -> bool {
+        self.focus.as_ref().is_some_and(|focus| {
+            self.place(terminal).is_some_and(|(_, workspace, _, tab)| {
+                workspace.id == focus.workspace && tab.id == focus.tab
+            })
+        })
+    }
+
+    pub(super) fn context(&self, terminal: &str) -> Option<String> {
+        let (index, workspace, tab_index, tab) = self.place(terminal)?;
+        let place = format!("{} · {}", self.label(workspace), index + 1);
+        Some(match workspace.tabs.len() > 1 {
+            true => format!("{place} · {}", super::chrome::tab_label(tab_index, tab)),
+            false => place,
+        })
     }
 
     pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {
@@ -530,7 +586,7 @@ impl Session {
 
     fn shown_in(&self, focus: &Focus, terminal: &str) -> bool {
         Some(terminal) != focus.terminal.as_deref()
-            && self.layout.shows(terminal)
+            && self.shows(terminal)
             && tab(&self.layout, focus).is_some_and(|tab| tab.root.contains(terminal))
     }
 
@@ -789,7 +845,7 @@ impl Session {
     }
 
     fn locate(&self, terminal: &str) -> Option<Focus> {
-        if !self.layout.shows(terminal) {
+        if !self.shows(terminal) {
             return None;
         }
         self.layout.workspaces.iter().find_map(|workspace| {

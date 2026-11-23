@@ -780,7 +780,10 @@ fn pane_named(name: &str) -> Option<Operation> {
 }
 
 fn heard_name(surface: &mut Surface, terminal: &str, name: Option<&str>) {
-    surface.heard(Report::Name(terminal.to_owned(), name.map(str::to_owned)));
+    surface.heard(
+        Report::Name(terminal.to_owned(), name.map(str::to_owned)),
+        std::time::Instant::now(),
+    );
 }
 
 #[tokio::test]
@@ -972,4 +975,29 @@ async fn a_pane_field_edited_by_pasted_text_or_the_clear_button_is_saved() {
     let clear = column_of(&screen, buttons, "^c clear");
     assert_eq!(left(&mut surface, clear, buttons), None);
     assert_eq!(press(&mut surface, KeyCode::Enter), pane_named(""));
+}
+
+#[tokio::test]
+async fn a_dialog_stays_as_drawn_while_the_copy_cursor_moves_behind_it() {
+    let (mut surface, _, _input) = selecting(false, b"hello");
+    surface.resize(host(COLS, ROWS));
+    surface.enter_copy_mode();
+    surface.act(KeybindAction::Help, false);
+    frame(&mut surface, &HashSet::new());
+    let image = |surface: &Surface| {
+        surface
+            .dialog
+            .as_ref()
+            .and_then(|dialog| dialog.image())
+            .map(|(_, cells)| cells.clone())
+    };
+    let drawn = image(&surface);
+    let cursor = surface.painted.copy.cursor;
+
+    feed(&surface, "t0", &b"line\r\n".repeat(60));
+    let dirty = HashSet::from([id_of(&surface, "t0")]);
+    frame(&mut surface, &dirty);
+
+    assert_ne!(surface.painted.copy.cursor, cursor);
+    assert!(image(&surface) == drawn);
 }

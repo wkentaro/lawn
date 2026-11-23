@@ -10,6 +10,12 @@ use crate::session_doc::Loaded;
 
 const SESSION: &str = "followed";
 
+fn followed() -> mpsc::UnboundedReceiver<Loaded> {
+    let (layouts, received) = mpsc::unbounded_channel();
+    follow(SESSION.to_owned(), layouts).expect("follow");
+    received
+}
+
 fn shared() -> Option<TestCore> {
     let test = TestCore::start()?;
     crate::hc::use_core_for_test();
@@ -48,7 +54,7 @@ async fn the_follower_sees_each_edit_and_follows_again_after_the_core_connection
         return;
     };
     let terminal = start(&test);
-    let mut layouts = follow(SESSION.to_owned()).expect("follow");
+    let mut layouts = followed();
     until(&mut layouts, "the started pane", |loaded| {
         loaded.layout.shows(&terminal)
     })
@@ -80,7 +86,7 @@ async fn a_session_closed_out_while_followed_gets_one_new_shell() {
         return;
     };
     let terminal = start(&test);
-    let mut layouts = follow(SESSION.to_owned()).expect("follow");
+    let mut layouts = followed();
     until(&mut layouts, "the started pane", |loaded| {
         loaded.layout.shows(&terminal)
     })
@@ -107,7 +113,7 @@ async fn the_first_load_after_the_core_connection_drops_is_passed_on_even_at_the
         return;
     };
     let terminal = start(&test);
-    let mut layouts = follow(SESSION.to_owned()).expect("follow");
+    let mut layouts = followed();
     let seen = until(&mut layouts, "the started pane", |loaded| {
         loaded.layout.shows(&terminal)
     })
