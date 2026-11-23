@@ -771,3 +771,205 @@ async fn a_dialog_opened_and_closed_before_a_frame_releases_a_held_pane_button_o
 
     assert_eq!(reports(&mut input), b"\x1b[<0;2;2M\x1b[<0;2;2m\x1b[<0;3;2M");
 }
+
+fn pane_named(name: &str) -> Option<Operation> {
+    Some(Operation::Name {
+        terminal: "t0".to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+fn heard_name(surface: &mut Surface, terminal: &str, name: Option<&str>) {
+    surface.heard(Report::Name(terminal.to_owned(), name.map(str::to_owned)));
+}
+
+#[tokio::test]
+async fn renaming_an_unnamed_pane_starts_empty_and_enter_saves_the_trimmed_name() {
+    let mut surface = one_pane();
+    let mut screen = Screen::of(&mut surface);
+
+    assert_eq!(surface.act(KeybindAction::RenamePane, false), None);
+    screen.show(&mut surface, &HashSet::new());
+    let title = row_with(&screen, "rename pane");
+    assert_eq!(
+        screen.line(title + 2).trim_matches([' ', '│']),
+        "",
+        "{:?}",
+        screen.line(title + 2)
+    );
+
+    typed(&mut surface, " build ");
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named("build"));
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn renaming_a_named_pane_starts_from_its_name_and_saving_it_blank_clears_it() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("build"));
+    let mut screen = Screen::of(&mut surface);
+
+    surface.act(KeybindAction::RenamePane, false);
+    screen.show(&mut surface, &HashSet::new());
+    let title = row_with(&screen, "rename pane");
+    assert!(screen.line(title + 2).contains(" build "));
+    typed(&mut surface, "s");
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named("builds"));
+
+    surface.act(KeybindAction::RenamePane, false);
+    clear_field(&mut surface);
+    typed(&mut surface, " ");
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named(""));
+}
+
+#[tokio::test]
+async fn escape_closes_the_pane_rename_without_saving() {
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, "build");
+
+    assert_eq!(press(&mut surface, KeyCode::Esc), None);
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_pane_name_saved_as_it_was_opened_sends_nothing_so_a_stale_field_cannot_undo_a_rename() {
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenamePane, false);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+
+    heard_name(&mut surface, "t0", Some("build"));
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, " ");
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn a_pane_name_with_outer_spaces_saved_untouched_does_not_undo_a_newer_name() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("build "));
+    surface.act(KeybindAction::RenamePane, false);
+    heard_name(&mut surface, "t0", Some("test"));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn a_pane_name_the_field_shows_differently_saved_untouched_does_not_undo_a_newer_name() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("build\tlogs"));
+    surface.act(KeybindAction::RenamePane, false);
+    heard_name(&mut surface, "t0", Some("test"));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn a_pane_name_the_field_cannot_show_at_all_is_removed_by_saving_the_field_edited_to_empty() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("\u{7f}"));
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, " ");
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named(""));
+}
+
+#[tokio::test]
+async fn an_untouched_empty_field_saved_after_a_newer_name_arrived_sends_nothing_and_keeps_it() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("\u{7f}"));
+    surface.act(KeybindAction::RenamePane, false);
+    heard_name(&mut surface, "t0", Some("build"));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert_eq!(surface.session.name("t0"), Some("build"));
+}
+
+#[tokio::test]
+async fn an_unnamed_pane_field_typed_in_and_emptied_again_sends_nothing_after_a_newer_name_arrived()
+{
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, "x");
+    press(&mut surface, KeyCode::Backspace);
+    heard_name(&mut surface, "t0", Some("build"));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert_eq!(surface.session.name("t0"), Some("build"));
+}
+
+#[tokio::test]
+async fn a_named_pane_field_edited_back_to_its_name_sends_nothing_after_a_newer_name_arrived() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("dev"));
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, "s");
+    press(&mut surface, KeyCode::Backspace);
+    heard_name(&mut surface, "t0", Some("build"));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert_eq!(surface.session.name("t0"), Some("build"));
+}
+
+#[tokio::test]
+async fn clearing_a_pane_name_of_only_spaces_removes_it_and_leaving_it_untouched_sends_nothing() {
+    let mut surface = one_pane();
+    heard_name(&mut surface, "t0", Some("  "));
+    surface.act(KeybindAction::RenamePane, false);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+
+    surface.act(KeybindAction::RenamePane, false);
+    clear_field(&mut surface);
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named(""));
+}
+
+#[tokio::test]
+async fn a_named_workspace_or_tab_saved_unchanged_sends_nothing_and_an_unnamed_workspace_keeps_its_label(
+) {
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenameWorkspace, false);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        workspace_named("workspace")
+    );
+
+    surface.update(
+        serde_json::from_value(json!({"workspaces": [{"id": "w0", "name": "main", "tabs": [
+            {"id": "t0", "name": "logs", "root": {"kind": "pane", "terminal": "t0"}},
+        ]}]}))
+        .expect("layout"),
+    );
+    surface.act(KeybindAction::RenameWorkspace, false);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    surface.act(KeybindAction::RenameTab, false);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn a_pane_rename_whose_pane_left_the_session_while_open_sends_nothing() {
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenamePane, false);
+    typed(&mut surface, "build");
+
+    surface.update(row_of(&["t1".to_owned()]));
+
+    assert!(surface.dialog_open());
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn a_pane_field_edited_by_pasted_text_or_the_clear_button_is_saved() {
+    let mut surface = one_pane();
+    surface.act(KeybindAction::RenamePane, false);
+    assert!(surface.dialog_input(&RawInputEvent::Paste("build".to_owned())));
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named("build"));
+
+    heard_name(&mut surface, "t0", Some("build"));
+    let mut screen = Screen::of(&mut surface);
+    surface.act(KeybindAction::RenamePane, false);
+    screen.show(&mut surface, &HashSet::new());
+    let buttons = row_with(&screen, "rename pane") + 3;
+    let clear = column_of(&screen, buttons, "^c clear");
+    assert_eq!(left(&mut surface, clear, buttons), None);
+    assert_eq!(press(&mut surface, KeyCode::Enter), pane_named(""));
+}

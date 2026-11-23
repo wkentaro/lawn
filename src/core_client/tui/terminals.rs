@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::api::schema::AgentStatus;
 use crate::detect::{Agent, AgentState};
+use crate::hc::{Core, HcResult};
 use crate::pane::{core_status, CoreStatus};
 use crate::workspace::derive_label_from_cwd;
 
@@ -16,7 +17,11 @@ pub(super) enum Report {
     Folder(String, PathBuf),
     Statuses(HashMap<String, CoreStatus>),
     Status(String, CoreStatus),
+    Names(HashMap<String, String>),
+    Name(String, Option<String>),
 }
+
+const NAME_LABEL: &str = "lawn-name";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Status {
@@ -36,12 +41,17 @@ impl Status {
 pub(super) struct Terminals {
     folder_names: HashMap<String, String>,
     statuses: HashMap<String, Status>,
+    names: HashMap<String, String>,
     changes: u64,
 }
 
 impl Terminals {
     pub(super) fn folder_name(&self, terminal: &str) -> Option<&str> {
         self.folder_names.get(terminal).map(String::as_str)
+    }
+
+    pub(super) fn name(&self, terminal: &str) -> Option<&str> {
+        self.names.get(terminal).map(String::as_str)
     }
 
     pub(super) fn status(&self, terminal: &str) -> Option<&Status> {
@@ -97,6 +107,19 @@ impl Terminals {
                     })
             }
             Report::Status(terminal, status) => self.report(terminal, status, &shows),
+            Report::Names(names) => {
+                let old = std::mem::replace(&mut self.names, names);
+                old.keys().chain(self.names.keys()).any(|terminal| {
+                    shows(terminal) && old.get(terminal) != self.names.get(terminal)
+                })
+            }
+            Report::Name(terminal, name) => {
+                let old = match name {
+                    Some(name) => self.names.insert(terminal.clone(), name),
+                    None => self.names.remove(&terminal),
+                };
+                shows(&terminal) && old.as_ref() != self.names.get(&terminal)
+            }
         }
     }
 
@@ -170,6 +193,7 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
     };
     if reports.send(snapshot(&subscription.snapshot)).is_err()
         || reports.send(statuses(&subscription.snapshot)).is_err()
+        || reports.send(names(&subscription.snapshot)).is_err()
     {
         return false;
     }
@@ -182,6 +206,9 @@ fn listen(reports: &mpsc::UnboundedSender<Report>) -> bool {
                 reports.send(report).ok();
             }
             if let Some(report) = status_reported(message) {
+                reports.send(report).ok();
+            }
+            if let Some(report) = name_reported(message) {
                 reports.send(report).ok();
             }
         },
@@ -241,6 +268,47 @@ fn statuses(snapshot: &Value) -> Report {
                 ))
             })
             .collect(),
+    )
+}
+
+fn name_reported(message: &Value) -> Option<Report> {
+    let params = &message["params"];
+    match (message["method"].as_str()?, params["type"].as_str()) {
+        ("event", Some("labels")) => Some(Report::Name(
+            params["terminal"].as_str()?.to_owned(),
+            name(&params["data"]),
+        )),
+        ("event", Some("created")) => Some(Report::Name(
+            params["data"]["address"].as_str()?.to_owned(),
+            name(&params["data"]),
+        )),
+        ("event", Some("removed")) => {
+            Some(Report::Name(params["terminal"].as_str()?.to_owned(), None))
+        }
+        ("missed", _) => Some(names(params)),
+        _ => None,
+    }
+}
+
+fn names(snapshot: &Value) -> Report {
+    Report::Names(
+        snapshot["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|record| Some((record["address"].as_str()?.to_owned(), name(record)?)))
+            .collect(),
+    )
+}
+
+fn name(record: &Value) -> Option<String> {
+    record["labels"][NAME_LABEL].as_str().map(str::to_owned)
+}
+
+pub(super) fn rename(core: &Core, terminal: &str, name: &str) -> HcResult<Value> {
+    core.call(
+        "terminal.label",
+        json!({"terminal": terminal, "labels": {NAME_LABEL: name}}),
     )
 }
 

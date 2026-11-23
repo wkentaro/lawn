@@ -27,12 +27,15 @@ pub(super) struct Rename {
     title: &'static str,
     input: TextEditor,
     naming: Naming,
+    kept: Option<String>,
+    edited: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 enum Naming {
     Workspace(String),
-    Tab { id: String, auto: Option<String> },
+    Tab(String),
+    Pane(String),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -81,7 +84,7 @@ impl Modal {
     pub(super) fn accepted(&self, session: &Session) -> Option<Operation> {
         match &self.dialog {
             Dialog::Confirm(closing) => session.confirmed(closing),
-            Dialog::Rename(rename) => rename.saved(),
+            Dialog::Rename(rename) => rename.saved(session),
             Dialog::Help(_) => None,
         }
     }
@@ -114,9 +117,9 @@ impl Modal {
                         help.scroll = 0;
                     }
                 }
-                Dialog::Rename(rename) => {
-                    rename.input.insert(text);
-                }
+                Dialog::Rename(rename) => rename.edit(|input| {
+                    input.insert(text);
+                }),
                 Dialog::Confirm(_) => {}
             }
             Outcome::Stay
@@ -151,7 +154,7 @@ impl Modal {
                     Outcome::Accept
                 }
                 MouseEventKind::Down(MouseButton::Left) if hits.clear.contains(point) => {
-                    rename.input.clear();
+                    rename.edit(TextEditor::clear);
                     Outcome::Stay
                 }
                 MouseEventKind::Down(MouseButton::Left) => Outcome::Close,
@@ -249,10 +252,13 @@ impl Rename {
                     .iter()
                     .find(|workspace| Some(workspace.id.as_str()) == selected)
                     .unwrap_or(workspace);
+                let input = TextEditor::new(session.label(workspace), false);
                 Some(Self {
                     title: "rename workspace",
-                    input: TextEditor::new(session.label(workspace), false),
+                    kept: workspace.name.is_some().then(|| input.as_str().to_owned()),
+                    input,
                     naming: Naming::Workspace(workspace.id.clone()),
+                    edited: false,
                 })
             }
             KeybindAction::RenameTab => {
@@ -262,14 +268,25 @@ impl Rename {
                     .iter()
                     .enumerate()
                     .find(|(_, tab)| tab.id == focused)?;
-                let label = super::chrome::tab_label(index, tab);
+                let input = TextEditor::new(&super::chrome::tab_label(index, tab), false);
                 Some(Self {
                     title: "rename tab",
-                    input: TextEditor::new(&label, false),
-                    naming: Naming::Tab {
-                        id: tab.id.clone(),
-                        auto: tab.name.is_none().then_some(label),
-                    },
+                    kept: Some(input.as_str().to_owned()),
+                    input,
+                    naming: Naming::Tab(tab.id.clone()),
+                    edited: false,
+                })
+            }
+            KeybindAction::RenamePane => {
+                let terminal = session.focused()?;
+                let name = session.name(terminal);
+                let input = TextEditor::new(name.unwrap_or_default(), name.is_none());
+                Some(Self {
+                    title: "rename pane",
+                    kept: (name.is_none() || !input.is_empty()).then(|| input.as_str().to_owned()),
+                    input,
+                    naming: Naming::Pane(terminal.to_owned()),
+                    edited: false,
                 })
             }
             _ => None,
@@ -287,29 +304,47 @@ impl Rename {
             .as_deref()
             .is_some_and(|text| !text.is_empty())
         {
-            self.input.handle_key(key);
+            self.edit(|input| {
+                input.handle_key(key);
+            });
         } else if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL
             || key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::SUPER)
         {
-            self.input.clear();
+            self.edit(TextEditor::clear);
         } else {
-            self.input.handle_key(key);
+            self.edit(|input| {
+                input.handle_key(key);
+            });
         }
         Outcome::Stay
     }
 
-    fn saved(&self) -> Option<Operation> {
+    fn edit(&mut self, change: impl FnOnce(&mut TextEditor)) {
+        let before = self.input.as_str().to_owned();
+        change(&mut self.input);
+        self.edited |= self.input.as_str() != before;
+    }
+
+    fn saved(&self, session: &Session) -> Option<Operation> {
         let name = self.input.trim();
-        if name.is_empty() {
+        let untouched = |kept: &String| kept == self.input.as_str() || kept == name;
+        let unedited_pane = !self.edited && matches!(self.naming, Naming::Pane(_));
+        if unedited_pane || self.kept.as_ref().is_some_and(untouched) {
             return None;
         }
         let arrangement = match &self.naming {
+            Naming::Pane(terminal) => {
+                return session.owns(terminal).then(|| Operation::Name {
+                    terminal: terminal.clone(),
+                    name: name.to_owned(),
+                })
+            }
+            _ if name.is_empty() => return None,
             Naming::Workspace(workspace) => Arrangement::NameWorkspace {
                 workspace: workspace.clone(),
                 name: name.to_owned(),
             },
-            Naming::Tab { auto, .. } if auto.as_deref() == Some(name) => return None,
-            Naming::Tab { id, .. } => Arrangement::NameTab {
+            Naming::Tab(id) => Arrangement::NameTab {
                 tab: id.clone(),
                 name: name.to_owned(),
             },

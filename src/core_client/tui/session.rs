@@ -44,6 +44,7 @@ pub(super) enum Operation {
     Close(Vec<String>),
     Park(String),
     Arrange(Arrangement),
+    Name { terminal: String, name: String },
 }
 
 #[derive(Debug, PartialEq)]
@@ -96,9 +97,10 @@ impl Session {
         self.reveal_created();
     }
 
-    pub(super) fn heard(&mut self, report: Report) -> bool {
+    pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {
         let layout = &self.layout;
         let workspaces = &layout.workspaces;
+        let naming_panes = matches!(report, Report::Names(_) | Report::Name(..));
         self.terminals.hear(
             report,
             |terminal| {
@@ -106,8 +108,15 @@ impl Session {
                     workspace.name.is_none() && naming(workspace) == Some(terminal)
                 })
             },
-            |terminal| layout.shows(terminal),
+            |terminal| match naming_panes {
+                true => tiled(terminal),
+                false => layout.shows(terminal),
+            },
         )
+    }
+
+    pub(super) fn owns(&self, terminal: &str) -> bool {
+        self.layout.owns(terminal)
     }
 
     pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {
@@ -184,6 +193,10 @@ impl Session {
             .as_deref()
             .or_else(|| self.terminals.folder_name(naming(workspace)?))
             .unwrap_or("workspace")
+    }
+
+    pub(super) fn name(&self, terminal: &str) -> Option<&str> {
+        self.terminals.name(terminal)
     }
 
     pub(super) fn created(&mut self, terminal: String) -> bool {

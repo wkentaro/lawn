@@ -41,7 +41,7 @@ fn operations_wait_on_one_blocking_task_until_the_split_before_them_finishes() {
         Operation::Close(_) => {
             report.send(("closed", tokio::task::try_id())).ok();
         }
-        Operation::Arrange(_) => {}
+        Operation::Arrange(_) | Operation::Name { .. } => {}
     });
     let split = Destination::Split {
         beside: "t1".to_owned(),

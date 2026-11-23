@@ -179,6 +179,11 @@ mod unix {
                     warn!(%error, terminal, "the pane did not park");
                 }
             }
+            Operation::Name { terminal, name } => {
+                if let Err(error) = super::terminals::rename(&core, &terminal, &name) {
+                    warn!(%error, terminal, "the pane was not renamed");
+                }
+            }
             Operation::Arrange(arrangement) => {
                 return lifecycle().arrange(&arrangement).unwrap_or_else(|error| {
                     warn!(%error, "the session was not rearranged");
