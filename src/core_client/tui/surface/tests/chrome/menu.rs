@@ -137,10 +137,7 @@ async fn closing_from_a_menu_asks_first_exactly_when_the_close_key_would() {
     let x = find(&surface, 3, "side");
     right(&mut surface, x, 3);
     assert_eq!(choose(&mut surface, x, 3, "Close"), None);
-    assert!(Screen::of(&mut surface)
-        .lines(0..30)
-        .iter()
-        .any(|line| line.contains("Close workspace?")));
+    assert!(asked(&mut surface));
     assert_eq!(key(&mut surface, KeyCode::Enter), panes(&["t3"]));
 
     let target = pane(&surface, "t1");
@@ -494,6 +491,13 @@ async fn a_right_click_on_a_pane_that_reports_the_mouse_opens_the_menu_and_sends
     }
 }
 
+fn asked(surface: &mut Surface) -> bool {
+    Screen::of(surface)
+        .lines(0..30)
+        .iter()
+        .any(|line| line.contains("Close workspace?"))
+}
+
 fn held(surface: &mut Surface) -> Option<Operation> {
     ran(surface.dialog_key(
         &TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE).with_kind(KeyEventKind::Repeat),
@@ -516,11 +520,149 @@ async fn a_held_enter_opens_the_close_confirmation_from_the_menu_and_never_answe
     assert_eq!(key(&mut surface, KeyCode::Enter), None);
     assert_eq!(held(&mut surface), None);
     assert_eq!(held(&mut surface), None);
-    assert!(Screen::of(&mut surface)
-        .lines(0..30)
-        .iter()
-        .any(|line| line.contains("Close workspace?")));
+    assert!(asked(&mut surface));
+    assert_eq!(typed(&mut surface, b"\x1b[13;1:3u"), None);
     assert_eq!(key(&mut surface, KeyCode::Enter), panes(&["t3"]));
+}
+
+fn typed(surface: &mut Surface, bytes: &[u8]) -> Option<Operation> {
+    let events = crate::raw_input::parse_framed_input(bytes);
+    let [crate::raw_input::RawInputEvent::Key(key)] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    ran(surface.dialog_key(key))
+}
+
+fn closing() -> Surface {
+    let mut surface = spread_out().confirming_close(true);
+    let x = find(&surface, 3, "side");
+    right(&mut surface, x, 3);
+    frame(&mut surface, &HashSet::new());
+    key(&mut surface, KeyCode::Down);
+    surface
+}
+
+#[tokio::test]
+async fn an_enter_the_host_sent_as_a_bare_return_answers_a_confirmation_one_opened_only_after_another_key(
+) {
+    let mut surface = closing();
+
+    assert_eq!(typed(&mut surface, b"\r"), None);
+    assert_eq!(typed(&mut surface, b"\r"), None);
+    assert_eq!(typed(&mut surface, b"\r"), None);
+    assert!(asked(&mut surface));
+
+    assert_eq!(key(&mut surface, KeyCode::Down), None);
+    assert!(asked(&mut surface));
+    assert_eq!(typed(&mut surface, b"\r"), panes(&["t3"]));
+}
+
+#[tokio::test]
+async fn an_enter_a_host_without_the_kitty_protocol_sent_as_an_escape_sequence_is_held_back_the_same_way(
+) {
+    for enter in [&b"\x1b[27;2;13~"[..], b"\x1b[13;2u"] {
+        let mut surface = closing();
+
+        assert_eq!(typed(&mut surface, enter), None);
+        assert_eq!(typed(&mut surface, enter), None);
+        assert!(asked(&mut surface));
+
+        assert_eq!(key(&mut surface, KeyCode::Down), None);
+        assert_eq!(typed(&mut surface, enter), panes(&["t3"]));
+    }
+}
+
+#[tokio::test]
+async fn an_enter_answers_a_confirmation_enter_opened_once_that_enter_is_released() {
+    for opener in [&b"\r"[..], b"\x1b[13u"] {
+        let mut surface = closing();
+
+        assert_eq!(typed(&mut surface, opener), None);
+        assert_eq!(typed(&mut surface, b"\x1b[13u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[13;1:1u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[13;1:2u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[57441;2u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[57441;1:3u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[120;1:2u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[57358u"), None);
+        assert_eq!(typed(&mut surface, b"\x1b[13u"), None);
+        assert!(asked(&mut surface));
+
+        assert_eq!(typed(&mut surface, b"\x1b[13;1:3u"), None);
+        assert!(asked(&mut surface));
+        assert_eq!(typed(&mut surface, b"\x1b[13u"), panes(&["t3"]));
+    }
+}
+
+#[tokio::test]
+async fn the_release_of_the_other_enter_key_does_not_let_a_held_enter_answer() {
+    let main: [&[u8]; 2] = [b"\x1b[13u", b"\x1b[13;1:3u"];
+    let keypad: [&[u8]; 2] = [b"\x1b[57414u", b"\x1b[57414;1:3u"];
+    for ([press, release], [_, other]) in [(main, keypad), (keypad, main)] {
+        let mut surface = closing();
+
+        assert_eq!(typed(&mut surface, press), None);
+        assert_eq!(typed(&mut surface, other), None);
+        assert_eq!(typed(&mut surface, press), None);
+        assert!(asked(&mut surface));
+
+        assert_eq!(typed(&mut surface, release), None);
+        assert_eq!(typed(&mut surface, press), panes(&["t3"]));
+    }
+}
+
+#[tokio::test]
+async fn an_enter_key_pressed_while_the_other_is_held_is_held_too() {
+    let mut surface = closing();
+
+    assert_eq!(typed(&mut surface, b"\x1b[13u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[57414u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[13;1:3u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[57414u"), None);
+    assert!(asked(&mut surface));
+
+    assert_eq!(typed(&mut surface, b"\x1b[57414;1:3u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[57414u"), panes(&["t3"]));
+}
+
+#[tokio::test]
+async fn a_release_the_host_sent_as_it_lost_focus_does_not_let_a_held_enter_answer() {
+    let mut surface = closing();
+
+    assert_eq!(typed(&mut surface, b"\x1b[13u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[13;1:3u"), None);
+    surface.host_focus(false);
+    surface.host_focus(true);
+    assert_eq!(typed(&mut surface, b"\x1b[13u"), None);
+    assert!(asked(&mut surface));
+
+    assert_eq!(typed(&mut surface, b"\x1b[13;1:3u"), None);
+    assert_eq!(typed(&mut surface, b"\x1b[13u"), panes(&["t3"]));
+}
+
+#[tokio::test]
+async fn a_kitty_host_is_asked_for_every_key_from_the_menu_until_the_confirmation_closes() {
+    let mut surface = spread_out().confirming_close(true).on_a_kitty_host(true);
+    assert!(!surface.wants_all_keys());
+    let x = find(&surface, 3, "side");
+    right(&mut surface, x, 3);
+    frame(&mut surface, &HashSet::new());
+    assert!(surface.wants_all_keys());
+
+    key(&mut surface, KeyCode::Down);
+    typed(&mut surface, b"\x1b[13u");
+    assert!(asked(&mut surface));
+    assert!(surface.wants_all_keys());
+
+    key(&mut surface, KeyCode::Esc);
+    assert!(!surface.wants_all_keys());
+    assert!(!closing().wants_all_keys());
+    surface.act(KeybindAction::RenameWorkspace, false);
+    assert!(!surface.wants_all_keys());
+    let mut surface = spread_out().on_a_kitty_host(true);
+    launch(&mut surface);
+    assert!(surface.dialog_open());
+    assert!(!surface.wants_all_keys());
 }
 
 #[tokio::test]

@@ -759,7 +759,8 @@ fn in_a_dialog(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
 }
 
 #[test]
-fn in_a_dialog_every_key_and_its_repeats_go_to_the_dialog_and_none_to_a_pane_or_a_binding() {
+fn in_a_dialog_every_key_its_repeats_and_the_release_of_enter_go_to_the_dialog_and_none_to_a_pane_or_a_binding(
+) {
     let mut keys = keys();
     let typed = key('j', KeyModifiers::NONE);
     for key in [
@@ -775,6 +776,12 @@ fn in_a_dialog_every_key_and_its_repeats_go_to_the_dialog_and_none_to_a_pane_or_
     assert_eq!(
         in_a_dialog(&mut keys, &typed.with_kind(KeyEventKind::Release)),
         []
+    );
+    let enter = TerminalKey::new(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(in_a_dialog(&mut keys, &enter), [Outcome::Dialog]);
+    assert_eq!(
+        in_a_dialog(&mut keys, &enter.with_kind(KeyEventKind::Release)),
+        [Outcome::Dialog]
     );
 }
 

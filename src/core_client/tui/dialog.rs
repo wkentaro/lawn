@@ -92,12 +92,28 @@ struct Hits {
     cursor: Option<CursorState>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Enter {
+    Free,
+    Held([bool; 2]),
+    LetGo(bool),
+}
+
+impl Enter {
+    fn held(keypad: bool) -> Self {
+        let mut held = [false; 2];
+        held[usize::from(keypad)] = true;
+        Self::Held(held)
+    }
+}
+
 pub(super) struct Modal {
     dialog: Dialog,
     frame: Option<(Rect, Vec<CellData>)>,
     hits: Hits,
     outdated: bool,
     grab: Option<u16>,
+    enter: Enter,
     #[cfg(test)]
     copies: usize,
 }
@@ -110,8 +126,33 @@ impl Modal {
             hits: Hits::default(),
             outdated: false,
             grab: None,
+            enter: Enter::Free,
             #[cfg(test)]
             copies: 0,
+        }
+    }
+
+    pub(super) fn after(&mut self, key: &TerminalKey) {
+        if self.enter == Enter::Free
+            && key.code == KeyCode::Enter
+            && key.kind == KeyEventKind::Press
+            && matches!(self.dialog, Dialog::Confirm(_))
+        {
+            self.enter = Enter::held(key.keypad());
+        }
+    }
+
+    pub(super) fn host_unfocused(&mut self) {
+        if let Enter::LetGo(keypad) = self.enter {
+            self.enter = Enter::held(keypad);
+        }
+    }
+
+    pub(super) fn leads_to_a_confirmation(&self) -> bool {
+        match &self.dialog {
+            Dialog::Confirm(_) => true,
+            Dialog::Menu(menu) => !menu.launched(),
+            _ => false,
         }
     }
 
@@ -219,8 +260,24 @@ impl Modal {
         session: &Session,
         chosen: &Chosen,
     ) -> Outcome {
-        if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
-            return Outcome::Stay;
+        let keypad = key.keypad();
+        match (key.code, key.kind, &mut self.enter) {
+            (KeyCode::Enter, KeyEventKind::Release, Enter::Held(held)) => {
+                held[usize::from(keypad)] = false;
+                if *held == [false; 2] {
+                    self.enter = Enter::LetGo(keypad);
+                }
+                return Outcome::Stay;
+            }
+            (KeyCode::Enter, KeyEventKind::Press, Enter::Held(held)) => {
+                held[usize::from(keypad)] = true;
+                return Outcome::Stay;
+            }
+            (_, KeyEventKind::Release, _) | (KeyCode::Modifier(_), _, _) => return Outcome::Stay,
+            (KeyCode::Enter, KeyEventKind::Repeat, _) => return Outcome::Stay,
+            (KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock, _, _)
+            | (_, KeyEventKind::Repeat, _) => {}
+            _ => self.enter = Enter::Free,
         }
         self.changing(|dialog, hits, _| match dialog {
             Dialog::Confirm(_) => match key.code {

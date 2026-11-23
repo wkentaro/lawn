@@ -136,10 +136,8 @@ impl Keys {
                     .plan_repeat(lease_key, &key, Some(&(self.prefix, mode)));
                 self.repeat(lease_key, key, plan, focused, mode, &mut routed);
             }
-            KeyEventKind::Release => {
-                if let Some(InputLease::Forwarded(lease)) =
-                    self.take_release_lease(&lease_key, &key)
-                {
+            KeyEventKind::Release => match self.take_release_lease(&lease_key, &key) {
+                Some(InputLease::Forwarded(lease)) => {
                     let layout_chord =
                         key.code != lease.key.code && key.identity() == lease.key.identity();
                     let release = if key.physical_key_id().is_some() || layout_chord {
@@ -152,7 +150,11 @@ impl Keys {
                     };
                     routed.push(Routed::Key(lease.target, release));
                 }
-            }
+                _ if mode == Mode::Dialog && key.code == KeyCode::Enter => {
+                    routed.push(Routed::Dialog(key))
+                }
+                _ => {}
+            },
         }
         routed
     }
