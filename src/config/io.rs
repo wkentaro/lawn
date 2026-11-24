@@ -559,7 +559,107 @@ fn load_live_section<T>(
     }
 }
 
+fn rewritten(content: &str, section: &str, key: &str, raw: Option<&str>) -> Option<String> {
+    let bare = |name: &str| {
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    };
+    if !(section.is_empty() || section.split('.').all(bare)) || !bare(key) {
+        return None;
+    }
+    let value = raw.map(str::parse::<toml_edit::Value>).transpose().ok()?;
+    let updated = match spliced(content, section, key, raw) {
+        Some(updated) => updated,
+        None => {
+            let mut document = content.parse::<toml_edit::DocumentMut>().ok()?;
+            let changed = match value {
+                Some(value) => added(&mut document, section, key, value)?,
+                None => unset(&mut document, section, key)?,
+            };
+            if changed {
+                document.to_string()
+            } else {
+                content.to_string()
+            }
+        }
+    };
+    let parses = toml_edit::ImDocument::parse(updated.as_str()).is_ok();
+    parses.then_some(updated)
+}
+
+fn scalar(item: &toml_edit::Item) -> Option<&toml_edit::Value> {
+    item.as_value()
+        .filter(|value| !value.is_array() && !value.is_inline_table())
+}
+
+fn spliced(content: &str, section: &str, key: &str, raw: Option<&str>) -> Option<String> {
+    let document = toml_edit::ImDocument::parse(content).ok()?;
+    let mut item = document.as_item();
+    for part in section.split('.').filter(|part| !part.is_empty()) {
+        item = item.as_table_like()?.get(part)?;
+    }
+    let (name, value) = item.as_table_like()?.get_key_value(key)?;
+    let (name, value) = (name.span()?, scalar(value)?.span()?);
+    if let Some(raw) = raw {
+        return Some([&content[..value.start], raw, &content[value.end..]].concat());
+    }
+    if item.is_inline_table() {
+        return None;
+    }
+    let from = content[..name.start].rfind('\n').map_or(0, |at| at + 1);
+    let to = content[value.end..]
+        .find('\n')
+        .map_or(content.len(), |at| value.end + at + 1);
+    Some([&content[..from], &content[to..]].concat())
+}
+
+fn added(
+    document: &mut toml_edit::DocumentMut,
+    section: &str,
+    key: &str,
+    value: toml_edit::Value,
+) -> Option<bool> {
+    let mut item = document.as_item_mut();
+    for part in section.split('.').filter(|part| !part.is_empty()) {
+        let child = if item.is_inline_table() {
+            toml_edit::Item::Value(toml_edit::InlineTable::new().into())
+        } else {
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            toml_edit::Item::Table(table)
+        };
+        item = item.as_table_like_mut()?.entry(part).or_insert(child);
+    }
+    let table = item.as_table_like_mut()?;
+    if table.contains_key(key) {
+        return None;
+    }
+    table.insert(key, toml_edit::Item::Value(value));
+    Some(true)
+}
+
+fn unset(document: &mut toml_edit::DocumentMut, section: &str, key: &str) -> Option<bool> {
+    let mut item = document.as_item_mut();
+    for part in section.split('.').filter(|part| !part.is_empty()) {
+        let Some(child) = item.as_table_like_mut()?.get_mut(part) else {
+            return Some(false);
+        };
+        item = child;
+    }
+    let table = item.as_table_like_mut()?;
+    match table.get(key) {
+        Some(item) if scalar(item).is_some() => Some(table.remove(key).is_some()),
+        Some(_) => None,
+        None => Some(false),
+    }
+}
+
 pub(crate) fn upsert_top_level_bool(content: &str, key: &str, value: bool) -> String {
+    if let Some(updated) = rewritten(content, "", key, Some(&value.to_string())) {
+        return updated;
+    }
     let replacement = format!("{key} = {value}");
     let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
     let mut in_section = false;
@@ -596,6 +696,9 @@ pub fn upsert_section_bool(content: &str, section: &str, key: &str, value: bool)
 }
 
 pub fn remove_section_key(content: &str, section: &str, key: &str) -> String {
+    if let Some(updated) = rewritten(content, section, key, None) {
+        return updated;
+    }
     let header = format!("[{section}]");
     let lines: Vec<&str> = content.lines().collect();
     let mut result = Vec::new();
@@ -680,6 +783,9 @@ fn is_top_level_keys_assignment(trimmed: &str) -> bool {
 }
 
 fn upsert_section_raw(content: &str, section: &str, key: &str, value: &str) -> String {
+    if let Some(updated) = rewritten(content, section, key, Some(value)) {
+        return updated;
+    }
     let header = format!("[{section}]");
     let assignment = format!("{key} = {value}");
     let lines: Vec<&str> = content.lines().collect();
@@ -749,6 +855,266 @@ mod tests {
         let updated = upsert_top_level_bool(content, "onboarding", false);
         assert!(updated.contains("onboarding = false"));
         assert!(!updated.contains("onboarding = true"));
+    }
+
+    #[test]
+    fn a_commented_section_header_is_still_its_section() {
+        let content = "[ui.sound] # audio\nenabled = true\n[theme]# look\nname = \"x\"\n";
+
+        assert_eq!(
+            upsert_section_bool(content, "ui.sound", "enabled", false),
+            "[ui.sound] # audio\nenabled = false\n[theme]# look\nname = \"x\"\n"
+        );
+        assert_eq!(
+            upsert_section_value(content, "ui.sound", "volume", "1"),
+            "[ui.sound] # audio\nenabled = true\nvolume = 1\n[theme]# look\nname = \"x\"\n"
+        );
+        assert_eq!(
+            remove_section_key(content, "theme", "name"),
+            "[ui.sound] # audio\nenabled = true\n[theme]# look\n"
+        );
+        assert_eq!(
+            upsert_top_level_bool(content, "enabled", false),
+            format!("enabled = false\n{content}")
+        );
+    }
+
+    #[test]
+    fn a_header_inside_a_multiline_value_is_left_alone() {
+        for note in ["", " # note"] {
+            let command = format!(
+                "[[keys.command]]\ncommand = \"\"\"\n[ui.sound]{note}\nenabled = true\n\"\"\"\n"
+            );
+            let array = format!("[ui.sound]\nextra = [\n  [1, 2]{note}\n]\nenabled = true\n");
+
+            assert_eq!(
+                upsert_section_bool(&command, "ui.sound", "enabled", false),
+                format!("{command}\n[ui.sound]\nenabled = false\n")
+            );
+            assert_eq!(remove_section_key(&command, "ui.sound", "enabled"), command);
+            assert_eq!(
+                upsert_section_bool(&array, "ui.sound", "enabled", false),
+                format!("[ui.sound]\nextra = [\n  [1, 2]{note}\n]\nenabled = false\n")
+            );
+            assert_eq!(
+                remove_section_key(&array, "ui.sound", "enabled"),
+                format!("[ui.sound]\nextra = [\n  [1, 2]{note}\n]\n")
+            );
+        }
+    }
+
+    #[test]
+    fn a_setting_spelled_without_its_own_header_is_edited_where_it_is() {
+        assert_eq!(
+            upsert_section_bool(
+                "[ui]\nsound = { enabled = true } # c\n",
+                "ui.sound",
+                "enabled",
+                false
+            ),
+            "[ui]\nsound = { enabled = false } # c\n"
+        );
+        assert_eq!(
+            upsert_section_bool(
+                "ui.sound.enabled = true # c\n",
+                "ui.sound",
+                "enabled",
+                false
+            ),
+            "ui.sound.enabled = false # c\n"
+        );
+        assert_eq!(
+            remove_section_key(
+                "[ui]\ntoast = { enabled = true, delivery = \"off\" }\n",
+                "ui.toast",
+                "enabled"
+            ),
+            "[ui]\ntoast = { delivery = \"off\" }\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_section_is_added_without_touching_the_others() {
+        assert_eq!(
+            upsert_section_bool(
+                "[ui]\na = 1\n\n[theme]\nname = \"x\"\n",
+                "ui.sound",
+                "enabled",
+                false
+            ),
+            "[ui]\na = 1\n\n[ui.sound]\nenabled = false\n\n[theme]\nname = \"x\"\n"
+        );
+        assert_eq!(
+            upsert_top_level_bool("a = 1\n\n[x]\nb = 2\n", "onboarding", false),
+            "a = 1\nonboarding = false\n\n[x]\nb = 2\n"
+        );
+    }
+
+    #[test]
+    fn the_lines_around_a_replaced_value_are_kept() {
+        assert_eq!(
+            upsert_section_bool(
+                "[ui.sound]\n# quiet at night\n\n  enabled = true # loud\n",
+                "ui.sound",
+                "enabled",
+                false
+            ),
+            "[ui.sound]\n# quiet at night\n\n  enabled = false # loud\n"
+        );
+        assert_eq!(
+            upsert_top_level_bool("a = 1\n\nonboarding = true\n", "onboarding", false),
+            "a = 1\n\nonboarding = false\n"
+        );
+    }
+
+    #[test]
+    fn a_section_under_an_inline_table_is_added_inline() {
+        let updated = upsert_section_value(
+            "ui = { sound = { enabled = true } }\n",
+            "ui.toast",
+            "delivery",
+            "\"off\"",
+        );
+
+        assert_eq!(
+            toml::from_str::<toml::Value>(&updated).ok(),
+            toml::from_str("ui = { sound = { enabled = true }, toast = { delivery = \"off\" } }")
+                .ok()
+        );
+        assert_eq!(updated.lines().count(), 1);
+    }
+
+    #[test]
+    fn a_file_the_document_editor_cannot_take_is_edited_by_line_as_before() {
+        let broken = "[ui.sound]\nenabled = true\n[theme\n";
+
+        assert_eq!(
+            upsert_section_bool(broken, "ui.sound", "enabled", false),
+            "[ui.sound]\nenabled = false\n[theme\n"
+        );
+        assert_eq!(
+            remove_section_key(broken, "ui.sound", "enabled"),
+            "[ui.sound]\n[theme\n"
+        );
+        assert_eq!(
+            upsert_section_bool("ui = 1\n", "ui.sound", "enabled", false),
+            "ui = 1\n\n[ui.sound]\nenabled = false\n"
+        );
+    }
+
+    #[test]
+    fn an_existing_setting_is_edited_without_touching_another_byte() {
+        let dotted = "[ui]\nsound.enabled = true\nsidebar_width = 24\nsound.path = \"done.mp3\"\n";
+        assert_eq!(
+            upsert_section_bool(dotted, "ui.sound", "enabled", false),
+            dotted.replace("true", "false")
+        );
+        assert_eq!(
+            remove_section_key(dotted, "ui.sound", "enabled"),
+            "[ui]\nsidebar_width = 24\nsound.path = \"done.mp3\"\n"
+        );
+
+        let quoted = "[ui]\n[\"ui\".sound] # note\r\nenabled = true # loud\r\nvolume = 1\n";
+        assert_eq!(
+            upsert_section_bool(quoted, "ui.sound", "enabled", false),
+            quoted.replace("true", "false")
+        );
+        assert_eq!(
+            remove_section_key(quoted, "ui.sound", "enabled"),
+            "[ui]\n[\"ui\".sound] # note\r\nvolume = 1\n"
+        );
+        assert_eq!(remove_section_key(quoted, "ui.toast", "enabled"), quoted);
+
+        assert_eq!(
+            remove_section_key(
+                "[ui.toast] # header\n# a note on the section\n\nenabled = \"\"\"\na\nb\"\"\" # gone\ndelivery = \"off\"",
+                "ui.toast",
+                "enabled"
+            ),
+            "[ui.toast] # header\n# a note on the section\n\ndelivery = \"off\""
+        );
+        assert_eq!(
+            remove_section_key(
+                "ui = { toast = { enabled = true, delivery = \"off\" } }\n",
+                "ui.toast",
+                "enabled"
+            ),
+            "ui = { toast = { delivery = \"off\" } }\n"
+        );
+    }
+
+    #[test]
+    fn a_setting_whose_name_is_a_table_is_left_to_the_line_editor() {
+        let channel = "[update]\n[update.channel]\nnote = \"keep\"\n";
+        assert_eq!(
+            upsert_section_value(channel, "update", "channel", "\"stable\""),
+            "[update]\nchannel = \"stable\"\n[update.channel]\nnote = \"keep\"\n"
+        );
+
+        let enabled = "[ui.toast]\n[ui.toast.enabled]\nnote = \"keep\"\n";
+        assert_eq!(remove_section_key(enabled, "ui.toast", "enabled"), enabled);
+
+        let inline = "update.channel = { note = \"keep\" }\n";
+        assert_eq!(
+            upsert_section_value(inline, "update", "channel", "\"stable\""),
+            "update.channel = { note = \"keep\" }\n\n[update]\nchannel = \"stable\"\n"
+        );
+
+        let array = "update.channel = [\"preview\"]\n";
+        assert_eq!(
+            upsert_section_value(array, "update", "channel", "\"stable\""),
+            "update.channel = [\"preview\"]\n\n[update]\nchannel = \"stable\"\n"
+        );
+        let quoted = "[ui.toast]\n\"enabled\" = [{ note = \"keep\" }]\n";
+        assert_eq!(remove_section_key(quoted, "ui.toast", "enabled"), quoted);
+        assert_eq!(
+            remove_section_key(
+                "ui = { toast = { enabled = [1] } }\n",
+                "ui.toast",
+                "enabled"
+            ),
+            "ui = { toast = { enabled = [1] } }\n"
+        );
+
+        let dotted = "ui = { toast.delivery = \"off\", toast.enabled.note = \"keep\" }\n";
+        assert_eq!(remove_section_key(dotted, "ui.toast", "enabled"), dotted);
+
+        assert_eq!(
+            remove_section_key(
+                "[[ui]]\n[ui.toast]\nenabled = true\n",
+                "ui.toast",
+                "enabled"
+            ),
+            "[[ui]]\n[ui.toast]\n"
+        );
+    }
+
+    #[test]
+    fn a_value_that_does_not_parse_where_it_lands_is_left_to_the_line_editor() {
+        let deep = format!("{}{}", "[".repeat(79), "]".repeat(79));
+
+        assert_eq!(
+            upsert_section_value("sound = { enabled = true }\n", "sound", "enabled", &deep),
+            format!("sound = {{ enabled = true }}\n\n[sound]\nenabled = {deep}\n")
+        );
+        assert_eq!(
+            upsert_section_value("sound = { note = \"keep\" }\n", "sound", "enabled", &deep),
+            format!("sound = {{ note = \"keep\" }}\n\n[sound]\nenabled = {deep}\n")
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_a_bare_key_is_left_to_the_line_editor() {
+        assert_eq!(
+            upsert_section_bool("[\"a.b\"]\n\"x.y\" = true\n", "\"a.b\"", "\"x.y\"", false),
+            "[\"a.b\"]\n\"x.y\" = false\n"
+        );
+        let toast = "[ui.toast]\nenabled = true\n";
+        assert_eq!(remove_section_key(toast, "ui..toast", "enabled"), toast);
+        assert_eq!(
+            remove_section_key("[\"a.b\"]\n\"x.y\" = true\n", "\"a.b\"", "\"x.y\""),
+            "[\"a.b\"]\n"
+        );
     }
 
     #[test]
