@@ -31,6 +31,74 @@ use crate::session_doc::{Arrangement, Destination, Layout, Loaded};
 use crate::ui::theme::Palette;
 use crate::ui::ScrollbarThumb;
 
+fn reason(error: &io::Error) -> String {
+    let core = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<crate::hc::HcError>());
+    match core {
+        Some(crate::hc::HcError::Rpc { message, .. }) => message.clone(),
+        _ => error.to_string(),
+    }
+}
+
+fn drawn(text: &str, width: usize) -> impl Iterator<Item = (&str, usize)> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    text.graphemes(true)
+        .filter(|symbol| !symbol.contains(char::is_control))
+        .map(|symbol| (symbol, symbol.width()))
+        .filter(move |(_, wide)| (1..=width).contains(wide))
+}
+
+fn wrapped(text: &str, width: usize) -> Vec<Vec<(&str, usize)>> {
+    let mut lines = Vec::new();
+    let (mut line, mut used) = (Vec::new(), 0);
+    for word in text.split_whitespace() {
+        let wide: usize = drawn(word, width).map(|(_, wide)| wide).sum();
+        if wide == 0 {
+            continue;
+        }
+        if used > 0 && used + 1 + wide <= width {
+            line.push((" ", 1));
+            used += 1;
+        } else if used > 0 {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        for (symbol, wide) in drawn(word, width) {
+            if used + wide > width {
+                lines.push(std::mem::take(&mut line));
+                used = 0;
+            }
+            line.push((symbol, wide));
+            used += wide;
+        }
+    }
+    if used > 0 || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+fn paint_reason(reason: &str, style: impl Into<Style>, inner: Rect, buffer: &mut Buffer) {
+    let style = style.into();
+    let lines = wrapped(reason, usize::from(inner.width));
+    let above = inner
+        .height
+        .saturating_sub(u16::try_from(lines.len()).unwrap_or(u16::MAX))
+        / 2;
+    for (y, line) in (inner.y + above..inner.bottom()).zip(&lines) {
+        let cells = |wide: usize| u16::try_from(wide).unwrap_or(u16::MAX);
+        let wide: usize = line.iter().map(|(_, wide)| wide).sum();
+        let mut x = inner.x + inner.width.saturating_sub(cells(wide)) / 2;
+        for (symbol, wide) in line {
+            buffer.set_stringn(x, y, symbol, *wide, style);
+            x += cells(*wide);
+        }
+    }
+}
+
 const TOAST: Duration = Duration::from_secs(2);
 const SPLIT_DRAG: Duration = Duration::from_millis(33);
 
@@ -373,6 +441,7 @@ pub(super) struct Surface {
     session: Session,
     views: HashMap<PaneId, Shown>,
     attaching: HashMap<PaneId, bool>,
+    unattached: HashMap<PaneId, String>,
     owned: HashMap<PaneId, String>,
     targets: HashSet<PaneId>,
     ended: Vec<PaneId>,
@@ -431,6 +500,7 @@ impl Surface {
             session: Session::default(),
             views: HashMap::new(),
             attaching: HashMap::new(),
+            unattached: HashMap::new(),
             owned: HashMap::new(),
             targets: HashSet::new(),
             ended: Vec::new(),
@@ -575,6 +645,7 @@ impl Surface {
     pub(super) fn update(&mut self, layout: Layout) {
         self.session.update(layout);
         self.owned = self.session.owned();
+        self.unattached.retain(|id, _| self.owned.contains_key(id));
         self.reflow();
         self.session_changed(Change::Layout);
     }
@@ -1322,6 +1393,7 @@ impl Surface {
             Ok(mut view) if !detached && self.terminal(id).is_some() => {
                 view.scroll_by(self.scrollback.wheel_lines);
                 self.relayout |= on_screen;
+                self.unattached.remove(&id);
                 self.views.insert(
                     id,
                     Shown {
@@ -1335,7 +1407,11 @@ impl Surface {
             Ok(_) => self.relayout |= on_screen,
             Err(error) => {
                 self.relayout |= on_screen;
-                tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
+                let reason = reason(&error);
+                if self.owned.contains_key(&id) && self.unattached.get(&id) != Some(&reason) {
+                    tracing::warn!(%error, terminal = self.terminal(id), "the pane did not attach");
+                    self.unattached.insert(id, reason);
+                }
             }
         }
         let focused = self.reporting_focus() == Some(id);
@@ -2275,6 +2351,17 @@ impl Surface {
             &self.palette,
             |id| names.get(&id).map(|name| (*name).to_owned()),
         );
+        for tile in &self.tiles.tiles {
+            let Some(reason) = self.unattached.get(&tile.info.id) else {
+                continue;
+            };
+            paint_reason(
+                reason,
+                self.palette.overlay0,
+                tile.info.inner_rect,
+                &mut buffer,
+            );
+        }
         let mut cells: Vec<CellData> = buffer
             .content
             .iter()
