@@ -2173,6 +2173,157 @@ async fn a_pane_command_splits_right_of_the_focused_pane_and_runs_in_the_shell()
     assert_eq!(env_of(&overlay.env)["HERDR_ACTIVE_PANE_ID"], "t1");
 }
 
+#[tokio::test]
+async fn the_scrollback_is_taken_at_key_press_and_opens_beside_the_focused_pane() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)), 0);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::FocusPaneRight, true);
+    feed(&surface, "t0", b"left");
+    feed(&surface, "t1", b"right");
+
+    let Some(super::Operation::Overlay(overlay)) = surface.edit_scrollback(None) else {
+        panic!("an overlay beside the focused pane");
+    };
+    feed(&surface, "t1", b" later");
+
+    assert_eq!(
+        overlay.scrollback,
+        Some(super::ScrollbackText("right".to_owned()))
+    );
+    assert!(overlay.argv.is_empty());
+    assert!(!format!("{overlay:?}").contains("right"));
+    assert_eq!(
+        overlay.destination,
+        crate::session_doc::Destination::Split {
+            beside: "t1".to_owned(),
+            direction: crate::session_doc::Direction::Right,
+            ratio: 0.5,
+        }
+    );
+    assert_eq!(env_of(&overlay.env)["HERDR_ACTIVE_PANE_ID"], "t1");
+}
+
+#[tokio::test]
+async fn the_scrollback_editor_comes_from_the_tui_environment_when_set() {
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(1)), 0);
+    frame(&mut surface, &HashSet::new());
+
+    let editors: Vec<Option<String>> = [Some("nvim -f"), Some(""), None]
+        .map(|editor| {
+            let Some(super::Operation::Overlay(overlay)) =
+                surface.edit_scrollback(editor.map(str::to_owned))
+            else {
+                panic!("an overlay beside the focused pane");
+            };
+            env_of(&overlay.env)
+                .get("EDITOR")
+                .map(|editor| editor.to_string())
+        })
+        .into();
+
+    assert_eq!(editors, [Some("nvim -f".to_owned()), None, None]);
+}
+
+#[cfg(unix)]
+fn edited_text(dir: &std::path::Path, run: &Value) -> Option<String> {
+    let command = run["argv"][2].as_str()?;
+    crate::core_client::tui::tests::files_in(dir)
+        .into_iter()
+        .find(|file| command.contains(&file.display().to_string()))
+        .and_then(|file| std::fs::read_to_string(file).ok())
+}
+
+#[cfg(unix)]
+fn blocking_first_run(
+    dir: std::path::PathBuf,
+    runs: std::sync::mpsc::Sender<Option<String>>,
+    gate: std::sync::mpsc::Receiver<()>,
+) -> std::sync::Arc<crate::hc::Core> {
+    let mut document = (0, Value::Null);
+    let mut started = 0;
+    crate::hc::test_support::answering(move |method, params| match method {
+        "doc.get" => Ok(json!({"version": document.0, "value": document.1})),
+        "doc.set" => {
+            document = (document.0 + 1, params["value"].clone());
+            Ok(json!({"version": document.0}))
+        }
+        "terminal.list" => Ok(json!({"terminals": []})),
+        "terminal.run" => {
+            runs.send(edited_text(&dir, params)).ok();
+            if started == 0 {
+                gate.recv_timeout(std::time::Duration::from_secs(10)).ok();
+            }
+            started += 1;
+            Ok(json!({"address": format!("t{started}")}))
+        }
+        _ => Err(json!({"code": -32000, "message": "refused"})),
+    })
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn edits_write_no_file_until_the_worker_reaches_them_and_start_in_the_order_asked() {
+    let bound = std::time::Duration::from_secs(10);
+    let dir = crate::core_client::tui::tests::scratch_temp_dir("edit-worker");
+    let (runs_tx, runs) = std::sync::mpsc::channel();
+    let (open, gate) = std::sync::mpsc::channel();
+    let core = blocking_first_run(dir.clone(), runs_tx, gate);
+    let (started, _answers) = tokio::sync::mpsc::unbounded_channel();
+    let queue = crate::core_client::tui::unix::operations(move |operation, cwd| {
+        crate::core_client::tui::unix::perform(Ok(core.clone()), "work", operation, &cwd, &started);
+    });
+    let mut surface = surface(40, 10);
+    surface.update(row_of(&terminals(2)), 0);
+    frame(&mut surface, &HashSet::new());
+    surface.act(KeybindAction::FocusPaneRight, true);
+    let workspace = crate::session_doc::Destination::Workspace { name: None };
+    queue
+        .send((super::Operation::Start(0, workspace), "/tmp".into()))
+        .expect("queued");
+    assert_eq!(runs.recv_timeout(bound).expect("the start ran"), None);
+
+    let mut shown = String::new();
+    let mut asked = Vec::new();
+    for text in ["first", " second"] {
+        feed(&surface, "t1", text.as_bytes());
+        shown.push_str(text);
+        asked.push(Some(shown.clone()));
+        let edit = surface.edit_scrollback(None).expect("an edit");
+        queue.send((edit, "/tmp".into())).expect("queued");
+    }
+    let waiting = crate::core_client::tui::tests::files_in(&dir);
+    open.send(()).expect("opened");
+    let edited: Vec<_> = asked
+        .iter()
+        .map(|_| runs.recv_timeout(bound).expect("the edit ran"))
+        .collect();
+
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(waiting.is_empty(), "{waiting:?}");
+    assert_eq!(edited, asked);
+}
+
+#[test]
+fn the_scrollback_without_a_focused_pane_opens_nothing() {
+    let mut surface = surface(40, 10);
+    surface.update(Layout::default(), 0);
+    assert!(surface.edit_scrollback(Some("vi".to_owned())).is_none());
+}
+
+#[test]
+fn a_finished_or_removed_terminal_waits_to_have_its_scrollback_file_removed() {
+    use crate::core_client::tui::terminals::Report;
+    let mut surface = surface(40, 10);
+    let mut gate = crate::core_client::tui::gate::Gate::default();
+    surface.received(Report::Ended("t1".to_owned()).into(), &mut gate);
+    surface.received(Report::Removed("t2".to_owned()).into(), &mut gate);
+
+    assert_eq!(surface.closed(), ["t1", "t2"]);
+    assert!(surface.closed().is_empty());
+}
+
 #[test]
 fn a_pane_command_without_a_focused_pane_starts_nothing() {
     let mut surface = surface(40, 10);

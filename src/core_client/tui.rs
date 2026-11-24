@@ -70,6 +70,7 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_millis(500
 #[cfg(unix)]
 mod unix {
     use std::cell::Cell;
+    use std::collections::HashMap;
     use std::io;
     use std::path::PathBuf;
     use std::process::Stdio;
@@ -85,7 +86,7 @@ mod unix {
     use super::gate::Gate;
     use super::keys::{Keys, Mode, Routed};
     use super::notices::{Effect, Notifying};
-    use super::session::{Operation, Overlay};
+    use super::session::{Operation, Overlay, ScrollbackText};
     use super::surface::{reloaded, Arrival, Pointed, Settings, Surface};
     use crate::client::terminal_setup::TerminalGuard;
     use crate::config::{Config, CustomCommandAction, CustomCommandKeybind, SoundConfig};
@@ -102,6 +103,7 @@ mod unix {
     use crate::input::{KeybindAction, KeybindMatch};
     use crate::layout::PaneId;
     use crate::raw_input::RawInputEvent;
+    use crate::session_doc::Created;
 
     const RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -180,6 +182,9 @@ mod unix {
         surface.saved(written);
     }
 
+    pub(super) type Answer = (u64, Option<(String, u64)>, Option<PathBuf>);
+    type Started = mpsc::UnboundedSender<Answer>;
+
     pub(super) fn operations(
         mut perform: impl FnMut(Operation, PathBuf) + Send + 'static,
     ) -> std::sync::mpsc::Sender<(Operation, PathBuf)> {
@@ -197,7 +202,7 @@ mod unix {
         session: &str,
         operation: Operation,
         cwd: &std::path::Path,
-        started: &mpsc::UnboundedSender<(u64, Option<(String, u64)>)>,
+        started: &Started,
     ) -> Option<u64> {
         let core = match core {
             Ok(core) => core,
@@ -206,33 +211,50 @@ mod unix {
                 if let Operation::Start(request, _) | Operation::Overlay(Overlay { request, .. }) =
                     operation
                 {
-                    started.send((request, None)).ok();
+                    started.send((request, None, None)).ok();
                 }
                 return None;
             }
         };
         let lifecycle = || Lifecycle::new(core.clone(), session);
-        let start = |request, destination, argv: &[String], env: &[(String, String)], size| {
+        let start = |request,
+                     destination,
+                     argv: &[String],
+                     env: &[(String, String)],
+                     size,
+                     temp_file: Option<PathBuf>| {
             let report = |error| warn!(%error, session, "recovery failed");
-            let placed = match creation_lifecycle(&core, session, report)
-                .and_then(|lifecycle| lifecycle.start_with_env(destination, cwd, argv, env, size))
-            {
-                Ok(created) => Some((created.terminal, created.version)),
-                Err(error) => {
-                    warn!(%error, "the program did not start");
-                    None
-                }
-            };
-            started.send((request, placed)).ok();
+            let outcome = creation_lifecycle(&core, session, report)
+                .and_then(|lifecycle| lifecycle.start_with_env(destination, cwd, argv, env, size));
+            answer(started, request, outcome, temp_file);
         };
         match operation {
-            Operation::Start(request, destination) => start(request, destination, &[], &[], None),
+            Operation::Start(request, destination) => {
+                start(request, destination, &[], &[], None, None)
+            }
+            Operation::Overlay(Overlay {
+                request,
+                destination,
+                env,
+                size,
+                scrollback: Some(scrollback),
+                ..
+            }) => match editing(&scrollback) {
+                Ok((temp_file, argv)) => {
+                    start(request, destination, &argv, &env, size, Some(temp_file))
+                }
+                Err(error) => {
+                    warn!(%error, "the scrollback did not open in an editor");
+                    started.send((request, None, None)).ok();
+                }
+            },
             Operation::Overlay(overlay) => start(
                 overlay.request,
                 overlay.destination,
                 &overlay.argv,
                 &overlay.env,
                 overlay.size,
+                None,
             ),
             Operation::Close(terminals) => {
                 for terminal in terminals {
@@ -259,6 +281,61 @@ mod unix {
             }
         }
         None
+    }
+
+    pub(super) fn answer(
+        started: &Started,
+        request: u64,
+        outcome: Result<Created, String>,
+        temp_file: Option<PathBuf>,
+    ) {
+        match outcome {
+            Ok(created) => {
+                let placed = Some((created.terminal, created.version));
+                started.send((request, placed, temp_file)).ok();
+            }
+            Err(error) => {
+                warn!(%error, "the program did not start");
+                remove(temp_file);
+                started.send((request, None, None)).ok();
+            }
+        }
+    }
+
+    pub(super) fn keep(
+        scrollbacks: &mut HashMap<String, PathBuf>,
+        placed: &Option<(String, u64)>,
+        temp_file: Option<PathBuf>,
+    ) {
+        if let (Some((terminal, _)), Some(temp_file)) = (placed, temp_file) {
+            scrollbacks.insert(terminal.clone(), temp_file);
+        }
+    }
+
+    fn remove(temp_files: impl IntoIterator<Item = PathBuf>) {
+        for temp_file in temp_files {
+            std::fs::remove_file(temp_file).ok();
+        }
+    }
+
+    pub(super) fn forget(
+        scrollbacks: &mut HashMap<String, PathBuf>,
+        closed: impl IntoIterator<Item = String>,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let temp_files: Vec<PathBuf> = closed
+            .into_iter()
+            .filter_map(|closed| scrollbacks.remove(&closed))
+            .collect();
+        (!temp_files.is_empty()).then(|| tokio::task::spawn_blocking(move || remove(temp_files)))
+    }
+
+    pub(super) fn editing(scrollback: &ScrollbackText) -> io::Result<(PathBuf, Vec<String>)> {
+        let written = crate::app::custom_commands::write_scrollback_temp_file(&scrollback.0)?;
+        let path = std::path::absolute(&written).inspect_err(|_| remove(Some(written.clone())))?;
+        let argv = crate::platform::scrollback_editor_argv(&path).inspect_err(|_| {
+            remove(Some(path.clone()));
+        })?;
+        Ok((path, argv))
     }
 
     pub(super) async fn detached(
@@ -351,6 +428,7 @@ mod unix {
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
+        let mut scrollbacks = HashMap::new();
         let operations = {
             let (core, session) = (core.clone(), session.clone());
             operations(move |operation, cwd| {
@@ -430,6 +508,7 @@ mod unix {
                 () = wait(surface.deadline().map(Instant::from_std)) => {
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
                     settle(&surface, caught, &config.ui.sound);
+                    forget(&mut scrollbacks, surface.closed());
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -444,8 +523,9 @@ mod unix {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                Some((request, placed)) = started.recv() => {
-                    surface.started(request, placed);
+                Some((request, placed, temp_file)) = started.recv() => {
+                    keep(&mut scrollbacks, &placed, temp_file);
+                    forget(&mut scrollbacks, surface.started(request, placed));
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -465,6 +545,7 @@ mod unix {
                     surface.received(arrival, &mut gate);
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
                     settle(&surface, caught, &config.ui.sound);
+                    forget(&mut scrollbacks, surface.closed());
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -627,6 +708,17 @@ mod unix {
                                     KeybindAction::OpenNotificationTarget,
                                 )) => {
                                     surface.open_notice(std::time::Instant::now());
+                                    continue;
+                                }
+                                Routed::Binding(KeybindMatch::Action(
+                                    KeybindAction::EditScrollback,
+                                )) => {
+                                    match surface.edit_scrollback(std::env::var("EDITOR").ok()) {
+                                        Some(operation) => start(&surface, operation),
+                                        None => warn!(
+                                            "there is no focused pane to open the scrollback of"
+                                        ),
+                                    }
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(action)) => action,

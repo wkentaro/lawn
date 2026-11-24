@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use std::path::PathBuf;
 
-use super::session::Operation;
+use super::session::{Operation, ScrollbackText};
 use super::{run_with_bounded_shutdown, SHUTDOWN_GRACE};
 use crate::session_doc::{Destination, Direction};
 
@@ -300,7 +300,7 @@ fn beside(terminal: &str) -> Destination {
 fn answers_to(
     core: std::io::Result<std::sync::Arc<crate::hc::Core>>,
     operation: Operation,
-) -> Vec<(u64, Option<(String, u64)>)> {
+) -> Vec<super::unix::Answer> {
     let (started, mut answers) = tokio::sync::mpsc::unbounded_channel();
     super::unix::perform(
         core,
@@ -344,7 +344,7 @@ fn a_start_the_core_refuses_answers_its_request_once_without_a_terminal() {
     assert!(methods
         .try_iter()
         .any(|(method, _)| method == "terminal.run"));
-    assert_eq!(answers, [(7, None)]);
+    assert_eq!(answers, [(7, None, None)]);
 }
 
 #[test]
@@ -357,6 +357,7 @@ fn a_command_pane_asks_the_core_to_start_its_program_at_the_size_of_its_pane() {
         argv: vec!["stty".to_owned(), "size".to_owned()],
         env: Vec::new(),
         size: Some(size),
+        scrollback: None,
     };
 
     answers_to(Ok(refusing_core(asked)), Operation::Overlay(overlay));
@@ -376,7 +377,52 @@ fn a_start_with_the_core_unreachable_answers_its_request_once_without_a_terminal
         Operation::Start(7, beside("t1")),
     );
 
-    assert_eq!(answers, [(7, None)]);
+    assert_eq!(answers, [(7, None, None)]);
+}
+
+pub(super) fn scratch_temp_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lawn-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch directory");
+    std::env::set_var("TMPDIR", &dir);
+    dir
+}
+
+pub(super) fn files_in(dir: &std::path::Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .expect("scratch directory")
+        .map(|entry| entry.expect("entry").path())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_edit_whose_start_recovery_placed_first_keeps_its_file_until_its_pane_closes() {
+    let dir = scratch_temp_dir("edit-recovered");
+    let (temp_file, _argv) =
+        super::unix::editing(&ScrollbackText("text".to_owned())).expect("written");
+    let (started, mut answers) = tokio::sync::mpsc::unbounded_channel();
+    let recovered = crate::session_doc::Created {
+        terminal: "t9".to_owned(),
+        workspace: None,
+        tab: None,
+        version: 4,
+    };
+
+    super::unix::answer(&started, 3, Ok(recovered), Some(temp_file.clone()));
+    let (request, placed, kept) = answers.try_recv().expect("an answer");
+    let mut scrollbacks = std::collections::HashMap::new();
+    super::unix::keep(&mut scrollbacks, &placed, kept);
+
+    assert_eq!((request, placed), (3, Some(("t9".to_owned(), 4))));
+    assert!(temp_file.exists());
+    assert!(super::unix::forget(&mut scrollbacks, ["t8".to_owned()]).is_none());
+    assert!(temp_file.exists());
+    super::unix::forget(&mut scrollbacks, ["t9".to_owned()])
+        .expect("the file is forgotten")
+        .await
+        .expect("removed");
+    assert!(!temp_file.exists());
+    std::fs::remove_dir_all(dir).ok();
 }
 
 #[tokio::test]
@@ -405,4 +451,23 @@ async fn a_shell_command_runs_detached_in_the_pane_directory_with_the_command_en
     std::fs::remove_dir_all(&dir).expect("remove the scratch directory");
     assert!(status.success());
     assert_eq!(written.expect("the command wrote its output"), expected);
+}
+
+#[test]
+fn an_edit_under_a_relative_temp_dir_opens_and_tracks_its_file_by_an_absolute_path() {
+    let dir = scratch_temp_dir("edit-relative");
+    std::env::set_current_dir(dir.parent().expect("temp root")).expect("current directory");
+    std::env::set_var("TMPDIR", dir.file_name().expect("scratch name"));
+
+    let (temp_file, argv) =
+        super::unix::editing(&ScrollbackText("text".to_owned())).expect("written");
+
+    assert!(temp_file.is_absolute());
+    assert_eq!(
+        std::fs::read_to_string(&temp_file).expect("the file"),
+        "text"
+    );
+    let shown = temp_file.display().to_string();
+    assert!(argv.iter().any(|arg| arg.contains(&shown)), "{argv:?}");
+    std::fs::remove_dir_all(&dir).ok();
 }
