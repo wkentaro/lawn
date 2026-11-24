@@ -32,6 +32,20 @@ fn workspace(core: &Arc<Core>) -> Value {
         .expect("workspace create")
 }
 
+fn pending_start(core: &Arc<Core>) -> String {
+    crate::session_doc::Store::new(core.clone(), SESSION, None)
+        .reserve_start(&crate::session_doc::Destination::Workspace { name: None })
+        .expect("reserve start")
+}
+
+fn started_for(core: &Core, reference: &str) -> String {
+    core.run(
+        json!({"argv": sleeper().argv, "keep": true, "no_parent": true,
+        "labels": {"lawn-start": reference}}),
+    )
+    .expect("terminal.run")
+}
+
 fn split_right(core: &Arc<Core>, beside: &str) -> String {
     let split = commands::pane_split(core, SESSION, beside, Direction::Right, 0.5, &sleeper())
         .expect("pane split");
@@ -43,17 +57,8 @@ fn retrying_a_pending_create_recovers_without_starting_a_second_program() {
     let Some(test) = TestCore::start() else {
         return;
     };
-    let store = crate::session_doc::Store::new(test.core.clone(), SESSION, None);
-    let reference = store
-        .reserve_start(&crate::session_doc::Destination::Workspace { name: None })
-        .unwrap();
-    let terminal = test
-        .core
-        .run(
-            json!({"argv": sleeper().argv, "keep": true, "no_parent": true,
-        "labels": {"lawn-start": reference}}),
-        )
-        .unwrap();
+    let reference = pending_start(&test.core);
+    let terminal = started_for(&test.core, &reference);
 
     let error = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap_err();
 
@@ -73,10 +78,7 @@ fn listing_an_unresolved_start_keeps_it_visible_without_blocking_other_sessions(
     let Some(test) = TestCore::start() else {
         return;
     };
-    let store = crate::session_doc::Store::new(test.core.clone(), SESSION, None);
-    let reference = store
-        .reserve_start(&crate::session_doc::Destination::Workspace { name: None })
-        .unwrap();
+    let reference = pending_start(&test.core);
 
     let layout = commands::ls(&test.core, SESSION).unwrap();
     assert!(commands::ls_text(&layout).contains(&reference));
@@ -90,6 +92,70 @@ fn listing_an_unresolved_start_keeps_it_visible_without_blocking_other_sessions(
         .unwrap()
         .pending_starts
         .contains_key(&reference));
+}
+
+#[test]
+fn dropping_a_pending_start_lets_the_session_start_again() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let reference = pending_start(&test.core);
+    let refused = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap_err();
+    assert!(
+        refused.contains(&format!("start drop {reference}")),
+        "{refused}"
+    );
+
+    commands::start_drop(&test.core, SESSION, &reference).unwrap();
+
+    assert!(commands::start_drop(&test.core, SESSION, &reference).is_err());
+    let created = commands::workspace_create(&test.core, SESSION, None, &sleeper()).unwrap();
+    let layout = commands::ls(&test.core, SESSION).unwrap();
+    assert!(layout.pending_starts.is_empty());
+    assert!(layout.shows(&text(&created, "terminal")));
+    let listed = test
+        .core
+        .call("terminal.list", json!({"all": true}))
+        .unwrap();
+    assert_eq!(listed["terminals"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn a_start_that_recovery_finds_is_placed_instead_of_dropped() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let reference = pending_start(&test.core);
+    let terminal = started_for(&test.core, &reference);
+
+    let error = commands::start_drop(&test.core, SESSION, &reference).unwrap_err();
+
+    assert!(error.contains("is not pending"), "{error}");
+    let layout = crate::session_doc::Store::new(test.core.clone(), SESSION, None)
+        .load()
+        .unwrap()
+        .layout;
+    assert!(layout.shows(&terminal));
+    assert_eq!(get(&test.core, &terminal)["state"], "live");
+}
+
+#[test]
+fn a_start_that_cannot_be_looked_up_is_not_dropped() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let reference = pending_start(&test.core);
+    started_for(&test.core, &reference);
+    started_for(&test.core, &reference);
+
+    let error = commands::start_drop(&test.core, SESSION, &reference).unwrap_err();
+
+    assert!(error.contains("multiple local terminals"), "{error}");
+    let layout = crate::session_doc::Store::new(test.core.clone(), SESSION, None)
+        .load()
+        .unwrap()
+        .layout;
+    assert!(layout.pending_starts.contains_key(&reference));
 }
 
 #[test]

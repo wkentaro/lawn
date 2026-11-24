@@ -137,6 +137,18 @@ fn terminal_commands_need_a_terminal() {
 }
 
 #[test]
+fn start_drop_takes_the_reference_of_a_pending_start() {
+    assert_eq!(
+        parsed(&["start", "drop", "work:3"]),
+        Command::StartDrop {
+            reference: "work:3".to_owned()
+        }
+    );
+    assert!(matches!(parse(&args(&["start", "drop"])), Some(Err(_))));
+    assert!(parse(&args(&["start"])).is_none());
+}
+
+#[test]
 fn unpark_takes_an_optional_placement() {
     let unpark = |to| Command::Unpark {
         terminal: "t3".to_owned(),

@@ -110,17 +110,8 @@ impl Lifecycle {
     pub(crate) fn recover(&self) -> Result<(), String> {
         let loaded = self.store.load()?.layout;
         for (reference, start) in &loaded.pending_starts {
-            let listed = self
-                .core
-                .call(
-                    "terminal.list",
-                    json!({
-                        "all": true, "labels": {START_LABEL: reference}
-                    }),
-                )
-                .map_err(|err| err.to_string())?;
-            if let Some(terminal) = local_start(&listed)? {
-                self.finish_start(reference, terminal)?;
+            if let Some(terminal) = self.lookup(reference)? {
+                self.finish_start(reference, &terminal)?;
             } else if start.reply_received {
                 self.store
                     .edit(|layout| layout.pending_starts.remove(reference))?;
@@ -130,6 +121,40 @@ impl Lifecycle {
             self.end_close(&terminal)?;
         }
         Ok(())
+    }
+
+    fn lookup(&self, reference: &str) -> Result<Option<String>, String> {
+        let listed = self
+            .core
+            .call(
+                "terminal.list",
+                json!({
+                    "all": true, "labels": {START_LABEL: reference}
+                }),
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(local_start(&listed)?.map(str::to_owned))
+    }
+
+    pub(crate) fn drop_start(&self, reference: &str) -> Result<(), String> {
+        let gone = || {
+            format!(
+                "start {reference} is not pending in session {}",
+                self.session
+            )
+        };
+        let pending = self.store.load()?.layout.pending_starts;
+        if !pending.contains_key(reference) {
+            return Err(gone());
+        }
+        if let Some(terminal) = self.lookup(reference)? {
+            self.finish_start(reference, &terminal)?;
+            return Err(gone());
+        }
+        let (dropped, _) = self
+            .store
+            .edit(|layout| layout.pending_starts.remove(reference).is_some())?;
+        dropped.then_some(()).ok_or_else(gone)
     }
 
     fn finish_start(&self, reference: &str, terminal: &str) -> Result<Option<Created>, String> {

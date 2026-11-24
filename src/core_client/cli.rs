@@ -42,6 +42,7 @@ pub(super) fn handles(args: &[String]) -> bool {
             | ["workspace", "create"]
             | ["tab", "create"]
             | ["pane", "split" | "close"]
+            | ["start", "drop"]
     )
 }
 
@@ -96,6 +97,14 @@ fn command() -> clap::Command {
                 .subcommand(clap::Command::new("close").arg(terminal())),
         )
         .subcommand(clap::Command::new("park").arg(terminal()))
+        .subcommand(
+            clap::Command::new("start")
+                .subcommand_required(true)
+                .subcommand(
+                    clap::Command::new("drop")
+                        .arg(Arg::new("reference").value_name("START").required(true)),
+                ),
+        )
         .subcommand(
             clap::Command::new("unpark")
                 .arg(terminal())
@@ -188,6 +197,14 @@ fn from_matches(matches: &ArgMatches) -> Result<Command, clap::Error> {
         Some(("park", matches)) => Command::Park {
             terminal: terminal(matches),
         },
+        Some(("start", matches)) => {
+            let Some(("drop", matches)) = matches.subcommand() else {
+                return Err(missing_subcommand());
+            };
+            Command::StartDrop {
+                reference: string(matches, "reference").unwrap_or_default(),
+            }
+        }
         Some(("unpark", matches)) => Command::Unpark {
             terminal: terminal(matches),
             to: match string(matches, "beside") {

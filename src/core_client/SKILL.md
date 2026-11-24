@@ -57,7 +57,7 @@ On Unix, `LAWN_REWRITE=1 lawn attach t3` draws that terminal without a Lawn serv
 
 ## Handle uncertain results
 
-A timed-out or disconnected start may have created a terminal. Run `lawn ls --json` with the same rewrite flag and layout session. If the start remains pending, stop and report it. Repeated creation is not a safe way to retry the same start.
+A timed-out or disconnected start may have created a terminal. Run `lawn ls --json` with the same rewrite flag and layout session. If the start remains pending, stop and report it. Repeated creation is not a safe way to retry the same start. A pending start refuses every later start in its layout session. Once the user confirms that nothing runs under it, `lawn start drop <reference>` gives it up, with the reference `ls` prints under `unconfirmed starts`. The drop looks the start up first. A terminal that already exists is handled as `ls` would handle it and the drop is refused: it is placed, or queued for closing when its place is gone, because the pane it was to split is no longer shown or the workspace its tab was for is closed. A lookup that fails leaves the start pending. A terminal that appears after the drop stays outside the layout until it is unparked.
 
 A pending close means termination is not yet confirmed. Listing retries it. Check the terminal's current state through hc rather than assuming that a request to stop has finished.
 

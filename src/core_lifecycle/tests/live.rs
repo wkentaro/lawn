@@ -264,6 +264,57 @@ fn another_session_cannot_take_an_unconfirmed_start() {
 }
 
 #[test]
+fn a_drop_reports_the_start_it_removed_after_a_final_reply() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let reference = lifecycle.store.reserve_start(&workspace()).unwrap();
+    lifecycle
+        .store
+        .edit(|layout| {
+            if let Some(start) = layout.pending_starts.get_mut(&reference) {
+                start.reply_received = true;
+            }
+        })
+        .unwrap();
+
+    lifecycle.drop_start(&reference).unwrap();
+
+    let layout = lifecycle.store.load().unwrap().layout;
+    assert!(layout.pending_starts.is_empty());
+}
+
+#[test]
+fn a_drop_queues_the_close_of_a_terminal_whose_destination_is_gone() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let first = lifecycle
+        .start(workspace(), Path::new("/tmp"), &program())
+        .unwrap();
+    let reference = lifecycle
+        .store
+        .reserve_start(&Destination::Split {
+            beside: first.terminal.clone(),
+            direction: Direction::Right,
+            ratio: 0.5,
+        })
+        .unwrap();
+    lifecycle.park(&first.terminal).unwrap();
+    let terminal = run_unacknowledged(&test, &reference);
+
+    let error = lifecycle.drop_start(&reference).unwrap_err();
+
+    assert!(error.contains("reserved for closing"), "{error}");
+    let layout = lifecycle.store.load().unwrap().layout;
+    assert!(layout.pending_starts.is_empty());
+    assert!(layout.closing.contains(&terminal));
+    assert_eq!(record(&test.core, &terminal)["state"], "live");
+}
+
+#[test]
 fn a_vanished_destination_reserves_cleanup_before_killing() {
     let Some(test) = TestCore::start() else {
         return;
