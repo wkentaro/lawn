@@ -1,13 +1,20 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::json;
 
 use crate::hc::{Core, HcError};
-use crate::session_doc::{Created, Destination, Sessions, Store};
+use crate::session_doc::{Created, Destination, Layout, Sessions, Store};
 
 const START_LABEL: &str = "lawn-start";
 const KEEP_SETTLE_ATTEMPTS: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Size {
+    pub(crate) cols: u16,
+    pub(crate) rows: u16,
+}
 
 fn utf8(path: &Path) -> Result<&str, String> {
     path.to_str()
@@ -37,14 +44,26 @@ impl Lifecycle {
         cwd: &Path,
         argv: &[String],
     ) -> Result<Created, String> {
+        self.start_with_env(destination, cwd, argv, &[], None)
+    }
+
+    pub(crate) fn start_with_env(
+        &self,
+        destination: Destination,
+        cwd: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+        size: Option<Size>,
+    ) -> Result<Created, String> {
         let cwd = utf8(cwd)?;
         let reference = self.store.reserve_start(&destination)?;
-        self.submit(&reference, cwd, argv)?.ok_or_else(|| {
-            format!(
-                "start {reference} was already recovered; inspect `lawn --session {} ls`",
-                self.session
-            )
-        })
+        self.submit(&reference, cwd, argv, env, size)?
+            .ok_or_else(|| {
+                format!(
+                    "start {reference} was already recovered; inspect `lawn --session {} ls`",
+                    self.session
+                )
+            })
     }
 
     #[cfg(unix)]
@@ -66,7 +85,7 @@ impl Lifecycle {
     ) -> Result<Option<Created>, String> {
         let cwd = utf8(cwd)?;
         match self.store.reserve_first_start()? {
-            Some(reference) => self.submit(&reference, cwd, argv),
+            Some(reference) => self.submit(&reference, cwd, argv, &[], None),
             None => Ok(None),
         }
     }
@@ -76,6 +95,8 @@ impl Lifecycle {
         reference: &str,
         cwd: &str,
         argv: &[String],
+        env: &[(String, String)],
+        size: Option<Size>,
     ) -> Result<Option<Created>, String> {
         let mut params = json!({
             "cwd": cwd,
@@ -86,6 +107,12 @@ impl Lifecycle {
         });
         if !argv.is_empty() {
             params["argv"] = json!(argv);
+        }
+        if !env.is_empty() {
+            params["env"] = json!(env.iter().cloned().collect::<HashMap<_, _>>());
+        }
+        if let Some(Size { cols, rows }) = size {
+            params["size"] = json!({"cols": cols, "rows": rows});
         }
         let terminal = match self.core.run(params) {
             Ok(terminal) => terminal,
@@ -133,9 +160,9 @@ impl Lifecycle {
     }
 
     fn finish_start(&self, reference: &str, terminal: &str) -> Result<Option<Created>, String> {
-        let (finished, _) = self.store.edit_all(|sessions| {
+        let (finished, version) = self.store.edit_all(|sessions| {
             let Some(start) = sessions.get(&self.session).and_then(|l| l.pending_starts.get(reference)).cloned() else {
-                return Ok(None);
+                return Ok(sessions.get(&self.session).and_then(|layout| placed(layout, terminal)));
             };
             if let Some(owner) = owner(sessions, terminal) {
                 return Err(format!("{terminal} is already owned by session {owner}; start {reference} remains pending"));
@@ -155,7 +182,7 @@ impl Lifecycle {
                 }
             }
         })?;
-        finished
+        Ok(finished?.map(|created| Created { version, ..created }))
     }
 
     pub(crate) fn close(&self, terminal: &str) -> Result<(), String> {
@@ -305,6 +332,22 @@ fn local_start(listed: &serde_json::Value) -> Result<Option<&str>, String> {
         }
     }
     Ok(local)
+}
+
+fn placed(layout: &Layout, terminal: &str) -> Option<Created> {
+    let (workspace, tab) = layout.workspaces.iter().find_map(|workspace| {
+        let tab = workspace
+            .tabs
+            .iter()
+            .find(|tab| tab.root.contains(terminal))?;
+        Some((workspace.id.clone(), tab.id.clone()))
+    })?;
+    Some(Created {
+        terminal: terminal.to_owned(),
+        workspace: Some(workspace),
+        tab: Some(tab),
+        version: 0,
+    })
 }
 
 fn owner<'a>(sessions: &'a Sessions, terminal: &str) -> Option<&'a str> {

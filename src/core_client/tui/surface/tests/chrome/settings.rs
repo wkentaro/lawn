@@ -10,10 +10,10 @@ fn opened_in(rows: u16, configure: impl FnOnce(&mut Config)) -> (Surface, Screen
     configure(&mut config);
     let mut surface = Surface::new(
         host(120, rows),
-        Chrome::new(&config),
+        Chrome::new(&config, unheard()),
         Settings::from(&config),
     );
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     surface.act(KeybindAction::Settings, false);
     let screen = Screen::of(&mut surface);

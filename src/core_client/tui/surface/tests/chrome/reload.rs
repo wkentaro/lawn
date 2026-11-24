@@ -7,7 +7,10 @@ fn config(toml: &str) -> Config {
 
 fn one_space() -> Surface {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]));
+    surface.update(
+        spaces(&[(Some("main"), &[None]), (Some("other"), &[None])]),
+        0,
+    );
     frame_attaching(&mut surface, &HashSet::new());
     surface
 }
@@ -211,7 +214,7 @@ fn a_reload_whose_keys_leave_no_prefix_keeps_the_running_keys() {
 #[tokio::test]
 async fn a_pane_whose_attach_was_in_flight_during_a_reload_takes_the_new_wheel_step() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     let pending = requests(&mut surface);
     let (_, id, geometry) = pending[0].clone();
 
@@ -248,8 +251,12 @@ async fn every_reload_takes_a_visible_toast_away_so_none_stays_at_its_old_place_
 }
 
 fn started(config: &Config, tabs: usize, focus: &[usize]) -> Surface {
-    let mut surface = Surface::new(host(90, 30), Chrome::new(config), Settings::from(config));
-    surface.update(spaces(&[(Some("main"), &vec![None; tabs])]));
+    let mut surface = Surface::new(
+        host(90, 30),
+        Chrome::new(config, unheard()),
+        Settings::from(config),
+    );
+    surface.update(spaces(&[(Some("main"), &vec![None; tabs])]), 0);
     frame(&mut surface, &HashSet::new());
     for tab in focus {
         surface.act(KeybindAction::SwitchTab(*tab), false);
@@ -312,7 +319,7 @@ fn a_reload_reports_a_tab_strip_entry_it_hides_as_the_legacy_reload_does() {
 #[tokio::test]
 async fn a_reload_that_changes_nothing_leaves_a_scrolled_sidebar_where_it_was() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     wheel(&mut surface, true, 5, 4);
     frame(&mut surface, &HashSet::new());
@@ -335,7 +342,7 @@ async fn a_reload_that_changes_nothing_leaves_a_scrolled_sidebar_where_it_was() 
 #[tokio::test]
 async fn a_tab_drag_released_after_a_reload_in_the_same_batch_moves_the_tab() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None, None, None])]));
+    surface.update(spaces(&[(None, &[None, None, None])]), 0);
     frame(&mut surface, &HashSet::new());
     let (first, plus) = (find(&surface, 0, " 1 ") + 1, find(&surface, 0, " + ") + 1);
     point(
@@ -368,7 +375,7 @@ async fn a_tab_drag_released_after_a_reload_in_the_same_batch_moves_the_tab() {
 #[tokio::test]
 async fn a_reload_that_changes_nothing_leaves_a_scrolled_tab_strip_where_it_was() {
     let mut surface = plain(90, 10);
-    surface.update(spaces(&[(None, &[None; 20])]));
+    surface.update(spaces(&[(None, &[None; 20])]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     tap(&mut surface, right, 0);
@@ -390,10 +397,10 @@ fn scrolled_at(cols: u16, status: &str) -> (Surface, String) {
     let config = config(status);
     let mut surface = Surface::new(
         host(cols, 10),
-        Chrome::new(&config),
+        Chrome::new(&config, unheard()),
         Settings::from(&config),
     );
-    surface.update(spaces(&[(None, &[None; 20])]));
+    surface.update(spaces(&[(None, &[None; 20])]), 0);
     frame(&mut surface, &HashSet::new());
     let right = find(&surface, 0, " > ") + 1;
     tap(&mut surface, right, 0);

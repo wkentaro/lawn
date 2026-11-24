@@ -10,7 +10,7 @@ fn three() -> Layout {
 }
 
 fn navigating(mut surface: Surface, layout: Layout) -> Surface {
-    surface.update(layout);
+    surface.update(layout, 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(surface.act(KeybindAction::WorkspacePicker, false), None);
     assert!(surface.navigating());
@@ -20,7 +20,7 @@ fn navigating(mut surface: Surface, layout: Layout) -> Surface {
 #[tokio::test]
 async fn the_workspace_picker_key_enters_navigate_mode_with_the_focused_workspace_selected() {
     let mut surface = plain(120, 30);
-    surface.update(three());
+    surface.update(three(), 0);
     surface.act(KeybindAction::NextWorkspace, false);
     frame(&mut surface, &HashSet::new());
 
@@ -154,7 +154,7 @@ async fn an_offscreen_selection_scrolls_the_workspace_list_into_view() {
 #[tokio::test]
 async fn entering_navigate_mode_scrolls_the_focused_workspace_back_into_the_sidebar() {
     let mut surface = plain(120, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     surface.act(KeybindAction::SwitchWorkspace(11), false);
     frame(&mut surface, &HashSet::new());
@@ -212,7 +212,7 @@ async fn the_cursor_is_hidden_on_the_row_under_the_navigate_bar() {
     let mut surface = dressed(120, 5, |config| {
         config.ui.tab_bar_position = TabBarPositionConfig::Top;
     });
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     let dirty = HashSet::from([id_of(&surface, "t1")]);
     surface.resize(host(120, 2));
@@ -234,7 +234,7 @@ async fn the_cursor_is_hidden_on_the_row_under_the_navigate_bar() {
 #[tokio::test]
 async fn the_cursor_stays_above_the_navigate_bar() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     frame_attaching(&mut surface, &HashSet::new());
     feed(&surface, "t1", b"\x1b[1;3H\x1b[?25h");
     let dirty = HashSet::from([id_of(&surface, "t1")]);
@@ -254,7 +254,7 @@ async fn the_navigate_bar_is_not_redrawn_when_nothing_it_shows_changed() {
     let built = surface.outer.bar().map(|bar| bar.1.as_ptr());
 
     assert!(frame(&mut surface, &HashSet::new()).is_empty());
-    surface.update(three());
+    surface.update(three(), 0);
     frame(&mut surface, &HashSet::new());
     assert_eq!(surface.outer.bar().map(|bar| bar.1.as_ptr()), built);
 
@@ -286,7 +286,7 @@ async fn tabs_under_the_navigate_bar_take_no_clicks_or_wheel() {
 #[tokio::test]
 async fn a_press_on_the_navigate_bar_reaches_no_pane_until_a_frame_takes_the_bar_away() {
     let mut surface = plain(120, 30);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
     surface.act(KeybindAction::WorkspacePicker, false);
     frame(&mut surface, &HashSet::new());
@@ -384,7 +384,7 @@ async fn the_resize_mode_key_in_navigate_mode_ends_navigate_mode_and_the_resize_
 #[tokio::test]
 async fn navigate_mode_over_copy_mode_hides_the_copy_cursor_until_it_ends() {
     let mut surface = plain(120, 30);
-    surface.update(three());
+    surface.update(three(), 0);
     frame_attaching(&mut surface, &HashSet::new());
     surface.enter_copy_mode();
     let cursor = surface.overlays().copy.cursor;
@@ -417,7 +417,7 @@ async fn moving_up_then_down_before_a_frame_keeps_the_final_selection_in_view() 
 #[tokio::test]
 async fn widening_with_the_last_workspace_selected_shows_it_in_the_sidebar() {
     let mut surface = plain(64, 12);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     tap(&mut surface, 58, 1);
     for _ in 0..11 {
@@ -444,7 +444,7 @@ async fn a_selected_workspace_closed_by_an_update_vanishes_until_a_move_selects_
 
     let mut closed = three();
     closed.workspaces.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
     assert!(surface.navigating());
     assert!(surface.selection_vanished());
@@ -492,7 +492,7 @@ fn shown_in(surface: &Surface, rows: u16, name: &str) -> bool {
 #[tokio::test]
 async fn the_wheel_scrolls_the_collapsed_list_one_row_at_a_time_within_what_was_drawn() {
     let mut surface = compact(6);
-    surface.update(many(12));
+    surface.update(many(12), 0);
     frame(&mut surface, &HashSet::new());
     let first = compact_rows(&surface, 1);
 
@@ -600,7 +600,7 @@ async fn with_the_selection_vanished_a_press_on_the_panes_leaves_navigate_mode()
     surface.navigate(Navigation::Move(1));
     let mut closed = three();
     closed.workspaces.remove(1);
-    surface.update(closed);
+    surface.update(closed, 0);
     frame(&mut surface, &HashSet::new());
     assert!(surface.selection_vanished());
 

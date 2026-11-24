@@ -21,13 +21,13 @@ pub(super) struct TabBarDatetimeRuntime {
     format: time::format_description::OwnedFormatItem,
 }
 
-pub(super) struct TabBarCommandRuntime {
-    segment_index: usize,
-    command: String,
-    interval: Duration,
-    timeout: Duration,
-    next_run_at: std::time::Instant,
-    task: Option<StatusCommandTask>,
+pub(crate) struct TabBarCommandRuntime {
+    pub(crate) segment_index: usize,
+    pub(crate) command: String,
+    pub(crate) interval: Duration,
+    pub(crate) timeout: Duration,
+    pub(crate) next_run_at: std::time::Instant,
+    pub(crate) task: Option<StatusCommandTask>,
 }
 
 impl Drop for TabBarCommandRuntime {
@@ -381,7 +381,7 @@ async fn read_last_output_line(
     })
 }
 
-struct StatusCommandTask {
+pub(crate) struct StatusCommandTask {
     abort_handle: tokio::task::AbortHandle,
     control: Arc<StatusCommandControl>,
 }
@@ -421,7 +421,7 @@ impl StatusCommandControl {
     }
 }
 
-fn spawn_status_command(
+pub(crate) fn spawn_status_command(
     event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
     generation: u64,
     segment_index: usize,

@@ -36,6 +36,8 @@ pub(crate) struct Created {
     pub(crate) workspace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tab: Option<String>,
+    #[serde(skip)]
+    pub(crate) version: u64,
 }
 
 impl Destination {
@@ -74,6 +76,7 @@ impl Destination {
             terminal: terminal.to_owned(),
             workspace: None,
             tab: None,
+            version: 0,
         };
         match self {
             Self::Workspace { name } => {

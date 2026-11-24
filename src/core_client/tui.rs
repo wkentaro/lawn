@@ -72,6 +72,7 @@ mod unix {
     use std::cell::Cell;
     use std::io;
     use std::path::PathBuf;
+    use std::process::Stdio;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
@@ -84,10 +85,10 @@ mod unix {
     use super::gate::Gate;
     use super::keys::{Keys, Mode, Routed};
     use super::notices::{Effect, Notifying};
-    use super::session::Operation;
+    use super::session::{Operation, Overlay};
     use super::surface::{reloaded, Arrival, Pointed, Settings, Surface};
     use crate::client::terminal_setup::TerminalGuard;
-    use crate::config::{Config, SoundConfig};
+    use crate::config::{Config, CustomCommandAction, CustomCommandKeybind, SoundConfig};
     use crate::core_client::commands::creation_lifecycle;
     use crate::core_client::host::{
         clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
@@ -96,6 +97,7 @@ mod unix {
     use crate::core_client::screen::Screen;
     use crate::core_client::view::{Event, Events, Geometry, View, Wake};
     use crate::core_lifecycle::Lifecycle;
+    use crate::events::AppEvent;
     use crate::hc::Core;
     use crate::input::{KeybindAction, KeybindMatch};
     use crate::layout::PaneId;
@@ -195,33 +197,43 @@ mod unix {
         session: &str,
         operation: Operation,
         cwd: &std::path::Path,
-        started: &mpsc::UnboundedSender<(u64, Option<String>)>,
+        started: &mpsc::UnboundedSender<(u64, Option<(String, u64)>)>,
     ) -> Option<u64> {
         let core = match core {
             Ok(core) => core,
             Err(error) => {
                 warn!(%error, ?operation, "the core is unreachable");
-                if let Operation::Start(request, _) = operation {
+                if let Operation::Start(request, _) | Operation::Overlay(Overlay { request, .. }) =
+                    operation
+                {
                     started.send((request, None)).ok();
                 }
                 return None;
             }
         };
         let lifecycle = || Lifecycle::new(core.clone(), session);
+        let start = |request, destination, argv: &[String], env: &[(String, String)], size| {
+            let report = |error| warn!(%error, session, "recovery failed");
+            let placed = match creation_lifecycle(&core, session, report)
+                .and_then(|lifecycle| lifecycle.start_with_env(destination, cwd, argv, env, size))
+            {
+                Ok(created) => Some((created.terminal, created.version)),
+                Err(error) => {
+                    warn!(%error, "the program did not start");
+                    None
+                }
+            };
+            started.send((request, placed)).ok();
+        };
         match operation {
-            Operation::Start(request, destination) => {
-                let report = |error| warn!(%error, session, "recovery failed");
-                let terminal = match creation_lifecycle(&core, session, report)
-                    .and_then(|lifecycle| lifecycle.start(destination, cwd, &[]))
-                {
-                    Ok(started) => Some(started.terminal),
-                    Err(error) => {
-                        warn!(%error, "the program did not start");
-                        None
-                    }
-                };
-                started.send((request, terminal)).ok();
-            }
+            Operation::Start(request, destination) => start(request, destination, &[], &[], None),
+            Operation::Overlay(overlay) => start(
+                overlay.request,
+                overlay.destination,
+                &overlay.argv,
+                &overlay.env,
+                overlay.size,
+            ),
             Operation::Close(terminals) => {
                 for terminal in terminals {
                     if let Err(error) = lifecycle().close(&terminal) {
@@ -249,6 +261,56 @@ mod unix {
         None
     }
 
+    pub(super) async fn detached(
+        command: String,
+        env: Vec<(String, String)>,
+        cwd: Option<PathBuf>,
+    ) -> io::Result<tokio::process::Child> {
+        tokio::task::spawn_blocking(move || {
+            let mut process = crate::platform::detached_custom_command_process(&command);
+            process
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .envs(env);
+            if let Some(cwd) = cwd.filter(|cwd| cwd.is_dir()) {
+                process.current_dir(cwd);
+            }
+            tokio::process::Command::from(process).spawn()
+        })
+        .await
+        .unwrap_or_else(|error| Err(io::Error::other(error)))
+    }
+
+    fn command(
+        surface: &mut Surface,
+        binding: CustomCommandKeybind,
+        start: impl Fn(&Surface, Operation),
+    ) {
+        let label = binding.label;
+        match binding.action {
+            CustomCommandAction::Shell => {
+                let (env, cwd) = surface.command_env();
+                tokio::spawn(async move {
+                    if let Err(error) = detached(binding.command, env, cwd).await {
+                        warn!(%error, binding = %label, "the custom command did not start");
+                    }
+                });
+            }
+            CustomCommandAction::Pane => match surface.overlay(&binding.command) {
+                Some(operation) => start(surface, operation),
+                None => {
+                    warn!(binding = %label, "the custom command has no focused pane to open beside")
+                }
+            },
+            CustomCommandAction::Popup | CustomCommandAction::PluginAction => warn!(
+                binding = %label,
+                action = ?binding.action,
+                "the core client does not run popup or plugin_action custom commands"
+            ),
+        }
+    }
+
     pub(super) async fn show(
         core: Arc<Core>,
         session: String,
@@ -259,9 +321,11 @@ mod unix {
         mut stop: Stop,
     ) -> io::Result<()> {
         let mut config = Config::load().config;
+        let (statuses_tx, mut statuses) = mpsc::channel(crate::config::MAX_TAB_BAR_RIGHT_ENTRIES);
         let mut surface = Surface::new(
             host,
-            Chrome::new(&config).remembering(super::chrome::preferences_path(&session)),
+            Chrome::new(&config, statuses_tx)
+                .remembering(super::chrome::preferences_path(&session)),
             Settings::from(&config),
         )
         .notifying(Notifying::from_config(&config))
@@ -303,7 +367,7 @@ mod unix {
                 }
             })
         };
-        let run = |surface: &Surface, operation: Operation| {
+        let start = |surface: &Surface, operation: Operation| {
             let cwd = surface
                 .folder(&operation)
                 .unwrap_or_else(|| launched_in.clone());
@@ -316,13 +380,13 @@ mod unix {
                       (operation, effects): (Option<Operation>, Vec<Effect>),
                       sound: &SoundConfig| {
             if let Some(operation) = operation {
-                run(surface, operation);
+                start(surface, operation);
             }
             notify(effects, sound);
         };
         let act = |surface: &mut Surface, action: KeybindAction| {
             if let Some(operation) = surface.act(action, surface.confirms_close()) {
-                run(surface, operation);
+                start(surface, operation);
             }
         };
         loop {
@@ -380,8 +444,16 @@ mod unix {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                Some((request, terminal)) = started.recv() => {
-                    surface.started(request, terminal);
+                Some((request, placed)) = started.recv() => {
+                    surface.started(request, placed);
+                    if surface.needs_frame() {
+                        due.get_or_insert_with(Instant::now);
+                    }
+                }
+                Some(report) = statuses.recv() => {
+                    if let AppEvent::TabBarCommandFinished { generation, segment_index, result } = report {
+                        surface.finished(generation, segment_index, result);
+                    }
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -421,7 +493,7 @@ mod unix {
                                         reload(&mut config, &mut surface, &mut bindings);
                                     }
                                     Some(Pointed::Act(action)) => act(&mut surface, action),
-                                    Some(Pointed::Run(operation)) => run(&surface, operation),
+                                    Some(Pointed::Run(operation)) => start(&surface, operation),
                                     Some(Pointed::Save(edit)) => {
                                         save(edit, &mut config, &mut surface, &mut bindings);
                                     }
@@ -523,7 +595,7 @@ mod unix {
                                     match surface.dialog_key(&key) {
                                         Some(Pointed::Act(action)) => action,
                                         Some(Pointed::Run(operation)) => {
-                                            run(&surface, operation);
+                                            start(&surface, operation);
                                             continue;
                                         }
                                         Some(Pointed::Save(edit)) => {
@@ -535,7 +607,7 @@ mod unix {
                                 }
                                 Routed::Resize(key) => {
                                     if let Some(operation) = surface.resize_key(&key) {
-                                        run(&surface, operation);
+                                        start(&surface, operation);
                                     }
                                     continue;
                                 }
@@ -558,7 +630,10 @@ mod unix {
                                     continue;
                                 }
                                 Routed::Binding(KeybindMatch::Action(action)) => action,
-                                Routed::Binding(KeybindMatch::Command(_)) => continue,
+                                Routed::Binding(KeybindMatch::Command(binding)) => {
+                                    command(&mut surface, binding, start);
+                                    continue;
+                                }
                             };
                             match action {
                                 KeybindAction::Detach => return Ok(()),

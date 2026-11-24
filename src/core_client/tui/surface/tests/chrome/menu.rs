@@ -18,7 +18,7 @@ fn two_spaces() -> Layout {
 
 fn spread_out() -> Surface {
     let mut surface = plain(120, 30);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     frame(&mut surface, &HashSet::new());
     surface
 }
@@ -405,7 +405,7 @@ async fn items_on_a_target_that_left_the_session_do_nothing() {
     for label in ["Rename", "Close"] {
         right(&mut surface, x, 3);
         listed(&mut surface, x, 3);
-        surface.update(gone.clone());
+        surface.update(gone.clone(), 0);
         let index = u16::from(label == "Close");
         assert_eq!(
             point(
@@ -418,14 +418,14 @@ async fn items_on_a_target_that_left_the_session_do_nothing() {
             "{label}"
         );
         assert!(!surface.dialog_open(), "{label}");
-        surface.update(two_spaces());
+        surface.update(two_spaces(), 0);
         frame(&mut surface, &HashSet::new());
     }
     for label in PANE_ITEMS {
         right(&mut surface, other.x + 1, other.y + 1);
         let items = listed(&mut surface, other.x + 1, other.y + 1);
         let row = other.y + 2 + items.iter().position(|item| item == label).expect(label) as u16;
-        surface.update(gone.clone());
+        surface.update(gone.clone(), 0);
         assert_eq!(
             point(
                 &mut surface,
@@ -438,7 +438,7 @@ async fn items_on_a_target_that_left_the_session_do_nothing() {
         );
         assert!(!surface.dialog_open(), "{label}");
         assert!(!surface.session.zoomed(), "{label}");
-        surface.update(two_spaces());
+        surface.update(two_spaces(), 0);
         frame(&mut surface, &HashSet::new());
     }
 }
@@ -471,7 +471,7 @@ async fn the_menu_opens_at_the_click_over_the_undimmed_screen_on_a_pane_border_t
 async fn a_right_click_on_a_pane_that_reports_the_mouse_opens_the_menu_and_sends_the_pane_nothing()
 {
     let mut surface = plain(120, 30);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     for input in inputs.iter_mut() {
@@ -504,7 +504,7 @@ async fn a_right_click_with_the_passthrough_modifier_goes_to_a_pane_that_reports
     surface.configure(
         &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
     );
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     for input in inputs.iter_mut() {
@@ -551,7 +551,7 @@ async fn a_right_click_with_the_passthrough_modifier_opens_the_menu_on_a_pane_th
     surface.configure(
         &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
     );
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let mut inputs = attach_with_input(&mut surface, b"");
     frame(&mut surface, &HashSet::new());
     let other = pane(&surface, "t1");
@@ -573,7 +573,7 @@ async fn a_right_click_with_the_passthrough_modifier_waits_for_a_frame_after_a_r
     surface.configure(
         &toml::from_str("[ui]\nright_click_passthrough_modifier = \"alt\"").expect("config"),
     );
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     for input in inputs.iter_mut() {
@@ -617,7 +617,7 @@ async fn a_right_click_with_the_passthrough_modifier_goes_to_the_pane_in_copy_an
     for resizing in [false, true] {
         let mut surface = plain(120, 30);
         surface.right_click_passthrough = Some(KeyModifiers::ALT);
-        surface.update(two_spaces());
+        surface.update(two_spaces(), 0);
         let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
         match resizing {
             true => {
@@ -648,7 +648,7 @@ async fn a_right_click_with_the_passthrough_modifier_goes_to_the_pane_in_copy_an
 async fn a_right_click_with_the_passthrough_modifier_on_a_mode_bar_reaches_no_pane() {
     let mut surface = surface_with_scrollbars(20, 10, false);
     surface.right_click_passthrough = Some(KeyModifiers::ALT);
-    surface.update(row_of(&terminals(1)));
+    surface.update(row_of(&terminals(1)), 0);
     let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
     surface.act(KeybindAction::EnterResizeMode, false);
     frame(&mut surface, &HashSet::new());
@@ -669,7 +669,7 @@ async fn a_right_click_with_the_passthrough_modifier_on_a_mode_bar_reaches_no_pa
 
     let mut surface = plain(120, 30);
     surface.right_click_passthrough = Some(KeyModifiers::ALT);
-    surface.update(spaces(&[(None, &[None])]));
+    surface.update(spaces(&[(None, &[None])]), 0);
     let mut input = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h").remove(0);
     surface.act(KeybindAction::WorkspacePicker, false);
     frame(&mut surface, &HashSet::new());
@@ -874,7 +874,7 @@ async fn a_kitty_host_is_asked_for_every_key_from_the_menu_until_the_confirmatio
 #[tokio::test]
 async fn enter_picks_only_an_item_the_menu_drew_and_down_stops_at_the_last_drawn_one() {
     let mut surface = plain(120, 8);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     frame(&mut surface, &HashSet::new());
     let other = pane(&surface, "t1");
     let (x, y) = (other.x + 1, other.y + 1);
@@ -906,12 +906,12 @@ async fn a_menu_closes_when_its_target_leaves_the_screen_and_stays_while_it_rema
     let mut surface = spread_out();
     let other = pane(&surface, "t1");
     right(&mut surface, other.x + 1, other.y + 1);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     assert!(surface.dialog_open());
-    surface.update(parked("t1"));
+    surface.update(parked("t1"), 0);
     assert!(!surface.dialog_open());
 
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let x = find(&surface, 0, "logs");
     right(&mut surface, x, 0);
     let moved: Layout = serde_json::from_value(json!({
@@ -926,7 +926,7 @@ async fn a_menu_closes_when_its_target_leaves_the_screen_and_stays_while_it_rema
         ],
     }))
     .expect("layout");
-    surface.update(moved);
+    surface.update(moved, 0);
     assert_eq!(workspace(&surface), "w1");
     assert!(!surface.dialog_open());
 }
@@ -944,7 +944,7 @@ async fn a_pane_menu_closes_when_a_creation_reveals_another_tab() {
     let request = starting(&mut surface);
     let other = pane(&surface, "t1");
     right(&mut surface, other.x + 1, other.y + 1);
-    surface.started(request, Some("t2".to_owned()));
+    surface.started(request, Some(("t2".to_owned(), 0)));
     assert_eq!(tab(&surface), "tab1");
     assert!(!surface.dialog_open());
 }
@@ -959,7 +959,7 @@ async fn swap_acts_with_the_pane_the_menu_showed_as_focused_or_not_at_all() {
         "t4".to_owned(),
     ]))
     .expect("root");
-    surface.update(layout);
+    surface.update(layout, 0);
     let request = starting(&mut surface);
     frame(&mut surface, &HashSet::new());
     let other = pane(&surface, "t1");
@@ -984,7 +984,7 @@ async fn swap_acts_with_the_pane_the_menu_showed_as_focused_or_not_at_all() {
 
     surface.session.focus("t0");
     right(&mut surface, x, y);
-    surface.started(request, Some("t4".to_owned()));
+    surface.started(request, Some(("t4".to_owned(), 0)));
     assert!(surface.needs_frame());
 }
 
@@ -1021,7 +1021,7 @@ async fn a_right_click_in_copy_or_resize_mode_opens_no_menu() {
 #[tokio::test]
 async fn a_right_press_while_a_tab_is_held_reaches_neither_a_menu_nor_the_pane() {
     let mut surface = plain(120, 30);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     let mut inputs = attach_with_input(&mut surface, b"\x1b[?1000h\x1b[?1006h");
     frame(&mut surface, &HashSet::new());
     for input in inputs.iter_mut() {
@@ -1104,7 +1104,7 @@ async fn an_item_a_shorter_screen_no_longer_draws_is_not_picked_by_enter() {
 async fn a_right_press_on_a_target_an_unpainted_update_took_away_opens_no_menu() {
     let mut surface = spread_out();
     let other = pane(&surface, "t1");
-    surface.update(parked("t1"));
+    surface.update(parked("t1"), 0);
     point(
         &mut surface,
         MouseEventKind::Down(MouseButton::Right),
@@ -1118,7 +1118,7 @@ async fn a_right_press_on_a_target_an_unpainted_update_took_away_opens_no_menu()
     let mut layout = two_spaces();
     let logs = layout.workspaces[0].tabs.remove(1);
     layout.workspaces[1].tabs.push(logs);
-    surface.update(layout);
+    surface.update(layout, 0);
     point(&mut surface, MouseEventKind::Down(MouseButton::Right), x, 0);
     assert!(!surface.dialog_open());
 }
@@ -1347,7 +1347,7 @@ async fn the_open_menu_closes_when_the_launcher_goes_away() {
 #[tokio::test]
 async fn on_a_short_terminal_a_second_press_on_the_launcher_closes_the_menu_over_it() {
     let mut surface = plain(120, 5);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     frame(&mut surface, &HashSet::new());
     launch(&mut surface);
     let (_, y) = launcher(&surface);
@@ -1364,7 +1364,7 @@ async fn on_a_short_terminal_a_second_press_on_the_launcher_closes_the_menu_over
 async fn a_press_on_the_launcher_clears_the_pane_selection() {
     let mut surface = plain(120, 30);
     surface.select = crate::core_client::tui::select::Select::new(false);
-    surface.update(spaces(&[(Some("main"), &[None])]));
+    surface.update(spaces(&[(Some("main"), &[None])]), 0);
     attach_with_input(&mut surface, b"hello world");
     frame(&mut surface, &HashSet::new());
     let id = surface.session.focused_id().expect("focused");
@@ -1404,7 +1404,7 @@ async fn in_copy_or_resize_mode_a_press_on_the_launcher_over_new_does_nothing() 
             config.ui.sidebar_min_width = 8;
             config.ui.sidebar_max_width = 8;
         });
-        surface.update(two_spaces());
+        surface.update(two_spaces(), 0);
         frame(&mut surface, &HashSet::new());
         match resizing {
             true => {
@@ -1427,7 +1427,7 @@ async fn in_copy_or_resize_mode_a_press_on_the_launcher_over_new_does_nothing() 
 #[tokio::test]
 async fn a_global_menu_squeezed_to_its_leading_space_picks_nothing() {
     let mut surface = dressed(120, 10, |config| config.ui.mobile_width_threshold = 0);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     frame(&mut surface, &HashSet::new());
     launch(&mut surface);
     Screen::of(&mut surface);
@@ -1447,7 +1447,7 @@ async fn a_global_menu_squeezed_to_its_leading_space_picks_nothing() {
 #[tokio::test]
 async fn a_context_menu_squeezed_to_one_column_still_picks_the_label_it_drew() {
     let mut surface = dressed(120, 10, |config| config.ui.mobile_width_threshold = 0);
-    surface.update(two_spaces());
+    surface.update(two_spaces(), 0);
     frame(&mut surface, &HashSet::new());
     let x = find(&surface, 0, "logs");
     right(&mut surface, x, 0);

@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 use ratatui::layout::Rect;
 
-use super::starts::Starts;
+use super::starts::{Opener, Starts};
 use super::terminals::{Moved, Report, Status, Terminals};
 use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
+use crate::core_lifecycle::Size;
 use crate::input::KeybindAction;
 use crate::layout::{NavDirection, PaneId, PaneInfo, SplitBorder, TileLayout};
 use crate::session_doc::{
@@ -43,6 +44,7 @@ pub(super) struct Tiles {
 #[derive(Debug, PartialEq)]
 pub(super) enum Operation {
     Start(u64, Destination),
+    Overlay(Overlay),
     Close(Vec<String>),
     Park(String),
     Arrange(Arrangement),
@@ -68,6 +70,15 @@ impl Closing {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub(super) struct Overlay {
+    pub(super) request: u64,
+    pub(super) destination: Destination,
+    pub(super) argv: Vec<String>,
+    pub(super) env: Vec<(String, String)>,
+    pub(super) size: Option<Size>,
+}
+
 #[derive(Default)]
 pub(super) struct Session {
     layout: Layout,
@@ -79,6 +90,7 @@ pub(super) struct Session {
     pane_of_tab: HashMap<String, String>,
     previous_of_tab: HashMap<String, String>,
     zoomed: bool,
+    loaded: bool,
     starts: Starts,
     terminals: Terminals,
     #[cfg(test)]
@@ -88,32 +100,41 @@ pub(super) struct Session {
 }
 
 impl Session {
-    pub(super) fn holds(&self, layout: &Layout) -> bool {
-        self.layout == *layout
-    }
-
-    pub(super) fn update(&mut self, layout: Layout) {
-        self.layout = layout;
-        self.places.clear();
-        for (index, workspace) in self.layout.workspaces.iter().enumerate() {
-            for (tab_index, tab) in workspace.tabs.iter().enumerate() {
-                for terminal in tab.root.terminals() {
-                    self.places
-                        .entry(terminal.to_owned())
-                        .or_insert((index, tab_index));
+    pub(super) fn update(&mut self, layout: Layout, version: u64) -> bool {
+        let unchanged = layout == self.layout;
+        self.loaded = true;
+        if !unchanged {
+            self.layout = layout;
+            self.places.clear();
+            for (index, workspace) in self.layout.workspaces.iter().enumerate() {
+                for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                    for terminal in tab.root.terminals() {
+                        self.places
+                            .entry(terminal.to_owned())
+                            .or_insert((index, tab_index));
+                    }
                 }
             }
+            let places = &self.places;
+            self.ids.retain(|terminal, _| places.contains_key(terminal));
         }
-        let places = &self.places;
-        self.ids.retain(|terminal, _| places.contains_key(terminal));
+        let settled = self.starts.laid_out(
+            !unchanged,
+            |terminal| self.layout.owns(terminal),
+            |terminal| locate(&self.layout, terminal),
+            version,
+        );
+        if unchanged && settled.is_empty() {
+            return false;
+        }
+        let back = self.returned(settled.gone);
         let focus = self.reconciled_focus();
         self.set_focus(focus);
-        if let Some(focus) = self
-            .starts
-            .laid_out(|terminal| locate(&self.layout, terminal))
-        {
-            self.move_focus(focus);
+        if let Some(back) = back {
+            self.zoomed = back.zoomed && self.focused() == Some(back.terminal.as_str());
         }
+        self.reveal_started(settled.shown);
+        true
     }
 
     pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {
@@ -249,6 +270,10 @@ impl Session {
         })
     }
 
+    pub(super) fn loaded(&self) -> bool {
+        self.loaded
+    }
+
     pub(super) fn reveal(&mut self, terminal: &str) -> bool {
         locate(&self.layout, terminal).is_some_and(|focus| self.move_focus(focus))
     }
@@ -269,10 +294,71 @@ impl Session {
         self.terminals.folder(terminal)
     }
 
-    pub(super) fn started(&mut self, request: u64, terminal: Option<String>) -> bool {
-        self.starts
-            .started(request, terminal, |terminal| locate(&self.layout, terminal))
-            .is_some_and(|focus| self.move_focus(focus))
+    pub(super) fn started(&mut self, request: u64, placed: Option<(String, u64)>) -> bool {
+        let settled = self.starts.started(
+            request,
+            placed,
+            |terminal| self.layout.owns(terminal),
+            |terminal| locate(&self.layout, terminal),
+        );
+        self.returned(settled.gone);
+        self.reveal_started(settled.shown)
+    }
+
+    fn reveal_started(&mut self, shown: Option<(Focus, bool)>) -> bool {
+        let Some((focus, overlay)) = shown else {
+            return false;
+        };
+        let moved = self.focus.as_ref() != Some(&focus);
+        self.set_focus(Some(focus));
+        let zooms = overlay && !self.zoomed;
+        self.zoomed |= zooms;
+        moved || zooms
+    }
+
+    fn returned(&mut self, gone: Vec<(String, Opener)>) -> Option<Opener> {
+        let focus = self.focus.clone();
+        let mut back = None;
+        for (terminal, opener) in gone {
+            for remembered in self.pane_of_tab.values_mut() {
+                if *remembered == terminal {
+                    remembered.clone_from(&opener.terminal);
+                }
+            }
+            let returns = focus.as_ref().is_some_and(|focus| {
+                focus.terminal.as_ref() == Some(&terminal)
+                    && locate(&self.layout, &opener.terminal)
+                        .is_some_and(|opened| opened.tab == focus.tab)
+            });
+            if returns {
+                back = Some(opener);
+            }
+        }
+        back
+    }
+
+    pub(super) fn overlay(
+        &mut self,
+        argv: Vec<String>,
+        env: Vec<(String, String)>,
+        size: Option<Size>,
+    ) -> Option<Overlay> {
+        let terminal = self.focused()?.to_owned();
+        let request = self.starts.ask(Some(Opener {
+            terminal: terminal.clone(),
+            zoomed: self.zoomed,
+        }));
+        Some(Overlay {
+            request,
+            destination: Destination::Split {
+                beside: terminal,
+                direction: Direction::Right,
+                ratio: 0.5,
+            },
+            argv,
+            env,
+            size,
+        })
     }
 
     pub(super) fn navigate(
@@ -362,7 +448,7 @@ impl Session {
             .and_then(|focus| focus.terminal.as_deref());
         if let Some(destination) = self.destination(beside, action) {
             return Some(Request::Run(Operation::Start(
-                self.starts.ask(),
+                self.starts.ask(None),
                 destination,
             )));
         }
@@ -389,7 +475,7 @@ impl Session {
         }
         if let Some(destination) = self.destination(Some(terminal), action) {
             return Some(Request::Run(Operation::Start(
-                self.starts.ask(),
+                self.starts.ask(None),
                 destination,
             )));
         }
@@ -644,6 +730,7 @@ impl Session {
         if self.focus.as_ref() == Some(&focus) {
             return false;
         }
+        self.starts.moved();
         self.set_focus(Some(focus));
         true
     }
@@ -811,6 +898,11 @@ impl Session {
             })
             .flat_map(|(tiles, _)| tiles)
             .collect()
+    }
+
+    pub(super) fn zoomed_inner(&mut self, area: Rect, chrome: PaneChrome) -> Option<Rect> {
+        let tiles = self.arranged(area, chrome, true).tiles;
+        tiles.first().map(|tile| tile.info.inner_rect)
     }
 
     fn arranged(&mut self, area: Rect, chrome: PaneChrome, zoomed: bool) -> Tiles {

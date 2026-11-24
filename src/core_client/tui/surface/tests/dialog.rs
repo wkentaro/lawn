@@ -15,7 +15,7 @@ const ROWS: u16 = 24;
 
 fn one_pane() -> Surface {
     let mut surface = surface(COLS, ROWS);
-    surface.update(row_of(&terminals(1)));
+    surface.update(row_of(&terminals(1)), 0);
     frame_attaching(&mut surface, &HashSet::new());
     surface
 }
@@ -535,7 +535,7 @@ async fn a_dialog_is_redrawn_only_when_its_state_or_the_host_size_changes() {
     press(&mut surface, KeyCode::Home);
     at(&mut surface, MouseEventKind::Moved, 3, 3);
     assert!(!surface.needs_frame());
-    surface.update(row_of(&terminals(2)));
+    surface.update(row_of(&terminals(2)), 0);
     frame_attaching(&mut surface, &HashSet::new());
     assert_eq!(image(&surface), drawn);
 
@@ -942,6 +942,7 @@ async fn a_named_workspace_or_tab_saved_unchanged_sends_nothing_and_an_unnamed_w
             {"id": "t0", "name": "logs", "root": {"kind": "pane", "terminal": "t0"}},
         ]}]}))
         .expect("layout"),
+        0,
     );
     surface.act(KeybindAction::RenameWorkspace, false);
     assert_eq!(press(&mut surface, KeyCode::Enter), None);
@@ -955,7 +956,7 @@ async fn a_pane_rename_whose_pane_left_the_session_while_open_sends_nothing() {
     surface.act(KeybindAction::RenamePane, false);
     typed(&mut surface, "build");
 
-    surface.update(row_of(&["t1".to_owned()]));
+    surface.update(row_of(&["t1".to_owned()]), 0);
 
     assert!(surface.dialog_open());
     assert_eq!(press(&mut surface, KeyCode::Enter), None);
@@ -1021,7 +1022,7 @@ fn spread() -> Layout {
 
 fn spread_surface() -> Surface {
     let mut surface = surface(COLS, ROWS);
-    surface.update(spread());
+    surface.update(spread(), 0);
     surface
 }
 
@@ -1207,7 +1208,7 @@ async fn a_search_matches_only_the_workspace_and_tab_names_not_the_separator_dra
 
     let mut layout = spread();
     layout.workspaces[0].tabs[1].name = Some("logs/err".to_owned());
-    surface.update(layout);
+    surface.update(layout, 0);
     picking(&mut surface);
     typed(&mut surface, "/");
     assert_eq!(
@@ -1255,7 +1256,7 @@ async fn a_destination_removed_while_the_picker_is_open_keeps_the_picker_open_an
         let new_tab = column_of(&screen, action, "New tab");
         let mut layout = spread();
         layout.workspaces.pop();
-        surface.update(layout);
+        surface.update(layout, 0);
         if repaint {
             screen.show(&mut surface, &HashSet::new());
             assert!(!screen
@@ -1283,7 +1284,7 @@ async fn a_pane_parked_or_gone_while_the_picker_is_open_is_not_moved() {
         } else {
             layout.workspaces[0].tabs[0].root = json_pane("t1");
         }
-        surface.update(layout);
+        surface.update(layout, 0);
         assert_eq!(press(&mut surface, KeyCode::Enter), None, "{parked}");
     }
 }
@@ -1328,7 +1329,7 @@ async fn a_pane_alone_in_an_earlier_tab_moves_to_a_new_tab_at_the_end_of_its_wor
     });
     layout.workspaces[1].tabs[0].root = json_pane("t3");
     layout.workspaces[0].tabs[1].root = json_pane("t4");
-    surface.update(layout);
+    surface.update(layout, 0);
     assert_eq!(surface.session.focused(), Some("t3"));
 
     picking(&mut surface);
@@ -1359,7 +1360,7 @@ async fn focus_follows_the_moved_pane_to_its_new_place() {
     };
     let mut layout = spread();
     assert!(layout.arrange(&arrangement));
-    surface.update(layout);
+    surface.update(layout, 0);
 
     assert_eq!(surface.session.focused(), Some("t0"));
     assert_eq!(surface.session.focused_tab(), Some("tab5"));
@@ -1412,7 +1413,10 @@ async fn a_list_longer_than_the_picker_scrolls_to_keep_the_selection_in_view() {
             ]})
         })
         .collect();
-    surface.update(serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"));
+    surface.update(
+        serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"),
+        0,
+    );
     let mut screen = picking(&mut surface);
     assert!(!screen
         .lines(1..ROWS)
@@ -1434,7 +1438,7 @@ async fn a_list_longer_than_the_picker_scrolls_to_keep_the_selection_in_view() {
 async fn at_120_columns_the_picker_is_a_list_column_wide_and_its_rows_action_and_outside_still_hit()
 {
     let mut surface = surface(120, ROWS);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let mut screen = picking(&mut surface);
     let top = row_with(&screen, " move terminal · 1 ");
     let left_edge = column_of(&screen, top, " move ") - 2;
@@ -1474,7 +1478,7 @@ async fn a_click_picks_the_row_drawn_under_it_even_after_the_rows_change_unseen(
     let logs = row_with(&screen, "└─ logs");
     let mut layout = spread();
     layout.workspaces[0].tabs.pop();
-    surface.update(layout);
+    surface.update(layout, 0);
 
     assert_eq!(
         left(&mut surface, column_of(&screen, logs, "logs"), logs),
@@ -1487,7 +1491,7 @@ async fn a_click_picks_the_row_drawn_under_it_even_after_the_rows_change_unseen(
 #[tokio::test]
 async fn a_picker_too_small_to_draw_its_rows_does_not_move_on_enter() {
     let mut surface = surface(COLS, 7);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let screen = picking(&mut surface);
     row_with(&screen, "Enlarge terminal");
 
@@ -1520,7 +1524,10 @@ async fn a_click_after_scrolling_picks_the_row_drawn_under_it() {
             ]})
         })
         .collect();
-    surface.update(serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"));
+    surface.update(
+        serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"),
+        0,
+    );
     let mut screen = picking(&mut surface);
     let first = row_with(&screen, " /") + 2;
     let unscrolled = screen.line(first);
@@ -1558,7 +1565,7 @@ async fn a_tab_renamed_out_of_the_search_before_repaint_is_not_swapped_for_anoth
         let action = row_with(&screen, " Split right Enter");
         let mut layout = spread();
         layout.workspaces[1].tabs[0].name = Some("deploy".to_owned());
-        surface.update(layout);
+        surface.update(layout, 0);
 
         let sent = if click {
             let column = column_of(&screen, action, "Split right");
@@ -1605,7 +1612,7 @@ fn unnamed_side() -> Surface {
     let mut layout = spread();
     layout.workspaces[1].name = None;
     let mut surface = surface(COLS, ROWS);
-    surface.update(layout);
+    surface.update(layout, 0);
     hears(&mut surface, folders("/srv/app"));
     surface
 }
@@ -1672,7 +1679,7 @@ async fn a_resize_drops_an_open_dialogs_frame_and_hits_while_session_changes_onl
         |surface| {
             let mut layout = spread();
             layout.workspaces[1].name = Some("other".to_owned());
-            surface.update(layout);
+            surface.update(layout, 0);
         },
         |surface| hears(surface, folders("/srv/web")),
         |surface| {
@@ -1773,7 +1780,7 @@ async fn a_tab_list_narrower_than_a_rows_connector_and_first_letter_lists_nothin
 {
     for (cols, lists) in [(11, false), (12, true)] {
         let mut surface = surface(cols, ROWS);
-        surface.update(spread());
+        surface.update(spread(), 0);
         let screen = picking(&mut surface);
         let listed = screen
             .lines(1..ROWS)
@@ -1839,6 +1846,7 @@ async fn a_tab_whose_wide_first_glyph_finds_no_room_beside_its_connector_is_not_
             ]},
         ]}))
         .expect("layout"),
+        0,
     );
     let mut screen = picking(&mut surface);
     down(&mut surface, 1);
@@ -1860,7 +1868,7 @@ async fn a_tab_whose_wide_first_glyph_finds_no_room_beside_its_connector_is_not_
 #[tokio::test]
 async fn a_footer_too_narrow_to_draw_any_of_the_action_takes_no_click() {
     let mut surface = surface(17, ROWS);
-    surface.update(spread());
+    surface.update(spread(), 0);
     let screen = picking(&mut surface);
     let footer = row_with(&screen, "Esc close");
     let inner = column_of(&screen, footer, "Esc close") - 2;
@@ -1886,6 +1894,7 @@ async fn a_tab_name_too_long_to_measure_beside_a_wide_first_glyph_is_not_picked_
             ]},
         ]}))
         .expect("layout"),
+        0,
     );
     let mut screen = picking(&mut surface);
     down(&mut surface, 1);
