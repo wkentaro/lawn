@@ -73,6 +73,7 @@ mod unix {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use crossterm::event::{KeyCode, KeyEventKind};
     use tokio::sync::mpsc;
@@ -85,6 +86,7 @@ mod unix {
     use super::notices::{Effect, Notifying};
     use super::session::Operation;
     use super::surface::{reloaded, Arrival, Pointed, Settings, Surface};
+    use super::terminals::Report;
     use crate::client::terminal_setup::TerminalGuard;
     use crate::config::{Config, SoundConfig};
     use crate::core_client::commands::creation_lifecycle;
@@ -175,6 +177,50 @@ mod unix {
             reload(running, surface, bindings);
         }
         surface.saved(written);
+    }
+
+    fn tend(
+        core: Arc<Core>,
+        session: String,
+        job: impl FnOnce(&Lifecycle) -> Result<(), String> + Send + 'static,
+    ) {
+        tokio::task::spawn_blocking(move || {
+            let tended = connected(core)
+                .map_err(|error| error.to_string())
+                .and_then(|core| job(&Lifecycle::new(core, &session)));
+            if let Err(error) = tended {
+                warn!(%error, session, "the session's agents were not tended");
+            }
+        });
+    }
+
+    fn resumer(
+        core: Arc<Core>,
+        session: String,
+        spacing: Duration,
+    ) -> (
+        std::sync::mpsc::Sender<Option<String>>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (resumes, queue) = std::sync::mpsc::channel::<Option<String>>();
+        let (stop, stopped) = std::sync::mpsc::channel();
+        tokio::task::spawn_blocking(move || {
+            crate::core_lifecycle::drain(
+                queue,
+                crate::core_lifecycle::Pace::new(spacing, stopped),
+                |only, pace| {
+                    let resumed = connected(core.clone())
+                        .map_err(|error| error.to_string())
+                        .and_then(|core| {
+                            Lifecycle::new(core, &session).resume_agents(only.as_deref(), pace)
+                        });
+                    if let Err(error) = resumed {
+                        warn!(%error, session, "the session's agents were not resumed");
+                    }
+                },
+            );
+        });
+        (resumes, stop)
     }
 
     pub(super) fn operations(
@@ -278,6 +324,13 @@ mod unix {
         let mut screen = Screen::default();
         let mut keys = HostKeys::new(guard);
         let mut bindings = Keys::new(surface.keybinds().clone(), keys.erase_is_ctrl_h, keys.kitty);
+        let resumes = config.session.resume_agents_on_restore.then(|| {
+            resumer(
+                core.clone(),
+                session.clone(),
+                Duration::from_millis(config.session.startup_per_agent_delay_ms.into()),
+            )
+        });
         let mut out = io::stdout();
         let mut due = None;
         let mut last_draw = Instant::now();
@@ -300,11 +353,26 @@ mod unix {
             }
             operations.send((operation, cwd)).ok();
         };
-        let settle = |surface: &Surface,
+        let settle = |surface: &mut Surface,
                       (operation, effects): (Option<Operation>, Vec<Effect>),
                       sound: &SoundConfig| {
             if let Some(operation) = operation {
                 run(surface, operation);
+            }
+            for report in surface.tending() {
+                match report {
+                    Report::Resume(only) => {
+                        if let Some((resumes, _)) = &resumes {
+                            resumes.send(only).ok();
+                        }
+                    }
+                    Report::Forget(only) => {
+                        tend(core.clone(), session.clone(), move |lifecycle| {
+                            lifecycle.forget_agents(only.as_deref())
+                        });
+                    }
+                    _ => {}
+                }
             }
             notify(effects, sound);
         };
@@ -353,7 +421,7 @@ mod unix {
                 }
                 () = wait(surface.deadline().map(Instant::from_std)) => {
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
-                    settle(&surface, caught, &config.ui.sound);
+                    settle(&mut surface, caught, &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }
@@ -380,7 +448,7 @@ mod unix {
                     };
                     surface.received(arrival, &mut gate);
                     let caught = surface.caught_up(&mut gate, &mut arrivals, std::time::Instant::now());
-                    settle(&surface, caught, &config.ui.sound);
+                    settle(&mut surface, caught, &config.ui.sound);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }

@@ -507,3 +507,314 @@ fn an_arrangement_that_writes_returns_the_version_it_wrote() {
 
     assert_eq!(written, Ok(Some(lifecycle.store.load().unwrap().version)));
 }
+
+fn wait_for(core: &Core, terminal: &str, kind: &str, then: impl FnOnce()) {
+    wait_until(core, terminal, then, |params| params["type"] == kind);
+}
+
+fn wait_until(
+    core: &Core,
+    terminal: &str,
+    then: impl FnOnce(),
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let mut events = core.subscribe(json!({"terminal": terminal})).unwrap();
+    then();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + EVENT_DEADLINE;
+    let mut pending = Vec::new();
+    loop {
+        let next = runtime
+            .block_on(async { tokio::time::timeout_at(deadline, events.stream.recv()).await });
+        match next {
+            Ok(Some(crate::hc::Stream::Data(bytes))) => pending.extend_from_slice(&bytes),
+            Ok(Some(_)) => {}
+            Ok(None) => panic!("the events of {terminal} ended first"),
+            Err(_) => panic!("{terminal} sent no awaited event within {EVENT_DEADLINE:?}"),
+        }
+        while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let message: Value = serde_json::from_slice(&line).unwrap_or_default();
+            if done(&message["params"]) {
+                return message["params"].clone();
+            }
+        }
+    }
+}
+
+const EVENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn core_with(inherited: &[(&str, &str)]) -> Option<TestCore> {
+    let pinned: Vec<(&str, &str)> = inherited
+        .iter()
+        .copied()
+        .chain([("SHELL", "/bin/sh")])
+        .collect();
+    let previous: Vec<_> = pinned
+        .iter()
+        .map(|(name, value)| {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            (*name, previous)
+        })
+        .collect();
+    let test = TestCore::start();
+    for (name, previous) in previous {
+        match previous {
+            Some(previous) => std::env::set_var(name, previous),
+            None => std::env::remove_var(name),
+        }
+    }
+    test
+}
+
+fn recovered_agent(
+    test: &TestCore,
+    lifecycle: &Lifecycle,
+    word: &str,
+) -> (String, crate::hc::PendingRequest) {
+    let terminal = lifecycle
+        .start(workspace(), Path::new("/tmp"), &["sh".to_owned()])
+        .unwrap()
+        .terminal;
+    let before = record(&test.core, &terminal);
+    let pid = u32::try_from(before["pid"].as_u64().unwrap()).unwrap();
+    let report = json!({
+        "source": "test", "agent": "printer", "reporter_id": "r", "seq": 1, "cwd": "/tmp",
+        "argv": ["printf", "%s-%s\\n", "lawn", word],
+        "program": {"pid": pid, "started_ms": crate::platform::process_start_token(pid)},
+    });
+    test.core
+        .doc_set(
+            &format!("{}-resume-{terminal}", crate::config::app_dir_name()),
+            None,
+            &json!({
+                "schema": 1, "record_only": false, "reports": [report],
+                "terminal": {"address": terminal, "created_ms": before["created_ms"]},
+            }),
+            0,
+        )
+        .unwrap();
+    wait_for(&test.core, &terminal, "restarted", || {
+        crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill)
+    });
+    let printed = test
+        .core
+        .request(
+            "terminal.wait",
+            json!({"terminal": terminal, "output": format!("lawn-{word}")}),
+        )
+        .unwrap();
+    (terminal, printed)
+}
+
+fn typed(test: &TestCore, terminal: &str, line: &str) -> usize {
+    let done = test
+        .core
+        .request(
+            "terminal.wait",
+            json!({"terminal": terminal, "output": "lawn-done"}),
+        )
+        .unwrap();
+    test.core
+        .call(
+            "terminal.send",
+            json!({"terminal": terminal, "text": "printf '%s-%s\\n' lawn done"}),
+        )
+        .unwrap();
+    done.wait(std::time::Duration::from_secs(30)).unwrap();
+    let screen = test
+        .core
+        .call("terminal.read", json!({"terminal": terminal, "lines": 100}))
+        .unwrap();
+    screen["text"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .filter(|text| text.trim() == line)
+        .count()
+}
+
+fn sleeping_pace(spacing: std::time::Duration, mut on_wait: impl FnMut() + Send + 'static) -> Pace {
+    let start = std::time::Instant::now();
+    Pace {
+        spacing,
+        elapsed: Box::new(move || start.elapsed()),
+        wait: Box::new(move |wait| {
+            on_wait();
+            std::thread::sleep(wait);
+            true
+        }),
+    }
+}
+
+#[test]
+fn two_clients_of_one_session_send_resumes_no_closer_than_the_spacing() {
+    let Some(test) = core_with(&[]) else {
+        return;
+    };
+    let spacing = std::time::Duration::from_secs(1);
+    let clients = ["one", "two"].map(|word| {
+        let lifecycle = Lifecycle::new(test.core.clone(), "work");
+        let (terminal, printed) = recovered_agent(&test, &lifecycle, word);
+        (lifecycle, terminal, printed)
+    });
+
+    let arrivals: Vec<std::time::Instant> = std::thread::scope(|scope| {
+        let waiting: Vec<_> = clients
+            .into_iter()
+            .map(|(lifecycle, terminal, printed)| {
+                scope.spawn(move || {
+                    lifecycle
+                        .resume_agents(Some(&terminal), &mut sleeping_pace(spacing, || {}))
+                        .unwrap();
+                });
+                scope.spawn(move || {
+                    printed.wait(std::time::Duration::from_secs(30)).unwrap();
+                    std::time::Instant::now()
+                })
+            })
+            .collect();
+        waiting
+            .into_iter()
+            .map(|arrival| arrival.join().unwrap())
+            .collect()
+    });
+    let gap = arrivals[0].max(arrivals[1]) - arrivals[0].min(arrivals[1]);
+    assert!(gap >= spacing.mul_f32(0.9), "{gap:?}");
+}
+
+#[test]
+fn a_pane_moved_to_another_session_during_the_wait_is_not_claimed() {
+    let Some(test) = core_with(&[]) else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let (terminal, printed) = recovered_agent(&test, &lifecycle, "moved");
+    let pace_name = format!("{}-resume-pace", crate::config::app_dir_name());
+    test.core
+        .doc_set(&pace_name, None, &json!({"work": {"sent": 1}}), 0)
+        .unwrap();
+    let core = test.core.clone();
+    let moving = terminal.clone();
+    let mut waits = 0;
+    let mut pace = sleeping_pace(std::time::Duration::from_millis(1), move || {
+        waits += 1;
+        if waits == 2 {
+            Lifecycle::new(core.clone(), "work").park(&moving).unwrap();
+            Lifecycle::new(core.clone(), "play")
+                .unpark(&moving, None)
+                .unwrap();
+        }
+    });
+    let name = format!("{}-resume-{terminal}", crate::config::app_dir_name());
+    let before = test.core.doc_get(&name, None).unwrap();
+
+    lifecycle.resume_agents(Some(&terminal), &mut pace).unwrap();
+
+    let after = test.core.doc_get(&name, None).unwrap();
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.value["reports"], before.value["reports"]);
+
+    let (_stop, stopped) = std::sync::mpsc::channel();
+    Lifecycle::new(test.core.clone(), "play")
+        .resume_agents(
+            Some(&terminal),
+            &mut Pace::new(std::time::Duration::ZERO, stopped),
+        )
+        .unwrap();
+    printed.wait(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(typed(&test, &terminal, "lawn-moved"), 1);
+}
+
+#[test]
+fn a_recovered_shell_types_the_lost_agents_resume_command_once() {
+    let Some(test) = core_with(&[]) else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let (terminal, printed) = recovered_agent(&test, &lifecycle, "resumed");
+
+    let (requests, queue) = std::sync::mpsc::channel();
+    requests.send(None).unwrap();
+    requests.send(Some(terminal.clone())).unwrap();
+    drop(requests);
+    let (_stop, stopped) = std::sync::mpsc::channel();
+    crate::core_lifecycle::drain(
+        queue,
+        Pace::new(std::time::Duration::ZERO, stopped),
+        |only, pace| {
+            lifecycle.resume_agents(only.as_deref(), pace).unwrap();
+        },
+    );
+    printed.wait(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(typed(&test, &terminal, "lawn-resumed"), 1);
+}
+
+#[test]
+fn an_agent_that_quit_from_a_shown_shell_is_forgotten() {
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    let lifecycle = Lifecycle::new(test.core.clone(), "work");
+    let terminal = lifecycle
+        .start(workspace(), Path::new("/tmp"), &["sh".to_owned()])
+        .unwrap()
+        .terminal;
+    let before = record(&test.core, &terminal);
+    let pid = u32::try_from(before["pid"].as_u64().unwrap()).unwrap();
+    let job = wait_until(
+        &test.core,
+        &terminal,
+        || {
+            test.core
+                .call(
+                    "terminal.send",
+                    json!({"terminal": terminal, "text": "cat"}),
+                )
+                .unwrap();
+        },
+        |params| {
+            params["type"] == "foreground"
+                && params["data"]["pid"]
+                    .as_u64()
+                    .is_some_and(|job| job != u64::from(pid))
+        },
+    )["data"]["pid"]
+        .as_u64()
+        .unwrap();
+    let job = u32::try_from(job).unwrap();
+    let name = format!("{}-resume-{terminal}", crate::config::app_dir_name());
+    let report = json!({
+        "source": "test", "agent": "printer", "reporter_id": "r", "seq": 1, "cwd": "/tmp",
+        "argv": ["printf", "unexpected\\n"],
+        "program": {"pid": pid, "started_ms": crate::platform::process_start_token(pid)},
+        "recorded": 1, "job": job,
+    });
+    test.core
+        .doc_set(
+            &name,
+            None,
+            &json!({
+                "schema": 1, "record_only": false, "reports": [report],
+                "terminal": {"address": terminal, "created_ms": before["created_ms"]},
+            }),
+            0,
+        )
+        .unwrap();
+
+    wait_until(
+        &test.core,
+        &terminal,
+        || crate::platform::signal_processes(&[job], crate::platform::Signal::Kill),
+        |params| params["type"] == "foreground" && params["data"]["pid"] == json!(pid),
+    );
+    lifecycle.forget_agents(Some(&terminal)).unwrap();
+    assert_eq!(
+        test.core.doc_get(&name, None).unwrap().value["reports"],
+        json!([])
+    );
+}

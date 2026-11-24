@@ -91,7 +91,12 @@ impl Session {
         self.layout == *layout
     }
 
-    pub(super) fn update(&mut self, layout: Layout) {
+    pub(super) fn update(&mut self, layout: Layout) -> Vec<String> {
+        let gained = layout
+            .terminals()
+            .filter(|terminal| !self.layout.owns(terminal))
+            .map(str::to_owned)
+            .collect();
         self.layout = layout;
         self.places.clear();
         for (index, workspace) in self.layout.workspaces.iter().enumerate() {
@@ -108,6 +113,7 @@ impl Session {
         let focus = self.reconciled_focus();
         self.set_focus(focus);
         self.reveal_created();
+        gained
     }
 
     pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {

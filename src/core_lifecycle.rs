@@ -1,5 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 
 use serde_json::json;
 
@@ -13,6 +15,11 @@ fn utf8(path: &Path) -> Result<&str, String> {
     path.to_str()
         .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
 }
+
+#[cfg(unix)]
+mod pace;
+#[cfg(unix)]
+pub(crate) use pace::{drain, Pace};
 
 pub(crate) struct Lifecycle {
     core: Arc<Core>,
@@ -156,6 +163,63 @@ impl Lifecycle {
             }
         })?;
         finished
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn resume_agents(&self, only: Option<&str>, pace: &mut Pace) -> Result<(), String> {
+        let layout = self.store.load()?.layout;
+        for terminal in layout
+            .terminals()
+            .filter(|terminal| only.is_none_or(|only| only == *terminal))
+        {
+            if !(pace.wait)(Duration::ZERO) {
+                break;
+            }
+            if let Err(error) = self.resume_agent(terminal, pace) {
+                tracing::warn!(%error, terminal, "the agent did not resume");
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn resume_agent(&self, terminal: &str, pace: &mut Pace) -> Result<(), String> {
+        if !crate::core_resume::pending(&self.core, terminal)? {
+            return Ok(());
+        }
+        let board = pace::CoreBoard(&self.core);
+        pace::with_turn(&board, &self.session, pace, || {
+            if self.still_owns(terminal) {
+                crate::core_resume::resume(&self.core, terminal)
+            } else {
+                Ok(false)
+            }
+        })
+    }
+
+    #[cfg(unix)]
+    fn still_owns(&self, terminal: &str) -> bool {
+        match self.store.load() {
+            Ok(loaded) => loaded.layout.owns(terminal),
+            Err(error) => {
+                tracing::warn!(%error, terminal, "the session layout did not load");
+                false
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn forget_agents(&self, only: Option<&str>) -> Result<(), String> {
+        let layout = self.store.load()?.layout;
+        for terminal in layout
+            .terminals()
+            .filter(|terminal| only.is_none_or(|only| only == *terminal))
+        {
+            if let Err(error) = crate::core_resume::forget(&self.core, terminal) {
+                tracing::warn!(%error, terminal, "the quit agent's resume command stays");
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn close(&self, terminal: &str) -> Result<(), String> {
