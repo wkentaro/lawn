@@ -490,6 +490,30 @@ fn arrange_swaps_a_pane_with_its_shown_neighbour_toward_the_key_and_reports_only
     assert_eq!(layout, before);
 }
 
+#[test]
+fn arrange_swaps_two_shown_panes_of_one_tab_and_refuses_any_other_pair() {
+    let mut layout = one_workspace(split(Direction::Right, pane("a"), pane("b")));
+    layout.add_tab("ws0", None, "c".to_owned());
+    let swapping = |terminal: &str, with: &str| Arrangement::SwapWith {
+        terminal: terminal.to_owned(),
+        with: with.to_owned(),
+    };
+    assert!(layout.arrange(&swapping("a", "b")));
+    assert_eq!(
+        layout.workspaces[0].tabs[0].root,
+        split(Direction::Right, pane("b"), pane("a"))
+    );
+
+    let before = layout.clone();
+    assert!(!layout.arrange(&swapping("a", "c")));
+    assert!(!layout.arrange(&swapping("a", "z")));
+    layout.parked.insert("b".to_owned());
+    assert!(!layout.arrange(&swapping("a", "b")));
+    assert!(!layout.arrange(&swapping("b", "a")));
+    layout.parked.clear();
+    assert_eq!(layout, before);
+}
+
 fn ratios(node: &Node) -> Vec<f32> {
     match node {
         Node::Pane { .. } => Vec::new(),
@@ -654,4 +678,195 @@ fn a_parked_pane_hands_its_border_to_the_pane_shown_beside_it() {
     assert_eq!(layout, before);
     assert!(layout.arrange(&right_ratio("a", "c")));
     assert_eq!(ratios(&layout.workspaces[0].tabs[0].root), [0.3, 0.5]);
+}
+
+fn two_workspaces() -> Layout {
+    let mut layout = named(one_workspace(split(Direction::Right, pane("a"), pane("b"))));
+    layout.add_tab("ws0", None, "c".to_owned());
+    layout.add_workspace(None, "d".to_owned());
+    layout
+}
+
+fn moving(terminal: &str, to: Destination) -> Arrangement {
+    Arrangement::MovePane {
+        terminal: terminal.to_owned(),
+        to,
+        tab: None,
+    }
+}
+
+fn moving_into(terminal: &str, tab: &str, beside: &str) -> Arrangement {
+    Arrangement::MovePane {
+        terminal: terminal.to_owned(),
+        to: Destination::Split {
+            beside: beside.to_owned(),
+            direction: Direction::Right,
+            ratio: 0.5,
+        },
+        tab: Some(tab.to_owned()),
+    }
+}
+
+fn new_tab_in(workspace: &str) -> Destination {
+    Destination::Tab {
+        workspace: Some(workspace.to_owned()),
+        name: None,
+    }
+}
+
+fn valid(layout: &Layout) {
+    let sessions = super::super::Sessions::from([("main".to_owned(), layout.clone())]);
+    super::super::validate(&sessions).expect("valid layout");
+}
+
+#[test]
+fn moving_a_pane_to_a_workspace_appends_it_as_a_new_tab_and_closes_its_gap() {
+    let mut layout = two_workspaces();
+    let to = Destination::Tab {
+        workspace: Some("ws3".to_owned()),
+        name: None,
+    };
+    assert!(layout.arrange(&moving("a", to)));
+    assert_eq!(root(&layout, 0, 0), &pane("b"));
+    assert_eq!(layout.workspaces[0].tabs[0].name.as_deref(), Some("logs"));
+    assert_eq!(layout.workspaces[1].tabs.len(), 2);
+    assert_eq!(root(&layout, 1, 1), &pane("a"));
+    assert_eq!(layout.workspaces[1].tabs[1].name, None);
+    valid(&layout);
+}
+
+#[test]
+fn moving_a_pane_into_a_tab_splits_it_to_the_right_of_the_chosen_pane() {
+    let mut layout = two_workspaces();
+    let to = Destination::Split {
+        beside: "d".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    };
+    assert!(layout.arrange(&moving("b", to)));
+    assert_eq!(root(&layout, 0, 0), &pane("a"));
+    assert_eq!(
+        root(&layout, 1, 0),
+        &split(Direction::Right, pane("d"), pane("b"))
+    );
+    valid(&layout);
+}
+
+#[test]
+fn moving_a_pane_to_a_new_workspace_appends_one_named_as_asked_holding_only_the_pane() {
+    let mut layout = two_workspaces();
+    let to = Destination::Workspace {
+        name: Some("build".to_owned()),
+    };
+    assert!(layout.arrange(&moving("a", to)));
+    assert_eq!(layout.workspaces.len(), 3);
+    let added = &layout.workspaces[2];
+    assert_eq!(added.name.as_deref(), Some("build"));
+    assert_eq!(added.tabs.len(), 1);
+    assert_eq!(root(&layout, 2, 0), &pane("a"));
+    valid(&layout);
+}
+
+#[test]
+fn moving_the_last_pane_of_a_tab_removes_the_tab_and_of_a_workspace_removes_the_workspace() {
+    let mut layout = two_workspaces();
+    let into_d = |terminal: &str| {
+        moving(
+            terminal,
+            Destination::Split {
+                beside: "d".to_owned(),
+                direction: Direction::Right,
+                ratio: 0.5,
+            },
+        )
+    };
+    assert!(layout.arrange(&into_d("c")));
+    assert_eq!(tab_ids(&layout), ["tab1"]);
+    valid(&layout);
+
+    let to_ws0 = || Destination::Tab {
+        workspace: Some("ws0".to_owned()),
+        name: None,
+    };
+    assert!(layout.arrange(&moving("d", to_ws0())));
+    assert_eq!(layout.workspaces.len(), 2);
+    assert!(layout.arrange(&moving("c", to_ws0())));
+    assert_eq!(layout.workspaces.len(), 1);
+    assert_eq!(layout.workspaces[0].id, "ws0");
+    assert_eq!(root(&layout, 0, 1), &pane("d"));
+    assert_eq!(root(&layout, 0, 2), &pane("c"));
+    valid(&layout);
+}
+
+#[test]
+fn a_pane_alone_in_its_tab_sent_to_a_new_tab_of_its_own_workspace_keeps_that_tab_and_moves_it_last()
+{
+    let mut layout = named(one_workspace(pane("a")));
+    let before = layout.clone();
+    assert!(layout.arrange(&moving("a", new_tab_in("ws0"))));
+    assert_eq!(layout, before);
+
+    layout.add_tab("ws0", None, "b".to_owned());
+    let mut ending = layout.clone();
+    ending.workspaces[0].tabs.rotate_left(1);
+    assert!(layout.arrange(&moving("a", new_tab_in("ws0"))));
+    assert_eq!(layout, ending);
+    assert_eq!(layout.workspaces[0].tabs[1].name.as_deref(), Some("logs"));
+    valid(&layout);
+}
+
+#[test]
+fn moving_a_pane_into_a_tab_splits_beside_the_named_pane_only_while_it_is_in_that_tab() {
+    let mut layout = two_workspaces();
+    let d_tab = layout.workspaces[1].tabs[0].id.clone();
+    let c_tab = layout.workspaces[0].tabs[1].id.clone();
+    let before = layout.clone();
+    for refusal in [
+        moving_into("a", &c_tab, "d"),
+        moving_into("a", "tab9", "d"),
+        Arrangement::MovePane {
+            terminal: "a".to_owned(),
+            to: new_tab_in("ws0"),
+            tab: Some(c_tab.clone()),
+        },
+    ] {
+        assert!(!layout.arrange(&refusal), "{refusal:?}");
+        assert_eq!(layout, before, "{refusal:?}");
+    }
+    assert!(layout.arrange(&moving_into("a", &d_tab, "d")));
+    assert_eq!(
+        root(&layout, 1, 0),
+        &split(Direction::Right, pane("d"), pane("a"))
+    );
+}
+
+#[test]
+fn a_parked_departed_or_misplaced_move_changes_nothing_and_reports_nothing_found() {
+    let mut layout = two_workspaces();
+    layout.park("c");
+    let before = layout.clone();
+    let beside = |terminal: &str| Destination::Split {
+        beside: terminal.to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    };
+    let refusals = [
+        moving("c", Destination::Workspace { name: None }),
+        moving("z", Destination::Workspace { name: None }),
+        moving(
+            "a",
+            Destination::Tab {
+                workspace: Some("ws9".to_owned()),
+                name: None,
+            },
+        ),
+        moving("a", beside("c")),
+        moving("a", beside("z")),
+        moving("a", beside("b")),
+        moving("a", beside("a")),
+    ];
+    for refusal in refusals {
+        assert!(!layout.arrange(&refusal), "{refusal:?}");
+        assert_eq!(layout, before, "{refusal:?}");
+    }
 }

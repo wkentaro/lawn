@@ -87,6 +87,15 @@ pub(super) struct Select {
 }
 
 impl Select {
+    #[cfg(test)]
+    pub(super) fn copies_on_select(&self) -> bool {
+        self.on_select
+    }
+
+    pub(super) fn copy_on_select(&mut self, on_select: bool) {
+        self.on_select = on_select;
+    }
+
     pub(super) fn new(on_select: bool) -> Self {
         Self {
             on_select,

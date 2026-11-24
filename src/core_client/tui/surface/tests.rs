@@ -6,16 +6,17 @@ use crossterm::event::{
 use ratatui::layout::Rect;
 use serde_json::{json, Value};
 
-use super::Surface;
+use super::{Settings, Surface};
 use crate::config::Config;
 use crate::config::PaneBordersConfig;
 use crate::config::ToastClipboardPosition;
 use crate::core_client::tui::chrome::Chrome;
+use crate::core_client::tui::dialog::Chosen;
 use crate::core_client::tui::keys::Navigation;
 use crate::core_client::tui::select::Copying;
 use crate::core_client::tui::session::PaneChrome;
 use crate::core_client::tui::terminals::Report;
-use crate::core_client::view::{Geometry, Placing, View};
+use crate::core_client::view::{Geometry, Placing, Scrollback, View};
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::PaneId;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
@@ -85,19 +86,24 @@ fn surface(cols: u16, rows: u16) -> Surface {
 fn surface_with_scrollbars(cols: u16, rows: u16, scrollbars: bool) -> Surface {
     Surface::new(
         host(cols, rows),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: false,
-            outer_borders: true,
-        },
         panes_only(),
-        Palette::catppuccin(),
-        scrollbars,
-        Copying {
-            on_select: true,
-            toast: Some(ToastClipboardPosition::BottomCenter),
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars,
+            copying: Copying {
+                on_select: true,
+                toast: Some(ToastClipboardPosition::BottomCenter),
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     )
 }
 
@@ -262,6 +268,14 @@ fn feed(surface: &Surface, terminal: &str, bytes: &[u8]) {
 
 fn mouse(surface: &mut Surface, event: MouseEvent) -> Option<String> {
     copied_text(surface.mouse(event, std::time::Instant::now()))
+}
+
+fn ran(pointed: Option<super::Pointed>) -> Option<crate::core_client::tui::session::Operation> {
+    match pointed {
+        Some(super::Pointed::Run(operation)) => Some(operation),
+        None => None,
+        other => panic!("{other:?}"),
+    }
 }
 
 fn copied_text(pointed: Option<super::Pointed>) -> Option<String> {
@@ -683,19 +697,24 @@ async fn a_held_pane_keeps_what_it_showed_when_the_host_resizes() {
     );
     let mut surface = Surface::new(
         host(80, 24),
-        PaneChrome {
-            borders: PaneBordersConfig::Off,
-            gaps: false,
-            outer_borders: true,
-        },
         panes_only(),
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: None,
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Off,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: None,
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     );
     surface.update(
         serde_json::from_value(
@@ -728,6 +747,11 @@ fn reports(input: &mut tokio::sync::mpsc::Receiver<bytes::Bytes>) -> Vec<u8> {
     }
     sent
 }
+
+const SCROLLBACK: Scrollback = Scrollback {
+    limit_bytes: 100_000,
+    wheel_lines: 3,
+};
 
 const REPORT_FOCUS: &[u8] = b"\x1b[?1004h";
 

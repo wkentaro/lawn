@@ -115,6 +115,15 @@ impl Node {
         terminals
     }
 
+    pub(crate) fn find_terminal(&self, wanted: &dyn Fn(&str) -> bool) -> Option<&str> {
+        match self {
+            Node::Pane { terminal } => wanted(terminal).then_some(terminal.as_str()),
+            Node::Split { first, second, .. } => first
+                .find_terminal(wanted)
+                .or_else(|| second.find_terminal(wanted)),
+        }
+    }
+
     pub(crate) fn first_terminal(&self) -> &str {
         match self {
             Node::Pane { terminal } => terminal,

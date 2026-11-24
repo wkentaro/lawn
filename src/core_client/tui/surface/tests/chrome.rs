@@ -16,19 +16,24 @@ fn dressed(cols: u16, rows: u16, configure: impl FnOnce(&mut Config)) -> Surface
 fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
     Surface::new(
         host(cols, rows),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: false,
-            outer_borders: true,
-        },
         outer,
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: Some(ToastClipboardPosition::BottomCenter),
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: Some(ToastClipboardPosition::BottomCenter),
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     )
 }
 
@@ -572,7 +577,7 @@ fn point_at(
     match surface.mouse(mouse_at(kind, column, row), now) {
         Some(Pointed::Act(action)) => surface.act(action, false),
         Some(Pointed::Run(operation)) => Some(operation),
-        Some(Pointed::Copied(text)) => unreachable!("{text}"),
+        Some(other @ (Pointed::Copied(_) | Pointed::Save(_))) => unreachable!("{other:?}"),
         None => None,
     }
 }
@@ -1815,8 +1820,11 @@ async fn a_status_for_a_terminal_no_pane_shows_draws_no_frame() {
 }
 
 mod drag;
+mod menu;
 mod mobile;
 mod navigate;
+mod reload;
+mod settings;
 
 #[tokio::test]
 async fn tabs_under_the_resize_bar_take_no_clicks_releases_or_wheel() {

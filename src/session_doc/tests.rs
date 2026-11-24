@@ -42,6 +42,20 @@ fn new_id_counts_up_from_next_id() {
 }
 
 #[test]
+fn finding_a_terminal_walks_depth_first_and_stops_at_the_first_match() {
+    let root = split(split(pane("t1"), pane("t2")), pane("t3"));
+    let asked = std::cell::Cell::new(0);
+    let found = root.find_terminal(&|terminal| {
+        asked.set(asked.get() + 1);
+        terminal != "t1"
+    });
+
+    assert_eq!(found, Some("t2"));
+    assert_eq!(asked.get(), 2);
+    assert_eq!(root.find_terminal(&|_| false), None);
+}
+
+#[test]
 fn terminals_walk_every_tab_depth_first() {
     let mut layout = Layout::default();
     add_workspace(

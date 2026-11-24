@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use ratatui::layout::Rect;
 
@@ -175,6 +176,10 @@ impl Session {
         })
     }
 
+    pub(super) fn parked(&self, terminal: &str) -> bool {
+        self.layout.parked.contains(terminal)
+    }
+
     pub(super) fn look(&mut self, presented: impl Fn(PaneId) -> bool) -> bool {
         self.terminals.see(
             self.ids
@@ -253,6 +258,10 @@ impl Session {
 
     pub(super) fn name(&self, terminal: &str) -> Option<&str> {
         self.terminals.name(terminal)
+    }
+
+    pub(super) fn folder(&self, terminal: &str) -> Option<&PathBuf> {
+        self.terminals.folder(terminal)
     }
 
     pub(super) fn created(&mut self, terminal: String) -> bool {
@@ -368,6 +377,40 @@ impl Session {
             None => self.focus.clone()?,
         };
         self.operation_at(&focus, action, confirm_close)
+    }
+
+    pub(super) fn operation_on(
+        &self,
+        terminal: &str,
+        action: KeybindAction,
+        confirm_close: bool,
+    ) -> Option<Request> {
+        if !self.on_screen(terminal) {
+            return None;
+        }
+        let focus = Focus {
+            terminal: Some(terminal.to_owned()),
+            ..self.focus.clone()?
+        };
+        self.operation_at(&focus, action, confirm_close)
+    }
+
+    pub(super) fn on_screen(&self, terminal: &str) -> bool {
+        self.focus
+            .as_ref()
+            .is_some_and(|focus| self.tiled_in(focus, self.zoomed, terminal))
+    }
+
+    fn tiled_in(&self, focus: &Focus, zoomed: bool, terminal: &str) -> bool {
+        tab(&self.layout, focus).is_some_and(|tab| tab.root.contains(terminal))
+            && self.tiling(focus, zoomed)(terminal)
+    }
+
+    fn tiling<'a>(&'a self, focus: &'a Focus, zoomed: bool) -> impl Fn(&str) -> bool + 'a {
+        move |terminal| {
+            !self.layout.parked.contains(terminal)
+                && (!zoomed || focus.terminal.as_deref() == Some(terminal))
+        }
     }
 
     pub(super) fn confirmed(&self, closing: &Closing) -> Option<Operation> {
@@ -565,29 +608,27 @@ impl Session {
     }
 
     fn landing(&self, workspace: &Workspace, tab: &Tab) -> Focus {
+        Focus {
+            workspace: workspace.id.clone(),
+            tab: tab.id.clone(),
+            terminal: self.tab_pane(tab).map(str::to_owned),
+        }
+    }
+
+    pub(super) fn tab_pane<'a>(&'a self, tab: &'a Tab) -> Option<&'a str> {
         let parked = &self.layout.parked;
-        let terminal = self
-            .pane_of_tab
+        self.pane_of_tab
             .get(&tab.id)
             .map(String::as_str)
             .filter(|terminal| tab.root.contains(terminal) && !parked.contains(*terminal))
             .or_else(|| {
                 tab.root
-                    .terminals()
-                    .into_iter()
-                    .find(|terminal| !parked.contains(*terminal))
-            });
-        Focus {
-            workspace: workspace.id.clone(),
-            tab: tab.id.clone(),
-            terminal: terminal.map(str::to_owned),
-        }
+                    .find_terminal(&|terminal| !parked.contains(terminal))
+            })
     }
 
     fn shown_in(&self, focus: &Focus, terminal: &str) -> bool {
-        Some(terminal) != focus.terminal.as_deref()
-            && self.shows(terminal)
-            && tab(&self.layout, focus).is_some_and(|tab| tab.root.contains(terminal))
+        Some(terminal) != focus.terminal.as_deref() && self.tiled_in(focus, false, terminal)
     }
 
     fn move_focus(&mut self, focus: Focus) -> bool {
@@ -623,7 +664,11 @@ impl Session {
     }
 
     pub(super) fn focused_id(&self) -> Option<PaneId> {
-        self.ids.get(self.focused()?).copied()
+        self.id_of(self.focused()?)
+    }
+
+    pub(super) fn id_of(&self, terminal: &str) -> Option<PaneId> {
+        self.ids.get(terminal).copied()
     }
 
     pub(super) fn focused(&self) -> Option<&str> {
@@ -772,17 +817,13 @@ impl Session {
             return Tiles::default();
         };
         let splits = layout.splits(area);
-        let hidden: Vec<&str> = match zoomed {
-            true => tab
-                .root
+        let hidden: Vec<&str> = {
+            let tiling = self.tiling(&focus, zoomed);
+            tab.root
                 .terminals()
                 .into_iter()
-                .filter(|terminal| {
-                    Some(*terminal) != focus.terminal.as_deref()
-                        && !self.layout.parked.contains(*terminal)
-                })
-                .collect(),
-            false => Vec::new(),
+                .filter(|terminal| !self.layout.parked.contains(*terminal) && !tiling(terminal))
+                .collect()
         };
         let hidden = hidden
             .into_iter()

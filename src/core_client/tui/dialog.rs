@@ -1,4 +1,6 @@
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 
@@ -7,9 +9,18 @@ use crate::config::LiveKeybindConfig;
 use crate::input::{KeybindAction, TerminalKey};
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, CursorState};
-use crate::session_doc::Arrangement;
+use crate::session_doc::{Arrangement, Workspace};
 use crate::ui::text_editor::TextEditor;
 use crate::ui::theme::Palette;
+
+mod menu;
+mod picker;
+mod settings;
+
+pub(super) use menu::{Aim, Item, Menu};
+pub(super) use picker::Move;
+use picker::Target;
+pub(super) use settings::{Chosen, Preferences};
 
 const CLOSE_TITLE: &str = "Close workspace?";
 const WHEEL_ROWS: usize = 3;
@@ -20,6 +31,9 @@ pub(super) enum Dialog {
     Confirm(Closing),
     Help(Help),
     Rename(Rename),
+    Move(Move),
+    Menu(Menu),
+    Settings(Preferences),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,11 +59,20 @@ pub(super) struct Help {
     scroll: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Change {
+    Layout,
+    Names,
+    Folders,
+}
+
 #[derive(Debug, PartialEq)]
 pub(super) enum Outcome {
     Stay,
     Close,
     Accept,
+    Save(crate::config::ConfigEdit<'static>),
+    Preview(usize),
 }
 
 #[derive(Default)]
@@ -61,23 +84,34 @@ struct Hits {
     scrollbar: Rect,
     metrics: Option<ScrollMetrics>,
     max_scroll: usize,
+    rows: Vec<(Rect, Target)>,
+    action: Option<Target>,
+    items: Vec<(Rect, Item)>,
+    tabs: Vec<(Rect, crate::ui::dialog::SettingsSection)>,
+    choices: Vec<(Rect, (crate::ui::dialog::SettingsSection, usize))>,
     cursor: Option<CursorState>,
 }
 
 pub(super) struct Modal {
     dialog: Dialog,
-    image: Option<(Rect, Vec<CellData>)>,
+    frame: Option<(Rect, Vec<CellData>)>,
     hits: Hits,
+    outdated: bool,
     grab: Option<u16>,
+    #[cfg(test)]
+    copies: usize,
 }
 
 impl Modal {
     pub(super) fn new(dialog: Dialog) -> Self {
         Self {
             dialog,
-            image: None,
+            frame: None,
             hits: Hits::default(),
+            outdated: false,
             grab: None,
+            #[cfg(test)]
+            copies: 0,
         }
     }
 
@@ -85,35 +119,82 @@ impl Modal {
         match &self.dialog {
             Dialog::Confirm(closing) => session.confirmed(closing),
             Dialog::Rename(rename) => rename.saved(session),
-            Dialog::Help(_) => None,
+            Dialog::Move(moving) => moving.accepted(session),
+            Dialog::Help(_) | Dialog::Menu(_) | Dialog::Settings(_) => None,
         }
+    }
+
+    pub(super) fn chosen(&self, session: &Session) -> Option<(Aim, Item)> {
+        match (&self.dialog, &self.frame) {
+            (Dialog::Menu(menu), Some(_)) => menu.chosen(session, &self.hits),
+            _ => None,
+        }
+    }
+
+    pub(super) fn saved(&mut self, chosen: &Chosen, written: bool) -> Outcome {
+        self.changing(|dialog, _, _| match dialog {
+            Dialog::Settings(preferences) => preferences.saved(chosen, written),
+            _ => Outcome::Stay,
+        })
+    }
+
+    pub(super) fn restyle(&mut self) {
+        self.outdated = true;
+    }
+
+    pub(super) fn forget(&mut self) {
+        self.frame = None;
+        self.hits = Hits {
+            max_scroll: self.hits.max_scroll,
+            ..Hits::default()
+        };
+        self.grab = None;
+    }
+
+    pub(super) fn session_changed(&mut self, session: &Session, change: Change) -> bool {
+        match &self.dialog {
+            Dialog::Menu(menu) if !menu.on_screen(session) => return false,
+            Dialog::Menu(_) => self.outdated |= change != Change::Folders,
+            Dialog::Move(_) => self.outdated = true,
+            Dialog::Confirm(_) | Dialog::Help(_) | Dialog::Rename(_) | Dialog::Settings(_) => {}
+        }
+        true
     }
 
     pub(super) fn edits(&self) -> bool {
         match &self.dialog {
             Dialog::Help(help) => help.searching,
-            Dialog::Rename(_) => true,
-            Dialog::Confirm(_) => false,
+            Dialog::Rename(_) | Dialog::Move(_) => true,
+            Dialog::Confirm(_) | Dialog::Menu(_) | Dialog::Settings(_) => false,
         }
     }
 
+    pub(super) fn launched(&self) -> bool {
+        matches!(&self.dialog, Dialog::Menu(menu) if menu.launched())
+    }
+
     pub(super) fn stale(&self, host: Rect) -> bool {
-        self.image.as_ref().is_none_or(|(area, _)| *area != host)
+        self.outdated || self.frame.as_ref().is_none_or(|frame| frame.0 != host)
+    }
+
+    #[cfg(test)]
+    pub(super) fn copies(&self) -> usize {
+        self.copies
     }
 
     pub(super) fn redraw(&mut self) {
-        self.image = None;
+        self.outdated = true;
     }
 
     pub(super) fn image(&self) -> Option<&(Rect, Vec<CellData>)> {
-        self.image.as_ref()
+        self.frame.as_ref()
     }
 
     pub(super) fn cursor(&self) -> Option<CursorState> {
         self.hits.cursor.clone()
     }
 
-    pub(super) fn text(&mut self, text: &str) {
+    pub(super) fn text(&mut self, text: &str, session: &Session) {
         self.changing(|dialog, _, _| {
             match dialog {
                 Dialog::Help(help) => {
@@ -124,13 +205,23 @@ impl Modal {
                 Dialog::Rename(rename) => rename.edit(|input| {
                     input.insert(text);
                 }),
-                Dialog::Confirm(_) => {}
+                Dialog::Move(moving) => moving.text(text, session),
+                Dialog::Confirm(_) | Dialog::Menu(_) | Dialog::Settings(_) => {}
             }
             Outcome::Stay
         });
     }
 
-    pub(super) fn key(&mut self, key: &TerminalKey) -> Outcome {
+    pub(super) fn key(
+        &mut self,
+        key: &TerminalKey,
+        keybinds: &LiveKeybindConfig,
+        session: &Session,
+        chosen: &Chosen,
+    ) -> Outcome {
+        if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
+            return Outcome::Stay;
+        }
         self.changing(|dialog, hits, _| match dialog {
             Dialog::Confirm(_) => match key.code {
                 KeyCode::Enter => Outcome::Accept,
@@ -139,10 +230,22 @@ impl Modal {
             },
             Dialog::Help(help) => help.key(key, hits.max_scroll),
             Dialog::Rename(rename) => rename.key(key),
+            Dialog::Move(moving) => moving.key(key, keybinds, session, hits),
+            Dialog::Menu(menu) => menu.key(key, hits),
+            Dialog::Settings(preferences) => preferences.key(key, hits, chosen),
         })
     }
 
-    pub(super) fn mouse(&mut self, event: MouseEvent) -> Outcome {
+    pub(super) fn mouse(
+        &mut self,
+        event: MouseEvent,
+        session: &Session,
+        chosen: &Chosen,
+    ) -> Outcome {
+        let follows = matches!(self.dialog, Dialog::Menu(_));
+        if event.kind == MouseEventKind::Moved && !follows || self.frame.is_none() {
+            return Outcome::Stay;
+        }
         let point = Position::new(event.column, event.row);
         self.changing(|dialog, hits, grab| match dialog {
             Dialog::Confirm(_) => match event.kind {
@@ -164,17 +267,25 @@ impl Modal {
                 MouseEventKind::Down(MouseButton::Left) => Outcome::Close,
                 _ => Outcome::Stay,
             },
+            Dialog::Move(moving) => moving.mouse(event, point, hits, grab, session),
+            Dialog::Menu(menu) => menu.mouse(event, point, hits),
+            Dialog::Settings(preferences) => preferences.mouse(event, point, hits, chosen),
         })
     }
 
     pub(super) fn draw(
         &mut self,
         mut buffer: Buffer,
+        launcher: Option<Rect>,
         keybinds: &LiveKeybindConfig,
+        chosen: &Chosen,
         palette: &Palette,
+        session: &Session,
     ) {
-        crate::ui::dialog::dim_backdrop(&mut buffer);
-        self.hits = match &mut self.dialog {
+        if !matches!(self.dialog, Dialog::Menu(_)) {
+            crate::ui::dialog::dim_backdrop(&mut buffer);
+        }
+        let hits = match &mut self.dialog {
             Dialog::Confirm(closing) => crate::ui::dialog::render_confirm(
                 &mut buffer,
                 CLOSE_TITLE,
@@ -219,6 +330,9 @@ impl Modal {
                         ..Hits::default()
                     })
             }
+            Dialog::Move(moving) => moving.draw(&mut buffer, palette, session),
+            Dialog::Menu(menu) => menu.draw(&mut buffer, launcher, palette, session),
+            Dialog::Settings(preferences) => preferences.draw(&mut buffer, chosen, palette),
         }
         .unwrap_or_default();
         let cells = buffer
@@ -226,7 +340,9 @@ impl Modal {
             .iter()
             .map(CellData::from_ratatui_cell)
             .collect();
-        self.image = Some((buffer.area, cells));
+        self.frame = Some((buffer.area, cells));
+        self.hits = hits;
+        self.outdated = false;
     }
 
     fn changing(
@@ -234,10 +350,12 @@ impl Modal {
         change: impl FnOnce(&mut Dialog, &Hits, &mut Option<u16>) -> Outcome,
     ) -> Outcome {
         let before = self.dialog.clone();
-        let outcome = change(&mut self.dialog, &self.hits, &mut self.grab);
-        if self.dialog != before {
-            self.image = None;
+        #[cfg(test)]
+        {
+            self.copies += 1;
         }
+        let outcome = change(&mut self.dialog, &self.hits, &mut self.grab);
+        self.outdated |= self.dialog != before;
         outcome
     }
 }
@@ -250,21 +368,14 @@ impl Rename {
     ) -> Option<Self> {
         let workspace = session.focused_workspace()?;
         match action {
-            KeybindAction::RenameWorkspace => {
-                let workspace = session
+            KeybindAction::RenameWorkspace => Some(Self::workspace(
+                session,
+                session
                     .workspaces()
                     .iter()
                     .find(|workspace| Some(workspace.id.as_str()) == selected)
-                    .unwrap_or(workspace);
-                let input = TextEditor::new(session.label(workspace), false);
-                Some(Self {
-                    title: "rename workspace",
-                    kept: workspace.name.is_some().then(|| input.as_str().to_owned()),
-                    input,
-                    naming: Naming::Workspace(workspace.id.clone()),
-                    edited: false,
-                })
-            }
+                    .unwrap_or(workspace),
+            )),
             KeybindAction::RenameTab => {
                 let focused = session.focused_tab()?;
                 let (index, tab) = workspace
@@ -281,20 +392,35 @@ impl Rename {
                     edited: false,
                 })
             }
-            KeybindAction::RenamePane => {
-                let terminal = session.focused()?;
-                let name = session.name(terminal);
-                let input = TextEditor::new(name.unwrap_or_default(), name.is_none());
-                Some(Self {
-                    title: "rename pane",
-                    kept: (name.is_none() || !input.is_empty()).then(|| input.as_str().to_owned()),
-                    input,
-                    naming: Naming::Pane(terminal.to_owned()),
-                    edited: false,
-                })
-            }
+            KeybindAction::RenamePane => Self::pane(session, session.focused()?),
             _ => None,
         }
+    }
+
+    pub(super) fn workspace(session: &Session, workspace: &Workspace) -> Self {
+        let input = TextEditor::new(session.label(workspace), false);
+        Self {
+            title: "rename workspace",
+            kept: workspace.name.is_some().then(|| input.as_str().to_owned()),
+            input,
+            naming: Naming::Workspace(workspace.id.clone()),
+            edited: false,
+        }
+    }
+
+    pub(super) fn pane(session: &Session, terminal: &str) -> Option<Self> {
+        if !session.owns(terminal) {
+            return None;
+        }
+        let name = session.name(terminal);
+        let input = TextEditor::new(name.unwrap_or_default(), name.is_none());
+        Some(Self {
+            title: "rename pane",
+            kept: (name.is_none() || !input.is_empty()).then(|| input.as_str().to_owned()),
+            input,
+            naming: Naming::Pane(terminal.to_owned()),
+            edited: false,
+        })
     }
 
     fn key(&mut self, key: &TerminalKey) -> Outcome {

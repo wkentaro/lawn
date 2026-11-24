@@ -845,3 +845,63 @@ fn a_tab_move_asked_before_an_earlier_tab_closes_still_steps_past_its_neighbour(
         .collect();
     assert_eq!(ids, ["t2", "t1", "t3"]);
 }
+
+#[test]
+fn the_tiles_are_exactly_the_terminals_the_session_says_are_on_screen() {
+    let zoomed = |parked: &[&str], focused: &str| {
+        let mut session = Session::default();
+        session.update(two_tabs(parked));
+        session.focus(focused);
+        assert!(navigate(&mut session, KeybindAction::Zoom));
+        session
+    };
+    let focused = |parked: &[&str], focused: &str| {
+        let mut session = Session::default();
+        session.update(two_tabs(parked));
+        session.focus(focused);
+        session
+    };
+    let mut other_tab = focused(&[], "a");
+    navigate(&mut other_tab, KeybindAction::NextTab);
+    let mut other_workspace = focused(&[], "a");
+    navigate(&mut other_workspace, KeybindAction::NextWorkspace);
+    let sessions = [
+        ("split", focused(&[], "a")),
+        ("zoomed", zoomed(&[], "b")),
+        ("parked", focused(&["b"], "a")),
+        ("zoomed beside a parked pane", zoomed(&["b"], "a")),
+        ("another tab", other_tab),
+        ("another workspace", other_workspace),
+    ];
+    for (name, mut session) in sessions {
+        let mut on_screen: Vec<&str> = ["a", "b", "c", "d"]
+            .into_iter()
+            .filter(|terminal| session.on_screen(terminal))
+            .collect();
+        on_screen.sort_unstable();
+        let tiles = session.tiles(AREA, CHROME);
+        let mut tiled: Vec<&str> = tiles
+            .tiles
+            .iter()
+            .map(|tile| tile.terminal.as_str())
+            .collect();
+        tiled.sort_unstable();
+        assert_eq!(tiled, on_screen, "{name}");
+        assert!(!on_screen.is_empty(), "{name}");
+        let mut hidden: Vec<&str> = tiles
+            .hidden
+            .iter()
+            .map(|(_, terminal)| terminal.as_str())
+            .collect();
+        hidden.sort_unstable();
+        let unzoomed = session.arranged(AREA, CHROME, false);
+        let mut beside: Vec<&str> = unzoomed
+            .tiles
+            .iter()
+            .map(|tile| tile.terminal.as_str())
+            .filter(|terminal| !on_screen.contains(terminal))
+            .collect();
+        beside.sort_unstable();
+        assert_eq!(hidden, beside, "{name}");
+    }
+}

@@ -7,6 +7,7 @@ use crate::core_client::tui::surface::Pointed;
 use crate::input::TextCommit;
 use crate::protocol::CursorState;
 use crate::raw_input::RawInputEvent;
+use crate::session_doc::{Arrangement, Destination, Direction};
 use crate::ui::text_editor::TextEditor;
 
 const COLS: u16 = 80;
@@ -26,7 +27,7 @@ fn inner(surface: &Surface) -> Rect {
 }
 
 fn press(surface: &mut Surface, code: KeyCode) -> Option<Operation> {
-    surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE))
+    ran(surface.dialog_key(&TerminalKey::new(code, KeyModifiers::NONE)))
 }
 
 fn typed(surface: &mut Surface, text: &str) {
@@ -1000,4 +1001,897 @@ async fn a_dialog_stays_as_drawn_while_the_copy_cursor_moves_behind_it() {
 
     assert_ne!(surface.painted.copy.cursor, cursor);
     assert!(image(&surface) == drawn);
+}
+
+fn spread() -> Layout {
+    serde_json::from_value(json!({
+        "next_id": 5,
+        "workspaces": [
+            {"id": "w0", "name": "main", "tabs": [
+                {"id": "tab0", "root": balanced(&terminals(2))},
+                {"id": "tab1", "name": "logs", "root": {"kind": "pane", "terminal": "t2"}},
+            ]},
+            {"id": "w1", "name": "side", "tabs": [
+                {"id": "tab2", "name": "build", "root": balanced(&["t3".to_owned(), "t4".to_owned()])},
+            ]},
+        ],
+    }))
+    .expect("layout")
+}
+
+fn spread_surface() -> Surface {
+    let mut surface = surface(COLS, ROWS);
+    surface.update(spread());
+    surface
+}
+
+fn moved(terminal: &str, to: Destination) -> Option<Operation> {
+    Some(Operation::Arrange(Arrangement::MovePane {
+        terminal: terminal.to_owned(),
+        to,
+        tab: None,
+    }))
+}
+
+fn into(terminal: &str, tab: &str, pane: &str) -> Option<Operation> {
+    Some(Operation::Arrange(Arrangement::MovePane {
+        terminal: terminal.to_owned(),
+        to: beside(pane),
+        tab: Some(tab.to_owned()),
+    }))
+}
+
+fn new_tab(workspace: &str) -> Destination {
+    Destination::Tab {
+        workspace: Some(workspace.to_owned()),
+        name: None,
+    }
+}
+
+fn beside(terminal: &str) -> Destination {
+    Destination::Split {
+        beside: terminal.to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    }
+}
+
+fn down(surface: &mut Surface, times: usize) {
+    for _ in 0..times {
+        assert_eq!(press(surface, KeyCode::Down), None);
+    }
+}
+
+fn picking(surface: &mut Surface) -> Screen {
+    let mut screen = Screen::of(surface);
+    assert_eq!(surface.act(KeybindAction::MovePane, false), None);
+    assert!(surface.dialog_open());
+    screen.show(surface, &HashSet::new());
+    screen
+}
+
+#[tokio::test]
+async fn the_move_key_lists_each_workspace_with_its_other_tabs_then_a_new_workspace_under_the_panes_title(
+) {
+    let mut surface = spread_surface();
+    let screen = picking(&mut surface);
+
+    let title = row_with(&screen, " move terminal · 1 ");
+    let rows: Vec<u16> = ["main", "└─ logs", "side", "└─ build", "+ New workspace"]
+        .into_iter()
+        .map(|label| row_with(&screen, label))
+        .collect();
+    assert!(title < rows[0], "{rows:?}");
+    assert!(
+        rows.windows(2).all(|pair| pair[0] + 1 == pair[1]),
+        "{rows:?}"
+    );
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("─ 1")));
+}
+
+#[tokio::test]
+async fn enter_moves_the_pane_to_a_new_tab_into_a_tab_beside_its_focused_pane_or_to_a_new_workspace(
+) {
+    let rows = [
+        (0, moved("t0", new_tab("w0"))),
+        (1, into("t0", "tab1", "t2")),
+        (2, moved("t0", new_tab("w1"))),
+        (3, into("t0", "tab2", "t3")),
+        (4, moved("t0", Destination::Workspace { name: None })),
+        (6, moved("t0", Destination::Workspace { name: None })),
+    ];
+    for (steps, expected) in rows {
+        let mut surface = spread_surface();
+        picking(&mut surface);
+        down(&mut surface, steps);
+        assert_eq!(press(&mut surface, KeyCode::Enter), expected, "{steps}");
+        assert!(!surface.dialog_open());
+    }
+}
+
+#[tokio::test]
+async fn the_picker_steps_with_the_arrows_control_n_and_p_and_pages_and_stops_at_either_end() {
+    let mut surface = spread_surface();
+    picking(&mut surface);
+    let control = |character| TerminalKey::new(KeyCode::Char(character), KeyModifiers::CONTROL);
+    assert_eq!(press(&mut surface, KeyCode::Up), None);
+    assert_eq!(surface.dialog_key(&control('n')), None);
+    assert_eq!(surface.dialog_key(&control('n')), None);
+    assert_eq!(surface.dialog_key(&control('p')), None);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab1", "t2")
+    );
+
+    picking(&mut surface);
+    assert_eq!(press(&mut surface, KeyCode::PageDown), None);
+    assert_eq!(press(&mut surface, KeyCode::PageUp), None);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", new_tab("w0"))
+    );
+}
+
+#[tokio::test]
+async fn a_tab_row_splits_beside_the_pane_that_tab_last_focused() {
+    let mut surface = spread_surface();
+    Screen::of(&mut surface);
+    surface.act(KeybindAction::SwitchWorkspace(1), false);
+    surface.act(KeybindAction::FocusPaneRight, false);
+    assert_eq!(surface.session.focused(), Some("t4"));
+    surface.act(KeybindAction::SwitchWorkspace(0), false);
+
+    picking(&mut surface);
+    down(&mut surface, 3);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t4")
+    );
+}
+
+#[tokio::test]
+async fn a_named_pane_titles_the_picker_and_names_its_new_workspace() {
+    let mut surface = spread_surface();
+    heard_name(&mut surface, "t0", Some("build"));
+    let screen = picking(&mut surface);
+    row_with(&screen, " move build · 1 ");
+
+    down(&mut surface, 4);
+    let name = Some("build".to_owned());
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", Destination::Workspace { name })
+    );
+}
+
+#[tokio::test]
+async fn escape_or_the_move_key_closes_the_picker_and_another_prefixed_key_keeps_it() {
+    let mut surface = spread_surface();
+    let prefix = TerminalKey::new(surface.keybinds.prefix[0].0, surface.keybinds.prefix[0].1);
+    picking(&mut surface);
+    assert_eq!(press(&mut surface, KeyCode::Esc), None);
+    assert!(!surface.dialog_open());
+
+    picking(&mut surface);
+    assert_eq!(surface.dialog_key(&prefix), None);
+    assert_eq!(press(&mut surface, KeyCode::Char('x')), None);
+    assert!(surface.dialog_open());
+    assert_eq!(surface.dialog_key(&prefix), None);
+    assert_eq!(press(&mut surface, KeyCode::Char('m')), None);
+    assert!(!surface.dialog_open());
+
+    picking(&mut surface);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", new_tab("w0"))
+    );
+}
+
+#[tokio::test]
+async fn a_search_matches_only_the_workspace_and_tab_names_not_the_separator_drawn_between_them() {
+    let mut surface = spread_surface();
+    let mut screen = picking(&mut surface);
+    typed(&mut surface, "/");
+    screen.show(&mut surface, &HashSet::new());
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("logs") || line.contains("build")));
+    assert_ne!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab1", "t2")
+    );
+
+    let mut layout = spread();
+    layout.workspaces[0].tabs[1].name = Some("logs/err".to_owned());
+    surface.update(layout);
+    picking(&mut surface);
+    typed(&mut surface, "/");
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab1", "t2")
+    );
+}
+
+#[tokio::test]
+async fn typing_keeps_the_rows_that_match_with_their_workspace_and_selects_the_first_matching_tab()
+{
+    let mut surface = spread_surface();
+    let mut screen = picking(&mut surface);
+    typed(&mut surface, "side bu");
+    screen.show(&mut surface, &HashSet::new());
+    row_with(&screen, "side");
+    row_with(&screen, "└─ build");
+    row_with(&screen, "+ New workspace");
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("logs")));
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t3")
+    );
+
+    picking(&mut surface);
+    typed(&mut surface, "side");
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t3")
+    );
+}
+
+#[tokio::test]
+async fn a_destination_removed_while_the_picker_is_open_keeps_the_picker_open_and_neither_enter_nor_its_footer_action_sends_anything_before_or_after_the_repaint(
+) {
+    for repaint in [true, false] {
+        let mut surface = spread_surface();
+        let mut screen = picking(&mut surface);
+        down(&mut surface, 2);
+        screen.show(&mut surface, &HashSet::new());
+        let action = row_with(&screen, " New tab Enter");
+        let new_tab = column_of(&screen, action, "New tab");
+        let mut layout = spread();
+        layout.workspaces.pop();
+        surface.update(layout);
+        if repaint {
+            screen.show(&mut surface, &HashSet::new());
+            assert!(!screen
+                .lines(1..ROWS)
+                .iter()
+                .any(|line| line.contains("side")));
+        }
+
+        assert_eq!(press(&mut surface, KeyCode::Enter), None, "{repaint}");
+        assert!(surface.dialog_open(), "{repaint}");
+        assert_eq!(left(&mut surface, new_tab, action), None, "{repaint}");
+        assert!(surface.dialog_open(), "{repaint}");
+    }
+}
+
+#[tokio::test]
+async fn a_pane_parked_or_gone_while_the_picker_is_open_is_not_moved() {
+    for parked in [true, false] {
+        let mut surface = spread_surface();
+        picking(&mut surface);
+        down(&mut surface, 2);
+        let mut layout = spread();
+        if parked {
+            layout.parked.insert("t0".to_owned());
+        } else {
+            layout.workspaces[0].tabs[0].root = json_pane("t1");
+        }
+        surface.update(layout);
+        assert_eq!(press(&mut surface, KeyCode::Enter), None, "{parked}");
+    }
+}
+
+fn json_pane(terminal: &str) -> crate::session_doc::Node {
+    crate::session_doc::Node::Pane {
+        terminal: terminal.to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn a_lone_pane_moves_to_a_new_workspace_and_leaves_a_new_tab_where_it_already_is_to_the_edit()
+{
+    let mut surface = one_pane();
+    picking(&mut surface);
+    let Some(Operation::Arrange(arrangement)) = press(&mut surface, KeyCode::Enter) else {
+        panic!("no move");
+    };
+    let mut layout = row_of(&terminals(1));
+    let before = layout.clone();
+    assert!(layout.arrange(&arrangement));
+    assert_eq!(layout, before);
+
+    picking(&mut surface);
+    down(&mut surface, 1);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", Destination::Workspace { name: None })
+    );
+}
+
+#[tokio::test]
+async fn a_pane_alone_in_an_earlier_tab_moves_to_a_new_tab_at_the_end_of_its_workspace() {
+    let mut surface = spread_surface();
+    Screen::of(&mut surface);
+    surface.act(KeybindAction::SwitchWorkspace(1), false);
+    let mut layout = spread();
+    layout.workspaces[1].tabs.push(crate::session_doc::Tab {
+        id: "tab3".to_owned(),
+        name: None,
+        root: json_pane("t5"),
+    });
+    layout.workspaces[1].tabs[0].root = json_pane("t3");
+    layout.workspaces[0].tabs[1].root = json_pane("t4");
+    surface.update(layout);
+    assert_eq!(surface.session.focused(), Some("t3"));
+
+    picking(&mut surface);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t3", new_tab("w1"))
+    );
+}
+
+#[tokio::test]
+async fn a_zoomed_pane_is_not_moved() {
+    let mut surface = spread_surface();
+    Screen::of(&mut surface);
+    surface.act(KeybindAction::Zoom, false);
+    assert!(surface.session.zoomed());
+    picking(&mut surface);
+    down(&mut surface, 2);
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+}
+
+#[tokio::test]
+async fn focus_follows_the_moved_pane_to_its_new_place() {
+    let mut surface = spread_surface();
+    picking(&mut surface);
+    down(&mut surface, 2);
+    let Some(Operation::Arrange(arrangement)) = press(&mut surface, KeyCode::Enter) else {
+        panic!("no move");
+    };
+    let mut layout = spread();
+    assert!(layout.arrange(&arrangement));
+    surface.update(layout);
+
+    assert_eq!(surface.session.focused(), Some("t0"));
+    assert_eq!(surface.session.focused_tab(), Some("tab5"));
+}
+
+#[tokio::test]
+async fn a_click_selects_a_row_its_action_moves_there_the_wheel_steps_and_outside_closes() {
+    let mut surface = spread_surface();
+    let mut screen = picking(&mut surface);
+    let logs = row_with(&screen, "└─ logs");
+    assert_eq!(
+        left(&mut surface, column_of(&screen, logs, "logs"), logs),
+        None
+    );
+    assert!(surface.dialog_open());
+    screen.show(&mut surface, &HashSet::new());
+    let action = row_with(&screen, " Split right Enter");
+    let split = column_of(&screen, action, "Split right");
+    assert_eq!(
+        left(&mut surface, split, action),
+        into("t0", "tab1", "t2").map(Pointed::Run)
+    );
+    assert!(!surface.dialog_open());
+
+    let mut screen = picking(&mut surface);
+    assert_eq!(at(&mut surface, MouseEventKind::ScrollDown, 1, 1), None);
+    screen.show(&mut surface, &HashSet::new());
+    let action = row_with(&screen, " Split right Enter");
+    assert_eq!(
+        left(
+            &mut surface,
+            column_of(&screen, action, "Split right"),
+            action
+        ),
+        into("t0", "tab2", "t3").map(Pointed::Run)
+    );
+
+    picking(&mut surface);
+    assert_eq!(left(&mut surface, 0, 0), None);
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_list_longer_than_the_picker_scrolls_to_keep_the_selection_in_view() {
+    let mut surface = spread_surface();
+    let workspaces: Vec<Value> = (0..12)
+        .map(|index| {
+            json!({"id": format!("w{index}"), "name": format!("ws{index}"), "tabs": [
+                {"id": format!("tab{index}"), "root": {"kind": "pane", "terminal": format!("t{index}")}},
+            ]})
+        })
+        .collect();
+    surface.update(serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"));
+    let mut screen = picking(&mut surface);
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("+ New workspace")));
+
+    for _ in 0..4 {
+        assert_eq!(press(&mut surface, KeyCode::PageDown), None);
+    }
+    screen.show(&mut surface, &HashSet::new());
+    row_with(&screen, "+ New workspace");
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", Destination::Workspace { name: None })
+    );
+}
+
+#[tokio::test]
+async fn at_120_columns_the_picker_is_a_list_column_wide_and_its_rows_action_and_outside_still_hit()
+{
+    let mut surface = surface(120, ROWS);
+    surface.update(spread());
+    let mut screen = picking(&mut surface);
+    let top = row_with(&screen, " move terminal · 1 ");
+    let left_edge = column_of(&screen, top, " move ") - 2;
+    let line: Vec<char> = screen.line(top).chars().collect();
+    assert_eq!(line[usize::from(left_edge)], '┌');
+    let right_edge = (left_edge..120)
+        .find(|x| line[usize::from(*x)] == '┐')
+        .expect("corner");
+    assert_eq!(right_edge - left_edge + 1, 53);
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("Preview")));
+    row_with(&screen, " 2 tabs│");
+
+    let side = row_with(&screen, "side");
+    assert_eq!(
+        left(&mut surface, column_of(&screen, side, "side"), side),
+        None
+    );
+    screen.show(&mut surface, &HashSet::new());
+    let action = row_with(&screen, " New tab Enter");
+    assert_eq!(
+        left(&mut surface, column_of(&screen, action, "New tab"), action),
+        moved("t0", new_tab("w1")).map(Pointed::Run)
+    );
+
+    picking(&mut surface);
+    assert_eq!(left(&mut surface, right_edge + 2, side), None);
+    assert!(!surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_click_picks_the_row_drawn_under_it_even_after_the_rows_change_unseen() {
+    let mut surface = spread_surface();
+    let screen = picking(&mut surface);
+    let logs = row_with(&screen, "└─ logs");
+    let mut layout = spread();
+    layout.workspaces[0].tabs.pop();
+    surface.update(layout);
+
+    assert_eq!(
+        left(&mut surface, column_of(&screen, logs, "logs"), logs),
+        None
+    );
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_picker_too_small_to_draw_its_rows_does_not_move_on_enter() {
+    let mut surface = surface(COLS, 7);
+    surface.update(spread());
+    let screen = picking(&mut surface);
+    row_with(&screen, "Enlarge terminal");
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn pointer_motion_over_the_picker_copies_nothing_and_a_click_copies_it_once() {
+    let mut surface = spread_surface();
+    picking(&mut surface);
+    let copies = |surface: &Surface| surface.dialog.as_ref().map(|modal| modal.copies());
+    let before = copies(&surface);
+    for column in 0..20 {
+        assert_eq!(at(&mut surface, MouseEventKind::Moved, column, 3), None);
+    }
+    assert_eq!(copies(&surface), before);
+    assert_eq!(at(&mut surface, MouseEventKind::ScrollDown, 1, 1), None);
+    assert_eq!(copies(&surface), before.map(|copies| copies + 1));
+}
+
+#[tokio::test]
+async fn a_click_after_scrolling_picks_the_row_drawn_under_it() {
+    let mut surface = spread_surface();
+    let workspaces: Vec<Value> = (0..12)
+        .map(|index| {
+            json!({"id": format!("w{index}"), "name": format!("ws{index}"), "tabs": [
+                {"id": format!("tab{index}"), "name": format!("logs{index}"),
+                 "root": {"kind": "pane", "terminal": format!("t{index}")}},
+            ]})
+        })
+        .collect();
+    surface.update(serde_json::from_value(json!({"workspaces": workspaces})).expect("layout"));
+    let mut screen = picking(&mut surface);
+    let first = row_with(&screen, " /") + 2;
+    let unscrolled = screen.line(first);
+    for _ in 0..4 {
+        assert_eq!(press(&mut surface, KeyCode::PageDown), None);
+    }
+    screen.show(&mut surface, &HashSet::new());
+    let line = screen.line(first);
+    assert_ne!(line, unscrolled);
+    let row = line.split('│').nth(1).expect("row").trim_start();
+    let label = row.split("  ").next().expect("label").trim().to_owned();
+    let index = label.trim_start_matches("└─ ").trim_start_matches("├─ ");
+    let index = index
+        .trim_start_matches("ws")
+        .trim_start_matches("logs")
+        .to_owned();
+    let expected = if label.starts_with("ws") {
+        moved("t0", new_tab(&format!("w{index}")))
+    } else {
+        into("t0", &format!("tab{index}"), &format!("t{index}"))
+    };
+
+    let column = column_of(&screen, first, &label);
+    assert_eq!(left(&mut surface, column, first), None);
+    assert_eq!(press(&mut surface, KeyCode::Enter), expected, "{label}");
+}
+
+#[tokio::test]
+async fn a_tab_renamed_out_of_the_search_before_repaint_is_not_swapped_for_another_row() {
+    for click in [false, true] {
+        let mut surface = spread_surface();
+        let mut screen = picking(&mut surface);
+        typed(&mut surface, "side bu");
+        screen.show(&mut surface, &HashSet::new());
+        let action = row_with(&screen, " Split right Enter");
+        let mut layout = spread();
+        layout.workspaces[1].tabs[0].name = Some("deploy".to_owned());
+        surface.update(layout);
+
+        let sent = if click {
+            let column = column_of(&screen, action, "Split right");
+            left(&mut surface, column, action).and_then(|pointed| match pointed {
+                Pointed::Run(operation) => Some(operation),
+                _ => None,
+            })
+        } else {
+            press(&mut surface, KeyCode::Enter)
+        };
+        assert_eq!(sent, None, "{click}");
+    }
+}
+
+#[tokio::test]
+async fn a_picker_shrunk_until_it_draws_no_rows_does_not_move_on_enter_before_or_after_the_repaint()
+{
+    let mut surface = spread_surface();
+    picking(&mut surface);
+    surface.resize(host(COLS, 4));
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
+
+    Screen::of(&mut surface).show(&mut surface, &HashSet::new());
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_held_prefix_repeating_once_still_lets_the_move_key_close_the_picker() {
+    let mut surface = spread_surface();
+    let prefix = TerminalKey::new(surface.keybinds.prefix[0].0, surface.keybinds.prefix[0].1);
+    picking(&mut surface);
+    assert_eq!(surface.dialog_key(&prefix), None);
+    assert_eq!(
+        surface.dialog_key(&prefix.clone().with_kind(KeyEventKind::Repeat)),
+        None
+    );
+    assert_eq!(press(&mut surface, KeyCode::Char('m')), None);
+    assert!(!surface.dialog_open());
+}
+
+fn unnamed_side() -> Surface {
+    let mut layout = spread();
+    layout.workspaces[1].name = None;
+    let mut surface = surface(COLS, ROWS);
+    surface.update(layout);
+    hears(&mut surface, folders("/srv/app"));
+    surface
+}
+
+fn folders(folder: &str) -> Report {
+    Report::Snapshot {
+        folders: [("t3".to_owned(), folder.into())].into_iter().collect(),
+        statuses: Vec::new(),
+    }
+}
+
+fn hears(surface: &mut Surface, report: Report) {
+    surface.heard(report, std::time::Instant::now());
+}
+
+#[tokio::test]
+async fn a_folder_report_relabels_the_picker_rows_and_search_and_keeps_the_selection() {
+    let mut surface = unnamed_side();
+    let mut screen = picking(&mut surface);
+    row_with(&screen, "app");
+    down(&mut surface, 3);
+
+    hears(
+        &mut surface,
+        Report::Folder("t3".to_owned(), "/srv/app/src".into()),
+    );
+    screen.show(&mut surface, &HashSet::new());
+    row_with(&screen, "src");
+    assert!(!screen
+        .lines(1..ROWS)
+        .iter()
+        .any(|line| line.contains("app")));
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t3")
+    );
+
+    picking(&mut surface);
+    typed(&mut surface, "src");
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t3")
+    );
+}
+
+#[tokio::test]
+async fn a_pane_renamed_while_the_picker_is_open_retitles_it() {
+    let mut surface = spread_surface();
+    let mut screen = picking(&mut surface);
+    row_with(&screen, " move terminal · 1 ");
+    heard_name(&mut surface, "t0", Some("build"));
+    screen.show(&mut surface, &HashSet::new());
+    row_with(&screen, " move build · 1 ");
+}
+
+fn status(state: &str) -> crate::pane::CoreStatus {
+    crate::pane::core_status(&json!({"state": state, "app": "claude"}))
+}
+
+#[tokio::test]
+async fn a_resize_drops_an_open_dialogs_frame_and_hits_while_session_changes_only_ask_the_picker_to_repaint(
+) {
+    let changes: [fn(&mut Surface); 5] = [
+        |surface| {
+            let mut layout = spread();
+            layout.workspaces[1].name = Some("other".to_owned());
+            surface.update(layout);
+        },
+        |surface| hears(surface, folders("/srv/web")),
+        |surface| {
+            hears(
+                surface,
+                Report::Folder("t3".to_owned(), "/srv/app/src".into()),
+            )
+        },
+        |surface| {
+            hears(
+                surface,
+                Report::Names([("t3".to_owned(), "web".to_owned())].into_iter().collect()),
+            )
+        },
+        |surface| heard_name(surface, "t3", Some("api")),
+    ];
+    for (index, change) in changes.iter().enumerate() {
+        let mut surface = unnamed_side();
+        picking(&mut surface);
+        let painted = |surface: &Surface| {
+            surface
+                .dialog
+                .as_ref()
+                .map(|dialog| (dialog.image().is_some(), dialog.cursor().is_some()))
+        };
+        assert_eq!(painted(&surface), Some((true, true)), "{index}");
+        assert!(!surface.needs_frame(), "{index}");
+        change(&mut surface);
+        assert_eq!(painted(&surface), Some((true, true)), "{index}");
+        assert!(surface.needs_frame(), "{index}");
+    }
+
+    let statuses: [fn(&mut Surface); 2] = [
+        |surface| hears(surface, Report::Removed("t3".to_owned())),
+        |surface| hears(surface, Report::Status("t3".to_owned(), status("blocked"))),
+    ];
+    for (index, report) in statuses.iter().enumerate() {
+        let mut surface = unnamed_side();
+        picking(&mut surface);
+        report(&mut surface);
+        let host = surface.host_area();
+        let outdated = surface.dialog.as_ref().map(|dialog| dialog.stale(host));
+        assert_eq!(outdated, Some(false), "status {index}");
+    }
+
+    let (mut surface, _) = helping();
+    let expected = help(0, "", false);
+    surface.resize(host(COLS + 2, ROWS));
+    assert_eq!(
+        surface
+            .dialog
+            .as_ref()
+            .map(|dialog| (dialog.image().is_some(), dialog.cursor().is_some())),
+        Some((false, false))
+    );
+    assert_eq!(left(&mut surface, expected.close.x, expected.close.y), None);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn two_help_scroll_keys_in_one_batch_scroll_two_rows() {
+    let (mut surface, mut screen) = helping();
+    press(&mut surface, KeyCode::Char('j'));
+    press(&mut surface, KeyCode::Char('j'));
+    screen.show(&mut surface, &HashSet::new());
+    let expected = help(2, "", false);
+    assert_eq!(panel(&screen, expected.area), expected.lines);
+}
+
+#[tokio::test]
+async fn a_help_scroll_key_between_a_resize_and_the_next_frame_scrolls_from_where_the_list_was() {
+    let (mut surface, mut screen) = helping();
+    press(&mut surface, KeyCode::Char('j'));
+    press(&mut surface, KeyCode::Char('j'));
+    screen.show(&mut surface, &HashSet::new());
+    surface.resize(host(COLS + 2, ROWS));
+    surface.resize(host(COLS, ROWS));
+    press(&mut surface, KeyCode::Char('j'));
+    screen.show(&mut surface, &HashSet::new());
+    let expected = help(3, "", false);
+    assert_eq!(panel(&screen, expected.area), expected.lines);
+}
+
+#[tokio::test]
+async fn two_wheel_events_in_one_batch_move_the_picker_two_steps() {
+    let mut surface = spread_surface();
+    picking(&mut surface);
+    assert_eq!(at(&mut surface, MouseEventKind::ScrollDown, 1, 1), None);
+    assert_eq!(at(&mut surface, MouseEventKind::ScrollDown, 1, 1), None);
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        moved("t0", Destination::Workspace { name: None })
+    );
+}
+
+#[tokio::test]
+async fn a_tab_list_narrower_than_a_rows_connector_and_first_letter_lists_nothing_and_enter_stays()
+{
+    for (cols, lists) in [(11, false), (12, true)] {
+        let mut surface = surface(cols, ROWS);
+        surface.update(spread());
+        let screen = picking(&mut surface);
+        let listed = screen
+            .lines(1..ROWS)
+            .iter()
+            .any(|line| line.contains("└─ l"));
+        assert_eq!(listed, lists, "{cols}");
+        assert_eq!(
+            press(&mut surface, KeyCode::Enter).is_some(),
+            lists,
+            "{cols}"
+        );
+        assert_eq!(surface.dialog_open(), !lists, "{cols}");
+    }
+}
+
+#[tokio::test]
+async fn a_scrollbar_grab_does_not_outlive_a_resize() {
+    let (mut surface, _) = helping();
+    let top = help(0, "", false);
+    let thumb = crate::ui::scrollbar_thumb(top.metrics, top.scrollbar).expect("thumb");
+    left(&mut surface, top.scrollbar.x, thumb.top);
+    surface.resize(host(COLS, ROWS));
+    let mut screen = Screen::of(&mut surface);
+    screen.show(&mut surface, &HashSet::new());
+    at(
+        &mut surface,
+        MouseEventKind::Drag(MouseButton::Left),
+        top.scrollbar.x,
+        thumb.top + 3,
+    );
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(panel(&screen, top.area), top.lines);
+}
+
+#[tokio::test]
+async fn a_click_before_a_dialogs_first_paint_acts_on_nothing_and_leaves_it_open() {
+    let opens: [fn(&mut Surface); 3] = [
+        |surface| assert_eq!(surface.act(KeybindAction::ClosePane, true), None),
+        |surface| assert_eq!(surface.act(KeybindAction::RenameTab, false), None),
+        |surface| assert_eq!(surface.act(KeybindAction::Help, false), None),
+    ];
+    for (index, open) in opens.iter().enumerate() {
+        let mut surface = one_pane();
+        open(&mut surface);
+        assert!(surface.dialog_open(), "{index}");
+        assert_eq!(left(&mut surface, 0, 0), None, "{index}");
+        assert!(surface.dialog_open(), "{index}");
+    }
+}
+
+#[tokio::test]
+async fn a_tab_whose_wide_first_glyph_finds_no_room_beside_its_connector_is_not_picked_by_enter() {
+    let mut surface = surface(12, 8);
+    surface.update(
+        serde_json::from_value(json!({"workspaces": [
+            {"id": "w0", "name": "main", "tabs": [
+                {"id": "tab0", "root": balanced(&terminals(2))},
+                {"id": "tab1", "name": "開発", "root": {"kind": "pane", "terminal": "t2"}},
+                {"id": "tab2", "name": "logs", "root": {"kind": "pane", "terminal": "t3"}},
+            ]},
+            {"id": "w1", "name": "side", "tabs": [
+                {"id": "tab3", "name": "build", "root": {"kind": "pane", "terminal": "t4"}},
+            ]},
+        ]}))
+        .expect("layout"),
+    );
+    let mut screen = picking(&mut surface);
+    down(&mut surface, 1);
+    screen.show(&mut surface, &HashSet::new());
+    assert!(screen.lines(0..8).iter().any(|line| line.contains("├─")));
+    assert!(!screen.lines(0..8).iter().any(|line| line.contains('開')));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
+
+    down(&mut surface, 1);
+    screen.show(&mut surface, &HashSet::new());
+    assert_eq!(
+        press(&mut surface, KeyCode::Enter),
+        into("t0", "tab2", "t3")
+    );
+}
+
+#[tokio::test]
+async fn a_footer_too_narrow_to_draw_any_of_the_action_takes_no_click() {
+    let mut surface = surface(17, ROWS);
+    surface.update(spread());
+    let screen = picking(&mut surface);
+    let footer = row_with(&screen, "Esc close");
+    let inner = column_of(&screen, footer, "Esc close") - 2;
+    assert_eq!(screen.span(footer, inner - 1..inner + 2), "│  ");
+
+    assert_eq!(left(&mut surface, inner, footer), None);
+    assert!(surface.dialog_open());
+}
+
+#[tokio::test]
+async fn a_tab_name_too_long_to_measure_beside_a_wide_first_glyph_is_not_picked_by_enter() {
+    let mut surface = surface(12, 8);
+    let name = format!("開{}", "a".repeat(65_533));
+    surface.update(
+        serde_json::from_value(json!({"workspaces": [
+            {"id": "w0", "name": "main", "tabs": [
+                {"id": "tab0", "root": balanced(&terminals(2))},
+                {"id": "tab1", "name": name, "root": {"kind": "pane", "terminal": "t2"}},
+                {"id": "tab2", "name": "logs", "root": {"kind": "pane", "terminal": "t3"}},
+            ]},
+            {"id": "w1", "name": "side", "tabs": [
+                {"id": "tab3", "name": "build", "root": {"kind": "pane", "terminal": "t4"}},
+            ]},
+        ]}))
+        .expect("layout"),
+    );
+    let mut screen = picking(&mut surface);
+    down(&mut surface, 1);
+    screen.show(&mut surface, &HashSet::new());
+    assert!(!screen.lines(0..8).iter().any(|line| line.contains('開')));
+
+    assert_eq!(press(&mut surface, KeyCode::Enter), None);
+    assert!(surface.dialog_open());
 }

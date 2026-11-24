@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use time::format_description::OwnedFormatItem;
 
 use self::mobile::{Switcher, Target};
+use super::dialog::Aim;
 use super::session::{Operation, Session};
 use super::surface::Pointed;
 use crate::api::schema::AgentStatus;
@@ -57,6 +58,8 @@ struct Drawn {
     focused_tab: Option<usize>,
     zoomed: bool,
     status: Vec<(String, bool)>,
+    indicators: StatusIndicatorStyle,
+    separator: String,
     tab_statuses: Vec<String>,
     statuses: Vec<AgentStatus>,
     tab_marks: Vec<Option<(AgentStatus, usize)>>,
@@ -95,6 +98,7 @@ struct Hits {
     track: Rect,
     workspaces: Vec<(Rect, usize)>,
     new_workspace: Rect,
+    launcher: Rect,
     tabs: Vec<(Rect, usize)>,
     new_tab: Rect,
     scroll_left: Rect,
@@ -157,9 +161,16 @@ impl Drawn {
         })
     }
 
-    fn tab_widths(&self, indicators: StatusIndicatorStyle) -> impl Iterator<Item = u16> + '_ {
+    fn tab_widths(&self) -> impl Iterator<Item = u16> + '_ {
         self.strip()
-            .map(move |tab| paint::tab_width(&tab, indicators))
+            .map(move |tab| paint::tab_width(&tab, self.indicators))
+    }
+
+    fn tab_space(&self) -> Rect {
+        paint::tab_bar_content_area(
+            self.layout.tab_bar,
+            paint::tab_bar_status_width(self.status(), &self.separator),
+        )
     }
 
     fn rows_like(&self, other: &Drawn, drag: &Drag) -> bool {
@@ -299,6 +310,60 @@ impl Chrome {
         };
         chrome.width = chrome.bounded(chrome.width);
         chrome
+    }
+
+    pub(super) fn configure(&mut self, config: &Config) {
+        let Self {
+            settings,
+            width,
+            default_width,
+            width_manual: _,
+            spaces,
+            indicators,
+            sort,
+            entries,
+            separator,
+            collapsed: _,
+            collapsed_manual: _,
+            divider_click: _,
+            preferences: _,
+            unsaved: _,
+            recheck: _,
+            redraw: _,
+            tab_bar: _,
+            workspace_scroll: _,
+            reveal_selection: _,
+            reveal_focus: _,
+            drawn: _,
+            rows: _,
+            hits: _,
+            press: _,
+            hidden: _,
+            pressed: _,
+            drag: _,
+            navigate: _,
+            navigate_sessions: _,
+            cover: _,
+            reveal: _,
+            bar: _,
+            help,
+        } = Self::new(config);
+        self.settings = settings;
+        self.default_width = default_width;
+        if !self.width_manual {
+            self.width = width;
+        }
+        self.spaces = spaces;
+        self.indicators = indicators;
+        self.sort = sort;
+        self.entries = entries;
+        self.separator = separator;
+        self.help = help;
+        self.redraw = true;
+    }
+
+    pub(super) fn restyle(&mut self) {
+        self.redraw = true;
     }
 
     pub(super) fn remembering(mut self, path: PathBuf) -> Self {
@@ -615,6 +680,26 @@ impl Chrome {
         self.hidden.contains(point) || self.bar.as_ref().is_some_and(|bar| bar.0.contains(point))
     }
 
+    pub(super) fn launcher(&self) -> Option<Rect> {
+        Some(self.hits.launcher).filter(|launcher| !launcher.is_empty())
+    }
+
+    pub(super) fn on_launcher(&self, point: Position) -> bool {
+        self.hits.launcher.contains(point) && !self.covered(point)
+    }
+
+    pub(super) fn pressing(&self) -> bool {
+        self.press.is_some()
+    }
+
+    pub(super) fn aimed(&self, point: Position) -> Option<Aim> {
+        match self.over(point)? {
+            Press::Workspace(id) => Some(Aim::Workspace(id)),
+            Press::Tab(id) => Some(Aim::Tab(id)),
+            Press::Thumb(_) | Press::Width => None,
+        }
+    }
+
     fn over(&self, point: Position) -> Option<Press> {
         if self.covered(point) {
             return None;
@@ -912,12 +997,8 @@ impl Chrome {
             previous.tabs != drawn.tabs
                 || previous.focused_tab != drawn.focused_tab
                 || previous.zoomed != drawn.zoomed
-                || !previous
-                    .tab_widths(self.indicators)
-                    .eq(drawn.tab_widths(self.indicators))
-                || previous.layout.tab_bar.width != drawn.layout.tab_bar.width
-                || paint::tab_bar_status_width(previous.status(), &self.separator)
-                    != paint::tab_bar_status_width(drawn.status(), &self.separator)
+                || !previous.tab_widths().eq(drawn.tab_widths())
+                || previous.tab_space().width != drawn.tab_space().width
         }) {
             self.tab_bar.reveal_focused = true;
         }
@@ -997,6 +1078,8 @@ impl Chrome {
                         .map(|text| (text, false)),
                 })
                 .collect(),
+            indicators: self.indicators,
+            separator: self.separator.clone(),
             tab_statuses: if !mobile {
                 Vec::new()
             } else {
@@ -1296,6 +1379,14 @@ impl Chrome {
             u16::from(list.height > 0),
         );
         paint::put_text(buffer, list.x, footer, list.width, " new", quiet);
+        let launcher = list.width.min(6);
+        self.hits.launcher = Rect::new(
+            list.right() - launcher,
+            footer,
+            launcher,
+            u16::from(list.height > 0),
+        );
+        paint::put_right_text(buffer, list, footer, "menu", quiet);
         if self.settings.sidebar_collapsed_mode != SidebarCollapsedModeConfig::Hidden {
             self.hits.toggle = Rect::new(
                 area.right().saturating_sub(2),
@@ -1414,10 +1505,7 @@ impl Chrome {
         let area = drawn.layout.tab_bar;
         buffer.set_style(area, Style::default().bg(palette.panel_bg));
         let tabs: Vec<_> = drawn.strip().collect();
-        let content = paint::tab_bar_content_area(
-            area,
-            paint::tab_bar_status_width(drawn.status(), &self.separator),
-        );
+        let content = drawn.tab_space();
         let mut hits = Vec::new();
         let outcome = paint::render_tab_strip(
             buffer,

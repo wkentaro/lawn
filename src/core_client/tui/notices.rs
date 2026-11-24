@@ -161,6 +161,14 @@ impl Notices {
         }
     }
 
+    pub(super) fn configure(&mut self, notifying: Notifying) {
+        if notifying.delivery != ToastDelivery::Herdr {
+            self.queued.clear();
+        }
+        self.notifying = Some(notifying);
+        self.shows += 1;
+    }
+
     pub(super) fn position(&self) -> ToastHerdrPosition {
         self.notifying
             .as_ref()

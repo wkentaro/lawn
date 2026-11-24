@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use ratatui::layout::Rect;
 
-use super::{Direction, Layout, Node, Tab, Workspace};
+use super::{Destination, Direction, Layout, Node, Tab, Workspace};
 use crate::layout::NavDirection;
 
 pub(crate) const MIN_RATIO: f32 = 0.1;
@@ -47,6 +47,10 @@ pub(crate) enum Arrangement {
         toward: NavDirection,
         area: Rect,
     },
+    SwapWith {
+        terminal: String,
+        with: String,
+    },
     Resize {
         terminal: String,
         toward: NavDirection,
@@ -57,6 +61,11 @@ pub(crate) enum Arrangement {
         second: String,
         direction: Direction,
         ratio: f32,
+    },
+    MovePane {
+        terminal: String,
+        to: Destination,
+        tab: Option<String>,
     },
 }
 
@@ -111,6 +120,15 @@ impl Layout {
                 }
                 true
             }
+            Arrangement::SwapWith { terminal, with } => {
+                if !self.shows(terminal) || !self.shows(with) {
+                    return false;
+                }
+                tab_mut(&mut self.workspaces, terminal)
+                    .filter(|tab| tab.root.contains(with))
+                    .map(|tab| tab.root.swap(terminal, with))
+                    .is_some()
+            }
             Arrangement::Resize {
                 terminal,
                 toward,
@@ -151,7 +169,62 @@ impl Layout {
                 }
                 true
             }
+            Arrangement::MovePane { terminal, to, tab } => {
+                self.move_pane(terminal, to, tab.as_deref())
+            }
         }
+    }
+
+    #[cfg(any(unix, test))]
+    fn move_pane(&mut self, terminal: &str, to: &Destination, tab: Option<&str>) -> bool {
+        let tabs = || {
+            self.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.tabs.iter())
+        };
+        let lands = match (to, tab) {
+            (Destination::Split { beside, .. }, _)
+                if tabs().any(|tab| tab.root.contains(beside) && tab.root.contains(terminal)) =>
+            {
+                false
+            }
+            (_, None) => true,
+            (Destination::Split { beside, .. }, Some(id)) => {
+                tabs().any(|tab| tab.id == id && tab.root.contains(beside))
+            }
+            (_, Some(_)) => false,
+        };
+        if !lands || !self.shows(terminal) || to.validate(self).is_err() {
+            return false;
+        }
+        if let Destination::Tab {
+            workspace,
+            name: None,
+        } = to
+        {
+            let home = workspace
+                .as_deref()
+                .or_else(|| self.workspaces.first().map(|w| w.id.as_str()))
+                .map(str::to_owned);
+            if let Some(workspace) = self
+                .workspaces
+                .iter_mut()
+                .find(|w| Some(&w.id) == home.as_ref())
+            {
+                let alone = |tab: &Tab| matches!(&tab.root, Node::Pane { terminal: shown } if shown == terminal);
+                if let Some(index) = workspace.tabs.iter().position(alone) {
+                    let tab = workspace.tabs.remove(index);
+                    workspace.tabs.push(tab);
+                    return true;
+                }
+            }
+        }
+        let Some(source) = self.detach(terminal) else {
+            return false;
+        };
+        let placed = to.place(self, terminal).is_ok();
+        self.drop_if_empty(&source);
+        placed
     }
 
     /// Adds a workspace whose one tab shows `terminal`; returns the workspace

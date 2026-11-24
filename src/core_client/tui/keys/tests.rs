@@ -454,6 +454,16 @@ fn in_copy_mode_the_prefix_still_runs_bindings_and_twice_stays_a_copy_command() 
 }
 
 #[test]
+fn in_copy_mode_the_prefix_then_s_opens_settings() {
+    let mut keys = keys();
+    assert_eq!(in_copy_mode(&mut keys, &prefix()), []);
+    assert_eq!(
+        in_copy_mode(&mut keys, &key('s', KeyModifiers::NONE)),
+        [Outcome::Action(KeybindAction::Settings)]
+    );
+}
+
+#[test]
 fn a_held_copy_mode_key_repeats_as_a_command_and_never_reaches_the_pane() {
     let mut keys = keys();
     let down = key('j', KeyModifiers::NONE);
@@ -791,6 +801,16 @@ fn resizing(keys: &mut Keys, key: &TerminalKey) -> Vec<Outcome> {
 }
 
 #[test]
+fn in_resize_mode_the_prefix_then_s_go_to_resizing_and_open_no_settings() {
+    let mut keys = keys();
+    assert_eq!(resizing(&mut keys, &prefix()), [Outcome::Resize]);
+    assert_eq!(
+        resizing(&mut keys, &key('s', KeyModifiers::NONE)),
+        [Outcome::Resize]
+    );
+}
+
+#[test]
 fn in_resize_mode_every_key_and_its_repeats_go_to_resizing_and_none_to_a_pane_or_a_binding() {
     let mut keys = keys();
     let typed = key('j', KeyModifiers::NONE);
@@ -927,4 +947,29 @@ fn characters_typed_with_no_pane_to_take_them_on_a_host_without_releases_leave_n
     }
 
     assert!(keys.leases.is_empty());
+}
+
+#[test]
+fn a_rebind_routes_the_new_bindings_and_still_sends_a_held_key_to_the_pane_that_took_it() {
+    let mut keys = keys();
+    let up = TerminalKey::new(KeyCode::Up, KeyModifiers::NONE);
+    let next = key('n', KeyModifiers::CONTROL);
+    assert_eq!(press_in(&mut keys, &up, left()), [Outcome::Pane(left())]);
+
+    keys.rebind(LiveKeybindConfig {
+        prefix: Config::default().prefix_keys(),
+        keybinds: Keybinds {
+            previous_tab: ActionKeybinds::direct("ctrl+n"),
+            ..Config::default().keybinds()
+        },
+    });
+
+    assert_eq!(
+        press(&mut keys, &next),
+        [Outcome::Action(KeybindAction::PreviousTab)]
+    );
+    assert_eq!(
+        press_in(&mut keys, &up.with_kind(KeyEventKind::Release), right()),
+        [Outcome::Pane(left())]
+    );
 }

@@ -187,19 +187,24 @@ async fn resize_mode_keeps_copy_mode_but_hides_its_cursor_until_it_ends() {
 async fn swapping_picks_the_neighbour_by_the_panes_before_gaps_shrink_them() {
     let mut surface = Surface::new(
         host(COLS, ROWS),
-        PaneChrome {
-            borders: PaneBordersConfig::Off,
-            gaps: true,
-            outer_borders: false,
-        },
         panes_only(),
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: Some(ToastClipboardPosition::BottomCenter),
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Off,
+                gaps: true,
+                outer_borders: false,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: Some(ToastClipboardPosition::BottomCenter),
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     );
     let mut tall: Layout = serde_json::from_value(
         json!({"workspaces": [{"id": "w0", "tabs": [{"id": "t0", "root": {
@@ -222,19 +227,24 @@ async fn swapping_picks_the_neighbour_by_the_panes_before_gaps_shrink_them() {
 fn gapped() -> Surface {
     laid_out(Surface::new(
         host(COLS, ROWS),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: true,
-            outer_borders: true,
-        },
         panes_only(),
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: None,
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: true,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: None,
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     ))
 }
 
@@ -736,19 +746,24 @@ async fn a_split_whose_area_is_empty_across_its_axis_gets_no_ratio_as_when_the_m
 ) {
     let mut surface = laid_out(Surface::new(
         host(COLS, ROWS),
-        PaneChrome {
-            borders: PaneBordersConfig::Auto,
-            gaps: false,
-            outer_borders: true,
-        },
         Chrome::new(&Config::default()),
-        Palette::catppuccin(),
-        true,
-        Copying {
-            on_select: true,
-            toast: None,
+        Settings {
+            chrome: PaneChrome {
+                borders: PaneBordersConfig::Auto,
+                gaps: false,
+                outer_borders: true,
+            },
+            palette: Palette::catppuccin(),
+            scrollbars: true,
+            copying: Copying {
+                on_select: true,
+                toast: None,
+            },
+            keybinds: keybinds(),
+            confirm_close: false,
+            scrollback: SCROLLBACK,
+            chosen: Chosen::from(&Config::default()),
         },
-        keybinds(),
     ));
     let now = std::time::Instant::now();
     let outer = split(&surface, &[]);
