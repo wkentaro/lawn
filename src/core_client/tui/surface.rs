@@ -4,7 +4,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Direction, Position, Rect};
 use ratatui::style::{Modifier, Style};
@@ -61,6 +61,7 @@ struct Gesture {
     pane: PaneId,
     button: MouseButton,
     owner: Owner,
+    unreported: KeyModifiers,
 }
 
 #[derive(Clone, Copy)]
@@ -275,6 +276,7 @@ pub(super) struct Settings {
     pub(super) copying: Copying,
     pub(super) keybinds: LiveKeybindConfig,
     pub(super) confirm_close: bool,
+    pub(super) right_click_passthrough: Option<KeyModifiers>,
     pub(super) scrollback: Scrollback,
     pub(super) chosen: Chosen,
 }
@@ -306,6 +308,7 @@ impl From<&Config> for Settings {
                     keybinds: config.keybinds(),
                 }),
             confirm_close: ui.confirm_close,
+            right_click_passthrough: ui.right_click_passthrough_modifiers(),
             scrollback: Scrollback::from(config),
             chosen: Chosen::from(config),
         }
@@ -391,6 +394,7 @@ pub(super) struct Surface {
     dialog: Option<Modal>,
     confirm_close: bool,
     kitty: bool,
+    right_click_passthrough: Option<KeyModifiers>,
     resizing: bool,
     prefixed: bool,
     keybinds: LiveKeybindConfig,
@@ -419,6 +423,7 @@ impl Surface {
             copying,
             keybinds,
             confirm_close,
+            right_click_passthrough,
             scrollback,
             chosen,
         } = settings;
@@ -448,6 +453,7 @@ impl Surface {
             dialog: None,
             confirm_close,
             kitty: false,
+            right_click_passthrough,
             resizing: false,
             prefixed: false,
             keybinds,
@@ -480,6 +486,7 @@ impl Surface {
             copying,
             keybinds,
             confirm_close,
+            right_click_passthrough,
             scrollback,
             chosen,
         } = Settings::from(config);
@@ -493,6 +500,7 @@ impl Surface {
         self.toast = None;
         self.keybinds = keybinds;
         self.confirm_close = confirm_close;
+        self.right_click_passthrough = right_click_passthrough;
         self.scrollback = scrollback;
         self.notices.configure(Notifying::from_config(config));
         for shown in self.views.values_mut() {
@@ -1430,6 +1438,8 @@ impl Surface {
                     let mut copied = None;
                     match &mut gesture.owner {
                         Owner::Terminal { last } => {
+                            let mut event = event;
+                            event.modifiers.remove(gesture.unreported);
                             if let Some((delivered, _)) = self.to_terminal(gesture.pane, event) {
                                 *last = delivered;
                             }
@@ -1534,6 +1544,9 @@ impl Surface {
             }
             return None;
         }
+        if right && self.pass_right_click(event, point) {
+            return None;
+        }
         if menu {
             if let Some(tile) = self
                 .tiles
@@ -1625,8 +1638,46 @@ impl Surface {
             pane: id,
             button,
             owner,
+            unreported: KeyModifiers::NONE,
         });
         None
+    }
+
+    fn pass_right_click(&mut self, mut event: MouseEvent, point: Position) -> bool {
+        let Some(unreported) = self
+            .right_click_passthrough
+            .filter(|modifiers| *modifiers == event.modifiers)
+        else {
+            return false;
+        };
+        let Some(tile) = self
+            .tiles
+            .tiles
+            .iter()
+            .find(|tile| tile.info.inner_rect.contains(point))
+            .filter(|tile| {
+                self.placed(tile.info.id)
+                    && visible(&self.views, tile.info.id)
+                        .is_some_and(|(_, inner)| inner.contains(point))
+            })
+        else {
+            return false;
+        };
+        let (id, terminal) = (tile.info.id, tile.terminal.clone());
+        event.modifiers.remove(unreported);
+        let Some((last, true)) = self.to_terminal(id, event) else {
+            return false;
+        };
+        if self.session.focus(&terminal) {
+            self.reflow();
+        }
+        self.gesture = Some(Gesture {
+            pane: id,
+            button: MouseButton::Right,
+            owner: Owner::Terminal { last },
+            unreported,
+        });
+        true
     }
 
     fn split_at(&mut self, point: Position) -> Option<Splitting> {

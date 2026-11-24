@@ -31,6 +31,7 @@ fn around(cols: u16, rows: u16, outer: Chrome) -> Surface {
             },
             keybinds: keybinds(),
             confirm_close: false,
+            right_click_passthrough: None,
             scrollback: SCROLLBACK,
             chosen: Chosen::from(&Config::default()),
         },
