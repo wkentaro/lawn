@@ -5,19 +5,33 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 
 use super::{Hits, Outcome};
-use crate::config::{Config, ConfigEdit, StatusIndicatorStyle, THEME_NAMES};
+use crate::config::{Config, ConfigEdit, StatusIndicatorStyle, ToastDelivery, THEME_NAMES};
 use crate::input::TerminalKey;
 use crate::ui::dialog::{normalized_theme_name, SettingsSection};
 use crate::ui::theme::{Palette, ThemeRuntimeConfig};
 
-const SECTIONS: &[SettingsSection] = &[SettingsSection::Theme, SettingsSection::Indicators];
+const SECTIONS: &[SettingsSection] = &[
+    SettingsSection::Theme,
+    SettingsSection::Indicators,
+    SettingsSection::Sound,
+    SettingsSection::Toast,
+];
 const INDICATORS: [StatusIndicatorStyle; 2] =
     [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols];
+const SOUNDS: [bool; 2] = [true, false];
+const TOASTS: [ToastDelivery; 4] = [
+    ToastDelivery::Off,
+    ToastDelivery::Herdr,
+    ToastDelivery::Terminal,
+    ToastDelivery::System,
+];
 
 #[derive(Clone, Debug)]
 pub(in crate::core_client::tui) struct Chosen {
     theme: ThemeRuntimeConfig,
     indicators: StatusIndicatorStyle,
+    sound: bool,
+    toasts: ToastDelivery,
     previewed: Option<usize>,
 }
 
@@ -26,6 +40,8 @@ impl From<&Config> for Chosen {
         Self {
             theme: crate::ui::theme::client_theme_runtime_from_config(config),
             indicators: config.ui.status_indicators,
+            sound: config.ui.sound.enabled,
+            toasts: config.ui.toast.delivery,
             previewed: None,
         }
     }
@@ -62,7 +78,9 @@ impl Chosen {
                 .iter()
                 .position(|name| normalized_theme_name(name) == theme),
             SettingsSection::Indicators => INDICATORS.iter().position(|i| *i == self.indicators),
-            SettingsSection::Sound | SettingsSection::Toast | SettingsSection::Integrations => None,
+            SettingsSection::Sound => SOUNDS.iter().position(|on| *on == self.sound),
+            SettingsSection::Toast => TOASTS.iter().position(|to| *to == self.toasts),
+            SettingsSection::Integrations => None,
         }
     }
 }
@@ -203,7 +221,9 @@ impl Preferences {
         let count = match self.section {
             SettingsSection::Theme => THEME_NAMES.len(),
             SettingsSection::Indicators => INDICATORS.len(),
-            SettingsSection::Sound | SettingsSection::Toast | SettingsSection::Integrations => 1,
+            SettingsSection::Sound => SOUNDS.len(),
+            SettingsSection::Toast => TOASTS.len(),
+            SettingsSection::Integrations => 1,
         };
         self.selected = self
             .selected
@@ -227,7 +247,11 @@ impl Preferences {
             SettingsSection::Indicators => INDICATORS
                 .get(self.selected)
                 .map(|style| ConfigEdit::StatusIndicators(*style)),
-            SettingsSection::Sound | SettingsSection::Toast | SettingsSection::Integrations => None,
+            SettingsSection::Sound => SOUNDS.get(self.selected).map(|on| ConfigEdit::Sound(*on)),
+            SettingsSection::Toast => TOASTS
+                .get(self.selected)
+                .map(|to| ConfigEdit::ToastDelivery(*to)),
+            SettingsSection::Integrations => None,
         };
         match edit {
             Some(edit) if drawn => Outcome::Save(edit),
