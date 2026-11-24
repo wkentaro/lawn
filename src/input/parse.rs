@@ -88,7 +88,8 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
 
     let mut key = TerminalKey::new(code, modifiers)
         .with_kind(kind)
-        .with_layout_key(layout_key);
+        .with_layout_key(layout_key)
+        .with_keypad(codepoint == 57414);
     if let Some(shifted_codepoint) = shifted_codepoint {
         key = key.with_shifted_codepoint(shifted_codepoint);
     }

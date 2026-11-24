@@ -84,6 +84,7 @@ pub struct TerminalKey {
     /// identity, so a press and its release pair exactly even when a modifier
     /// let go first changes which of the two the host report resolves to.
     layout_key: Option<char>,
+    keypad: bool,
     source: KeySource,
 }
 
@@ -99,6 +100,7 @@ impl TerminalKey {
             physical_identity_hint: false,
             windows_dead_key: false,
             layout_key: None,
+            keypad: false,
             source: KeySource::Synthesized,
         }
     }
@@ -110,6 +112,15 @@ impl TerminalKey {
 
     pub(crate) fn layout_key(&self) -> Option<char> {
         self.layout_key
+    }
+
+    pub(crate) fn with_keypad(mut self, keypad: bool) -> Self {
+        self.keypad = keypad;
+        self
+    }
+
+    pub(crate) fn keypad(&self) -> bool {
+        self.keypad
     }
 
     pub fn with_kind(mut self, kind: crossterm::event::KeyEventKind) -> Self {

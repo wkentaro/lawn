@@ -258,7 +258,8 @@ mod unix {
             Chrome::new(&config).remembering(super::chrome::preferences_path(&session)),
             Settings::from(&config),
         )
-        .notifying(Notifying::from_config(&config));
+        .notifying(Notifying::from_config(&config))
+        .on_a_kitty_host(guard.host_escape_disambiguation_active());
         let mouse_capture = Arc::new(AtomicBool::new(true));
         let mut input = read_input(
             guard.take_buffered_host_input(),
@@ -340,10 +341,9 @@ mod unix {
                             attached.send((id, placing.geometry, view)).ok();
                         });
                     }, |id, view| release(&mut bindings, id, view));
+                    follow_key_reporting(surface.wants_all_keys(), &mut keys.all, &mut out)?;
                     screen.present(&mut out, (host.cols, host.rows), rows, cursor)?;
                     gate.drawn();
-                    let all_keys = surface.focused().is_some_and(View::reports_all_keys);
-                    follow_key_reporting(all_keys, &mut keys.all, &mut out)?;
                     last_draw = Instant::now();
                     due = None;
                     if let Some(panes) = surface.presented() {

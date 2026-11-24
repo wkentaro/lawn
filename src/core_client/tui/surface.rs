@@ -384,6 +384,7 @@ pub(super) struct Surface {
     copy: Option<CopyMode>,
     dialog: Option<Modal>,
     confirm_close: bool,
+    kitty: bool,
     resizing: bool,
     prefixed: bool,
     keybinds: LiveKeybindConfig,
@@ -440,6 +441,7 @@ impl Surface {
             copy: None,
             dialog: None,
             confirm_close,
+            kitty: false,
             resizing: false,
             prefixed: false,
             keybinds,
@@ -539,6 +541,11 @@ impl Surface {
 
     pub(super) fn confirms_close(&self) -> bool {
         self.confirm_close
+    }
+
+    pub(super) fn on_a_kitty_host(mut self, kitty: bool) -> Self {
+        self.kitty = kitty;
+        self
     }
 
     #[cfg(test)]
@@ -744,6 +751,15 @@ impl Surface {
         self.dialog.is_some()
     }
 
+    pub(super) fn wants_all_keys(&self) -> bool {
+        self.focused().is_some_and(View::reports_all_keys)
+            || self.kitty
+                && self
+                    .dialog
+                    .as_ref()
+                    .is_some_and(Modal::leads_to_a_confirmation)
+    }
+
     pub(super) fn dialog_input(&mut self, event: &RawInputEvent) -> bool {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
@@ -759,7 +775,11 @@ impl Surface {
     pub(super) fn dialog_key(&mut self, key: &TerminalKey) -> Option<Pointed> {
         let dialog = self.dialog.as_mut()?;
         let outcome = dialog.key(key, &self.keybinds, &self.session, &self.chosen);
-        self.settle(outcome)
+        let pointed = self.settle(outcome);
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.after(key);
+        }
+        pointed
     }
 
     pub(super) fn resizing(&self) -> bool {
@@ -940,6 +960,9 @@ impl Surface {
         } else {
             self.end_gesture(None);
             self.end_drags();
+            if let Some(dialog) = self.dialog.as_mut() {
+                dialog.host_unfocused();
+            }
         }
         self.sync_focus();
     }
