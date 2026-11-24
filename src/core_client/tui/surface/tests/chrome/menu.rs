@@ -162,11 +162,11 @@ async fn a_right_click_on_a_tab_offers_new_rename_and_close_and_focuses_that_tab
     let first = find(&surface, 0, " 1 ") + 1;
     right(&mut surface, first, 0);
     assert_eq!(
-        choose(&mut surface, first, 0, "New tab"),
-        Some(Operation::Start(Destination::Tab {
+        destination(choose(&mut surface, first, 0, "New tab")),
+        Some(Destination::Tab {
             workspace: Some("w0".to_owned()),
             name: None,
-        }))
+        })
     );
     assert_eq!(tab(&surface), "tab0");
 
@@ -217,20 +217,20 @@ async fn pane_items_act_on_the_clicked_pane_and_leave_the_focus_where_it_was() {
     };
     assert_eq!(run("Park"), Some(Operation::Park("t1".to_owned())));
     assert_eq!(
-        run("Split right"),
-        Some(Operation::Start(Destination::Split {
+        destination(run("Split right")),
+        Some(Destination::Split {
             beside: "t1".to_owned(),
             direction: Direction::Right,
             ratio: 0.5,
-        }))
+        })
     );
     assert_eq!(
-        run("Split down"),
-        Some(Operation::Start(Destination::Split {
+        destination(run("Split down")),
+        Some(Destination::Split {
             beside: "t1".to_owned(),
             direction: Direction::Down,
             ratio: 0.5,
-        }))
+        })
     );
     assert_eq!(run("Close pane"), panes(&["t1"]));
     assert_eq!(
@@ -931,12 +931,20 @@ async fn a_menu_closes_when_its_target_leaves_the_screen_and_stays_while_it_rema
     assert!(!surface.dialog_open());
 }
 
+fn starting(surface: &mut Surface) -> u64 {
+    let Some(Operation::Start(request, _)) = surface.act(KeybindAction::SplitVertical, true) else {
+        panic!("a split starts");
+    };
+    request
+}
+
 #[tokio::test]
 async fn a_pane_menu_closes_when_a_creation_reveals_another_tab() {
     let mut surface = spread_out();
+    let request = starting(&mut surface);
     let other = pane(&surface, "t1");
     right(&mut surface, other.x + 1, other.y + 1);
-    surface.created("t2".to_owned());
+    surface.started(request, Some("t2".to_owned()));
     assert_eq!(tab(&surface), "tab1");
     assert!(!surface.dialog_open());
 }
@@ -952,6 +960,7 @@ async fn swap_acts_with_the_pane_the_menu_showed_as_focused_or_not_at_all() {
     ]))
     .expect("root");
     surface.update(layout);
+    let request = starting(&mut surface);
     frame(&mut surface, &HashSet::new());
     let other = pane(&surface, "t1");
     let (x, y) = (other.x + 1, other.y + 1);
@@ -975,7 +984,7 @@ async fn swap_acts_with_the_pane_the_menu_showed_as_focused_or_not_at_all() {
 
     surface.session.focus("t0");
     right(&mut surface, x, y);
-    surface.created("t4".to_owned());
+    surface.started(request, Some("t4".to_owned()));
     assert!(surface.needs_frame());
 }
 

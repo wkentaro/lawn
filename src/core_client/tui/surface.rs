@@ -960,8 +960,8 @@ impl Surface {
             })
     }
 
-    pub(super) fn created(&mut self, terminal: String) {
-        if self.session.created(terminal) {
+    pub(super) fn started(&mut self, request: u64, terminal: Option<String>) {
+        if self.session.started(request, terminal) {
             self.reflow();
             self.session_changed(Change::Layout);
         }
@@ -1377,7 +1377,7 @@ impl Surface {
 
     pub(super) fn folder(&self, operation: &Operation) -> Option<PathBuf> {
         let terminal = match operation {
-            Operation::Start(Destination::Split { beside, .. }) => beside,
+            Operation::Start(_, Destination::Split { beside, .. }) => beside,
             _ => self.session.focused()?,
         };
         self.session

@@ -366,7 +366,7 @@ fn claiming_a_delivered_stream_does_not_close_it() {
     assert!(sent.try_recv().is_err());
 }
 
-fn transport_core() -> (Core, mpsc::Receiver<Outgoing>) {
+pub(super) fn transport_core() -> (Core, mpsc::Receiver<Outgoing>) {
     let (writer, sent) = mpsc::channel();
     let child = Command::new(std::env::current_exe().unwrap())
         .arg("--help")

@@ -58,6 +58,30 @@ impl TestCore {
     }
 }
 
+pub(crate) fn answering(
+    mut answer: impl FnMut(&str, &Value) -> Result<Value, Value> + Send + 'static,
+) -> Arc<Core> {
+    let (core, sent) = super::tests::transport_core();
+    let routes = core.routes.clone();
+    std::thread::spawn(move || {
+        for (bytes, _) in sent {
+            let Some(frame) = frame::read(&mut bytes.as_slice()).ok().flatten() else {
+                continue;
+            };
+            let Ok(request) = serde_json::from_slice::<Value>(&frame.payload) else {
+                continue;
+            };
+            let method = request["method"].as_str().unwrap_or_default();
+            let reply = match answer(method, &request["params"]) {
+                Ok(result) => json!({"id": request["id"], "result": result}),
+                Err(error) => json!({"id": request["id"], "error": error}),
+            };
+            deliver_reply(&routes, &mpsc::channel().0, reply.to_string().as_bytes());
+        }
+    });
+    Arc::new(core)
+}
+
 /// An `hc` that can't reach the user's core: its own session, state,
 /// config and socket.
 fn isolated(session: &str, state: &std::path::Path) -> Command {

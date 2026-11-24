@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use ratatui::layout::Rect;
 
+use super::starts::Starts;
 use super::terminals::{Moved, Report, Status, Terminals};
 use crate::api::schema::AgentStatus;
 use crate::config::PaneBordersConfig;
@@ -41,7 +42,7 @@ pub(super) struct Tiles {
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Operation {
-    Start(Destination),
+    Start(u64, Destination),
     Close(Vec<String>),
     Park(String),
     Arrange(Arrangement),
@@ -78,7 +79,7 @@ pub(super) struct Session {
     pane_of_tab: HashMap<String, String>,
     previous_of_tab: HashMap<String, String>,
     zoomed: bool,
-    created: Option<String>,
+    starts: Starts,
     terminals: Terminals,
     #[cfg(test)]
     pub(super) placements: usize,
@@ -107,7 +108,12 @@ impl Session {
         self.ids.retain(|terminal, _| places.contains_key(terminal));
         let focus = self.reconciled_focus();
         self.set_focus(focus);
-        self.reveal_created();
+        if let Some(focus) = self
+            .starts
+            .laid_out(|terminal| locate(&self.layout, terminal))
+        {
+            self.move_focus(focus);
+        }
     }
 
     pub(super) fn heard(&mut self, report: Report, tiled: impl Fn(&str) -> bool) -> bool {
@@ -244,8 +250,7 @@ impl Session {
     }
 
     pub(super) fn reveal(&mut self, terminal: &str) -> bool {
-        self.locate(terminal)
-            .is_some_and(|focus| self.move_focus(focus))
+        locate(&self.layout, terminal).is_some_and(|focus| self.move_focus(focus))
     }
 
     pub(super) fn label<'a>(&'a self, workspace: &'a Workspace) -> &'a str {
@@ -264,21 +269,10 @@ impl Session {
         self.terminals.folder(terminal)
     }
 
-    pub(super) fn created(&mut self, terminal: String) -> bool {
-        self.created = Some(terminal);
-        self.reveal_created()
-    }
-
-    fn reveal_created(&mut self) -> bool {
-        let Some(focus) = self
-            .created
-            .as_deref()
-            .and_then(|terminal| self.locate(terminal))
-        else {
-            return false;
-        };
-        self.created = None;
-        self.move_focus(focus)
+    pub(super) fn started(&mut self, request: u64, terminal: Option<String>) -> bool {
+        self.starts
+            .started(request, terminal, |terminal| locate(&self.layout, terminal))
+            .is_some_and(|focus| self.move_focus(focus))
     }
 
     pub(super) fn navigate(
@@ -357,15 +351,20 @@ impl Session {
     }
 
     pub(super) fn operation(
-        &self,
+        &mut self,
         action: KeybindAction,
         confirm_close: bool,
         selected: Option<&str>,
     ) -> Option<Request> {
-        if action == KeybindAction::NewWorkspace {
-            return Some(Request::Run(Operation::Start(Destination::Workspace {
-                name: None,
-            })));
+        let beside = self
+            .focus
+            .as_ref()
+            .and_then(|focus| focus.terminal.as_deref());
+        if let Some(destination) = self.destination(beside, action) {
+            return Some(Request::Run(Operation::Start(
+                self.starts.ask(),
+                destination,
+            )));
         }
         let focus = match selected.filter(|_| action == KeybindAction::CloseWorkspace) {
             Some(id) => self.entered(
@@ -380,13 +379,19 @@ impl Session {
     }
 
     pub(super) fn operation_on(
-        &self,
+        &mut self,
         terminal: &str,
         action: KeybindAction,
         confirm_close: bool,
     ) -> Option<Request> {
         if !self.on_screen(terminal) {
             return None;
+        }
+        if let Some(destination) = self.destination(Some(terminal), action) {
+            return Some(Request::Run(Operation::Start(
+                self.starts.ask(),
+                destination,
+            )));
         }
         let focus = Focus {
             terminal: Some(terminal.to_owned()),
@@ -411,6 +416,27 @@ impl Session {
             !self.layout.parked.contains(terminal)
                 && (!zoomed || focus.terminal.as_deref() == Some(terminal))
         }
+    }
+
+    fn destination(&self, beside: Option<&str>, action: KeybindAction) -> Option<Destination> {
+        let direction = match action {
+            KeybindAction::NewWorkspace => return Some(Destination::Workspace { name: None }),
+            KeybindAction::NewTab => {
+                return Some(Destination::Tab {
+                    workspace: Some(self.focused_workspace()?.id.clone()),
+                    name: None,
+                })
+            }
+            KeybindAction::SplitVertical => Direction::Right,
+            KeybindAction::SplitHorizontal => Direction::Down,
+            _ => return None,
+        };
+        self.focused_workspace()?;
+        Some(Destination::Split {
+            beside: beside?.to_owned(),
+            direction,
+            ratio: 0.5,
+        })
     }
 
     pub(super) fn confirmed(&self, closing: &Closing) -> Option<Operation> {
@@ -456,23 +482,6 @@ impl Session {
             }))
         };
         let closing = match action {
-            KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
-                return Some(Request::Run(Operation::Start(Destination::Split {
-                    beside: focus.terminal.clone()?,
-                    direction: if action == KeybindAction::SplitVertical {
-                        Direction::Right
-                    } else {
-                        Direction::Down
-                    },
-                    ratio: 0.5,
-                })));
-            }
-            KeybindAction::NewTab => {
-                return Some(Request::Run(Operation::Start(Destination::Tab {
-                    workspace: Some(workspace.id.clone()),
-                    name: None,
-                })));
-            }
             KeybindAction::ParkPane => {
                 return Some(Request::Run(Operation::Park(focus.terminal.clone()?)))
             }
@@ -885,28 +894,11 @@ impl Session {
         })
     }
 
-    fn locate(&self, terminal: &str) -> Option<Focus> {
-        if !self.shows(terminal) {
-            return None;
-        }
-        self.layout.workspaces.iter().find_map(|workspace| {
-            let tab = workspace
-                .tabs
-                .iter()
-                .find(|tab| tab.root.contains(terminal))?;
-            Some(Focus {
-                workspace: workspace.id.clone(),
-                tab: tab.id.clone(),
-                terminal: Some(terminal.to_owned()),
-            })
-        })
-    }
-
     fn reconciled_focus(&self) -> Option<Focus> {
         let previous = self.focus.as_ref();
         let following = previous
             .and_then(|focus| focus.terminal.as_deref())
-            .and_then(|terminal| self.locate(terminal));
+            .and_then(|terminal| locate(&self.layout, terminal));
         if following.is_some() {
             return following;
         }
@@ -958,6 +950,23 @@ fn tab<'a>(layout: &'a Layout, focus: &Focus) -> Option<&'a Tab> {
         .tabs
         .iter()
         .find(|tab| tab.id == focus.tab)
+}
+
+fn locate(layout: &Layout, terminal: &str) -> Option<Focus> {
+    if layout.parked.contains(terminal) {
+        return None;
+    }
+    layout.workspaces.iter().find_map(|workspace| {
+        let tab = workspace
+            .tabs
+            .iter()
+            .find(|tab| tab.root.contains(terminal))?;
+        Some(Focus {
+            workspace: workspace.id.clone(),
+            tab: tab.id.clone(),
+            terminal: Some(terminal.to_owned()),
+        })
+    })
 }
 
 #[cfg(test)]

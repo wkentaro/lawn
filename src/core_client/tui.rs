@@ -10,6 +10,7 @@ mod keys;
 mod notices;
 mod select;
 mod session;
+mod starts;
 mod surface;
 mod terminals;
 #[cfg(all(test, unix))]
@@ -189,32 +190,37 @@ mod unix {
         queue
     }
 
-    fn perform(
-        core: &Arc<Core>,
+    pub(super) fn perform(
+        core: io::Result<Arc<Core>>,
         session: &str,
         operation: Operation,
         cwd: &std::path::Path,
-        created: &mpsc::UnboundedSender<String>,
+        started: &mpsc::UnboundedSender<(u64, Option<String>)>,
     ) -> Option<u64> {
-        let core = match connected(core.clone()) {
+        let core = match core {
             Ok(core) => core,
             Err(error) => {
                 warn!(%error, ?operation, "the core is unreachable");
+                if let Operation::Start(request, _) = operation {
+                    started.send((request, None)).ok();
+                }
                 return None;
             }
         };
         let lifecycle = || Lifecycle::new(core.clone(), session);
         match operation {
-            Operation::Start(destination) => {
+            Operation::Start(request, destination) => {
                 let report = |error| warn!(%error, session, "recovery failed");
-                match creation_lifecycle(&core, session, report)
+                let terminal = match creation_lifecycle(&core, session, report)
                     .and_then(|lifecycle| lifecycle.start(destination, cwd, &[]))
                 {
-                    Ok(started) => {
-                        created.send(started.terminal).ok();
+                    Ok(started) => Some(started.terminal),
+                    Err(error) => {
+                        warn!(%error, "the program did not start");
+                        None
                     }
-                    Err(error) => warn!(%error, "the program did not start"),
-                }
+                };
+                started.send((request, terminal)).ok();
             }
             Operation::Close(terminals) => {
                 for terminal in terminals {
@@ -271,7 +277,7 @@ mod unix {
         let wake = Wake::default();
         let mut events = Events::default();
         let (attached_tx, mut attached) = mpsc::unbounded_channel();
-        let (created_tx, mut created) = mpsc::unbounded_channel();
+        let (started_tx, mut started) = mpsc::unbounded_channel();
         let (finished_tx, mut finished) = mpsc::unbounded_channel();
         let mut gate = Gate::default();
         let edits = Cell::new(0);
@@ -285,7 +291,13 @@ mod unix {
             let (core, session) = (core.clone(), session.clone());
             operations(move |operation, cwd| {
                 let arranging = matches!(operation, Operation::Arrange(_));
-                let written = perform(&core, &session, operation, &cwd, &created_tx);
+                let written = perform(
+                    connected(core.clone()),
+                    &session,
+                    operation,
+                    &cwd,
+                    &started_tx,
+                );
                 if arranging {
                     finished_tx.send(written).ok();
                 }
@@ -368,8 +380,8 @@ mod unix {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                Some(terminal) = created.recv() => {
-                    surface.created(terminal);
+                Some((request, terminal)) = started.recv() => {
+                    surface.started(request, terminal);
                     if surface.needs_frame() {
                         due.get_or_insert_with(Instant::now);
                     }

@@ -208,7 +208,10 @@ async fn the_create_rows_act_like_their_keys_and_close_the_switcher() {
     let (mut surface, _) = opened(two_workspaces());
     let workspace = tap(&mut surface, 5, 4);
     assert!(workspace.is_some());
-    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
+    assert_eq!(
+        destination(workspace),
+        destination(surface.act(KeybindAction::NewWorkspace, false))
+    );
     assert!(!surface.navigating());
 
     frame(&mut surface, &HashSet::new());
@@ -216,14 +219,20 @@ async fn the_create_rows_act_like_their_keys_and_close_the_switcher() {
     frame(&mut surface, &HashSet::new());
     let tab = tap(&mut surface, 5, 10);
     assert!(tab.is_some());
-    assert_eq!(tab, surface.act(KeybindAction::NewTab, false));
+    assert_eq!(
+        destination(tab),
+        destination(surface.act(KeybindAction::NewTab, false))
+    );
     assert!(!surface.navigating());
 
     let (mut surface, screen) = opened(spaces(&[]));
     assert_eq!(screen.lines(3..6), ["  spaces", "   + new workspace", ""]);
     let workspace = tap(&mut surface, 5, 4);
-    assert_eq!(workspace, surface.act(KeybindAction::NewWorkspace, false));
     assert!(workspace.is_some());
+    assert_eq!(
+        destination(workspace),
+        destination(surface.act(KeybindAction::NewWorkspace, false))
+    );
     assert!(!surface.navigating());
 }
 
