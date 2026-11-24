@@ -1,10 +1,18 @@
 use super::*;
-use crate::config::{ConfigEdit, StatusIndicatorStyle};
+use crate::config::{ConfigEdit, StatusIndicatorStyle, ToastDelivery};
 
 fn opened(configure: impl FnOnce(&mut Config)) -> (Surface, Screen) {
+    opened_in(30, configure)
+}
+
+fn opened_in(rows: u16, configure: impl FnOnce(&mut Config)) -> (Surface, Screen) {
     let mut config = Config::default();
     configure(&mut config);
-    let mut surface = Surface::new(host(120, 30), Chrome::new(&config), Settings::from(&config));
+    let mut surface = Surface::new(
+        host(120, rows),
+        Chrome::new(&config),
+        Settings::from(&config),
+    );
     surface.update(spaces(&[(Some("main"), &[None])]));
     frame_attaching(&mut surface, &HashSet::new());
     surface.act(KeybindAction::Settings, false);
@@ -61,15 +69,16 @@ fn saved(edit: ConfigEdit<'static>) -> Option<Pointed> {
 }
 
 #[tokio::test]
-async fn the_settings_key_opens_the_theme_and_indicators_tabs_and_no_others() {
+async fn the_settings_key_opens_every_tab_but_integrations() {
     let (_surface, screen) = opened(|_| {});
 
     let (_, y) = spot(&screen, " theme ");
     let tabs = screen.line(y);
-    assert!(tabs.contains(" theme   indicators "), "{tabs}");
-    for gone in ["sound", "toasts", "integrations"] {
-        assert!(!tabs.contains(gone), "{tabs}");
-    }
+    assert!(
+        tabs.contains(" theme   indicators   sound   toasts "),
+        "{tabs}"
+    );
+    assert!(!tabs.contains("integrations"), "{tabs}");
 }
 
 #[tokio::test]
@@ -190,15 +199,108 @@ async fn a_tab_click_shows_that_section_on_its_configured_choice() {
 #[tokio::test]
 async fn back_tab_from_the_first_section_wraps_to_the_last() {
     let (mut surface, mut screen) =
-        opened(|config| config.ui.status_indicators = StatusIndicatorStyle::Symbols);
+        opened(|config| config.ui.toast.delivery = ToastDelivery::Terminal);
 
     typed(&mut surface, KeyCode::BackTab);
     shown(&mut surface, &mut screen);
 
     assert_eq!(
         typed(&mut surface, KeyCode::Char(' ')),
-        saved(ConfigEdit::StatusIndicators(StatusIndicatorStyle::Symbols))
+        saved(ConfigEdit::ToastDelivery(ToastDelivery::Terminal))
     );
+}
+
+#[tokio::test]
+async fn a_click_on_a_sound_choice_saves_it_at_once_and_the_tab_reopens_on_it() {
+    let (mut surface, mut screen) = opened(|config| config.ui.sound.enabled = true);
+    press(&mut surface, spot(&screen, " sound "));
+    shown(&mut surface, &mut screen);
+    assert!(marked(&screen, "on"));
+
+    assert_eq!(
+        press(&mut surface, spot(&screen, "   off")),
+        saved(ConfigEdit::Sound(false))
+    );
+    surface.configure(&toml::from_str("[ui.sound]\nenabled = false").expect("config"));
+    surface.saved(true);
+    assert!(surface.dialog_open());
+
+    typed(&mut surface, KeyCode::BackTab);
+    typed(&mut surface, KeyCode::Tab);
+    shown(&mut surface, &mut screen);
+    assert!(marked(&screen, "off"));
+    typed(&mut surface, KeyCode::Up);
+    shown(&mut surface, &mut screen);
+    assert_eq!(
+        typed(&mut surface, KeyCode::Enter),
+        saved(ConfigEdit::Sound(true))
+    );
+}
+
+#[tokio::test]
+async fn the_toasts_tab_opens_on_the_configured_delivery_and_saves_the_one_moved_to() {
+    let (mut surface, mut screen) =
+        opened(|config| config.ui.toast.delivery = ToastDelivery::Herdr);
+    press(&mut surface, spot(&screen, " toasts "));
+    shown(&mut surface, &mut screen);
+    assert!(marked(&screen, "inside herdr"));
+
+    typed(&mut surface, KeyCode::Down);
+    typed(&mut surface, KeyCode::Down);
+    typed(&mut surface, KeyCode::Down);
+    shown(&mut surface, &mut screen);
+
+    assert_eq!(
+        typed(&mut surface, KeyCode::Enter),
+        saved(ConfigEdit::ToastDelivery(ToastDelivery::System))
+    );
+    typed(&mut surface, KeyCode::Up);
+    shown(&mut surface, &mut screen);
+    assert_eq!(
+        typed(&mut surface, KeyCode::Enter),
+        saved(ConfigEdit::ToastDelivery(ToastDelivery::Terminal))
+    );
+}
+
+#[tokio::test]
+async fn a_short_screen_still_draws_every_toast_delivery() {
+    let (mut surface, mut screen) = opened_in(18, |_| {});
+    typed(&mut surface, KeyCode::BackTab);
+    typed(&mut surface, KeyCode::Down);
+    typed(&mut surface, KeyCode::Down);
+    typed(&mut surface, KeyCode::Down);
+    shown(&mut surface, &mut screen);
+
+    assert!(screen
+        .lines(0..18)
+        .iter()
+        .any(|line| line.contains("   off")));
+    assert_eq!(
+        typed(&mut surface, KeyCode::Enter),
+        saved(ConfigEdit::ToastDelivery(ToastDelivery::System))
+    );
+}
+
+#[tokio::test]
+async fn a_screen_too_short_for_every_choice_keeps_the_selected_one_drawn() {
+    for rows in [15, 16, 17] {
+        let (mut surface, mut screen) = opened_in(rows, |_| {});
+        typed(&mut surface, KeyCode::BackTab);
+        for delivery in [
+            ToastDelivery::Off,
+            ToastDelivery::Herdr,
+            ToastDelivery::Terminal,
+            ToastDelivery::System,
+        ] {
+            shown(&mut surface, &mut screen);
+            assert_eq!(
+                typed(&mut surface, KeyCode::Enter),
+                saved(ConfigEdit::ToastDelivery(delivery)),
+                "{rows} rows"
+            );
+            typed(&mut surface, KeyCode::Down);
+        }
+    }
 }
 
 #[tokio::test]

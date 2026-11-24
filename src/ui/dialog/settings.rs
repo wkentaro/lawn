@@ -344,9 +344,12 @@ fn render_choice_section(
         description,
         Style::default().fg(palette.overlay1).bg(palette.panel_bg),
     );
-    let row_gap = u16::from(choices.len() > 2);
-    for (index, choice) in choices.iter().enumerate() {
-        let y = area.y + 3 + index as u16 * (1 + row_gap);
+    let spaced = 2 + choices.len() as u16 * 2;
+    let row_gap = u16::from(choices.len() > 2 && spaced <= area.height);
+    let visible = usize::from(area.height.saturating_sub(3));
+    let scroll = selected.saturating_sub(visible.saturating_sub(1));
+    for (row, (index, choice)) in choices.iter().enumerate().skip(scroll).enumerate() {
+        let y = area.y + 3 + row as u16 * (1 + row_gap);
         if y >= area.bottom() {
             break;
         }
