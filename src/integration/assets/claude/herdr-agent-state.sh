@@ -18,11 +18,17 @@ case "$action" in
 esac
 
 [ "${HERDR_ENV:-}" = "1" ] || exit 0
-[ -n "${HERDR_SOCKET_PATH:-}" ] || exit 0
-[ -n "${HERDR_PANE_ID:-}" ] || exit 0
+lawn_rewrite=0
+if [ -z "${HERDR_SOCKET_PATH:-}" ] || [ -z "${HERDR_PANE_ID:-}" ]; then
+  if [ "${LAWN_REWRITE:-}" = "1" ] && [ -n "${HC_TERMINAL_ID:-}" ] && [ -f "${HERDR_BIN_PATH:-}" ] && [ -x "${HERDR_BIN_PATH:-}" ]; then
+    lawn_rewrite=1
+  else
+    exit 0
+  fi
+fi
 command -v python3 >/dev/null 2>&1 || exit 0
 
-HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+LAWN_HOOK_REWRITE="$lawn_rewrite" HERDR_ACTION="$action" HERDR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
 import json
 import os
 import random
@@ -32,11 +38,12 @@ import unicodedata
 
 source = "herdr:claude"
 action = os.environ.get("HERDR_ACTION", "")
-pane_id = os.environ.get("HERDR_PANE_ID")
+rewrite = os.environ.get("LAWN_HOOK_REWRITE") == "1"
+pane_id = os.environ.get("HC_TERMINAL_ID" if rewrite else "HERDR_PANE_ID")
 socket_path = os.environ.get("HERDR_SOCKET_PATH")
 hook_input_file = os.environ.get("HERDR_HOOK_INPUT_FILE")
 
-if not pane_id or not socket_path:
+if not pane_id or not (socket_path or rewrite):
     raise SystemExit(0)
 
 try:
@@ -69,7 +76,36 @@ def clipped_command(value):
     return data[:4096 - len(marker)].decode("utf-8", "ignore") + marker, True
 
 
+def report_session(params):
+    args = [
+        os.environ.get("HERDR_BIN_PATH", ""), "pane", "report-agent-session", params["pane_id"],
+        "--source", params["source"], "--agent", params["agent"],
+        "--seq", str(params["seq"]), "--agent-session-id", params["agent_session_id"],
+    ]
+    if "agent_session_path" in params:
+        args.extend(["--agent-session-path", params["agent_session_path"]])
+    if "session_start_source" in params:
+        args.extend(["--session-start-source", params["session_start_source"]])
+    try:
+        import subprocess
+
+        subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
 def send(method, params):
+    if rewrite:
+        if method == "pane.report_agent_session":
+            report_session(params)
+        return
     request = {
         "id": f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}",
         "method": method,

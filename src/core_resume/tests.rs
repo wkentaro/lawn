@@ -220,6 +220,7 @@ fn document(reports: Vec<Report>) -> Value {
             created_ms: 7,
         },
         reports,
+        held: Vec::new(),
     })
     .unwrap()
 }
@@ -1499,4 +1500,178 @@ fn a_claim_retry_reads_the_terminal_again() {
     assert!(!resume_with(&fake, "t7").unwrap());
     assert!(fake.sends().is_empty());
     assert_eq!(fake.document().reports, [gone(1)]);
+}
+
+fn hook_session(seq: u64, session: &str) -> Report {
+    Report {
+        source: "herdr:claude".into(),
+        agent: "claude".into(),
+        reporter_id: "hook".into(),
+        argv: vec!["claude".into(), "--resume".into(), session.into()],
+        ..report(seq)
+    }
+}
+
+fn codex_session(seq: u64) -> Report {
+    Report {
+        source: "herdr:codex".into(),
+        agent: "codex".into(),
+        argv: vec!["codex".into(), "resume".into(), "child".into()],
+        ..hook_session(seq, "child")
+    }
+}
+
+fn hook(replaces: bool) -> Origin {
+    Origin::Hook { replaces }
+}
+
+fn running(job: Option<u32>, foreground: u32) -> Fake {
+    let stored = Report {
+        program: program(9999, 1),
+        recorded: Some(1),
+        job,
+        ..hook_session(1, "first")
+    };
+    let fake = Fake::with(vec![stored]);
+    fake.state.lock().unwrap().kernel_foreground = Some(foreground);
+    fake
+}
+
+#[test]
+fn a_hook_report_from_a_background_job_at_the_shell_prompt_is_ignored() {
+    let fake = Fake::new();
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.kernel_foreground = Some(9999);
+        state.reporter_in_job = false;
+    }
+    let outcome = record_report(&fake, "t7", &hook_session(1, "first"), hook(true)).unwrap();
+    assert_eq!(outcome.status, RecordStatus::Ignored);
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn a_hook_report_from_the_foreground_job_is_recorded_with_that_job() {
+    let fake = Fake::new();
+    fake.state.lock().unwrap().kernel_foreground = Some(12345);
+    let outcome = record_report(&fake, "t7", &hook_session(1, "first"), hook(true)).unwrap();
+    assert_eq!(outcome.status, RecordStatus::Recorded);
+    assert_eq!(fake.document().reports[0].job, Some(12345));
+}
+
+#[test]
+fn a_hook_report_from_a_background_job_while_another_job_is_in_front_is_ignored() {
+    let fake = Fake::new();
+    {
+        let mut state = fake.state.lock().unwrap();
+        state.kernel_foreground = Some(12345);
+        state.reporter_in_job = false;
+    }
+    let outcome = record_report(&fake, "t7", &hook_session(1, "first"), hook(true)).unwrap();
+    assert_eq!(outcome.status, RecordStatus::Ignored);
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn a_hook_report_from_the_panes_own_program_is_recorded_without_a_job() {
+    let fake = Fake::new();
+    fake.state.lock().unwrap().kernel_foreground = Some(9999);
+    let outcome = record_report(&fake, "t7", &hook_session(1, "first"), hook(true)).unwrap();
+    assert_eq!(outcome.status, RecordStatus::Recorded);
+    let stored = &fake.document().reports[0];
+    assert_eq!(stored.program, program(9999, 1));
+    assert_eq!(stored.job, None);
+}
+
+#[test]
+fn a_hook_report_the_kernel_cannot_place_is_ignored_whatever_the_core_sampled() {
+    let fake = Fake::new();
+    fake.state.lock().unwrap().terminal["foreground"]["pid"] = json!(12345);
+    let outcome = record_report(&fake, "t7", &hook_session(1, "first"), hook(true)).unwrap();
+    assert_eq!(outcome.status, RecordStatus::Ignored);
+    assert_eq!(fake.writes(), 0);
+}
+
+#[test]
+fn a_report_that_may_not_replace_keeps_the_running_agents_session() {
+    for (job, foreground) in [(Some(12345), 12345), (None, 9999)] {
+        let fake = running(job, foreground);
+        let before = fake.document().reports;
+        let outcome = record_report(&fake, "t7", &hook_session(2, "second"), hook(false)).unwrap();
+        assert_eq!(outcome.status, RecordStatus::Ignored, "{job:?}");
+        assert_eq!(fake.document().reports, before, "{job:?}");
+    }
+}
+
+#[test]
+fn a_report_that_may_replace_takes_over_the_running_agents_session() {
+    let fake = running(Some(12345), 12345);
+    record_report(&fake, "t7", &hook_session(2, "second"), hook(true)).unwrap();
+    assert_eq!(fake.payloads(), [hook_session(2, "second")]);
+}
+
+#[test]
+fn a_report_from_another_job_takes_over_whatever_it_may_replace() {
+    let fake = running(Some(12345), 23456);
+    record_report(&fake, "t7", &hook_session(2, "second"), hook(false)).unwrap();
+    assert_eq!(fake.payloads(), [hook_session(2, "second")]);
+}
+
+#[test]
+fn a_report_of_the_same_session_is_never_held_back() {
+    let fake = running(Some(12345), 12345);
+    record_report(&fake, "t7", &hook_session(2, "first"), hook(false)).unwrap();
+    assert_eq!(fake.payloads(), [hook_session(2, "first")]);
+}
+
+#[test]
+fn another_agents_hook_report_waits_while_the_recorded_agent_runs() {
+    for (job, foreground) in [(Some(12345), 12345), (None, 9999)] {
+        let fake = running(job, foreground);
+        let before = fake.document().reports;
+        let outcome = record_report(&fake, "t7", &codex_session(1), hook(true)).unwrap();
+        assert_eq!(outcome.status, RecordStatus::Ignored, "{job:?}");
+        assert_eq!(fake.document().reports, before, "{job:?}");
+    }
+}
+
+#[test]
+fn another_agent_started_after_the_recorded_one_quit_is_recorded() {
+    let fake = running(Some(12345), 23456);
+    record_report(&fake, "t7", &codex_session(1), hook(true)).unwrap();
+    assert_eq!(
+        fake.payloads(),
+        [hook_session(1, "first"), codex_session(1)]
+    );
+}
+
+#[test]
+fn a_recorded_command_replaces_whatever_agent_runs() {
+    let fake = running(Some(12345), 12345);
+    record_with(&fake, "t7", &hook_session(2, "second")).unwrap();
+    record_with(&fake, "t7", &codex_session(1)).unwrap();
+    assert_eq!(
+        fake.payloads(),
+        [hook_session(2, "second"), codex_session(1)]
+    );
+}
+
+#[test]
+fn a_delayed_report_older_than_a_held_one_is_stale() {
+    let fake = running(Some(12345), 12345);
+    let held = record_report(&fake, "t7", &hook_session(30, "second"), hook(false)).unwrap();
+    assert_eq!(held.status, RecordStatus::Ignored);
+    let delayed = record_report(&fake, "t7", &hook_session(20, "third"), hook(true)).unwrap();
+    assert_eq!(delayed.status, RecordStatus::Stale);
+    assert_eq!(fake.payloads(), [hook_session(1, "first")]);
+}
+
+#[test]
+fn a_newer_report_after_a_held_one_is_recorded() {
+    let fake = running(Some(12345), 12345);
+    record_report(&fake, "t7", &hook_session(30, "second"), hook(false)).unwrap();
+    let newer = record_report(&fake, "t7", &hook_session(40, "fourth"), hook(true)).unwrap();
+    assert_eq!(newer.status, RecordStatus::Recorded);
+    assert_eq!(fake.payloads(), [hook_session(40, "fourth")]);
+    assert!(fake.document().held.is_empty());
 }

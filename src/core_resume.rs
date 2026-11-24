@@ -112,6 +112,31 @@ impl Report {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct HeldSequence {
+    source: String,
+    agent: String,
+    reporter_id: String,
+    seq: u64,
+}
+
+impl HeldSequence {
+    fn belongs_to(&self, report: &Report) -> bool {
+        self.source == report.source
+            && self.agent == report.agent
+            && self.reporter_id == report.reporter_id
+    }
+}
+
+fn stale_or_repeated(seq: u64, last: u64) -> RecordStatus {
+    if seq < last {
+        RecordStatus::Stale
+    } else {
+        RecordStatus::Ignored
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TerminalIdentity {
     address: String,
     created_ms: u64,
@@ -124,6 +149,8 @@ struct Document {
     record_only: bool,
     terminal: TerminalIdentity,
     reports: Vec<Report>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    held: Vec<HeldSequence>,
 }
 
 impl Document {
@@ -134,6 +161,7 @@ impl Document {
                 record_only: false,
                 terminal: terminal.clone(),
                 reports: Vec::new(),
+                held: Vec::new(),
             });
         }
         if value["schema"].as_u64() != Some(u64::from(SCHEMA)) {
@@ -167,6 +195,9 @@ impl Document {
         if report.program.is_none() {
             return Ok((RecordStatus::Ignored, report.seq));
         }
+        if let Some(held) = self.held_seq(report).filter(|held| report.seq <= *held) {
+            return Ok((stale_or_repeated(report.seq, held), held));
+        }
         let stored = self
             .reports
             .iter_mut()
@@ -187,7 +218,48 @@ impl Document {
             Some(stored) => *stored = report.clone(),
             None => self.reports.push(report.clone()),
         }
+        self.held.retain(|held| !held.belongs_to(report));
         Ok((RecordStatus::Recorded, report.seq))
+    }
+
+    fn hold(&mut self, report: &Report) -> (RecordStatus, u64, bool) {
+        let last = self
+            .reports
+            .iter()
+            .filter(|stored| stored.same_reporter(report))
+            .map(|stored| stored.seq)
+            .chain(self.held_seq(report))
+            .max();
+        if let Some(last) = last.filter(|last| report.seq <= *last) {
+            return (stale_or_repeated(report.seq, last), last, false);
+        }
+        self.held.retain(|held| !held.belongs_to(report));
+        self.held.push(HeldSequence {
+            source: report.source.clone(),
+            agent: report.agent.clone(),
+            reporter_id: report.reporter_id.clone(),
+            seq: report.seq,
+        });
+        (RecordStatus::Ignored, report.seq, true)
+    }
+
+    fn held_seq(&self, report: &Report) -> Option<u64> {
+        self.held
+            .iter()
+            .find(|held| held.belongs_to(report))
+            .map(|held| held.seq)
+    }
+
+    fn holds(&self, report: &Report, foreground: Option<u32>, replaces: bool) -> bool {
+        let (Some(program), Some(foreground)) = (&report.program, foreground) else {
+            return false;
+        };
+        self.reports.iter().any(|stored| {
+            stored.program.as_ref() == Some(program)
+                && stored.job.unwrap_or(program.pid) == foreground
+                && (!stored.same_reporter(report)
+                    || !replaces && stored.seq < report.seq && stored.argv != report.argv)
+        })
     }
 
     fn encode(&self) -> Result<Value, String> {
@@ -425,7 +497,31 @@ pub(crate) fn record(core: &Core, target: &str, report: &Report) -> Result<Outco
     record_with(core, target, report)
 }
 
+#[derive(Clone, Copy)]
+enum Origin {
+    Command,
+    Hook { replaces: bool },
+}
+
+pub(crate) fn record_session(
+    core: &Core,
+    target: &str,
+    report: &Report,
+    replaces: bool,
+) -> Result<Outcome, String> {
+    record_report(core, target, report, Origin::Hook { replaces })
+}
+
 fn record_with(backend: &impl Backend, target: &str, report: &Report) -> Result<Outcome, String> {
+    record_report(backend, target, report, Origin::Command)
+}
+
+fn record_report(
+    backend: &impl Backend,
+    target: &str,
+    report: &Report,
+    origin: Origin,
+) -> Result<Outcome, String> {
     let report = report.payload();
     report.validate()?;
     crate::agent_resume::validate_resume_argv(&report.argv)?;
@@ -433,31 +529,47 @@ fn record_with(backend: &impl Backend, target: &str, report: &Report) -> Result<
         let root = terminal
             .live_root()
             .filter(|root| backend.runs_inside(*root));
-        let program = root.and_then(|pid| {
+        let kernel = root.and_then(|root| backend.foreground(root));
+        let in_job = root
+            .zip(kernel)
+            .is_some_and(|(root, job)| backend.reporter_in_job(root, job));
+        let counts = match origin {
+            Origin::Command => true,
+            Origin::Hook { .. } => in_job,
+        };
+        let program = root.filter(|_| counts).and_then(|pid| {
             backend.started(pid).map(|started| ReportedProgram {
                 pid,
                 started_ms: Some(started),
                 boot: backend.boot(),
             })
         });
-        let job = program.as_ref().and_then(|program| {
-            backend
-                .foreground(program.pid)
-                .filter(|job| *job != program.pid && backend.reporter_in_job(program.pid, *job))
-        });
+        let job = program
+            .as_ref()
+            .and(kernel)
+            .filter(|job| in_job && Some(*job) != root);
         let report = Report {
             job,
             recorded: program.as_ref().map(|_| version + 1),
             program,
             ..report.clone()
         };
-        let (status, seq) = document.apply(&report)?;
+        let held = match origin {
+            Origin::Command => false,
+            Origin::Hook { replaces } => document.holds(&report, kernel, replaces),
+        };
+        let (status, seq, changed) = if held {
+            document.hold(&report)
+        } else {
+            let (status, seq) = document.apply(&report)?;
+            (status, seq, status == RecordStatus::Recorded)
+        };
         let outcome = Outcome {
             terminal: terminal.identity.address.clone(),
             status,
             seq,
         };
-        Ok((outcome, status == RecordStatus::Recorded))
+        Ok((outcome, changed))
     })
 }
 
