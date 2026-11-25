@@ -492,6 +492,30 @@ fn recv_until(stream: &mut tokio_mpsc::UnboundedReceiver<Stream>, needle: &str) 
     panic!("no {needle:?} within 10s; saw {seen:?}");
 }
 
+#[cfg(unix)]
+fn recv_event(
+    stream: &mut tokio_mpsc::UnboundedReceiver<Stream>,
+    wanted: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut unread = String::new();
+    while std::time::Instant::now() < deadline {
+        let Ok(Stream::Data(bytes)) = stream.try_recv() else {
+            std::thread::sleep(Duration::from_millis(20));
+            continue;
+        };
+        unread.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some((line, rest)) = unread.split_once('\n') {
+            let event: Value = serde_json::from_str(line).expect("an event");
+            unread = rest.to_owned();
+            if wanted(&event) {
+                return event;
+            }
+        }
+    }
+    panic!("no such event within 10s");
+}
+
 // The programs here are Unix shell lines.
 #[cfg(unix)]
 #[test]
@@ -551,4 +575,131 @@ fn live_core_streams_events_to_subscribers() {
 
     core.call("terminal.kill", json!({"terminal": address}))
         .expect("kill");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_in_the_link_script_reaches_the_shell_byte_for_byte() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = std::ffi::OsStr::from_bytes(b"/tmp/O'Brien's \xff $HOME/hc");
+    let mut script = b"printf %s ".to_vec();
+    script.extend(test_support::quoted(path.as_ref()));
+
+    let printed = Command::new("sh")
+        .arg("-c")
+        .arg(std::ffi::OsStr::from_bytes(&script))
+        .output()
+        .expect("run sh");
+
+    assert_eq!(printed.stdout, path.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_terminal_on_a_linked_machine_carries_the_machines_name_in_its_address() {
+    let (Some(here), Some(there)) = (TestCore::start(), TestCore::start()) else {
+        return;
+    };
+    let core = &here.core;
+    let link = here.link(&there, "boxb");
+    let mut events = core.subscribe(json!({})).expect("subscribe");
+
+    let address = core
+        .run(json!({
+            "argv": ["sh", "-c", "sleep 30"], "on": link.name, "cwd": "/tmp", "no_parent": true,
+        }))
+        .expect("run");
+
+    assert!(address.starts_with("boxb/t"), "{address}");
+    let created = recv_event(&mut events.stream, |event| {
+        event["method"] == "event" && event["params"]["type"] == "created"
+    });
+    assert_eq!(created["params"]["terminal"], address);
+    assert_eq!(created["params"]["data"]["address"], address);
+    let terminal = json!({"terminal": address});
+    let got = core.call("terminal.get", terminal.clone()).expect("get");
+    assert_eq!(got["address"], address);
+    let listed = core.call("terminal.list", json!({})).expect("list");
+    assert_eq!(listed["terminals"][0]["address"], address);
+    assert_eq!(listed["machines"][0]["state"], "connected");
+    let attached = core
+        .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+        .expect("attach");
+    assert_eq!(attached.terminal["address"], address);
+    assert!(there
+        .core
+        .call("terminal.get", json!({"terminal": "t1"}))
+        .is_ok());
+
+    core.call("terminal.kill", terminal).expect("kill");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cut_link_leaves_a_remote_terminal_running_and_its_attach_open() {
+    let (Some(here), Some(there)) = (TestCore::start(), TestCore::start()) else {
+        return;
+    };
+    let core = &here.core;
+    let link = here.link(&there, "boxb");
+    let address = core
+        .run(json!({
+            "argv": ["sh", "-c", "echo lawn-$((40+2)); while read line; do echo got-$line; done"],
+            "on": link.name, "cwd": "/tmp", "no_parent": true,
+        }))
+        .expect("run");
+    let terminal = json!({"terminal": address});
+    let mut attached = core
+        .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+        .expect("attach");
+    recv_until(&mut attached.stream, "lawn-42");
+    let pid = core.call("terminal.get", terminal.clone()).expect("get")["pid"]
+        .as_u64()
+        .expect("a pid");
+
+    link.cut();
+    here.becomes("boxb", "unreachable");
+
+    recv_until(&mut attached.stream, "line to boxb lost");
+    let listed = core.call("terminal.list", json!({})).expect("list");
+    assert_eq!(listed["terminals"], json!([]));
+    for method in ["terminal.get", "terminal.kill", "terminal.rm"] {
+        let refused = core.call(method, terminal.clone()).unwrap_err();
+        assert_eq!(refused.kind(), Some("unavailable"), "{method}: {refused:?}");
+    }
+    let refused = core
+        .attach(json!({"terminal": address, "cols": 80, "rows": 24}))
+        .map(|attached| attached.terminal)
+        .unwrap_err();
+    assert_eq!(refused.kind(), Some("unavailable"), "{refused:?}");
+
+    let mut events = core.subscribe(json!({})).expect("subscribe");
+    link.mend();
+    let dialed = core
+        .call("machine.connect", json!({"machine": link.name}))
+        .expect("dial");
+    assert_eq!(dialed["state"], "connected");
+
+    let missed = recv_event(&mut events.stream, |event| event["method"] == "missed");
+    assert_eq!(missed["params"]["terminals"][0]["address"], address);
+    let got = core.call("terminal.get", terminal.clone()).expect("get");
+    assert_eq!(
+        (got["state"].as_str(), got["pid"].as_u64()),
+        (Some("live"), Some(pid))
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut answered = String::new();
+    while !answered.contains("got-probe") {
+        assert!(std::time::Instant::now() < deadline, "{answered:?}");
+        core.input(attached.channel, b"probe\n");
+        std::thread::sleep(Duration::from_millis(50));
+        while let Ok(Stream::Data(bytes)) = attached.stream.try_recv() {
+            answered.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    core.input(attached.channel, b"back\n");
+    recv_until(&mut attached.stream, "got-back");
+
+    core.call("terminal.kill", terminal).expect("kill");
 }
