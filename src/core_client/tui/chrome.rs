@@ -22,6 +22,7 @@ use crate::config::{
     AgentPanelSortConfig, Config, SidebarCollapsedModeConfig, SpacesSidebarConfig,
     StatusIndicatorStyle, TabBarPositionConfig, TabBarRightEntryConfig,
 };
+use crate::hc::located;
 use crate::input::KeybindAction;
 use crate::pane::ScrollMetrics;
 use crate::protocol::{CellData, PaneSurfacePatchRow};
@@ -813,13 +814,11 @@ impl Chrome {
             }
             (Press::Workspace(workspace), Some(Drag::Workspace(_))) => {
                 let (index, _) = self.workspace_drop(point)?;
-                let before = self
-                    .drawn
-                    .as_ref()?
-                    .workspaces
-                    .get(index)
-                    .map(|w| w.id.clone());
-                let workspaces = session.workspaces().iter().map(|w| &w.id);
+                let on = located(&workspace).ok()?.0;
+                let beside = |id: &&String| located(id).is_ok_and(|(machine, _)| machine == on);
+                let drawn = self.drawn.as_ref()?.workspaces.iter().map(|w| &w.id);
+                let before = drawn.skip(index).find(beside).cloned();
+                let workspaces = session.workspaces().iter().map(|w| &w.id).filter(beside);
                 let to = place(workspaces, &workspace, before)?;
                 Some(arranging(Arrangement::MoveWorkspace { workspace, to }))
             }

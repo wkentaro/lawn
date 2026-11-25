@@ -475,7 +475,7 @@ fn an_arrangement_that_finds_nothing_to_change_succeeds_without_a_write() {
         area: ratatui::layout::Rect::new(0, 0, 80, 24),
     };
 
-    assert_eq!(lifecycle.arrange(&edge), Ok(None));
+    assert_eq!(lifecycle.arrange(None, &edge), Ok(None));
     assert_eq!(lifecycle.store.load().unwrap().version, before.version);
 }
 
@@ -501,8 +501,8 @@ fn an_arrangement_whose_tab_or_pane_is_gone_fails_without_a_write() {
         area: ratatui::layout::Rect::new(0, 0, 80, 24),
     };
 
-    assert!(lifecycle.arrange(&rename).is_err());
-    assert!(lifecycle.arrange(&swap).is_err());
+    assert!(lifecycle.arrange(None, &rename).is_err());
+    assert!(lifecycle.arrange(None, &swap).is_err());
     assert_eq!(lifecycle.store.load().unwrap().version, before.version);
 }
 
@@ -530,7 +530,7 @@ fn a_resize_held_at_the_ratio_limit_reports_no_write() {
         area: ratatui::layout::Rect::new(0, 0, 80, 24),
     };
 
-    assert_eq!(lifecycle.arrange(&wider), Ok(None));
+    assert_eq!(lifecycle.arrange(None, &wider), Ok(None));
     assert_eq!(lifecycle.store.load().unwrap().version, before.version);
 }
 
@@ -554,7 +554,7 @@ fn an_arrangement_that_writes_returns_the_version_it_wrote() {
         name: "renamed".to_owned(),
     };
 
-    let written = lifecycle.arrange(&rename);
+    let written = lifecycle.arrange(None, &rename);
 
     assert_eq!(written, Ok(Some(lifecycle.store.load().unwrap().version)));
 }

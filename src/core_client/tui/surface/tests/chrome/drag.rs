@@ -218,6 +218,29 @@ async fn a_workspace_lands_at_the_nearest_gap_and_one_dropped_where_it_is_moves_
 }
 
 #[tokio::test]
+async fn a_workspace_dropped_beside_another_machines_rows_stays_among_its_own() {
+    let mut surface = plain(120, 30);
+    let mut layout = many(2);
+    layout.join(many(1).qualified("boxb"));
+    surface.update(layout);
+    frame(&mut surface, &HashSet::new());
+
+    press(&mut surface, 5, 2);
+    drag(&mut surface, 6, 4);
+    assert_eq!(
+        release(&mut surface, 6, 4),
+        moved(Arrangement::MoveWorkspace {
+            workspace: "w0".to_owned(),
+            to: Place::End,
+        })
+    );
+
+    press(&mut surface, 5, 4);
+    drag(&mut surface, 6, 1);
+    assert_eq!(release(&mut surface, 6, 1), None);
+}
+
+#[tokio::test]
 async fn a_workspace_dragged_off_the_list_shows_no_line_and_moves_nothing() {
     let mut surface = workspaces();
 

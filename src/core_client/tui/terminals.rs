@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use super::arrivals::Arrivals;
 use crate::api::schema::AgentStatus;
 use crate::detect::{Agent, AgentState};
-use crate::hc::{Core, HcResult};
+use crate::hc::{located, qualified, Core, HcResult, Machine};
 use crate::pane::{core_status, CoreStatus};
 use crate::workspace::derive_label_from_cwd;
 
@@ -23,6 +23,53 @@ pub(super) enum Report {
     Names(HashMap<String, String>),
     Name(String, Option<String>),
     Removed(String),
+}
+
+impl Report {
+    fn readdressed(self, mut to: impl FnMut(String) -> Option<String>) -> Option<Self> {
+        Some(match self {
+            Self::Snapshot { folders, statuses } => Self::Snapshot {
+                folders: folders
+                    .into_iter()
+                    .filter_map(|(terminal, folder)| Some((to(terminal)?, folder)))
+                    .collect(),
+                statuses: statuses
+                    .into_iter()
+                    .filter_map(|(terminal, status)| Some((to(terminal)?, status)))
+                    .collect(),
+            },
+            Self::Folder(terminal, folder) => Self::Folder(to(terminal)?, folder),
+            Self::Status(terminal, status) => Self::Status(to(terminal)?, status),
+            Self::Names(names) => Self::Names(
+                names
+                    .into_iter()
+                    .filter_map(|(terminal, name)| Some((to(terminal)?, name)))
+                    .collect(),
+            ),
+            Self::Name(terminal, name) => Self::Name(to(terminal)?, name),
+            Self::Removed(terminal) => Self::Removed(to(terminal)?),
+        })
+    }
+}
+
+struct Aliases<'a> {
+    core: &'a Core,
+    cores: Vec<Machine>,
+    stale: bool,
+}
+
+impl Aliases<'_> {
+    fn by_core_id(&mut self, address: String) -> Option<String> {
+        let Ok((Some(alias), local)) = located(&address) else {
+            return Some(address);
+        };
+        let known = self.cores.iter().any(|machine| machine.name == alias);
+        if std::mem::take(&mut self.stale) || !known {
+            self.cores = self.core.cores().unwrap_or_default();
+        }
+        let machine = self.cores.iter().find(|machine| machine.name == alias)?;
+        Some(qualified(Some(&machine.id), local))
+    }
 }
 
 const NAME_LABEL: &str = "lawn-name";
@@ -245,11 +292,18 @@ fn listen<T: From<Report>>(reports: &mpsc::UnboundedSender<T>) -> bool {
             return !reports.is_closed();
         }
     };
-    if reports
-        .send(snapshot(&subscription.snapshot).into())
-        .is_err()
-        || reports.send(names(&subscription.snapshot).into()).is_err()
-    {
+    let mut aliases = Aliases {
+        core: &core,
+        cores: Vec::new(),
+        stale: false,
+    };
+    let mut send = |report: Report, rebound: bool| {
+        aliases.stale |= rebound;
+        let report = report.readdressed(|address| aliases.by_core_id(address));
+        report.is_none_or(|report| reports.send(report.into()).is_ok())
+    };
+    let listed = &subscription.snapshot;
+    if !send(snapshot(listed), false) || !send(names(listed), false) {
         return false;
     }
     crate::pane::read_events(
@@ -257,11 +311,12 @@ fn listen<T: From<Report>>(reports: &mpsc::UnboundedSender<T>) -> bool {
         subscription.channel,
         subscription.stream,
         |message| {
+            let rebound = message["method"] == "missed" || message["params"]["type"] == "created";
             if let Some(report) = reported(message) {
-                reports.send(report.into()).ok();
+                send(report, rebound);
             }
             if let Some(report) = name_reported(message) {
-                reports.send(report.into()).ok();
+                send(report, false);
             }
         },
     );

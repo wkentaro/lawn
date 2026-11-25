@@ -110,7 +110,11 @@ impl Connection {
         }
     }
 
-    fn reconnect(&self, address: &str) -> Result<Option<(Arc<Attachment>, Attached)>, HcError> {
+    fn reconnect(
+        &self,
+        address: &str,
+        by_core_id: bool,
+    ) -> Result<Option<(Arc<Attachment>, Attached)>, HcError> {
         let mut delay = Duration::from_millis(100);
         loop {
             let size = {
@@ -123,6 +127,9 @@ impl Connection {
             let result = crate::hc::backend()
                 .unwrap_or_else(|| Err(HcError::Unavailable("core panes are disabled".into())))
                 .and_then(|core| {
+                    if let (true, Ok((machine, _))) = (by_core_id, crate::hc::located(address)) {
+                        core.holds(machine)?;
+                    }
                     let attached = match core.attach(serde_json::json!({
                         "terminal": address,
                         "rows": size.0,
@@ -185,6 +192,7 @@ enum Input {
 pub(in crate::pane) struct CoreIo {
     connection: Arc<Connection>,
     address: String,
+    followed: bool,
     input: mpsc::Sender<(Arc<Attachment>, Input)>,
 }
 
@@ -193,6 +201,7 @@ impl CoreIo {
         core: Arc<Core>,
         channel: u32,
         address: String,
+        followed: bool,
         rows: u16,
         cols: u16,
     ) -> std::io::Result<Self> {
@@ -252,6 +261,7 @@ impl CoreIo {
         Ok(Self {
             connection,
             address,
+            followed,
             input,
         })
     }
@@ -264,13 +274,19 @@ impl CoreIo {
     ) -> std::io::Result<()> {
         let connection = self.connection.clone();
         let address = self.address.clone();
+        let followed = self.followed;
         let Some(mut attachment) = connection.lock().current.clone() else {
             return Err(std::io::Error::other(
                 "core connection stopped before reading",
             ));
         };
         crate::thread_spawn::spawn_named("hc-pane", move || {
-            let mut follower = connection.follow(&attachment, &output, &address);
+            let follow = |attachment: &Arc<Attachment>| {
+                followed
+                    .then(|| connection.follow(attachment, &output, &address))
+                    .flatten()
+            };
+            let mut follower = follow(&attachment);
             let reason = loop {
                 match stream.blocking_recv() {
                     Some(Stream::Data(bytes)) => {
@@ -292,11 +308,11 @@ impl CoreIo {
                         if let Some(worker) = follower.take() {
                             let _ = worker.join();
                         }
-                        match connection.reconnect(&address) {
+                        match connection.reconnect(&address, !followed) {
                             Ok(Some((replacement, attached))) => {
                                 attachment = replacement;
                                 stream = attached.stream;
-                                follower = connection.follow(&attachment, &output, &address);
+                                follower = follow(&attachment);
                             }
                             Ok(None) => return,
                             Err(_) => break ChildExitReason::WaitFailed,

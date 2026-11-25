@@ -107,8 +107,11 @@ impl Layout {
         !self.parked.contains(terminal) && self.owns(terminal)
     }
 
-    pub(crate) fn qualified(mut self, machine: &str) -> Self {
-        let far = |local: &str| crate::hc::qualified(Some(machine), local);
+    pub(crate) fn qualified(self, machine: &str) -> Self {
+        self.readdressed(|local| crate::hc::qualified(Some(machine), local))
+    }
+
+    pub(crate) fn readdressed(mut self, far: impl Fn(&str) -> String) -> Self {
         for workspace in &mut self.workspaces {
             workspace.id = far(&workspace.id);
             for tab in &mut workspace.tabs {

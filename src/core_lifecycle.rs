@@ -266,9 +266,18 @@ impl Lifecycle {
     #[cfg(unix)]
     pub(crate) fn arrange(
         &self,
+        machine: Option<&str>,
         arrangement: &crate::session_doc::Arrangement,
     ) -> Result<Option<u64>, String> {
-        let (found, loaded, wrote) = self.store.edited(|layout| layout.arrange(arrangement))?;
+        let (found, loaded, wrote) = self.store.edited(|layout| match machine {
+            None => layout.arrange(arrangement),
+            Some(machine) => {
+                let mut listed = std::mem::take(layout).qualified(machine);
+                let found = listed.arrange(arrangement);
+                *layout = listed.readdressed(|far| local_of(far).to_owned());
+                found
+            }
+        })?;
         if !found {
             return Err(format!(
                 "session {} has nothing for {arrangement:?}",

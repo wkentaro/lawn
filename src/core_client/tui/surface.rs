@@ -1,7 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -21,7 +21,9 @@ use super::select::{Copying, Select};
 use super::session::{Operation, PaneChrome, Request, Session, Tile, Tiles};
 use super::terminals::Report;
 use crate::config::{Config, LiveKeybindConfig, ToastClipboardPosition};
+use crate::core_client::commands::located_start;
 use crate::core_client::view::{Geometry, Placing, Scrollback, View};
+use crate::hc::located;
 use crate::input::{KeybindAction, TerminalKey};
 use crate::layout::{PaneId, SplitBorder};
 use crate::pane::{ScrollMetrics, MIN_PANE_COLS, MIN_PANE_ROWS};
@@ -1451,15 +1453,24 @@ impl Surface {
         self.view(self.session.focused_id()?)
     }
 
-    pub(super) fn folder(&self, operation: &Operation) -> Option<PathBuf> {
-        let terminal = match operation {
-            Operation::Start(Destination::Split { beside, .. }) => beside,
-            _ => self.session.focused()?,
+    pub(super) fn folder(&self, operation: &Operation, launched_in: &Path) -> Option<PathBuf> {
+        let Operation::Start(destination) = operation else {
+            return None;
         };
-        self.session
-            .id_of(terminal)
-            .and_then(|id| self.view(id)?.cwd())
-            .or_else(|| self.session.folder(terminal).cloned())
+        let on = located_start(destination.clone()).ok()?.0;
+        let terminal = match destination {
+            Destination::Split { beside, .. } => Some(beside.as_str()),
+            _ => self.session.focused(),
+        };
+        terminal
+            .filter(|terminal| located(terminal).is_ok_and(|(machine, _)| machine == on.as_deref()))
+            .and_then(|terminal| {
+                let shown = self.session.id_of(terminal).filter(|_| on.is_none());
+                shown
+                    .and_then(|id| self.view(id)?.cwd())
+                    .or_else(|| self.session.folder(terminal).cloned())
+            })
+            .or_else(|| on.is_none().then(|| launched_in.to_owned()))
     }
 
     pub(super) fn view(&self, id: PaneId) -> Option<&View> {

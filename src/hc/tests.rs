@@ -738,3 +738,25 @@ fn a_machine_is_reached_by_its_core_id_unless_another_machine_has_that_name() {
     let error = core_id(&cores, "here").unwrap_err();
     assert!(error.starts_with("here is the name of one"), "{error}");
 }
+
+#[test]
+fn an_exact_core_id_is_the_id_of_one_machine_and_the_name_of_no_other() {
+    let machine = |name: &str, id: &str| Machine {
+        name: name.to_owned(),
+        id: id.to_owned(),
+        state: "connected".to_owned(),
+    };
+    let machines = [machine("boxb", "idb"), machine("idd", "idd")];
+    assert_eq!(exact_core_id(&machines, "idb"), Ok(()));
+    assert_eq!(exact_core_id(&machines, "idd"), Ok(()));
+    let error = exact_core_id(&machines, "gone").unwrap_err();
+    assert_eq!(error, "no linked machine has the core id gone");
+    assert!(exact_core_id(&machines, "boxb").is_err());
+
+    let unlinked = [machine("idb", "idc")];
+    let error = exact_core_id(&unlinked, "idb").unwrap_err();
+    assert!(error.starts_with("idb is the name of a machine"), "{error}");
+    let clash = [machine("idb", "idc"), machine("boxb", "idb")];
+    assert_eq!(exact_core_id(&clash, "idb"), Err(error));
+    assert_eq!(exact_core_id(&clash, "idc"), Ok(()));
+}

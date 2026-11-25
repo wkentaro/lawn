@@ -57,6 +57,18 @@ impl TestCore {
     }
 
     #[cfg(unix)]
+    pub(crate) fn stall(&self) -> Stalled {
+        let status = isolated(&self.session, &self.state)
+            .args(["server", "status", "--json"])
+            .output()
+            .expect("ask the core for its status");
+        let status: Value = serde_json::from_slice(&status.stdout).expect("a status");
+        let stalled = Stalled(status["pid"].as_u64().expect("the core's pid").to_string());
+        stalled.signal("-STOP");
+        stalled
+    }
+
+    #[cfg(unix)]
     pub(crate) fn link(&self, other: &TestCore, name: &str) -> Link {
         use std::os::unix::fs::PermissionsExt;
 
@@ -123,6 +135,24 @@ impl TestCore {
         *SHARED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(self.core.clone());
+    }
+}
+
+#[cfg(unix)]
+pub(crate) struct Stalled(String);
+
+#[cfg(unix)]
+impl Stalled {
+    fn signal(&self, signal: &str) {
+        let sent = Command::new("kill").args([signal, &self.0]).status();
+        assert!(sent.is_ok_and(|status| status.success()), "kill {signal}");
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Stalled {
+    fn drop(&mut self) {
+        self.signal("-CONT");
     }
 }
 

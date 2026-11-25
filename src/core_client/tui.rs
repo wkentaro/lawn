@@ -87,7 +87,7 @@ mod unix {
     use super::surface::{reloaded, Arrival, Pointed, Settings, Surface};
     use crate::client::terminal_setup::TerminalGuard;
     use crate::config::{Config, SoundConfig};
-    use crate::core_client::commands::creation_lifecycle;
+    use crate::core_client::commands::{creation_lifecycle, located_start};
     use crate::core_client::host::{
         clipboard, deliver, follow_key_reporting, read_input, refresh_host_modes, relay, wait,
         HostKeys, HostSizes, Stop, FRAME,
@@ -95,7 +95,7 @@ mod unix {
     use crate::core_client::screen::Screen;
     use crate::core_client::view::{Event, Events, Geometry, View, Wake};
     use crate::core_lifecycle::Lifecycle;
-    use crate::hc::Core;
+    use crate::hc::{qualified, Core};
     use crate::input::{KeybindAction, KeybindMatch};
     use crate::layout::PaneId;
     use crate::raw_input::RawInputEvent;
@@ -178,8 +178,8 @@ mod unix {
     }
 
     pub(super) fn operations(
-        mut perform: impl FnMut(Operation, PathBuf) + Send + 'static,
-    ) -> std::sync::mpsc::Sender<(Operation, PathBuf)> {
+        mut perform: impl FnMut(Operation, Option<PathBuf>) + Send + 'static,
+    ) -> std::sync::mpsc::Sender<(Operation, Option<PathBuf>)> {
         let (queue, queued) = std::sync::mpsc::channel();
         tokio::task::spawn_blocking(move || {
             for (operation, cwd) in queued {
@@ -189,11 +189,22 @@ mod unix {
         queue
     }
 
-    fn perform(
+    fn reach<'a>(
+        core: &Arc<Core>,
+        session: &str,
+        address: &'a str,
+    ) -> Result<(Lifecycle, Option<&'a str>, &'a str), String> {
+        let (machine, local) = crate::hc::located(address)?;
+        core.holds(machine).map_err(|error| error.to_string())?;
+        let lifecycle = Lifecycle::on(core.clone(), session, machine);
+        Ok((lifecycle, machine, local))
+    }
+
+    pub(super) fn perform(
         core: &Arc<Core>,
         session: &str,
         operation: Operation,
-        cwd: &std::path::Path,
+        cwd: Option<&std::path::Path>,
         created: &mpsc::UnboundedSender<String>,
     ) -> Option<u64> {
         let core = match connected(core.clone()) {
@@ -203,38 +214,56 @@ mod unix {
                 return None;
             }
         };
-        let lifecycle = || Lifecycle::new(core.clone(), session);
         match operation {
             Operation::Start(destination) => {
                 let report = |error| warn!(%error, session, "recovery failed");
-                match creation_lifecycle(&core, session, None, None, report)
-                    .and_then(|lifecycle| lifecycle.start(destination, Some(cwd), &[]))
-                {
-                    Ok(started) => {
-                        created.send(started.terminal).ok();
+                let started = located_start(destination).and_then(|(machine, destination)| {
+                    let machine = machine.as_deref();
+                    core.holds(machine).map_err(|error| error.to_string())?;
+                    let lifecycle = creation_lifecycle(&core, session, machine, machine, report)?;
+                    let started = lifecycle.start(destination, cwd, &[])?;
+                    Ok(qualified(machine, &started.terminal))
+                });
+                match started {
+                    Ok(terminal) => {
+                        created.send(terminal).ok();
                     }
                     Err(error) => warn!(%error, "the program did not start"),
                 }
             }
             Operation::Close(terminals) => {
                 for terminal in terminals {
-                    if let Err(error) = lifecycle().close(&terminal) {
+                    let closed = reach(&core, session, &terminal)
+                        .and_then(|(lifecycle, _, local)| lifecycle.close(local));
+                    if let Err(error) = closed {
                         warn!(%error, terminal, "the pane did not close");
                     }
                 }
             }
             Operation::Park(terminal) => {
-                if let Err(error) = lifecycle().park(&terminal) {
+                let parked = reach(&core, session, &terminal)
+                    .and_then(|(lifecycle, _, local)| lifecycle.park(local));
+                if let Err(error) = parked {
                     warn!(%error, terminal, "the pane did not park");
                 }
             }
             Operation::Name { terminal, name } => {
-                if let Err(error) = super::terminals::rename(&core, &terminal, &name) {
+                let renamed = reach(&core, session, &terminal).and_then(|_| {
+                    let renamed = super::terminals::rename(&core, &terminal, &name);
+                    renamed.map(drop).map_err(|error| error.to_string())
+                });
+                if let Err(error) = renamed {
                     warn!(%error, terminal, "the pane was not renamed");
                 }
             }
             Operation::Arrange(arrangement) => {
-                return lifecycle().arrange(&arrangement).unwrap_or_else(|error| {
+                let arranged = reach(&core, session, arrangement.subject()).and_then(
+                    |(lifecycle, machine, _)| {
+                        let written = lifecycle.arrange(machine, &arrangement)?;
+                        Ok(written.filter(|_| machine.is_none()))
+                    },
+                );
+                return arranged.unwrap_or_else(|error| {
                     warn!(%error, "the session was not rearranged");
                     None
                 });
@@ -285,16 +314,14 @@ mod unix {
             let (core, session) = (core.clone(), session.clone());
             operations(move |operation, cwd| {
                 let arranging = matches!(operation, Operation::Arrange(_));
-                let written = perform(&core, &session, operation, &cwd, &created_tx);
+                let written = perform(&core, &session, operation, cwd.as_deref(), &created_tx);
                 if arranging {
                     finished_tx.send(written).ok();
                 }
             })
         };
         let run = |surface: &Surface, operation: Operation| {
-            let cwd = surface
-                .folder(&operation)
-                .unwrap_or_else(|| launched_in.clone());
+            let cwd = surface.folder(&operation, &launched_in);
             if matches!(operation, Operation::Arrange(_)) {
                 edits.set(edits.get() + 1);
             }
@@ -576,7 +603,7 @@ mod unix {
                 event = events.recv() => match event {
                     Event::Ended(id) => {
                         if let Some(operation) = surface.ended(id) {
-                            operations.send((operation, launched_in.clone())).ok();
+                            operations.send((operation, None)).ok();
                         }
                     }
                     Event::Detached(id) => {
