@@ -296,6 +296,132 @@ fn click(column: u16, row: u16) -> MouseEvent {
 }
 
 #[tokio::test]
+async fn a_pane_that_did_not_attach_says_why_until_it_attaches() {
+    let unreachable = || {
+        std::io::Error::other(crate::hc::HcError::Rpc {
+            method: "terminal.attach".to_owned(),
+            kind: Some("unavailable".to_owned()),
+            message: "boxb is unreachable: the command that reaches it exited with status 1"
+                .to_owned(),
+            hint: Some("hc machine ls shows when it comes back".to_owned()),
+        })
+    };
+    let mut surface = surface(40, 9);
+    surface.update(row_of(&["boxb/t1".to_owned()]));
+    let (_, id, geometry) = requests(&mut surface).remove(0);
+
+    surface.attached(id, geometry, Err(unreachable()));
+
+    let rows = surface
+        .frame(&HashSet::new(), |_, _, _| {}, ignore_leaving)
+        .0;
+    assert_eq!(
+        [text(&rows[3..4]).trim(), text(&rows[4..5]).trim()],
+        [
+            "boxb is unreachable: the command that",
+            "reaches it exited with status 1"
+        ],
+        "{rows:?}"
+    );
+    surface.attached(id, geometry, Ok(View::test(geometry.cols, geometry.rows)));
+    let rows = frame(&mut surface, &HashSet::new());
+    assert!(!text(&rows).contains("unreachable"), "{rows:?}");
+    assert!(surface.unattached.is_empty());
+}
+
+fn painted(reason: &str, inner: Rect) -> Vec<String> {
+    let whole = Rect::new(0, 0, inner.width + 2, inner.height + 2);
+    let mut buffer = ratatui::buffer::Buffer::filled(whole, ratatui::buffer::Cell::new("#"));
+    for position in inner.positions() {
+        buffer[position].set_symbol(" ");
+    }
+    super::paint_reason(reason, ratatui::style::Style::new(), inner, &mut buffer);
+    (0..whole.height)
+        .map(|y| (0..whole.width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn a_reason_that_just_fits_its_pane_is_shown_whole() {
+    let rows = painted("could never reach local shell", Rect::new(1, 1, 10, 5));
+
+    assert_eq!(
+        rows,
+        [
+            "############",
+            "#  could   #",
+            "#  never   #",
+            "#  reach   #",
+            "#  local   #",
+            "#  shell   #",
+            "############",
+        ]
+    );
+}
+
+#[test]
+fn a_wide_character_in_a_reason_stays_inside_its_pane() {
+    let rows = painted("could not open log 界", Rect::new(1, 1, 20, 2));
+
+    assert_eq!(
+        rows,
+        [
+            "######################",
+            "# could not open log #",
+            "#         界          #",
+            "######################",
+        ]
+    );
+}
+
+fn rows(text: &str, width: usize) -> Vec<String> {
+    super::wrapped(text, width)
+        .iter()
+        .map(|line| line.iter().map(|(symbol, _)| *symbol).collect())
+        .collect()
+}
+
+#[test]
+fn a_word_wider_than_the_pane_is_broken_across_rows() {
+    assert_eq!(
+        rows("at /srv/界界/logs now", 6),
+        ["at", "/srv/", "界界/l", "ogs", "now"]
+    );
+    assert_eq!(rows("界 a", 1), ["a"]);
+    assert_eq!(rows("a 界", 1), ["a"]);
+    assert_eq!(rows("a", 0), [""]);
+}
+
+#[test]
+fn a_reason_is_measured_by_the_cells_it_is_drawn_in() {
+    assert_eq!(rows("a#\u{FE0F}", 2), ["a", "#\u{FE0F}"]);
+    assert_eq!(rows("\u{644}\u{627}", 1), ["\u{644}", "\u{627}"]);
+    assert_eq!(rows("a \u{301} b", 1), ["a", "b"]);
+    assert_eq!(rows("e\u{301} b", 1), ["e\u{301}", "b"]);
+    assert_eq!(
+        painted("\u{644}\u{627}", Rect::new(1, 1, 2, 1)),
+        ["####", "#\u{644}\u{627}#", "####"]
+    );
+}
+
+#[test]
+fn a_symbol_too_wide_for_the_pane_takes_no_row_from_its_neighbours() {
+    assert_eq!(rows("a\u{17D8}b", 2), ["ab"]);
+    assert_eq!(
+        painted("a\u{17D8}b", Rect::new(1, 1, 2, 1)),
+        ["####", "#ab#", "####"]
+    );
+}
+
+#[test]
+fn symbols_on_either_side_of_a_dropped_one_are_drawn_apart() {
+    assert_eq!(
+        painted("#\0\u{FE0F}\u{1F3FB}", Rect::new(1, 1, 3, 1)),
+        ["#####", "##\u{FE0F}\u{1F3FB} #", "#####"]
+    );
+}
+
+#[tokio::test]
 async fn a_layout_draws_the_whole_screen_with_borders_and_each_pane_inside_them() {
     let mut surface = surface(40, 10);
     surface.update(row_of(&terminals(2)));
