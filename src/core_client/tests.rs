@@ -64,8 +64,9 @@ fn create_commands_take_a_program_after_the_separator() {
         parsed(&["workspace", "create", "--name", "main", "--", "sleep", "-x"]),
         Command::WorkspaceCreate {
             name: Some("main".to_owned()),
+            on: None,
             program: Program {
-                cwd: here(),
+                cwd: Some(here()),
                 argv: args(&["sleep", "-x"]),
             },
         }
@@ -78,7 +79,7 @@ fn create_commands_take_a_program_after_the_separator() {
             workspace: Some("w0".to_owned()),
             name: None,
             program: Program {
-                cwd: elsewhere.clone(),
+                cwd: Some(elsewhere.clone()),
                 argv: Vec::new(),
             },
         }
@@ -91,7 +92,7 @@ fn a_relative_cwd_is_made_absolute() {
     else {
         panic!("not workspace create");
     };
-    assert_eq!(program.cwd, here().join("sub"));
+    assert_eq!(program.cwd, Some(here().join("sub")));
 }
 
 #[test]
@@ -103,7 +104,7 @@ fn pane_split_defaults_to_an_even_right_split() {
             direction: Direction::Right,
             ratio: 0.5,
             program: Program {
-                cwd: here(),
+                cwd: Some(here()),
                 argv: Vec::new(),
             },
         }
@@ -212,3 +213,46 @@ fn a_session_log_is_not_among_the_old_session_directories_under_a_shared_root() 
 
 #[cfg(unix)]
 mod live;
+
+#[test]
+fn a_program_for_another_machine_keeps_its_folder_as_typed() {
+    let far = |cwd: Option<&str>| Program {
+        cwd: cwd.map(PathBuf::from),
+        argv: Vec::new(),
+    };
+    assert_eq!(
+        parsed(&["workspace", "create", "--on", "boxb"]),
+        Command::WorkspaceCreate {
+            name: None,
+            on: Some("boxb".to_owned()),
+            program: far(None),
+        }
+    );
+    assert_eq!(
+        parsed(&["tab", "create", "--workspace", "boxb/w1", "--cwd", "sub"]),
+        Command::TabCreate {
+            workspace: Some("boxb/w1".to_owned()),
+            name: None,
+            program: far(Some("sub")),
+        }
+    );
+    assert_eq!(
+        parsed(&["pane", "split", "boxb/t1"]),
+        Command::PaneSplit {
+            beside: "boxb/t1".to_owned(),
+            direction: Direction::Right,
+            ratio: 0.5,
+            program: far(None),
+        }
+    );
+}
+
+#[test]
+fn only_a_workspace_is_given_a_machine() {
+    for words in [
+        &["tab", "create", "--on", "boxb"][..],
+        &["pane", "split", "t1", "--on", "boxb"],
+    ] {
+        assert!(parse(&args(words)).expect("handled").is_err(), "{words:?}");
+    }
+}

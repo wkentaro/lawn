@@ -4,12 +4,12 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::core_lifecycle::Lifecycle;
-use crate::hc::Core;
-use crate::session_doc::{Destination, Direction, Layout, Placement, Store};
+use crate::hc::{located, qualified, Core};
+use crate::session_doc::{Created, Destination, Direction, Layout, Placement, Store};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Program {
-    pub(super) cwd: PathBuf,
+    pub(super) cwd: Option<PathBuf>,
     pub(super) argv: Vec<String>,
 }
 
@@ -20,6 +20,7 @@ pub(super) enum Command {
     },
     WorkspaceCreate {
         name: Option<String>,
+        on: Option<String>,
         program: Program,
     },
     TabCreate {
@@ -48,16 +49,36 @@ pub(super) enum Command {
     },
 }
 
-fn lifecycle(core: &Arc<Core>, session: &str) -> Lifecycle {
-    recovered(core, session, report_recovery(session))
+fn lifecycle(
+    core: &Arc<Core>,
+    session: &str,
+    machine: Option<&str>,
+    id: Option<&str>,
+) -> Lifecycle {
+    recovered(core, session, id, report_recovery(session, machine))
 }
 
-fn report_recovery(session: &str) -> impl FnOnce(String) + '_ {
-    move |err| eprintln!("warning: recovery in session {session}: {err}")
+fn there(machine: Option<&str>) -> impl Fn(String) -> String + '_ {
+    move |err| match machine {
+        Some(machine) => format!("on {machine}: {err}"),
+        None => err,
+    }
 }
 
-fn recovered(core: &Arc<Core>, session: &str, report: impl FnOnce(String)) -> Lifecycle {
-    let lifecycle = Lifecycle::new(core.clone(), session);
+fn report_recovery<'a>(session: &'a str, machine: Option<&'a str>) -> impl FnOnce(String) + 'a {
+    move |err| {
+        let err = there(machine)(err);
+        eprintln!("warning: recovery in session {session}: {err}")
+    }
+}
+
+fn recovered(
+    core: &Arc<Core>,
+    session: &str,
+    id: Option<&str>,
+    report: impl FnOnce(String),
+) -> Lifecycle {
+    let lifecycle = Lifecycle::on(core.clone(), session, id);
     if let Err(err) = lifecycle.recover() {
         report(err);
     }
@@ -67,22 +88,44 @@ fn recovered(core: &Arc<Core>, session: &str, report: impl FnOnce(String)) -> Li
 pub(super) fn creation_lifecycle(
     core: &Arc<Core>,
     session: &str,
+    machine: Option<&str>,
+    id: Option<&str>,
     report: impl FnOnce(String),
 ) -> Result<Lifecycle, String> {
-    let pending = Store::new(core.clone(), session, None)
+    let pending = Store::new(core.clone(), session, id.map(str::to_owned))
         .load()?
         .layout
         .pending_starts;
-    let lifecycle = recovered(core, session, report);
+    let lifecycle = recovered(core, session, id, report);
     if let Some(reference) = pending.keys().next() {
+        let reference = qualified(machine, reference);
         return Err(format!("start {reference} was already pending; recovery was attempted, but no new program was started; inspect `lawn --session {session} ls`, or give it up with `lawn --session {session} start drop {reference}`"));
     }
     Ok(lifecycle)
 }
 
 pub(super) fn ls(core: &Arc<Core>, session: &str) -> Result<Layout, String> {
-    lifecycle(core, session);
-    Ok(Store::new(core.clone(), session, None).load()?.layout)
+    let mut layout = lifecycle(core, session, None, None).layout()?;
+    let cores = core.cores().unwrap_or_else(|error| {
+        eprintln!("warning: linked machines are not listed: {error}");
+        Vec::new()
+    });
+    let machines = cores.split_last().map_or(&[][..], |(_, machines)| machines);
+    for machine in machines {
+        let name = &machine.name;
+        if machine.state != "connected" {
+            let state = &machine.state;
+            eprintln!("warning: {name} is {state}; its workspaces are not listed");
+            continue;
+        }
+        let listed = crate::hc::core_id(&cores, name)
+            .and_then(|id| lifecycle(core, session, Some(name), Some(id)).layout());
+        match listed {
+            Ok(far) => layout.join(far.qualified(name)),
+            Err(error) => eprintln!("warning: the workspaces of {name} are not listed: {error}"),
+        }
+    }
+    Ok(layout)
 }
 
 pub(super) fn ls_json(session: &str, layout: &Layout) -> Value {
@@ -128,18 +171,60 @@ pub(super) fn ls_text(layout: &Layout) -> String {
     text
 }
 
+type Reached<'a> = (Option<&'a str>, Option<String>, &'a str);
+
+fn reached<'a>(core: &Core, typed: &'a str) -> Result<Reached<'a>, String> {
+    let (machine, local) = located(typed)?;
+    Ok((machine, core_id(core, machine)?, local))
+}
+
+fn core_id(core: &Core, machine: Option<&str>) -> Result<Option<String>, String> {
+    let Some(typed) = machine else {
+        return Ok(None);
+    };
+    let cores = core.cores().map_err(|err| err.to_string())?;
+    match crate::hc::core_id(&cores, typed) {
+        Ok(id) => Ok(Some(id.to_owned())),
+        Err(err) => Err(format!("{err}; nothing was changed")),
+    }
+}
+
+#[cfg(unix)]
+pub(super) fn core_address(core: &Core, typed: &str) -> Result<String, String> {
+    let (_, id, local) = reached(core, typed)?;
+    Ok(qualified(id.as_deref(), local))
+}
+
+fn start(
+    core: &Arc<Core>,
+    session: &str,
+    machine: Option<&str>,
+    destination: Destination,
+    program: &Program,
+) -> Result<Value, String> {
+    let id = core_id(core, machine)?;
+    let report = report_recovery(session, machine);
+    let lifecycle = creation_lifecycle(core, session, machine, id.as_deref(), report)?;
+    let created = lifecycle
+        .start(destination, program.cwd.as_deref(), &program.argv)
+        .map_err(there(machine))?;
+    let far = |local: String| qualified(machine, &local);
+    serde_json::to_value(Created {
+        terminal: far(created.terminal),
+        workspace: created.workspace.map(far),
+        tab: created.tab.map(far),
+    })
+    .map_err(|err| err.to_string())
+}
+
 pub(super) fn workspace_create(
     core: &Arc<Core>,
     session: &str,
     name: Option<String>,
+    on: Option<&str>,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
-        Destination::Workspace { name },
-        &program.cwd,
-        &program.argv,
-    )?;
-    serde_json::to_value(created).map_err(|err| err.to_string())
+    start(core, session, on, Destination::Workspace { name }, program)
 }
 
 pub(super) fn tab_create(
@@ -149,15 +234,12 @@ pub(super) fn tab_create(
     name: Option<String>,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
-        Destination::Tab {
-            workspace: workspace.map(str::to_owned),
-            name,
-        },
-        &program.cwd,
-        &program.argv,
-    )?;
-    serde_json::to_value(created).map_err(|err| err.to_string())
+    let (machine, workspace) = match workspace.map(located).transpose()? {
+        Some((machine, workspace)) => (machine, Some(workspace.to_owned())),
+        None => (None, None),
+    };
+    let destination = Destination::Tab { workspace, name };
+    start(core, session, machine, destination, program)
 }
 
 pub(super) fn pane_split(
@@ -168,30 +250,53 @@ pub(super) fn pane_split(
     ratio: f32,
     program: &Program,
 ) -> Result<Value, String> {
-    let created = creation_lifecycle(core, session, report_recovery(session))?.start(
-        Destination::Split {
-            beside: beside.to_owned(),
-            direction,
-            ratio,
-        },
-        &program.cwd,
-        &program.argv,
-    )?;
-    serde_json::to_value(created).map_err(|err| err.to_string())
+    let (machine, beside) = located(beside)?;
+    let destination = Destination::Split {
+        beside: beside.to_owned(),
+        direction,
+        ratio,
+    };
+    start(core, session, machine, destination, program)
 }
 
 pub(super) fn pane_close(core: &Arc<Core>, session: &str, terminal: &str) -> Result<Value, String> {
-    let lifecycle = Lifecycle::new(core.clone(), session);
-    lifecycle.close(terminal)?;
+    let (machine, id, local) = reached(core, terminal)?;
+    let lifecycle = Lifecycle::on(core.clone(), session, id.as_deref());
+    lifecycle.close(local).map_err(there(machine))?;
     if let Err(err) = lifecycle.recover() {
-        eprintln!("warning: recovery in session {session}: {err}");
+        report_recovery(session, machine)(err);
     }
     Ok(json!({"terminal": terminal}))
 }
 
 pub(super) fn park(core: &Arc<Core>, session: &str, terminal: &str) -> Result<Value, String> {
-    lifecycle(core, session).park(terminal)?;
+    let (machine, id, local) = reached(core, terminal)?;
+    lifecycle(core, session, machine, id.as_deref())
+        .park(local)
+        .map_err(there(machine))?;
     Ok(json!({"terminal": terminal}))
+}
+
+fn placed(machine: Option<&str>, to: Option<Placement>) -> Result<Option<Placement>, String> {
+    let near = |typed: &str| match located(typed)? {
+        (on, local) if on == machine => Ok(local.to_owned()),
+        _ => Err(format!("{typed} is on another machine than the terminal")),
+    };
+    Ok(match to {
+        Some(Placement::Beside {
+            terminal,
+            direction,
+        }) => Some(Placement::Beside {
+            terminal: near(&terminal)?,
+            direction,
+        }),
+        Some(Placement::NewTab {
+            workspace: Some(workspace),
+        }) => Some(Placement::NewTab {
+            workspace: Some(near(&workspace)?),
+        }),
+        to => to,
+    })
 }
 
 pub(super) fn unpark(
@@ -200,11 +305,12 @@ pub(super) fn unpark(
     terminal: &str,
     to: Option<Placement>,
 ) -> Result<Value, String> {
-    if terminal.contains('/') {
-        return Err("remote terminals are not supported by this rewrite build yet".to_owned());
-    }
-    let terminal = lifecycle(core, session).unpark(terminal, to)?;
-    Ok(json!({"terminal": terminal}))
+    let (machine, id, local) = reached(core, terminal)?;
+    let to = placed(machine, to)?;
+    let terminal = lifecycle(core, session, machine, id.as_deref())
+        .unpark(local, to)
+        .map_err(there(machine))?;
+    Ok(json!({"terminal": qualified(machine, &terminal)}))
 }
 
 pub(super) fn start_drop(
@@ -212,15 +318,18 @@ pub(super) fn start_drop(
     session: &str,
     reference: &str,
 ) -> Result<Value, String> {
-    Lifecycle::new(core.clone(), session).drop_start(reference)?;
+    let (machine, id, local) = reached(core, reference)?;
+    Lifecycle::on(core.clone(), session, id.as_deref())
+        .drop_start(local)
+        .map_err(there(machine))?;
     Ok(json!({"dropped": reference}))
 }
 
 pub(super) fn run(core: &Arc<Core>, session: &str, command: Command) -> Result<Value, String> {
     match command {
         Command::Ls { .. } => Ok(ls_json(session, &ls(core, session)?)),
-        Command::WorkspaceCreate { name, program } => {
-            workspace_create(core, session, name, &program)
+        Command::WorkspaceCreate { name, on, program } => {
+            workspace_create(core, session, name, on.as_deref(), &program)
         }
         Command::TabCreate {
             workspace,

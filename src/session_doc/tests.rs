@@ -72,6 +72,58 @@ fn terminals_walk_every_tab_depth_first() {
 }
 
 #[test]
+fn a_machine_s_layout_joins_another_under_the_machine_s_name() {
+    let mut near = Layout::default();
+    add_workspace(&mut near, pane("t1"));
+    let mut far = Layout::default();
+    let workspace = add_workspace(&mut far, split(pane("t1"), pane("t2")));
+    far.parked.insert("t2".to_owned());
+    far.closing.insert("t3".to_owned());
+    let pending = |destination| PendingStart {
+        destination,
+        reply_received: false,
+    };
+    far.pending_starts.insert(
+        "doc:4".to_owned(),
+        pending(Destination::Split {
+            beside: "t1".to_owned(),
+            direction: Direction::Down,
+            ratio: 0.5,
+        }),
+    );
+    far.pending_starts.insert(
+        "doc:5".to_owned(),
+        pending(Destination::Tab {
+            workspace: Some(workspace),
+            name: None,
+        }),
+    );
+
+    near.join(far.qualified("boxb"));
+
+    let ids = |layout: &Layout| -> Vec<String> {
+        let workspaces = layout.workspaces.iter();
+        workspaces
+            .flat_map(|w| std::iter::once(&w.id).chain(w.tabs.iter().map(|tab| &tab.id)))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(ids(&near), ["ws0", "tab1", "boxb/ws0", "boxb/tab1"]);
+    let terminals: Vec<&str> = near.terminals().collect();
+    assert_eq!(terminals, ["t1", "boxb/t1", "boxb/t2"]);
+    assert!(near.shows("t1") && near.shows("boxb/t1") && !near.shows("boxb/t2"));
+    assert!(near.closing.contains("boxb/t3"));
+    let destinations: Vec<_> = near.pending_starts.into_iter().collect();
+    assert!(matches!(
+        &destinations[..],
+        [(first, PendingStart { destination: Destination::Split { beside, .. }, .. }),
+         (second, PendingStart { destination: Destination::Tab { workspace: Some(workspace), .. }, .. })]
+            if first == "boxb/doc:4" && beside == "boxb/t1"
+                && second == "boxb/doc:5" && workspace == "boxb/ws0"
+    ));
+}
+
+#[test]
 fn every_session_shares_one_document() {
     let app = crate::config::app_dir_name();
     assert_eq!(name(), format!("{app}-sessions"));

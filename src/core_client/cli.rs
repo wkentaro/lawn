@@ -72,7 +72,11 @@ fn command() -> clap::Command {
         .subcommand(
             clap::Command::new("workspace")
                 .subcommand_required(true)
-                .subcommand(program(clap::Command::new("create").arg(name()))),
+                .subcommand(program(
+                    clap::Command::new("create")
+                        .arg(Arg::new("on").long("on").value_name("MACHINE"))
+                        .arg(name()),
+                )),
         )
         .subcommand(
             clap::Command::new("tab")
@@ -164,19 +168,22 @@ fn from_matches(matches: &ArgMatches) -> Result<Command, clap::Error> {
             let Some(("create", matches)) = matches.subcommand() else {
                 return Err(missing_subcommand());
             };
+            let on = string(matches, "on");
             Command::WorkspaceCreate {
                 name: string(matches, "name"),
-                program: program_of(matches)?,
+                program: program_of(matches, on.is_some())?,
+                on,
             }
         }
         Some(("tab", matches)) => {
             let Some(("create", matches)) = matches.subcommand() else {
                 return Err(missing_subcommand());
             };
+            let workspace = string(matches, "workspace");
             Command::TabCreate {
-                workspace: string(matches, "workspace"),
                 name: string(matches, "name"),
-                program: program_of(matches)?,
+                program: program_of(matches, workspace.as_deref().is_some_and(far))?,
+                workspace,
             }
         }
         Some(("pane", matches)) => match matches.subcommand() {
@@ -187,7 +194,7 @@ fn from_matches(matches: &ArgMatches) -> Result<Command, clap::Error> {
                     .get_one::<f32>("ratio")
                     .copied()
                     .unwrap_or(DEFAULT_RATIO),
-                program: program_of(matches)?,
+                program: program_of(matches, far(&terminal(matches)))?,
             },
             Some(("close", matches)) => Command::PaneClose {
                 terminal: terminal(matches),
@@ -223,10 +230,16 @@ fn from_matches(matches: &ArgMatches) -> Result<Command, clap::Error> {
     Ok(command)
 }
 
-fn program_of(matches: &ArgMatches) -> Result<Program, clap::Error> {
-    let cwd = match matches.get_one::<PathBuf>("cwd") {
-        Some(cwd) => std::path::absolute(cwd)?,
-        None => std::env::current_dir()?,
+fn far(address: &str) -> bool {
+    address.contains('/')
+}
+
+fn program_of(matches: &ArgMatches, far: bool) -> Result<Program, clap::Error> {
+    let cwd = match (matches.get_one::<PathBuf>("cwd"), far) {
+        (Some(cwd), false) => Some(std::path::absolute(cwd)?),
+        (Some(cwd), true) => Some(cwd.clone()),
+        (None, false) => Some(std::env::current_dir()?),
+        (None, true) => None,
     };
     let argv = matches
         .get_many::<String>("argv")

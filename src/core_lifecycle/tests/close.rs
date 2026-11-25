@@ -33,7 +33,7 @@ fn a_live_kill_reply_keeps_the_close_reservation() {
     let created = lifecycle
         .start(
             Destination::Workspace { name: None },
-            Path::new("/tmp"),
+            Some(Path::new("/tmp")),
             &["sh".to_owned(), "-c".to_owned(), "sleep 120".to_owned()],
         )
         .unwrap();

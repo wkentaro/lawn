@@ -419,7 +419,11 @@ async fn the_follower_reports_each_new_terminal_and_follows_again_after_the_core
         .expect("a new connection");
     assert!(!std::sync::Arc::ptr_eq(&core, &test.core));
     let second = Lifecycle::new(core, "followed")
-        .start(Destination::Workspace { name: None }, Path::new("/"), &argv)
+        .start(
+            Destination::Workspace { name: None },
+            Some(Path::new("/")),
+            &argv,
+        )
         .expect("start")
         .terminal;
 
