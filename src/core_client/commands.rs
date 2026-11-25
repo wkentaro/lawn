@@ -43,6 +43,9 @@ pub(super) enum Command {
         terminal: String,
         to: Option<Placement>,
     },
+    StartDrop {
+        reference: String,
+    },
 }
 
 fn lifecycle(core: &Arc<Core>, session: &str) -> Lifecycle {
@@ -72,7 +75,7 @@ pub(super) fn creation_lifecycle(
         .pending_starts;
     let lifecycle = recovered(core, session, report);
     if let Some(reference) = pending.keys().next() {
-        return Err(format!("start {reference} was already pending; recovery was attempted, but no new program was started; inspect `lawn --session {session} ls`"));
+        return Err(format!("start {reference} was already pending; recovery was attempted, but no new program was started; inspect `lawn --session {session} ls`, or give it up with `lawn --session {session} start drop {reference}`"));
     }
     Ok(lifecycle)
 }
@@ -204,6 +207,15 @@ pub(super) fn unpark(
     Ok(json!({"terminal": terminal}))
 }
 
+pub(super) fn start_drop(
+    core: &Arc<Core>,
+    session: &str,
+    reference: &str,
+) -> Result<Value, String> {
+    Lifecycle::new(core.clone(), session).drop_start(reference)?;
+    Ok(json!({"dropped": reference}))
+}
+
 pub(super) fn run(core: &Arc<Core>, session: &str, command: Command) -> Result<Value, String> {
     match command {
         Command::Ls { .. } => Ok(ls_json(session, &ls(core, session)?)),
@@ -224,5 +236,6 @@ pub(super) fn run(core: &Arc<Core>, session: &str, command: Command) -> Result<V
         Command::PaneClose { terminal } => pane_close(core, session, &terminal),
         Command::Park { terminal } => park(core, session, &terminal),
         Command::Unpark { terminal, to } => unpark(core, session, &terminal, to),
+        Command::StartDrop { reference } => start_drop(core, session, &reference),
     }
 }
