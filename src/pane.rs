@@ -2805,6 +2805,7 @@ impl PaneRuntime {
                 pane_id,
                 core,
                 attached,
+                None,
                 rows,
                 cols,
                 scrollback_limit_bytes,
@@ -4139,6 +4140,10 @@ impl PaneRuntime {
         let result = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
         self.content_seq.fetch_add(1, Ordering::Release);
         self.compression.wake();
+        if let Some(cwd) = result.reported_cwd {
+            let (events, _reported) = mpsc::channel(1);
+            publish_reported_cwd(self.pane_id, cwd, &self.reported_cwd, &events);
+        }
         result.terminal_responses
     }
 

@@ -1056,11 +1056,66 @@ async fn a_split_from_a_pane_menu_starts_in_the_reported_folder_of_the_clicked_p
     let other = pane(&surface, "t1");
     right(&mut surface, other.x + 1, other.y + 1);
     let split = choose(&mut surface, other.x + 1, other.y + 1, "Split right").expect("split");
-    assert_eq!(surface.folder(&split), Some("/srv/clicked".into()));
+    let launched_in = std::path::Path::new("/srv/launched");
     assert_eq!(
-        surface.folder(&Operation::Park("t1".to_owned())),
+        surface.folder(&split, launched_in),
+        Some("/srv/clicked".into())
+    );
+    let park = Operation::Park("t1".to_owned());
+    assert_eq!(surface.folder(&park, launched_in), None);
+}
+
+#[tokio::test]
+async fn a_start_on_another_machine_takes_no_folder_from_this_one() {
+    let mut surface = spread_out();
+    let now = std::time::Instant::now();
+    surface.heard(Report::Folder("t0".to_owned(), "/srv/focused".into()), now);
+    let launched_in = std::path::Path::new("/srv/launched");
+    let tab = |workspace: &str| {
+        Operation::Start(Destination::Tab {
+            workspace: Some(workspace.to_owned()),
+            name: None,
+        })
+    };
+    let split = Operation::Start(Destination::Split {
+        beside: "boxb/t9".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    });
+
+    assert_eq!(
+        surface.folder(&tab("ws0"), launched_in),
         Some("/srv/focused".into())
     );
+    assert_eq!(surface.folder(&tab("boxb/ws0"), launched_in), None);
+    assert_eq!(surface.folder(&split, launched_in), None);
+
+    surface.heard(Report::Folder("boxb/t9".to_owned(), "/srv/far".into()), now);
+    assert_eq!(surface.folder(&split, launched_in), Some("/srv/far".into()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_split_beside_a_linked_pane_starts_in_the_folder_its_machine_reports() {
+    let mut surface = plain(120, 30);
+    surface.update(row_of(&["boxb/t1".to_owned()]));
+    let (_, id, geometry) = requests(&mut surface).remove(0);
+    let view = View::test(geometry.cols, geometry.rows);
+    view.test_feed(b"\x1b]7;file:///\x07");
+    assert_eq!(view.cwd(), Some("/".into()));
+    surface.attached(id, geometry, Ok(view));
+    frame(&mut surface, &HashSet::new());
+    let far = Report::Folder("boxb/t1".to_owned(), "/srv/far".into());
+    surface.heard(far, std::time::Instant::now());
+    let split = Operation::Start(Destination::Split {
+        beside: "boxb/t1".to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    });
+
+    let folder = surface.folder(&split, std::path::Path::new("/srv/launched"));
+
+    assert_eq!(folder, Some("/srv/far".into()));
 }
 
 #[tokio::test]

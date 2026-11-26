@@ -178,7 +178,7 @@ fn reached<'a>(core: &Core, typed: &'a str) -> Result<Reached<'a>, String> {
     Ok((machine, core_id(core, machine)?, local))
 }
 
-fn core_id(core: &Core, machine: Option<&str>) -> Result<Option<String>, String> {
+pub(super) fn core_id(core: &Core, machine: Option<&str>) -> Result<Option<String>, String> {
     let Some(typed) = machine else {
         return Ok(None);
     };
@@ -195,13 +195,42 @@ pub(super) fn core_address(core: &Core, typed: &str) -> Result<String, String> {
     Ok(qualified(id.as_deref(), local))
 }
 
+pub(super) fn reach<'a>(
+    core: &Arc<Core>,
+    session: &str,
+    typed: &'a str,
+) -> Result<(Lifecycle, Option<&'a str>, &'a str), String> {
+    let (machine, id, local) = reached(core, typed)?;
+    let lifecycle = Lifecycle::on(core.clone(), session, id.as_deref());
+    Ok((lifecycle, machine, local))
+}
+
+pub(super) fn located_start(
+    mut destination: Destination,
+) -> Result<(Option<String>, Destination), String> {
+    let anchor = match &mut destination {
+        Destination::Tab {
+            workspace: Some(anchor),
+            ..
+        }
+        | Destination::Split { beside: anchor, .. } => anchor,
+        _ => return Ok((None, destination)),
+    };
+    let (machine, local) = located(anchor)?;
+    let machine = machine.map(str::to_owned);
+    *anchor = local.to_owned();
+    Ok((machine, destination))
+}
+
 fn start(
     core: &Arc<Core>,
     session: &str,
-    machine: Option<&str>,
+    on: Option<&str>,
     destination: Destination,
     program: &Program,
 ) -> Result<Value, String> {
+    let (machine, destination) = located_start(destination)?;
+    let machine = machine.as_deref().or(on);
     let id = core_id(core, machine)?;
     let report = report_recovery(session, machine);
     let lifecycle = creation_lifecycle(core, session, machine, id.as_deref(), report)?;
@@ -234,12 +263,9 @@ pub(super) fn tab_create(
     name: Option<String>,
     program: &Program,
 ) -> Result<Value, String> {
-    let (machine, workspace) = match workspace.map(located).transpose()? {
-        Some((machine, workspace)) => (machine, Some(workspace.to_owned())),
-        None => (None, None),
-    };
+    let workspace = workspace.map(str::to_owned);
     let destination = Destination::Tab { workspace, name };
-    start(core, session, machine, destination, program)
+    start(core, session, None, destination, program)
 }
 
 pub(super) fn pane_split(
@@ -250,18 +276,16 @@ pub(super) fn pane_split(
     ratio: f32,
     program: &Program,
 ) -> Result<Value, String> {
-    let (machine, beside) = located(beside)?;
     let destination = Destination::Split {
         beside: beside.to_owned(),
         direction,
         ratio,
     };
-    start(core, session, machine, destination, program)
+    start(core, session, None, destination, program)
 }
 
 pub(super) fn pane_close(core: &Arc<Core>, session: &str, terminal: &str) -> Result<Value, String> {
-    let (machine, id, local) = reached(core, terminal)?;
-    let lifecycle = Lifecycle::on(core.clone(), session, id.as_deref());
+    let (lifecycle, machine, local) = reach(core, session, terminal)?;
     lifecycle.close(local).map_err(there(machine))?;
     if let Err(err) = lifecycle.recover() {
         report_recovery(session, machine)(err);

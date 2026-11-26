@@ -256,3 +256,32 @@ fn only_a_workspace_is_given_a_machine() {
         assert!(parse(&args(words)).expect("handled").is_err(), "{words:?}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_start_beside_or_inside_something_on_a_machine_is_located_there() {
+    use crate::session_doc::{Destination, Direction};
+
+    let tab = |workspace: Option<&str>| Destination::Tab {
+        workspace: workspace.map(str::to_owned),
+        name: None,
+    };
+    let split = |beside: &str| Destination::Split {
+        beside: beside.to_owned(),
+        direction: Direction::Right,
+        ratio: 0.5,
+    };
+    let located = super::commands::located_start;
+
+    assert_eq!(
+        located(tab(Some("boxb/ws0"))),
+        Ok((Some("boxb".to_owned()), tab(Some("ws0"))))
+    );
+    assert_eq!(
+        located(split("boxb/t1")),
+        Ok((Some("boxb".to_owned()), split("t1")))
+    );
+    assert_eq!(located(split("t1")), Ok((None, split("t1"))));
+    assert_eq!(located(tab(None)), Ok((None, tab(None))));
+    assert!(located(split("boxb/boxc/t1")).is_err());
+}

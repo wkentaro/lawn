@@ -370,6 +370,18 @@ pub(crate) fn core_id<'a>(cores: &'a [Machine], prefix: &'a str) -> Result<&'a s
     })
 }
 
+pub(crate) fn exact_core_id(cores: &[Machine], id: &str) -> Result<(), String> {
+    if cores.iter().any(|core| core.name == id && core.id != id) {
+        return Err(format!(
+            "{id} is the name of a machine, so it reaches that machine and not the one with this core id"
+        ));
+    }
+    if cores.iter().any(|core| core.id == id) {
+        return Ok(());
+    }
+    Err(format!("no linked machine has the core id {id}"))
+}
+
 pub(crate) fn located(address: &str) -> Result<(Option<&str>, &str), String> {
     match address.split_once('/') {
         Some((_, local)) if local.contains('/') => {
@@ -754,6 +766,13 @@ impl Core {
             state: "connected".to_owned(),
         });
         Ok(cores)
+    }
+
+    pub(crate) fn holds(&self, machine: Option<&str>) -> HcResult<()> {
+        let Some(id) = machine else {
+            return Ok(());
+        };
+        exact_core_id(&self.cores()?, id).map_err(HcError::Unavailable)
     }
 
     pub(crate) fn doc_get(&self, name: &str, on: Option<&str>) -> HcResult<Doc> {

@@ -510,13 +510,17 @@ impl PaneRuntime {
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
+        let (machine, _) = crate::hc::located(address).map_err(std::io::Error::other)?;
+        core.holds(machine).map_err(std::io::Error::other)?;
         let mut params = reattach_params(address, rows, cols);
         params["resumed"] = resumed.into();
         let attached = attach_unless_finished(&core, address, params)?;
+        let reattach = machine.is_some().then_some(address);
         Self::attach_core(
             pane_id,
             core,
             attached,
+            reattach,
             rows,
             cols,
             scrollback_limit_bytes,
@@ -555,6 +559,7 @@ impl PaneRuntime {
             pane_id,
             core,
             attached,
+            None,
             rows,
             cols,
             scrollback_limit_bytes,
@@ -575,6 +580,7 @@ impl PaneRuntime {
         pane_id: PaneId,
         core: Arc<Core>,
         attached: Attached,
+        reattach: Option<&str>,
         rows: u16,
         cols: u16,
         scrollback_limit_bytes: usize,
@@ -590,14 +596,20 @@ impl PaneRuntime {
             stream,
             terminal: record,
         } = attached;
-        let address = record
-            .get("address")
-            .and_then(|address| address.as_str())
+        let address = reattach
+            .or_else(|| record.get("address")?.as_str())
             .unwrap_or_default()
             .to_owned();
         // From here on, failing drops `io`, which detaches the stream.
-        let io = CoreIo::new(core.clone(), channel, address, rows, cols)
-            .inspect_err(|_| core.detach(channel))?;
+        let io = CoreIo::new(
+            core.clone(),
+            channel,
+            address,
+            reattach.is_none(),
+            rows,
+            cols,
+        )
+        .inspect_err(|_| core.detach(channel))?;
         let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
         let pane_terminal = new_pane_terminal(
             rows,
@@ -915,6 +927,7 @@ mod tests {
             PaneId::from_raw(7),
             core.clone(),
             attached,
+            None,
             24,
             80,
             0,
@@ -948,6 +961,7 @@ mod tests {
             PaneId::from_raw(7),
             core.clone(),
             attached,
+            None,
             24,
             80,
             0,
@@ -980,6 +994,7 @@ mod tests {
             PaneId::from_raw(7),
             test.core.clone(),
             attached,
+            None,
             24,
             80,
             0,
@@ -1124,6 +1139,107 @@ mod tests {
         test.core
             .call("terminal.kill", json!({"terminal": address}))
             .expect("kill");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pane_attached_by_core_id_reconnects_to_its_machine_after_another_took_the_name() {
+        use crate::hc::test_support::TestCore;
+
+        let (Some(here), Some(first), Some(second)) =
+            (TestCore::start(), TestCore::start(), TestCore::start())
+        else {
+            return;
+        };
+        here.share();
+        crate::hc::use_core_for_test();
+        let _first = here.link(&first, "boxb");
+        here.becomes("boxb", "connected");
+        let cores = here.core.cores().expect("the cores");
+        let id = crate::hc::core_id(&cores, "boxb").expect("a core id");
+        let run = |core: &Arc<Core>, script: &str| {
+            core.run(json!({"argv": ["sh", "-c", script], "cwd": "/", "no_parent": true}))
+                .expect("run")
+        };
+        let local = run(
+            &first.core,
+            "stty -echo; echo first; read line; echo got-$line; sleep 30",
+        );
+        let (events, _event_rx) = mpsc::channel(64);
+        let runtime = PaneRuntime::attach_core_terminal(
+            PaneId::from_raw(7),
+            here.core.clone(),
+            &format!("{id}/{local}"),
+            24,
+            80,
+            false,
+            0,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .expect("attach");
+        wait_for("the first machine's program", || {
+            runtime.visible_text().contains("first")
+        })
+        .await;
+
+        let renamed = json!({"machine": "boxb", "new_name": "boxz"});
+        here.core
+            .call("machine.rename", renamed)
+            .expect("rename the machine");
+        let _second = here.link(&second, "boxb");
+        here.becomes("boxb", "connected");
+        assert_eq!(run(&second.core, "echo second; sleep 30"), local);
+        here.disconnect();
+        wait_for("the lost connection", || here.core.is_closed()).await;
+
+        wait_for("input through the replacement", || {
+            let _ = runtime.try_send_bytes(Bytes::from_static(b"again\r"));
+            runtime.visible_text().contains("got-again")
+        })
+        .await;
+        assert!(!runtime.visible_text().contains("second"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pane_does_not_attach_by_a_core_id_that_became_another_machines_name() {
+        use crate::hc::test_support::TestCore;
+
+        let (Some(here), Some(first), Some(second)) =
+            (TestCore::start(), TestCore::start(), TestCore::start())
+        else {
+            return;
+        };
+        let (_first, _second) = (here.link(&first, "boxb"), here.link(&second, "boxc"));
+        here.becomes("boxb", "connected");
+        here.becomes("boxc", "connected");
+        let cores = here.core.cores().expect("the cores");
+        let id = crate::hc::core_id(&cores, "boxb").expect("a core id");
+        let script = json!({"argv": ["sleep", "30"], "cwd": "/", "no_parent": true});
+        let local = second.core.run(script).expect("run");
+        let unlinked = json!({"machine": "boxb"});
+        here.core.call("machine.rm", unlinked).expect("unlink");
+        let renamed = json!({"machine": "boxc", "new_name": id});
+        here.core.call("machine.rename", renamed).expect("rename");
+        here.becomes(id, "connected");
+        let (events, _event_rx) = mpsc::channel(64);
+
+        let attached = PaneRuntime::attach_core_terminal(
+            PaneId::from_raw(7),
+            here.core.clone(),
+            &format!("{id}/{local}"),
+            24,
+            80,
+            false,
+            0,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert!(attached.is_err());
     }
 
     #[cfg(unix)]
@@ -1361,6 +1477,7 @@ mod tests {
             PaneId::from_raw(7),
             test.core.clone(),
             attached,
+            None,
             24,
             80,
             1 << 20,
@@ -1408,6 +1525,7 @@ mod tests {
             PaneId::from_raw(7),
             test.core.clone(),
             attached,
+            None,
             24,
             80,
             1 << 20,

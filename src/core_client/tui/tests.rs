@@ -48,15 +48,13 @@ fn operations_wait_on_one_blocking_task_until_the_split_before_them_finishes() {
         direction: Direction::Right,
         ratio: 0.5,
     };
-    queue
-        .send((Operation::Start(split), PathBuf::new()))
-        .expect("queued");
+    queue.send((Operation::Start(split), None)).expect("queued");
     let began = reports.recv_timeout(bound).expect("the split began");
     for operation in [
         Operation::Park("t1".to_owned()),
         Operation::Close(vec!["t1".to_owned()]),
     ] {
-        queue.send((operation, PathBuf::new())).expect("queued");
+        queue.send((operation, None)).expect("queued");
     }
     open.send(()).expect("opened");
     let rest = [(); 3].map(|()| reports.recv_timeout(bound).expect("the operation ran"));
@@ -287,4 +285,129 @@ async fn a_refused_write_of_the_running_theme_leaves_the_dialog_open() {
     );
 
     assert!(surface.dialog_open());
+}
+
+#[test]
+fn an_operation_on_a_linked_machines_pane_runs_on_that_machine() {
+    use crate::core_lifecycle::Lifecycle;
+    use crate::hc::test_support::TestCore;
+    use crate::session_doc::Arrangement;
+
+    let (Some(here), Some(there)) = (TestCore::start(), TestCore::start()) else {
+        return;
+    };
+    let _link = here.link(&there, "boxb");
+    here.becomes("boxb", "connected");
+    let core = &here.core;
+    let cores = core.cores().expect("the cores");
+    let id = crate::hc::core_id(&cores, "boxb").expect("a core id");
+    let workspace = || Destination::Workspace { name: None };
+    let near = Lifecycle::new(core.clone(), "live");
+    let far = Lifecycle::on(core.clone(), "live", Some("boxb"));
+    for lifecycle in [&near, &far] {
+        lifecycle.start(workspace(), None, &[]).expect("start");
+    }
+    let named = |workspace: String| {
+        Operation::Arrange(Arrangement::NameWorkspace {
+            workspace,
+            name: "moved".to_owned(),
+        })
+    };
+    let first = |lifecycle: &Lifecycle| lifecycle.layout().expect("layout").workspaces.remove(0);
+    let (created, mut creations) = tokio::sync::mpsc::unbounded_channel();
+    let perform = |operation| super::unix::perform(core, "live", operation, None, &created);
+
+    perform(Operation::Start(Destination::Split {
+        beside: format!("{id}/t1"),
+        direction: Direction::Right,
+        ratio: 0.5,
+    }));
+    let far_written = perform(named(format!("{id}/{}", first(&far).id)));
+    let near_written = perform(named(first(&near).id));
+    perform(Operation::Park(format!("{id}/t1")));
+    perform(Operation::Close(vec![format!("{id}/t2")]));
+
+    assert_eq!(creations.try_recv(), Ok(format!("{id}/t2")));
+    assert_eq!((far_written, near_written.is_some()), (None, true));
+    let there = Lifecycle::new(there.core.clone(), "live")
+        .layout()
+        .expect("layout");
+    assert_eq!(there.workspaces[0].name.as_deref(), Some("moved"));
+    assert_eq!(there.workspaces[0].id, first(&far).id);
+    assert!(
+        there.parked.contains("t1") && !there.owns("t2"),
+        "{there:?}"
+    );
+    assert!(near.layout().expect("layout").shows("t1"));
+}
+
+#[test]
+fn a_close_drawn_before_two_machines_swapped_names_reaches_the_machine_it_was_drawn_from() {
+    use crate::core_lifecycle::Lifecycle;
+    use crate::hc::test_support::TestCore;
+
+    let (Some(here), Some(first), Some(second)) =
+        (TestCore::start(), TestCore::start(), TestCore::start())
+    else {
+        return;
+    };
+    let core = &here.core;
+    let workspace = || Destination::Workspace { name: None };
+    let _first = here.link(&first, "boxb");
+    here.becomes("boxb", "connected");
+    let cores = core.cores().expect("the cores");
+    let drawn = crate::hc::core_id(&cores, "boxb").expect("a core id");
+    let renamed = serde_json::json!({"machine": "boxb", "new_name": "boxz"});
+    core.call("machine.rename", renamed).expect("rename");
+    let _second = here.link(&second, "boxb");
+    here.becomes("boxb", "connected");
+    for machine in ["boxz", "boxb"] {
+        Lifecycle::on(core.clone(), "live", Some(machine))
+            .start(workspace(), None, &[])
+            .expect("start");
+    }
+    let (created, _creations) = tokio::sync::mpsc::unbounded_channel();
+
+    let close = Operation::Close(vec![format!("{drawn}/t1")]);
+    super::unix::perform(core, "live", close, None, &created);
+
+    let owns = |test: &TestCore| {
+        let layout = Lifecycle::new(test.core.clone(), "live").layout();
+        layout.expect("layout").owns("t1")
+    };
+    assert_eq!((owns(&first), owns(&second)), (false, true));
+}
+
+#[test]
+fn a_close_drawn_for_a_machine_since_unlinked_spares_the_machine_now_named_with_its_core_id() {
+    use crate::core_lifecycle::Lifecycle;
+    use crate::hc::test_support::TestCore;
+
+    let (Some(here), Some(first), Some(second)) =
+        (TestCore::start(), TestCore::start(), TestCore::start())
+    else {
+        return;
+    };
+    let core = &here.core;
+    let (_first, _second) = (here.link(&first, "boxb"), here.link(&second, "boxc"));
+    for machine in ["boxb", "boxc"] {
+        here.becomes(machine, "connected");
+        Lifecycle::on(core.clone(), "live", Some(machine))
+            .start(Destination::Workspace { name: None }, None, &[])
+            .expect("start");
+    }
+    let cores = core.cores().expect("the cores");
+    let drawn = crate::hc::core_id(&cores, "boxb").expect("a core id");
+    let unlinked = serde_json::json!({"machine": "boxb"});
+    core.call("machine.rm", unlinked).expect("unlink");
+    let renamed = serde_json::json!({"machine": "boxc", "new_name": drawn});
+    core.call("machine.rename", renamed).expect("rename");
+    here.becomes(drawn, "connected");
+    let (created, _creations) = tokio::sync::mpsc::unbounded_channel();
+
+    let close = Operation::Close(vec![format!("{drawn}/t1")]);
+    super::unix::perform(core, "live", close, None, &created);
+
+    let layout = Lifecycle::new(second.core.clone(), "live").layout();
+    assert!(layout.expect("layout").owns("t1"));
 }

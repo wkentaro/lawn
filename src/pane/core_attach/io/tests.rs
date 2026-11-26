@@ -15,13 +15,14 @@ fn dropping_the_owner_cancels_connection_retries() {
     let owner = CoreIo {
         connection: connection.clone(),
         address: "t7".into(),
+        followed: true,
         input,
     };
     let (started, start) = mpsc::channel();
     let (completed, complete) = mpsc::channel();
     let worker = std::thread::spawn(move || {
         started.send(()).unwrap();
-        let result = connection.reconnect("t7");
+        let result = connection.reconnect("t7", false);
         completed.send(matches!(result, Ok(None))).unwrap();
     });
     start.recv().unwrap();
@@ -46,7 +47,15 @@ async fn replacement_routing_rejects_old_keys_and_renews_responses_and_size() {
     let attached = core
         .attach(json!({"terminal": address, "rows": 24, "cols": 80}))
         .unwrap();
-    let io = CoreIo::new(core.clone(), attached.channel, address.clone(), 24, 80).unwrap();
+    let io = CoreIo::new(
+        core.clone(),
+        attached.channel,
+        address.clone(),
+        true,
+        24,
+        80,
+    )
+    .unwrap();
     let text = || {
         core.call("terminal.read", json!({"terminal": address}))
             .unwrap()["text"]
@@ -63,7 +72,7 @@ async fn replacement_routing_rejects_old_keys_and_renews_responses_and_size() {
         .submit(Bytes::new(), Bytes::new(), Duration::ZERO)
         .is_err());
     io.resize(93, 33);
-    let (replacement, _attached) = io.connection.reconnect(&address).unwrap().unwrap();
+    let (replacement, _attached) = io.connection.reconnect(&address, false).unwrap().unwrap();
     assert!(!Arc::ptr_eq(&old, &replacement));
     io.input
         .send((old, Input::Bytes(Bytes::from_static(b"stale\r"))))
@@ -108,7 +117,15 @@ async fn input_sent_right_before_the_owner_drops_reaches_the_terminal() {
     let attached = core
         .attach(json!({"terminal": address, "rows": 24, "cols": 80}))
         .unwrap();
-    let io = CoreIo::new(core.clone(), attached.channel, address.clone(), 24, 80).unwrap();
+    let io = CoreIo::new(
+        core.clone(),
+        attached.channel,
+        address.clone(),
+        true,
+        24,
+        80,
+    )
+    .unwrap();
     let text = || {
         core.call("terminal.read", json!({"terminal": address}))
             .unwrap()["text"]

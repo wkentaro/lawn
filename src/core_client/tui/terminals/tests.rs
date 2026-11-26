@@ -520,6 +520,96 @@ async fn a_rename_reaches_every_follower_and_an_empty_name_removes_it() {
     until_named(&mut later, &terminal, None).await;
 }
 
+fn named_on(here: &TestCore, machine: &str, name: &str) -> String {
+    here.becomes(machine, "connected");
+    let cores = here.core.cores().expect("the cores");
+    let id = crate::hc::core_id(&cores, machine).expect("a core id");
+    let argv = ["sleep".to_owned(), "60".to_owned()];
+    let started = Lifecycle::on(here.core.clone(), "followed", Some(id))
+        .start(
+            Destination::Workspace { name: None },
+            Some(Path::new("/")),
+            &argv,
+        )
+        .expect("start");
+    let terminal = format!("{id}/{}", started.terminal);
+    rename(&here.core, &terminal, name).expect("renamed");
+    terminal
+}
+
+#[tokio::test]
+async fn a_linked_machines_reports_arrive_under_its_core_id_before_and_after_it_is_renamed() {
+    let (Some(here), Some(there)) = (TestCore::start(), TestCore::start()) else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    here.share();
+    let _link = here.link(&there, "boxb");
+    let terminal = named_on(&here, "boxb", "build");
+
+    let mut reports = followed();
+    until_named(&mut reports, &terminal, Some("build")).await;
+    let mut later = followed();
+    assert_eq!(until_seen(&mut later, &terminal).await, "/");
+
+    let renamed = json!({"machine": "boxb", "new_name": "boxc"});
+    here.core
+        .call("machine.rename", renamed)
+        .expect("rename the machine");
+    rename(&here.core, &terminal, "test").expect("renamed");
+    until_named(&mut reports, &terminal, Some("test")).await;
+}
+
+#[tokio::test]
+async fn a_machine_that_takes_an_unlinked_machines_name_is_reported_under_its_own_core_id() {
+    let (Some(here), Some(first), Some(second)) =
+        (TestCore::start(), TestCore::start(), TestCore::start())
+    else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    here.share();
+    let _first = here.link(&first, "boxb");
+    let was = named_on(&here, "boxb", "build");
+    let mut reports = followed();
+    until_named(&mut reports, &was, Some("build")).await;
+
+    here.core
+        .call("machine.rm", json!({"machine": "boxb"}))
+        .expect("unlink the machine");
+    let _second = here.link(&second, "boxb");
+    let now = named_on(&here, "boxb", "test");
+
+    assert_ne!(was, now);
+    until_named(&mut reports, &now, Some("test")).await;
+}
+
+#[tokio::test]
+async fn a_machine_named_with_another_machines_core_id_is_reported_under_its_own() {
+    let (Some(here), Some(first), Some(second)) =
+        (TestCore::start(), TestCore::start(), TestCore::start())
+    else {
+        return;
+    };
+    crate::hc::use_core_for_test();
+    here.share();
+    let (_first, _second) = (here.link(&first, "boxb"), here.link(&second, "boxc"));
+    let held = named_on(&here, "boxb", "build");
+    let other = named_on(&here, "boxc", "idle");
+    let (taken, _) = held.split_once('/').expect("a linked address");
+    let mut reports = followed();
+    until_named(&mut reports, &other, Some("idle")).await;
+
+    let renamed = json!({"machine": "boxc", "new_name": taken});
+    here.core
+        .call("machine.rename", renamed)
+        .expect("rename the machine");
+    here.becomes(taken, "connected");
+    rename(&here.core, &other, "test").expect("renamed");
+
+    until_named(&mut reports, &other, Some("test")).await;
+}
+
 #[test]
 fn a_removed_event_reports_the_terminal_gone() {
     let message =

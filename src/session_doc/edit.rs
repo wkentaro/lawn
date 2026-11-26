@@ -69,6 +69,23 @@ pub(crate) enum Arrangement {
     },
 }
 
+impl Arrangement {
+    #[cfg(unix)]
+    pub(crate) fn subject(&self) -> &str {
+        match self {
+            Self::NameWorkspace { workspace: id, .. }
+            | Self::MoveWorkspace { workspace: id, .. }
+            | Self::NameTab { tab: id, .. }
+            | Self::MoveTab { tab: id, .. }
+            | Self::Swap { terminal: id, .. }
+            | Self::SwapWith { terminal: id, .. }
+            | Self::Resize { terminal: id, .. }
+            | Self::SetRatio { first: id, .. }
+            | Self::MovePane { terminal: id, .. } => id,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Place {
     Before(String),
