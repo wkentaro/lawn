@@ -492,6 +492,40 @@ fn recv_until(stream: &mut tokio_mpsc::UnboundedReceiver<Stream>, needle: &str) 
     panic!("no {needle:?} within 10s; saw {seen:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_test_core_leaves_no_units_in_the_users_systemd_manager() {
+    let Some(before) = shutdown_units() else {
+        return;
+    };
+    let Some(test) = TestCore::start() else {
+        return;
+    };
+    drop(test);
+
+    let after = shutdown_units().expect("list the user's units again");
+    let left: Vec<_> = after.difference(&before).collect();
+    assert!(left.is_empty(), "left in the user's manager: {left:?}");
+}
+
+#[cfg(unix)]
+fn shutdown_units() -> Option<std::collections::BTreeSet<String>> {
+    let users_runtime_dir = format!("/run/user/{}", unsafe { libc::getuid() });
+    let out = Command::new("systemctl")
+        .env("XDG_RUNTIME_DIR", users_runtime_dir)
+        .args(["--user", "list-units", "--all", "--no-legend", "--plain"])
+        .arg("hc-shutdown-*")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+            .collect(),
+    )
+}
+
 // The programs here are Unix shell lines.
 #[cfg(unix)]
 #[test]

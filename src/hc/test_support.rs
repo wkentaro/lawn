@@ -45,25 +45,24 @@ impl TestCore {
     }
 
     pub(crate) fn share(&self) {
-        #[cfg(unix)]
-        std::env::set_var("HC_SOCKET", self.state.join("hc.sock"));
-        #[cfg(not(unix))]
-        std::env::remove_var("HC_SOCKET");
-        std::env::set_var("HC_SESSION", &self.session);
-        std::env::set_var("XDG_STATE_HOME", self.state.join("state"));
-        std::env::set_var("XDG_CONFIG_HOME", self.state.join("config"));
+        for (name, value) in isolated(&self.session, &self.state).get_envs() {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
         *SHARED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(self.core.clone());
     }
 }
 
-/// An `hc` that can't reach the user's core: its own session, state,
-/// config and socket.
 fn isolated(session: &str, state: &std::path::Path) -> Command {
     let mut command = crate::noninteractive_process::command(hc_bin());
     #[cfg(unix)]
-    command.env("HC_SOCKET", state.join("hc.sock"));
+    command
+        .env("HC_SOCKET", state.join("hc.sock"))
+        .env("XDG_RUNTIME_DIR", state.join("run"));
     #[cfg(not(unix))]
     command.env_remove("HC_SOCKET");
     command
